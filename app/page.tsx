@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function Page() {
   return (
-    <main>
+    <main className="p-4">
       <h1 className="text-4xl font-bold">Welcome to Velura</h1>
     </main>
   )

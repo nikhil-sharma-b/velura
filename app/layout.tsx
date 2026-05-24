@@ -1,7 +1,7 @@
 import { Geist_Mono, Inter } from "next/font/google"
 
+import { Topbar } from "@/components/layout/topbar/topbar"
 import { ThemeProvider } from "@/components/theme-provider"
-import { Topbar } from "@/components/topbar/topbar"
 import { APP_NAME } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 import { Metadata } from "next"
