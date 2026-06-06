@@ -30,7 +30,7 @@ export function GeneralForm() {
           render={({ field, fieldState }) => (
             <Field
               data-invalid={fieldState.invalid}
-              className="flex-row justify-between"
+              className="md:flex-row md:justify-between"
             >
               <FieldLabel htmlFor="toolbar">Toolbar</FieldLabel>
               <Select value={field.value} onValueChange={field.onChange}>
@@ -54,7 +54,7 @@ export function GeneralForm() {
           render={({ field, fieldState }) => (
             <Field
               data-invalid={fieldState.invalid}
-              className="flex-row justify-between"
+              className="md:flex-row md:justify-between"
             >
               <FieldLabel htmlFor="appearance">Appearance</FieldLabel>
               <Select value={field.value} onValueChange={field.onChange}>
@@ -83,7 +83,7 @@ export function GeneralForm() {
           render={({ field, fieldState }) => (
             <Field
               data-invalid={fieldState.invalid}
-              className="flex-row justify-between"
+              className="md:flex-row md:justify-between"
             >
               <FieldLabel htmlFor="file-format">File format</FieldLabel>
               <Select value={field.value} onValueChange={field.onChange}>
@@ -113,7 +113,7 @@ export function GeneralForm() {
           render={({ field, fieldState }) => (
             <Field
               data-invalid={fieldState.invalid}
-              className="flex-row justify-between"
+              className="md:flex-row md:justify-between"
             >
               <FieldLabel htmlFor="quality">Quality</FieldLabel>
               <Select value={field.value} onValueChange={field.onChange}>
@@ -138,7 +138,7 @@ export function GeneralForm() {
           render={({ field, fieldState }) => (
             <Field
               data-invalid={fieldState.invalid}
-              className="flex-row justify-between"
+              className="md:flex-row md:justify-between"
             >
               <FieldLabel htmlFor="dimensions">Dimensions</FieldLabel>
               <Select value={field.value} onValueChange={field.onChange}>

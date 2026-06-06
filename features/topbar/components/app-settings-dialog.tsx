@@ -1,14 +1,14 @@
 "use client"
 
 import { Button } from "@/components/ui/button"
+import { DialogTitle } from "@/components/ui/dialog"
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
+  ResponsiveDialog,
+  ResponsiveDialogContent,
+  ResponsiveDialogFooter,
+  ResponsiveDialogHeader,
+  ResponsiveDialogTrigger,
+} from "@/components/ui/responsive-dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { GeneralForm } from "@/features/topbar/components/forms/general"
 import { APP_SETTINGS_ITEMS } from "@/features/topbar/lib/constants"
@@ -16,11 +16,13 @@ import {
   generalFormSchema,
   GeneralFormValues,
 } from "@/features/topbar/lib/schemas"
+import { useIsMobile } from "@/hooks/use-mobile"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { GearIcon } from "@phosphor-icons/react"
 import { FormProvider, useForm } from "react-hook-form"
 
 export function AppSettingsDialog() {
+  const isMobile = useIsMobile()
   const form = useForm<GeneralFormValues>({
     defaultValues: {
       appearance: "system",
@@ -37,19 +39,23 @@ export function AppSettingsDialog() {
   }
 
   return (
-    <Dialog>
-      <DialogTrigger asChild>
+    <ResponsiveDialog>
+      <ResponsiveDialogTrigger asChild>
         <Button variant="ghost" className="h-11 rounded-full p-2">
           <GearIcon className="size-6" />
         </Button>
-      </DialogTrigger>
-      <DialogContent className="min-w-125 gap-0 p-0">
-        <DialogHeader>
+      </ResponsiveDialogTrigger>
+      <ResponsiveDialogContent className="gap-0 p-0 md:min-w-125">
+        <ResponsiveDialogHeader>
           <DialogTitle>App settings</DialogTitle>
-        </DialogHeader>
+        </ResponsiveDialogHeader>
         <hr className="bg-border" />
-        <Tabs defaultValue="general" orientation="vertical" className="h-full">
-          <TabsList className="bg-transparent p-0 py-4">
+        <Tabs
+          defaultValue="general"
+          orientation={isMobile ? "horizontal" : "vertical"}
+          className="h-full"
+        >
+          <TabsList className="bg-transparent p-0 py-4 max-md:gap-4 max-md:pt-6">
             {APP_SETTINGS_ITEMS.map((tab) => (
               <TabsTrigger
                 key={tab}
@@ -74,7 +80,7 @@ export function AppSettingsDialog() {
             </TabsContent>
           </div>
         </Tabs>
-        <DialogFooter>
+        <ResponsiveDialogFooter>
           <Button
             variant="outline"
             size="xs"
@@ -83,8 +89,8 @@ export function AppSettingsDialog() {
           >
             Save
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveDialogFooter>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   )
 }
