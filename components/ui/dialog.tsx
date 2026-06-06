@@ -1,10 +1,10 @@
 "use client"
 
-import * as React from "react"
 import { Dialog as DialogPrimitive } from "radix-ui"
+import * as React from "react"
 
-import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 import { XIcon } from "@phosphor-icons/react"
 
 function Dialog({
@@ -88,7 +88,7 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="dialog-header"
-      className={cn("flex flex-col gap-1 text-left", className)}
+      className={cn("flex flex-col gap-1 p-4 text-left", className)}
       {...props}
     />
   )
@@ -106,7 +106,7 @@ function DialogFooter({
     <div
       data-slot="dialog-footer"
       className={cn(
-        "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end",
+        "flex flex-col-reverse gap-2 p-2 sm:flex-row sm:justify-end",
         className
       )}
       {...props}

@@ -1,10 +1,10 @@
 "use client"
 
-import * as React from "react"
 import { Select as SelectPrimitive } from "radix-ui"
+import * as React from "react"
 
 import { cn } from "@/lib/utils"
-import { CaretDownIcon, CheckIcon, CaretUpIcon } from "@phosphor-icons/react"
+import { CaretDownIcon, CaretUpIcon, CheckIcon } from "@phosphor-icons/react"
 
 function Select({
   ...props
@@ -60,7 +60,7 @@ function SelectTrigger({
 function SelectContent({
   className,
   children,
-  position = "item-aligned",
+  position = "popper",
   align = "center",
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content>) {

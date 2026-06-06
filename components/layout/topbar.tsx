@@ -1,7 +1,7 @@
 "use client"
 
+import { ActionButtons } from "@/features/topbar/components/action-buttons"
 import Image from "next/image"
-import { ActionButtons } from "./action-buttons"
 
 export function Topbar() {
   return (
