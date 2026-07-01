@@ -1,7 +1,7 @@
 "use client"
 
-import * as React from "react"
 import { Slider as SliderPrimitive } from "radix-ui"
+import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
@@ -11,8 +11,12 @@ function Slider({
   value,
   min = 0,
   max = 100,
+  step = 1,
+  ticks = false,
   ...props
-}: React.ComponentProps<typeof SliderPrimitive.Root>) {
+}: React.ComponentProps<typeof SliderPrimitive.Root> & {
+  ticks?: boolean
+}) {
   const _values = React.useMemo(
     () =>
       Array.isArray(value)
@@ -23,6 +27,14 @@ function Slider({
     [value, defaultValue, min, max]
   )
 
+  const tickPositions = React.useMemo(() => {
+    if (!ticks || step <= 0 || max <= min) return []
+    return Array.from(
+      { length: Math.floor((max - min) / step) + 1 },
+      (_, index) => ((index * step) / (max - min)) * 100
+    )
+  }, [ticks, min, max, step])
+
   return (
     <SliderPrimitive.Root
       data-slot="slider"
@@ -30,6 +42,7 @@ function Slider({
       value={value}
       min={min}
       max={max}
+      step={step}
       className={cn(
         "relative flex w-full touch-none items-center select-none data-disabled:opacity-50 data-vertical:h-full data-vertical:min-h-40 data-vertical:w-auto data-vertical:flex-col",
         className
@@ -45,6 +58,23 @@ function Slider({
           className="absolute bg-primary select-none data-horizontal:h-full data-vertical:w-full"
         />
       </SliderPrimitive.Track>
+      {tickPositions.map((position) => (
+        <span
+          key={position}
+          data-slot="slider-tick"
+          className={cn(
+            "pointer-events-none absolute bg-muted-foreground/40",
+            props.orientation === "vertical"
+              ? "h-px w-2.5 translate-y-1/2"
+              : "h-2.5 w-px -translate-x-1/2"
+          )}
+          style={
+            props.orientation === "vertical"
+              ? { bottom: `${position}%` }
+              : { left: `${position}%` }
+          }
+        />
+      ))}
       {Array.from({ length: _values.length }, (_, index) => (
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"

@@ -2,19 +2,22 @@
 
 import { Button } from "@/components/ui/button"
 import { DialogTitle } from "@/components/ui/dialog"
+import { DEFAULT_PRESSURE_CURVE } from "@/components/ui/pressure-curve"
 import {
-  ResponsiveDialog,
-  ResponsiveDialogContent,
-  ResponsiveDialogFooter,
-  ResponsiveDialogHeader,
-  ResponsiveDialogTrigger,
+    ResponsiveDialog,
+    ResponsiveDialogContent,
+    ResponsiveDialogFooter,
+    ResponsiveDialogHeader,
+    ResponsiveDialogTrigger,
 } from "@/components/ui/responsive-dialog"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { GeneralForm } from "@/features/topbar/components/forms/general"
+import { InputForm } from "@/features/topbar/components/forms/input"
 import { APP_SETTINGS_ITEMS } from "@/features/topbar/lib/constants"
 import {
-  generalFormSchema,
-  GeneralFormValues,
+    generalFormSchema,
+    GeneralFormValues,
 } from "@/features/topbar/lib/schemas"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -30,6 +33,7 @@ export function AppSettingsDialog() {
       fileFormat: "png",
       quality: "medium",
       dimensions: "original",
+      pressure: DEFAULT_PRESSURE_CURVE,
     },
     resolver: zodResolver(generalFormSchema),
   })
@@ -45,7 +49,7 @@ export function AppSettingsDialog() {
           <GearIcon className="size-6" />
         </Button>
       </ResponsiveDialogTrigger>
-      <ResponsiveDialogContent className="gap-0 p-0 md:min-w-125">
+      <ResponsiveDialogContent className="gap-0 p-0 md:min-w-150">
         <ResponsiveDialogHeader>
           <DialogTitle>App settings</DialogTitle>
         </ResponsiveDialogHeader>
@@ -66,19 +70,23 @@ export function AppSettingsDialog() {
               </TabsTrigger>
             ))}
           </TabsList>
-          <div className="size-full bg-background">
-            <TabsContent value="general" className="p-3">
+          <ScrollArea className="h-91 w-full">
+            <div className="size-full bg-background">
               <FormProvider {...form}>
                 <form
                   id="app-settings-form"
-                  className="flex flex-col gap-3"
                   onSubmit={form.handleSubmit(onSubmit)}
                 >
-                  <GeneralForm />
+                  <TabsContent value="general" className="p-3">
+                    <GeneralForm />
+                  </TabsContent>
+                  <TabsContent value="input" className="p-3">
+                    <InputForm />
+                  </TabsContent>
                 </form>
               </FormProvider>
-            </TabsContent>
-          </div>
+            </div>
+          </ScrollArea>
         </Tabs>
         <ResponsiveDialogFooter>
           <Button
