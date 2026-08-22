@@ -4,11 +4,11 @@ import { Button } from "@/components/ui/button"
 import { DialogTitle } from "@/components/ui/dialog"
 import { DEFAULT_PRESSURE_CURVE } from "@/components/ui/pressure-curve"
 import {
-    ResponsiveDialog,
-    ResponsiveDialogContent,
-    ResponsiveDialogFooter,
-    ResponsiveDialogHeader,
-    ResponsiveDialogTrigger,
+  ResponsiveDialog,
+  ResponsiveDialogContent,
+  ResponsiveDialogFooter,
+  ResponsiveDialogHeader,
+  ResponsiveDialogTrigger,
 } from "@/components/ui/responsive-dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -16,8 +16,8 @@ import { GeneralForm } from "@/features/topbar/components/forms/general"
 import { InputForm } from "@/features/topbar/components/forms/input"
 import { APP_SETTINGS_ITEMS } from "@/features/topbar/lib/constants"
 import {
-    generalFormSchema,
-    GeneralFormValues,
+  generalFormSchema,
+  GeneralFormValues,
 } from "@/features/topbar/lib/schemas"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -45,7 +45,10 @@ export function AppSettingsDialog() {
   return (
     <ResponsiveDialog>
       <ResponsiveDialogTrigger asChild>
-        <Button variant="ghost" className="h-11 rounded-full p-2">
+        <Button
+          variant="ghost"
+          className="h-11 rounded-full p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
           <GearIcon className="size-6" />
         </Button>
       </ResponsiveDialogTrigger>
@@ -63,7 +66,7 @@ export function AppSettingsDialog() {
             {APP_SETTINGS_ITEMS.map((tab) => (
               <TabsTrigger
                 key={tab}
-                className="data-active:border-transparent data-active:border-l-foreground data-active:bg-transparent dark:data-active:border-transparent dark:data-active:border-l-foreground dark:data-active:bg-transparent"
+                className="data-active:border-transparent data-active:border-l-primary data-active:bg-transparent data-active:text-primary dark:data-active:border-transparent dark:data-active:border-l-primary dark:data-active:bg-transparent dark:data-active:text-primary"
                 value={tab.toLowerCase()}
               >
                 {tab}
@@ -89,12 +92,7 @@ export function AppSettingsDialog() {
           </ScrollArea>
         </Tabs>
         <ResponsiveDialogFooter>
-          <Button
-            variant="outline"
-            size="xs"
-            type="submit"
-            form="app-settings-form"
-          >
+          <Button size="xs" type="submit" form="app-settings-form">
             Save
           </Button>
         </ResponsiveDialogFooter>

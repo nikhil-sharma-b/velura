@@ -1,4 +1,4 @@
-import { Geist_Mono, Inter } from "next/font/google"
+import { Caveat, Geist_Mono, Instrument_Serif, Karla } from "next/font/google"
 
 import { Topbar } from "@/components/layout/topbar"
 import { ThemeProvider } from "@/components/theme-provider"
@@ -7,7 +7,19 @@ import { cn } from "@/lib/utils"
 import { Metadata } from "next"
 import "./globals.css"
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-sans" })
+const fontSans = Karla({ subsets: ["latin"], variable: "--font-sans" })
+
+// Display face: wordmark, headings, empty states. Single weight by design —
+// the Didone contrast carries the emphasis, so there is no bold to load.
+const fontHeading = Instrument_Serif({
+  subsets: ["latin"],
+  weight: "400",
+  style: ["normal", "italic"],
+  variable: "--font-heading",
+})
+
+// Margin notes only. Never used for anything the reader must not miss.
+const fontAnnotate = Caveat({ subsets: ["latin"], variable: "--font-annotate" })
 
 const fontMono = Geist_Mono({
   subsets: ["latin"],
@@ -31,9 +43,11 @@ export default function RootLayout({
       suppressHydrationWarning
       className={cn(
         "antialiased",
-        fontMono.variable,
         "font-sans",
-        inter.variable
+        fontSans.variable,
+        fontHeading.variable,
+        fontAnnotate.variable,
+        fontMono.variable
       )}
     >
       <body>
