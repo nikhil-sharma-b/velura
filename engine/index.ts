@@ -2,13 +2,40 @@ import {
   chooseOutputColorSpace,
   type OutputColorSpace,
 } from "./color/display-transform"
+import {
+  BRUSH_COLOR,
+  BRUSH_FEATHER,
+  BRUSH_RADIUS,
+  BRUSH_SPACING,
+} from "./brush/round-brush"
 import { BACKGROUND, createScene } from "./doc/scene"
 import type { TiledLayer } from "./doc/tiled-layer"
-import { createRenderer, type Renderer } from "./gpu/renderer"
+import { createStrokeResampler } from "./geom/path"
+import { createStabilizer } from "./geom/stabilizer"
+import { attachPointerSampler } from "./input/pointer-sampler"
+import { createSampleBuffer } from "./input/sample-buffer"
+import {
+  createRenderer,
+  MAX_STAMPS_PER_DRAW,
+  type Renderer,
+  STAMP_STRIDE,
+} from "./gpu/renderer"
+
+/**
+ * Two frames of the fastest plausible pen (240 Hz) plus slack. Overrunning
+ * drops the oldest samples, which is the right loss: the stroke's head matters
+ * more than a position two frames stale.
+ */
+const SAMPLE_CAPACITY = 512
+
+/** A light default: enough to steady a hand, little enough to feel direct. */
+export const DEFAULT_STABILIZATION = 0.2
 
 export type EngineCommand =
   | { type: "initialize" }
   | { type: "resize"; width: number; height: number; devicePixelRatio: number }
+  /** Stabilizer strength in [0, 1]; zero restores the raw unfiltered path. */
+  | { type: "setStabilization"; strength: number }
 
 export type EngineSnapshot = Readonly<{
   status:
@@ -22,6 +49,8 @@ export type EngineSnapshot = Readonly<{
   height: number
   /** The colour space pixels are presented in: wide gamut where available. */
   outputColorSpace: OutputColorSpace
+  /** Stabilizer strength in [0, 1]. Structural state, so React may see it. */
+  stabilization: number
   error: string | null
 }>
 
@@ -52,6 +81,7 @@ export function createEngine(
     width: 1,
     height: 1,
     outputColorSpace: "srgb",
+    stabilization: DEFAULT_STABILIZATION,
     error: null,
   })
   const listeners = new Set<() => void>()
@@ -63,6 +93,21 @@ export function createEngine(
   let renderer: Renderer | undefined
   let layer: TiledLayer | undefined
   let disposed = false
+
+  // The stroke path. Every buffer here is allocated once, at construction:
+  // a frame of drawing performs no allocation at all (D30).
+  const samples = createSampleBuffer(SAMPLE_CAPACITY)
+  const stabilizer = createStabilizer()
+  const resampler = createStrokeResampler(BRUSH_SPACING)
+  const stamps = new Float32Array(MAX_STAMPS_PER_DRAW * STAMP_STRIDE)
+  let stampCount = 0
+  let stroking = false
+  // Where the pen actually was, before stabilization pulled the path behind it.
+  let rawX = 0
+  let rawY = 0
+  let frame: number | undefined
+  let detachSampler: (() => void) | undefined
+  stabilizer.setStrength(DEFAULT_STABILIZATION)
 
   function publish(update: Partial<EngineSnapshot>) {
     const next = { ...snapshot, ...update }
@@ -79,6 +124,11 @@ export function createEngine(
   }
 
   function release() {
+    if (frame !== undefined) cancelAnimationFrame(frame)
+    frame = undefined
+    stroking = false
+    stampCount = 0
+    samples.clear()
     renderer?.destroy()
     renderer = undefined
     layer = undefined
@@ -122,6 +172,75 @@ export function createEngine(
       renderer.upload(layer)
     }
     publish({ width: pixelWidth, height: pixelHeight })
+  }
+
+  /** Collects one dab, drawing early if the instance buffer would overflow. */
+  function emitStamp(x: number, y: number) {
+    if (stampCount === MAX_STAMPS_PER_DRAW) flushStamps()
+    const offset = stampCount * STAMP_STRIDE
+    stamps[offset] = x
+    stamps[offset + 1] = y
+    stamps[offset + 2] = BRUSH_RADIUS
+    // Fixed opacity for now; pressure and the dynamics graph land in later
+    // tickets and modulate exactly these two slots.
+    stamps[offset + 3] = 1
+    stampCount++
+  }
+
+  function flushStamps() {
+    if (stampCount === 0) return
+    renderer?.stamp(stamps, stampCount)
+    stampCount = 0
+  }
+
+  /**
+   * One frame of drawing: drain everything the pen reported, stabilize it,
+   * resample it by arc length, stamp, present. React is never told.
+   */
+  function drawFrame() {
+    frame = undefined
+    samples.drain((x, y) => {
+      rawX = x
+      rawY = y
+      const point = stabilizer.filter(x, y)
+      resampler.extend(point.x, point.y, emitStamp)
+    })
+    if (!stroking) {
+      // The string is released on pen-up, so the mark reaches where the pen
+      // lifted instead of stopping a pull radius short of it.
+      resampler.extend(rawX, rawY, emitStamp)
+      resampler.end(emitStamp)
+    }
+    flushStamps()
+    try {
+      if (snapshot.status === "ready") render()
+    } catch (error) {
+      fail(error)
+      return
+    }
+    if (stroking) frame = requestAnimationFrame(drawFrame)
+  }
+
+  function scheduleFrame() {
+    if (frame === undefined) frame = requestAnimationFrame(drawFrame)
+  }
+
+  function beginStroke(x: number, y: number) {
+    if (snapshot.status !== "ready") return
+    stroking = true
+    rawX = x
+    rawY = y
+    stabilizer.begin(x, y)
+    resampler.begin(x, y, emitStamp)
+    scheduleFrame()
+  }
+
+  function endStroke() {
+    if (!stroking) return
+    // The tail is flushed by the next frame, so the stroke reaches the point
+    // the pen actually lifted from rather than stopping a sample short.
+    stroking = false
+    scheduleFrame()
   }
 
   function render(): GPUTexture {
@@ -208,6 +327,8 @@ export function createEngine(
         format,
         outputColorSpace: colorSpace,
         background: BACKGROUND,
+        ink: BRUSH_COLOR,
+        feather: BRUSH_FEATHER,
       })
       publish({ outputColorSpace: colorSpace })
       resize()
@@ -218,6 +339,12 @@ export function createEngine(
       // The host may have resized the canvas while validation was pending.
       render()
       publish({ status: "ready" })
+      // Input is attached only once there is something to draw into.
+      if (!detachSampler && canvas instanceof HTMLCanvasElement)
+        detachSampler = attachPointerSampler(canvas, samples, {
+          begin: beginStroke,
+          end: endStroke,
+        })
     } catch (error) {
       fail(error)
     }
@@ -263,6 +390,13 @@ export function createEngine(
             fail(error)
           }
           break
+        case "setStabilization": {
+          if (!Number.isFinite(command.strength))
+            throw new Error("Stabilization strength must be finite.")
+          stabilizer.setStrength(command.strength)
+          publish({ stabilization: stabilizer.strength() })
+          break
+        }
       }
     },
     async readPixels() {
@@ -305,6 +439,8 @@ export function createEngine(
     dispose() {
       if (disposed) return
       disposed = true
+      detachSampler?.()
+      detachSampler = undefined
       release()
       publish({ status: "disposed" })
       listeners.clear()

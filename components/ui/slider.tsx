@@ -13,6 +13,8 @@ function Slider({
   max = 100,
   step = 1,
   ticks = false,
+  "aria-label": ariaLabel,
+  "aria-labelledby": ariaLabelledBy,
   ...props
 }: React.ComponentProps<typeof SliderPrimitive.Root> & {
   ticks?: boolean
@@ -79,6 +81,10 @@ function Slider({
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
           key={index}
+          // The thumb carries role="slider", so the accessible name belongs
+          // here rather than on the wrapper Radix puts the props on.
+          aria-label={ariaLabel}
+          aria-labelledby={ariaLabelledBy}
           className="relative block size-3 shrink-0 rounded-none border border-ring bg-white ring-ring/50 transition-[color,box-shadow] select-none after:absolute after:-inset-2 hover:ring-1 focus-visible:ring-1 focus-visible:outline-hidden active:ring-1 disabled:pointer-events-none disabled:opacity-50"
         />
       ))}

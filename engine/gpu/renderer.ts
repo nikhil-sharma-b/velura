@@ -11,17 +11,33 @@ import {
 } from "../doc/tile-grid"
 import type { TiledLayer } from "../doc/tiled-layer"
 import { displayTransformShader } from "../shaders/display-transform"
+import { stampShader } from "../shaders/stamp"
 
 const LAYER_FORMAT: GPUTextureFormat = "rgba16float"
 const BYTES_PER_TEXEL = TILE_CHANNELS * 2
 /** mat3x3 occupies three 16-byte columns, then one vec4 of background. */
 const UNIFORM_BYTES = 64
+/** vec2 viewport, feather and padding, then one vec4 of ink. */
+const STAMP_UNIFORM_BYTES = 32
+/** Floats per dab instance: centre, radius, opacity. */
+export const STAMP_STRIDE = 4
+/**
+ * Dabs drawn in one submission. A 120 Hz frame of the fastest plausible
+ * stroke is a few hundred; the ceiling exists so the instance buffer can be
+ * allocated once, and a frame beyond it simply draws in more than one pass.
+ */
+export const MAX_STAMPS_PER_DRAW = 2048
 
 export interface Renderer {
   /** (Re)allocates the linear-light target; the next upload rewrites it whole. */
   resize(width: number, height: number): void
   /** Uploads the tiles the layer marked dirty, and clears that mark. */
   upload(layer: TiledLayer): void
+  /**
+   * Draws `count` dabs from `instances`, packed as centre x, centre y, radius
+   * and opacity. The caller owns the array and reuses it across frames.
+   */
+  stamp(instances: Float32Array, count: number): void
   render(view: GPUTextureView): void
   destroy(): void
 }
@@ -38,6 +54,9 @@ export function createRenderer(
     outputColorSpace: OutputColorSpace
     /** Opaque canvas backdrop, working-space linear. */
     background: readonly [number, number, number]
+    /** Premultiplied linear-light ink, and the dab rim falloff in pixels. */
+    ink: readonly [number, number, number, number]
+    feather: number
   }
 ): Renderer {
   const shader = device.createShaderModule({ code: displayTransformShader })
@@ -65,6 +84,53 @@ export function createRenderer(
     )
   )
 
+  const stampModule = device.createShaderModule({ code: stampShader })
+  const stampPipeline = device.createRenderPipeline({
+    layout: "auto",
+    vertex: {
+      module: stampModule,
+      entryPoint: "vertexMain",
+      buffers: [
+        {
+          arrayStride: STAMP_STRIDE * 4,
+          stepMode: "instance",
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x2" },
+            { shaderLocation: 1, offset: 8, format: "float32" },
+            { shaderLocation: 2, offset: 12, format: "float32" },
+          ],
+        },
+      ],
+    },
+    fragment: {
+      module: stampModule,
+      entryPoint: "fragmentMain",
+      targets: [
+        {
+          format: LAYER_FORMAT,
+          // Premultiplied "over": the shader already multiplied by coverage.
+          blend: {
+            color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+          },
+        },
+      ],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+
+  const stampUniform = device.createBuffer({
+    size: STAMP_UNIFORM_BYTES,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
+  const stampInstances = device.createBuffer({
+    size: MAX_STAMPS_PER_DRAW * STAMP_STRIDE * 4,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  })
+  let stampBindGroup: GPUBindGroup | undefined
+  // Held rather than recreated: the stamp pass runs every frame of a stroke.
+  let targetView: GPUTextureView | undefined
+
   let target: GPUTexture | undefined
   let bindGroup: GPUBindGroup | undefined
   // A fresh target holds nothing, so the first upload after it cannot be
@@ -78,13 +144,26 @@ export function createRenderer(
       target = device.createTexture({
         size: { width, height },
         format: LAYER_FORMAT,
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+      })
+      device.queue.writeBuffer(
+        stampUniform,
+        0,
+        new Float32Array([width, height, options.feather, 0, ...options.ink])
+      )
+      targetView = target.createView()
+      stampBindGroup = device.createBindGroup({
+        layout: stampPipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: stampUniform } }],
       })
       bindGroup = device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: { buffer: uniform } },
-          { binding: 1, resource: target.createView() },
+          { binding: 1, resource: targetView },
         ],
       })
     },
@@ -114,6 +193,43 @@ export function createRenderer(
       targetIsEmpty = false
       layer.clearDirty()
     },
+    stamp(instances, count) {
+      if (!targetView || !stampBindGroup)
+        throw new Error("The render target has not been sized.")
+      if (count <= 0) return
+      for (let first = 0; first < count; first += MAX_STAMPS_PER_DRAW) {
+        const batch = Math.min(MAX_STAMPS_PER_DRAW, count - first)
+        // One submission per batch: every batch rewrites the same instance
+        // buffer, so its draw must be queued before the next write lands.
+        const encoder = device.createCommandEncoder()
+        device.queue.writeBuffer(
+          stampInstances,
+          0,
+          instances,
+          first * STAMP_STRIDE,
+          batch * STAMP_STRIDE
+        )
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [
+            {
+              view: targetView,
+              // The target holds the painting so far: dabs blend onto it.
+              loadOp: "load",
+              storeOp: "store",
+            },
+          ],
+        })
+        pass.setPipeline(stampPipeline)
+        pass.setBindGroup(0, stampBindGroup)
+        pass.setVertexBuffer(0, stampInstances)
+        pass.draw(6, batch)
+        pass.end()
+        device.queue.submit([encoder.finish()])
+      }
+      // Painted pixels now live only in the target; the tiled layer learns
+      // about them when the stroke buffer is composited back (ticket 04).
+      targetIsEmpty = false
+    },
     render(view) {
       if (!bindGroup) throw new Error("The render target has not been sized.")
       const encoder = device.createCommandEncoder()
@@ -136,8 +252,12 @@ export function createRenderer(
     destroy() {
       target?.destroy()
       target = undefined
+      targetView = undefined
       bindGroup = undefined
+      stampBindGroup = undefined
       uniform.destroy()
+      stampUniform.destroy()
+      stampInstances.destroy()
     },
   }
 }

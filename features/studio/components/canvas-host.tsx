@@ -1,13 +1,21 @@
 "use client"
 
 import { useCallback, useState, useSyncExternalStore } from "react"
-import { createEngine, type Engine, type EngineSnapshot } from "@/engine"
+import {
+  createEngine,
+  DEFAULT_STABILIZATION,
+  type Engine,
+  type EngineSnapshot,
+} from "@/engine"
+import { Label } from "@/components/ui/label"
+import { Slider } from "@/components/ui/slider"
 
 const initialSnapshot: EngineSnapshot = Object.freeze({
   status: "idle",
   width: 1,
   height: 1,
   outputColorSpace: "srgb",
+  stabilization: DEFAULT_STABILIZATION,
   error: null,
 })
 const getInitialSnapshot = () => initialSnapshot
@@ -69,8 +77,32 @@ export function CanvasHost() {
         ref={attach}
         role="img"
         aria-label="Drawing canvas"
-        className="block h-full w-full"
+        // Touch and pen gestures belong to the stroke, not to the scroller.
+        className="block h-full w-full touch-none"
       />
+      {snapshot.status === "ready" && (
+        <div className="absolute bottom-6 left-6 w-56 space-y-2 rounded-lg border bg-background/80 p-4 backdrop-blur">
+          <div className="flex items-baseline justify-between">
+            <Label id="smoothing-label">Smoothing</Label>
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {Math.round(snapshot.stabilization * 100)}%
+            </span>
+          </div>
+          <Slider
+            aria-labelledby="smoothing-label"
+            min={0}
+            max={100}
+            step={1}
+            value={[Math.round(snapshot.stabilization * 100)]}
+            onValueChange={([percent]) =>
+              void engine?.dispatch({
+                type: "setStabilization",
+                strength: percent / 100,
+              })
+            }
+          />
+        </div>
+      )}
       {snapshot.status !== "ready" && (
         <div className="absolute inset-0 grid place-items-center bg-background p-6">
           <section

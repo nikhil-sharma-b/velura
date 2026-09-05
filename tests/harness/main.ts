@@ -4,6 +4,8 @@ declare global {
   interface Window {
     engine: Engine
     remountEngine(): void
+    /** Snapshot notifications counted by the stroke tests. */
+    strokeNotifications: number
   }
 }
 
