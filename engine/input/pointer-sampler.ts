@@ -14,14 +14,20 @@ import type { SampleBuffer } from "./sample-buffer"
  */
 
 export interface StrokeHandlers {
-  /** The pen went down, in canvas backing-store pixels. */
+  /**
+   * The pen went down, in canvas backing-store pixels. `time` is zero, since
+   * every sample's clock is relative to this one; `origin` is that zero read
+   * on the page's own clock, which is the only way anything downstream can
+   * say how old a sample is now.
+   */
   begin(
     x: number,
     y: number,
     pressure: number,
     tiltX: number,
     tiltY: number,
-    time: number
+    time: number,
+    origin: number
   ): void
   /** The pen lifted or the stroke was cancelled. */
   end(): void
@@ -104,7 +110,8 @@ export function attachPointerSampler(
       canvasPressure(event),
       event.tiltX,
       event.tiltY,
-      0
+      0,
+      event.timeStamp
     )
   }
 

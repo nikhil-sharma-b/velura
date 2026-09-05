@@ -1,3 +1,9 @@
+import {
+  describeEnvironment,
+  runBenchmark,
+  type RunResult,
+} from "../../bench/driver"
+import type { WorkloadOptions } from "../../bench/workload"
 import { BRUSH_COLOR, BRUSH_FEATHER } from "../../engine/brush/round-brush"
 import { createTextureLibrary } from "../../engine/brush/texture"
 import { BACKGROUND } from "../../engine/doc/scene"
@@ -41,6 +47,9 @@ declare global {
     strokeNotifications: number
     openStrokeBufferProbe(width: number, height: number): Promise<void>
     probe: StrokeBufferProbe
+    /** The performance benchmark (D30), driven by `bench/run.ts`. */
+    runBenchmark(options: WorkloadOptions): Promise<RunResult>
+    describeEnvironment: typeof describeEnvironment
   }
 }
 
@@ -51,6 +60,9 @@ window.remountEngine = () => {
   window.engine.dispose()
   window.engine = createEngine(canvas)
 }
+
+window.runBenchmark = (options) => runBenchmark(window.engine, canvas, options)
+window.describeEnvironment = describeEnvironment
 
 window.openStrokeBufferProbe = async (width, height) => {
   // Created on demand rather than sitting in the page: the other tests locate

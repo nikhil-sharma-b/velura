@@ -1,0 +1,3 @@
+# The per-run frame dumps are large and local. `history.jsonl` is the record
+# that travels: one line per run, which is what a regression is spotted in.
+*.json

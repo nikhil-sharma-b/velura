@@ -332,8 +332,13 @@ features/studio/   # the editor UI
   lib/             # schemas, constants, engine bindings
 
 convex/            # schema, auth, queries, mutations, actions, crons
-docs/design/       # this document, the PRD
+bench/             # the D30 benchmark: workload, driver, report, runner
+docs/design/       # this document, the PRD, the benchmark findings
 ```
+
+`bench/` imports the engine and is imported by nothing: it is a consumer of the
+public surface like `features/studio/` is, and the same D35 rule applies in
+reverse — the engine must not know it exists.
 
 **Enforced rule (D35):** `engine/**` may not import React, Next, or anything from `features/`, `app/`, or `components/`. Enforced with an oxlint `no-restricted-imports` rule so it fails CI rather than relying on discipline.
 
@@ -363,7 +368,7 @@ WGSL lives in `.wgsl` files under `engine/shaders/`, assembled by a small (~40 l
 | Stable contracts — resampling, stabilizer, dynamics evaluation, tile coordinates, hashing, zstd round-trip, manifest diffing | Bun unit tests, no GPU. Fast iteration during M1 brush tuning, and named assertions on parameters where a golden image would only say "differs". |
 | Convex functions — schema, flush path, dedup, GC sweep, retention | Convex function tests. |
 | GPU — brush rendering, blend modes, display transform | Playwright golden-image snapshots in headless Chrome over a small set of canonical strokes. |
-| Performance | Scripted benchmark against D30: 120 fps at 8192², under 10 ms pointer-to-pixel. Tracked, not gated. |
+| Performance | Scripted benchmark against D30: 120 fps at 8192², under 10 ms pointer-to-pixel. Tracked, not gated. `bun run bench`; see [benchmark.md](benchmark.md) for how it measures and what the first run found. |
 
 ---
 

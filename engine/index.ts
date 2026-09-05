@@ -120,12 +120,39 @@ export type RenderedPixels = {
   colorSpace: OutputColorSpace
 }
 
+/**
+ * What one frame of the interactive loop cost (D30). Emitted only while an
+ * observer is attached, and only for frames the stroke loop actually ran:
+ * nothing here is computed, allocated or awaited during ordinary painting.
+ */
+export type FrameTiming = {
+  /** The frame callback's timestamp, on the page's clock. */
+  start: number
+  /** Main-thread milliseconds spent draining, stamping and submitting. */
+  cpuMs: number
+  /** Dabs stamped in this frame. */
+  stamps: number
+  /**
+   * Pen-to-pixel, in milliseconds: from the event timestamp of the oldest
+   * sample the frame consumed to the GPU reporting the frame's work done.
+   * Null on a frame that consumed no sample. This is a fence, not a readback —
+   * no pixel crosses back to the CPU (D30).
+   */
+  latencyMs: number | null
+}
+
 export interface Engine {
   dispatch(command: EngineCommand): Promise<void>
   getSnapshot(): EngineSnapshot
   subscribe(listener: () => void): () => void
   /** Explicit asynchronous readback for tests and future export; never per frame. */
   readPixels(): Promise<RenderedPixels>
+  /**
+   * Watches the cost of every frame of drawing, for the benchmark (D30). Null
+   * detaches. Attaching one adds a promise per frame, so it is off by default
+   * and never on in the product.
+   */
+  observeFrames(observer: ((frame: FrameTiming) => void) | null): void
   dispose(): void
 }
 
@@ -195,6 +222,13 @@ export function createEngine(
   let appliedTextures: string | undefined
   let frame: number | undefined
   let detachSampler: (() => void) | undefined
+  // Frame instrumentation. All of it is inert until an observer is attached.
+  let frameObserver: ((frame: FrameTiming) => void) | null = null
+  /** The page clock reading that this stroke's sample times are relative to. */
+  let strokeOrigin = 0
+  let frameStamps = 0
+  /** Event time of the oldest sample this frame drained, on the page's clock. */
+  let frameOldestSample: number | null = null
   stabilizer.setStrength(DEFAULT_STABILIZATION)
 
   function publish(update: Partial<EngineSnapshot>) {
@@ -300,6 +334,7 @@ export function createEngine(
     // does to it per dab, so a light touch can skim the paper (D24).
     stamps[offset + STAMP.GRAIN_DEPTH] = params.grainDepth
     stampCount++
+    frameStamps++
   }
 
   /**
@@ -353,6 +388,8 @@ export function createEngine(
     rawTiltX = tiltX
     rawTiltY = tiltY
     rawTime = time
+    if (frameObserver && frameOldestSample === null)
+      frameOldestSample = strokeOrigin + time
     if (opening) {
       opening = false
       stabilizer.begin(x, y)
@@ -365,8 +402,11 @@ export function createEngine(
     resampler.extend(point.x, point.y, pressure, tiltX, tiltY, time, emitStamp)
   }
 
-  function drawFrame() {
+  function drawFrame(timestamp: number) {
     frame = undefined
+    const cpuStart = frameObserver ? performance.now() : 0
+    frameStamps = 0
+    frameOldestSample = null
     samples.drain(consumeSample)
     // A stroke that ended before its opening sample was drained drew nothing.
     if (!stroking && !opening) {
@@ -394,7 +434,32 @@ export function createEngine(
       fail(error)
       return
     }
+    if (frameObserver) reportFrame(timestamp, cpuStart)
     if (stroking) frame = requestAnimationFrame(drawFrame)
+  }
+
+  /**
+   * Closes one frame's timing once the GPU says the frame is done. Read after
+   * the fence rather than after submission, because submission only means the
+   * work was handed over — the pixel the pen is waiting for is not on screen
+   * until the queue has drained.
+   */
+  function reportFrame(timestamp: number, cpuStart: number) {
+    const observer = frameObserver
+    const queue = device?.queue
+    if (!observer || !queue) return
+    const cpuMs = performance.now() - cpuStart
+    const stamps = frameStamps
+    const oldest = frameOldestSample
+    void queue.onSubmittedWorkDone().then(() => {
+      if (frameObserver !== observer) return
+      observer({
+        start: timestamp,
+        cpuMs,
+        stamps,
+        latencyMs: oldest === null ? null : performance.now() - oldest,
+      })
+    })
   }
 
   function scheduleFrame() {
@@ -407,9 +472,11 @@ export function createEngine(
     pressure: number,
     tiltX: number,
     tiltY: number,
-    time: number
+    time: number,
+    origin: number
   ) {
     if (snapshot.status !== "ready") return
+    strokeOrigin = origin
     // Stroke opacity is applied once, at composite, so it is decided once,
     // here — from the pen state the stroke opened with. Nothing derived from
     // movement is known yet, so a mapping onto `opacity` reads what the pen
@@ -676,6 +743,9 @@ export function createEngine(
         }
       }
     },
+    observeFrames(observer) {
+      frameObserver = observer
+    },
     async readPixels() {
       if (snapshot.status !== "ready" || !device)
         throw new Error("The graphics device is not ready.")
@@ -718,6 +788,9 @@ export function createEngine(
       disposed = true
       detachSampler?.()
       detachSampler = undefined
+      // A disposed engine has no frames to report, and holding the observer
+      // would keep whatever it closes over alive with it.
+      frameObserver = null
       release()
       publish({ status: "disposed" })
       listeners.clear()
