@@ -1,0 +1,3 @@
+[run]
+# Run JavaScript CLIs and their Node-shebang subprocesses with Bun.
+bun = true
