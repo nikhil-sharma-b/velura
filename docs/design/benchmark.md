@@ -15,6 +15,7 @@ what that means for the design.
 ```
 bun run bench                  # records a run
 bun run bench/run.ts --sweep   # the document-size ladder, for diagnosis
+bun run bench/run.ts --layers  # the layer-count ladder, for the compositor
 ```
 
 It is tracked, not gated. The exit status is zero whatever the numbers say,
@@ -174,6 +175,33 @@ stroke buffer composites once per stroke, not once per frame, as D27 requires.
 The 3.0 ms mean main-thread figure in the unpaced pass is a red herring worth
 naming: the CPU is not computing there, it is stalling inside submission on a
 queue the GPU cannot drain. Paced, the same work costs 0.1 ms.
+
+### Layer count, also not a bottleneck
+
+`bun run bench/run.ts --layers` paints the same workload on a document of two
+layers and on one of fifty, at 1024², with a mark on every layer and the pen on
+a layer in the middle of the stack — so both caches exist and both hold
+something. Two runs on the same machine:
+
+| layers | ms/frame | mean fps |
+|---|---|---|
+| 2 | 0.290, 0.296, 0.289 | 3446, 3380, 3455 |
+| 50 | 0.324, 0.317, 0.316 | 3090, 3160, 3162 |
+
+Twenty-five times the layers for about three hundredths of a millisecond, a
+tenth of what one 1024² present pass costs. That is D19 doing
+what it was chosen for: everything under the active layer and everything over
+it are flattened when the structure changes, so a frame reads the two caches,
+the active layer and the stroke buffer whatever the stack is. The layer count
+moves the cost of a *structural* change — selecting a layer, reordering,
+changing an opacity — and nothing else.
+
+Two costs are hidden inside that number and worth naming. Fifty layers holding
+pixels is fifty canvas-sized `rgba16float` textures until the per-layer atlases
+land (D-6.1), which is why this ladder runs at 1024² rather than at 8192². And
+a structural change is a clear and a draw per layer on one side of the stack,
+which is why the ladder is measured with the pen in the middle of the stack
+rather than at the top of it.
 
 ## What this means
 

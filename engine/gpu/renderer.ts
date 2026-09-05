@@ -7,26 +7,33 @@ import {
 } from "../color/display-transform"
 import {
   intersectRect,
+  type PixelRect,
   TILE_CHANNELS,
   TILE_SIZE,
   tileBounds,
 } from "../doc/tile-grid"
+import { cacheKey, compositionKey, type CompositePlan } from "../doc/document"
 import type { TiledLayer } from "../doc/tiled-layer"
 import { displayTransformShader } from "../shaders/display-transform"
 import { stampShader } from "../shaders/stamp"
-import { strokeCompositeShader } from "../shaders/stroke-composite"
+import { surfaceCompositeShader } from "../shaders/surface-composite"
 import { STAMP, STAMP_STRIDE } from "./stamp-instance"
 import { createStampLog } from "./stamp-log"
 
 const LAYER_FORMAT: GPUTextureFormat = "rgba16float"
 const BYTES_PER_TEXEL = TILE_CHANNELS * 2
 /**
- * mat3x3 occupies three 16-byte columns, then one vec4 of background and the
- * stroke opacity, padded to the 16-byte alignment a uniform buffer requires.
+ * mat3x3 occupies three 16-byte columns, then one vec4 of background, then the
+ * four floats the present pass needs to know about the stack it is showing.
  */
 const UNIFORM_BYTES = 80
 /** Where the stroke opacity sits in that buffer: after matrix and background. */
 const STROKE_OPACITY_OFFSET = 64
+/**
+ * The active layer's opacity, followed by the two flags saying whether each
+ * cache exists. All three are written together, as one plan's answer.
+ */
+const ACTIVE_OPACITY_OFFSET = 68
 /**
  * vec2 viewport, feather and the tip flag, one vec4 of ink, then the grain's
  * scale and depth padded out to the 16-byte alignment a uniform requires.
@@ -54,10 +61,24 @@ export const MAX_STAMPS_PER_STROKE = 1 << 16
 export const MAX_STAMPS_PER_DRAW = 2048
 
 export interface Renderer {
-  /** (Re)allocates the linear-light target; the next upload rewrites it whole. */
+  /** (Re)allocates every render target; layers must be uploaded again after. */
   resize(width: number, height: number): void
-  /** Uploads the tiles the layer marked dirty, and clears that mark. */
-  upload(layer: TiledLayer): void
+  /**
+   * Gives a layer GPU storage, uploading the tiles its surface marked dirty
+   * and clearing that mark. A layer that has never been uploaded and never
+   * painted on holds no texture at all, which is what makes fifty empty
+   * layers cost nothing.
+   */
+  uploadLayer(id: string, surface: TiledLayer): void
+  /** Frees a removed layer's storage. */
+  releaseLayer(id: string): void
+  /**
+   * Sets what is composited and in what order (D19). Rebuilds the caches
+   * under and over the active layer, and does nothing at all when the plan is
+   * the one already in force — which is why painting, whose plan cannot
+   * change, never rebuilds a cache.
+   */
+  setComposition(plan: CompositePlan): void
   /**
    * Opens a stroke: empties the stroke buffer and fixes how this stroke's dabs
    * combine and what the finished mark's opacity will be.
@@ -86,17 +107,23 @@ export interface Renderer {
    * dynamics graph varies the bite per dab on top of this.
    */
   setGrain(texture: GrayscaleTexture | null, scale: number, depth: number): void
-  /** Composites the stroke buffer into the layer, once, at stroke opacity. */
+  /** Composites the stroke buffer into the active layer, once, at stroke opacity. */
   endStroke(): void
   render(view: GPUTextureView): void
   destroy(): void
 }
 
 /**
- * Owns the linear-light layer target, the stroke buffer that dabs land in
- * before the layer sees them (D27), and the single display-transform pass.
- * Tiles are uploaded into a canvas-sized `rgba16float` target; per-layer
- * atlases (D-6.1) replace that upload path without moving this seam.
+ * Owns the layers' linear-light textures, the two flattened caches around the
+ * active one (D19), the stroke buffer that dabs land in before the layer sees
+ * them (D27), and the single display-transform pass.
+ *
+ * A layer's tiles are uploaded into a canvas-sized `rgba16float` texture,
+ * allocated only for layers that hold something. That is affordable because
+ * the caches mean an untouched layer is read once per structural change rather
+ * than once per frame; per-layer sparse atlases (D-6.1) are what make a large
+ * document with many *painted* layers fit, and they replace this allocation
+ * without moving the seam — the compositor still sees below, active, above.
  */
 export function createRenderer(
   device: GPUDevice,
@@ -248,7 +275,7 @@ export function createRenderer(
   }
 
   const compositeModule = device.createShaderModule({
-    code: strokeCompositeShader,
+    code: surfaceCompositeShader,
   })
   const compositePipeline = device.createRenderPipeline({
     layout: "auto",
@@ -259,7 +286,7 @@ export function createRenderer(
       targets: [
         {
           format: LAYER_FORMAT,
-          // The finished stroke goes over the layer, premultiplied.
+          // A flattened surface goes over what is already there, premultiplied.
           blend: {
             color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
             alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
@@ -341,17 +368,168 @@ export function createRenderer(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
   let stampBindGroup: GPUBindGroup | undefined
-  let compositeBindGroup: GPUBindGroup | undefined
-  // Held rather than recreated: the stamp pass runs every frame of a stroke.
-  let targetView: GPUTextureView | undefined
-  let strokeView: GPUTextureView | undefined
 
-  let target: GPUTexture | undefined
-  let stroke: GPUTexture | undefined
-  let bindGroup: GPUBindGroup | undefined
-  // A fresh target holds nothing, so the first upload after it cannot be
-  // narrowed to the dirty region.
-  let targetIsEmpty = true
+  /**
+   * A canvas-sized linear-light surface, with the bind group that draws it
+   * into another one. Layers, the two caches and the stroke buffer are all
+   * this: what differs is only when they are written and what reads them.
+   */
+  type Surface = {
+    texture: GPUTexture
+    view: GPUTextureView
+    /** Reads this surface, for the pass that flattens it into another. */
+    readBindGroup: GPUBindGroup
+    /** Nothing has been written since it was allocated. */
+    empty: boolean
+  }
+
+  /** One texture per layer that holds something; absent layers hold none. */
+  const surfaces = new Map<string, Surface>()
+  let stroke: Surface | undefined
+  // Everything under and over the active layer, flattened (D19). Undefined
+  // when there is nothing on that side, which is a document of one layer.
+  let below: Surface | undefined
+  let above: Surface | undefined
+  let active: Surface | undefined
+  let presentBindGroup: GPUBindGroup | undefined
+  /** The plan in force. Undefined forces the next one to be applied in full. */
+  let composition: string | undefined
+  /** What the caches were built from, which is only part of that plan. */
+  let cachedFrom: string | undefined
+  let width = 0
+  let height = 0
+  /**
+   * Bound where a cache does not exist, so the present bind group is always
+   * complete. The shader is told not to read it, but a binding must resolve.
+   */
+  const placeholder = device.createTexture({
+    size: { width: 1, height: 1 },
+    format: LAYER_FORMAT,
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+  })
+  const placeholderView = placeholder.createView()
+  /** Applied when the stroke is composited, and shown in flight at the same value. */
+  let strokeOpacity = 1
+
+  const SURFACE_USAGE =
+    GPUTextureUsage.TEXTURE_BINDING |
+    GPUTextureUsage.COPY_DST |
+    GPUTextureUsage.RENDER_ATTACHMENT
+
+  function createSurface(): Surface {
+    if (width === 0) throw new Error("The render target has not been sized.")
+    const texture = device.createTexture({
+      size: { width, height },
+      format: LAYER_FORMAT,
+      usage: SURFACE_USAGE,
+    })
+    const view = texture.createView()
+    return {
+      texture,
+      view,
+      readBindGroup: device.createBindGroup({
+        layout: compositePipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: compositeUniform } },
+          { binding: 1, resource: view },
+        ],
+      }),
+      // WebGPU zeroes a new texture, and zero is transparent black.
+      empty: true,
+    }
+  }
+
+  function ensureSurface(id: string): Surface {
+    const existing = surfaces.get(id)
+    if (existing) return existing
+    const surface = createSurface()
+    surfaces.set(id, surface)
+    return surface
+  }
+
+  /**
+   * Empties a surface. A clear is a load operation, which a scissor rectangle
+   * does not narrow, so this is always the whole surface — it runs when a
+   * stroke starts, ends or rewinds and when a cache is rebuilt, never on a
+   * frame of drawing.
+   */
+  function clearSurface(surface: Surface) {
+    const encoder = device.createCommandEncoder()
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: surface.view,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: "clear",
+          storeOp: "store",
+        },
+      ],
+    })
+    pass.end()
+    device.queue.submit([encoder.finish()])
+    surface.empty = true
+  }
+
+  /** Draws one surface over another at an opacity, optionally scissored. */
+  function compositeSurface(
+    source: Surface,
+    destination: Surface,
+    opacity: number,
+    region?: PixelRect
+  ) {
+    // The uniform is written per composite rather than per surface: these
+    // passes are rare, and one buffer is cheaper than a bind group each.
+    device.queue.writeBuffer(compositeUniform, 0, new Float32Array([opacity]))
+    const encoder = device.createCommandEncoder()
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: destination.view, loadOp: "load", storeOp: "store" },
+      ],
+    })
+    pass.setPipeline(compositePipeline)
+    pass.setBindGroup(0, source.readBindGroup)
+    if (region)
+      pass.setScissorRect(region.x, region.y, region.width, region.height)
+    pass.draw(3)
+    pass.end()
+    device.queue.submit([encoder.finish()])
+    destination.empty = false
+  }
+
+  /**
+   * Flattens one side of the stack into its cache, allocating the cache only
+   * if there is anything to put in it. Layers with no texture have never held
+   * a pixel, so they are skipped rather than drawn as transparent.
+   */
+  function buildCache(
+    items: readonly { id: string; opacity: number }[],
+    cache: Surface | undefined
+  ): Surface | undefined {
+    const drawable = items.filter((item) => surfaces.has(item.id))
+    if (drawable.length === 0) {
+      cache?.texture.destroy()
+      return undefined
+    }
+    const target = cache ?? createSurface()
+    if (!target.empty) clearSurface(target)
+    for (const item of drawable)
+      compositeSurface(surfaces.get(item.id)!, target, item.opacity)
+    return target
+  }
+
+  function refreshPresentBindGroup() {
+    if (!active || !stroke) return
+    presentBindGroup = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: uniform } },
+        { binding: 1, resource: below?.view ?? placeholderView },
+        { binding: 2, resource: active.view },
+        { binding: 3, resource: stroke.view },
+        { binding: 4, resource: above?.view ?? placeholderView },
+      ],
+    })
+  }
 
   // The stroke in flight. The log lets the buffer be rewound; the bounds keep
   // clearing and compositing to the region the stroke actually covers.
@@ -397,11 +575,9 @@ export function createRenderer(
     })
   }
 
-  /** Both passes that fade the stroke read its opacity from a uniform. */
+  /** The present pass shows the stroke in flight at the opacity it will land at. */
   function writeStrokeOpacity(opacity: number) {
-    device.queue.writeBuffer(compositeUniform, 0, new Float32Array([opacity]))
-    // The present pass shows the stroke in flight at the same opacity, so the
-    // mark on screen is the one that will be composited.
+    strokeOpacity = opacity
     device.queue.writeBuffer(
       uniform,
       STROKE_OPACITY_OFFSET,
@@ -414,37 +590,20 @@ export function createRenderer(
     if (!stroke || painted.right <= painted.left) return null
     const x = Math.max(0, Math.floor(painted.left))
     const y = Math.max(0, Math.floor(painted.top))
-    const width = Math.min(stroke.width, Math.ceil(painted.right)) - x
-    const height = Math.min(stroke.height, Math.ceil(painted.bottom)) - y
-    if (width <= 0 || height <= 0) return null
-    return { x, y, width, height }
+    const right = Math.min(width, Math.ceil(painted.right))
+    const bottom = Math.min(height, Math.ceil(painted.bottom))
+    if (right <= x || bottom <= y) return null
+    return { x, y, width: right - x, height: bottom - y }
   }
 
-  /**
-   * Empties the stroke buffer. A clear is a load operation, which a scissor
-   * rectangle does not narrow, so this is always the whole buffer — it runs
-   * when a stroke starts, ends or rewinds, never on a frame of drawing.
-   */
   function clearStroke() {
-    if (!strokeView) throw new Error("The render target has not been sized.")
-    const encoder = device.createCommandEncoder()
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: strokeView,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: "clear",
-          storeOp: "store",
-        },
-      ],
-    })
-    pass.end()
-    device.queue.submit([encoder.finish()])
+    if (!stroke) throw new Error("The render target has not been sized.")
+    clearSurface(stroke)
   }
 
   /** Draws `count` dabs of the current stroke into the buffer. */
   function drawStamps(instances: Float32Array, offset: number, count: number) {
-    if (!strokeView || !stampBindGroup)
+    if (!stroke || !stampBindGroup)
       throw new Error("The render target has not been sized.")
     device.queue.writeBuffer(
       stampInstances,
@@ -457,7 +616,7 @@ export function createRenderer(
     const pass = encoder.beginRenderPass({
       colorAttachments: [
         // The buffer holds the stroke so far: dabs blend onto it.
-        { view: strokeView, loadOp: "load", storeOp: "store" },
+        { view: stroke.view, loadOp: "load", storeOp: "store" },
       ],
     })
     pass.setPipeline(stampPipelines[accumulation])
@@ -466,33 +625,33 @@ export function createRenderer(
     pass.draw(6, count)
     pass.end()
     device.queue.submit([encoder.finish()])
+    stroke.empty = false
   }
 
   return {
-    resize(width, height) {
-      target?.destroy()
-      stroke?.destroy()
-      targetIsEmpty = true
+    resize(nextWidth, nextHeight) {
+      for (const surface of surfaces.values()) surface.texture.destroy()
+      surfaces.clear()
+      stroke?.texture.destroy()
+      below?.texture.destroy()
+      above?.texture.destroy()
+      below = undefined
+      above = undefined
+      active = undefined
+      presentBindGroup = undefined
+      // The caches are gone with the textures they flattened, so the next plan
+      // rebuilds them even if it is the same plan.
+      composition = undefined
+      cachedFrom = undefined
       log.reset()
       resetPainted()
-      const usage =
-        GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.COPY_DST |
-        GPUTextureUsage.RENDER_ATTACHMENT
-      target = device.createTexture({
-        size: { width, height },
-        format: LAYER_FORMAT,
-        usage,
-      })
-      // The stroke buffer matches the layer texel for texel, so a dab lands at
+      width = nextWidth
+      height = nextHeight
+      // The stroke buffer matches a layer texel for texel, so a dab lands at
       // the same pixel in both and the composite is a straight copy. §6.2 wants
       // it bounded to the stroke's region; it narrows to a tiled surface with
-      // the per-layer atlases (D-6.1), which is what bounds the layer too.
-      stroke = device.createTexture({
-        size: { width, height },
-        format: LAYER_FORMAT,
-        usage,
-      })
+      // the per-layer atlases (D-6.1), which is what bounds a layer too.
+      stroke = createSurface()
       // Only the viewport changes with a resize; the tip flag, the ink and the
       // grain settings are the brush's and outlive it.
       device.queue.writeBuffer(
@@ -500,56 +659,80 @@ export function createRenderer(
         0,
         new Float32Array([width, height, options.feather])
       )
-      targetView = target.createView()
-      strokeView = stroke.createView()
       refreshStampBindGroup()
-      compositeBindGroup = device.createBindGroup({
-        layout: compositePipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: compositeUniform } },
-          { binding: 1, resource: strokeView },
-        ],
-      })
-      bindGroup = device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: uniform } },
-          { binding: 1, resource: targetView },
-          { binding: 2, resource: strokeView },
-        ],
-      })
       // A fresh texture is already transparent, but the previous stroke's
       // opacity is not; both passes read it from a uniform.
       writeStrokeOpacity(1)
     },
-    upload(layer) {
-      if (!target) throw new Error("The render target has not been sized.")
+    uploadLayer(id, layer) {
+      // A layer with no tiles has never held a pixel, and allocating a
+      // canvas-sized texture to hold nothing is what would make a document of
+      // fifty layers expensive. The active layer gets its storage from
+      // `setComposition` instead, because it is about to be drawn into.
+      if (!surfaces.has(id) && layer.tileCount() === 0) return
+      const surface = ensureSurface(id)
       const dirty = layer.dirtyBounds()
-      if (!targetIsEmpty && !dirty) return
-      const canvas = {
-        x: 0,
-        y: 0,
-        width: target.width,
-        height: target.height,
-      }
+      if (!surface.empty && !dirty) return
+      const canvas = { x: 0, y: 0, width, height }
+      let wrote = false
       for (const tile of layer.tiles()) {
         const bounds = tileBounds(tile)
         // Edge tiles hang past the canvas; upload only the visible sub-rect.
         const visible = intersectRect(bounds, canvas)
         if (!visible) continue
-        if (!targetIsEmpty && dirty && !intersectRect(bounds, dirty)) continue
+        if (!surface.empty && dirty && !intersectRect(bounds, dirty)) continue
         device.queue.writeTexture(
-          { texture: target, origin: { x: visible.x, y: visible.y } },
+          { texture: surface.texture, origin: { x: visible.x, y: visible.y } },
           tile.texels,
           { bytesPerRow: TILE_SIZE * BYTES_PER_TEXEL, rowsPerImage: TILE_SIZE },
           { width: visible.width, height: visible.height }
         )
+        wrote = true
       }
-      targetIsEmpty = false
       layer.clearDirty()
+      // An upload that wrote nothing changes nothing: the surface is as empty
+      // as it was, and the caches were built from pixels that still stand.
+      if (!wrote) return
+      surface.empty = false
+      // A layer whose pixels arrived from outside a stroke may be inside a
+      // cache, and the cache was flattened before they existed.
+      composition = undefined
+      cachedFrom = undefined
+    },
+    releaseLayer(id) {
+      surfaces.get(id)?.texture.destroy()
+      if (surfaces.delete(id)) {
+        composition = undefined
+        cachedFrom = undefined
+      }
+    },
+    setComposition(plan) {
+      if (!stroke) throw new Error("The render target has not been sized.")
+      if (!plan.active) throw new Error("A composition needs an active layer.")
+      const key = compositionKey(plan)
+      if (key === composition) return
+      composition = key
+      // Flattening is the expensive half, and most plans do not change what
+      // goes into it: fading the active layer or selecting nothing new leaves
+      // both caches exactly as they are.
+      const caches = cacheKey(plan)
+      if (caches !== cachedFrom) {
+        cachedFrom = caches
+        below = buildCache(plan.below, below)
+        above = buildCache(plan.above, above)
+      }
+      // The active layer is drawn into, so it needs storage whether or not it
+      // has ever held a pixel.
+      active = ensureSurface(plan.active.id)
+      device.queue.writeBuffer(
+        uniform,
+        ACTIVE_OPACITY_OFFSET,
+        new Float32Array([plan.active.opacity, below ? 1 : 0, above ? 1 : 0])
+      )
+      refreshPresentBindGroup()
     },
     beginStroke(options) {
-      if (!strokeView) throw new Error("The render target has not been sized.")
+      if (!stroke) throw new Error("The render target has not been sized.")
       if (
         !Number.isFinite(options.opacity) ||
         options.opacity < 0 ||
@@ -609,35 +792,23 @@ export function createRenderer(
       return true
     },
     endStroke() {
-      if (!targetView || !compositeBindGroup)
-        throw new Error("The render target has not been sized.")
+      if (!stroke || !active)
+        throw new Error("There is no active layer to paint into.")
       const region = paintedScissor()
       log.reset()
       resetPainted()
       if (!region) return
-      const encoder = device.createCommandEncoder()
-      const pass = encoder.beginRenderPass({
-        colorAttachments: [
-          { view: targetView, loadOp: "load", storeOp: "store" },
-        ],
-      })
-      pass.setPipeline(compositePipeline)
-      pass.setBindGroup(0, compositeBindGroup)
-      pass.setScissorRect(region.x, region.y, region.width, region.height)
-      pass.draw(3)
-      pass.end()
-      device.queue.submit([encoder.finish()])
-      // The mark now lives in the layer target; the buffer must not show it a
-      // second time through the present pass.
+      // The mark goes into the layer at the stroke's opacity, once (D27).
+      compositeSurface(stroke, active, strokeOpacity, region)
+      // The mark now lives in the layer's texture; the buffer must not show it
+      // a second time through the present pass.
       clearStroke()
       // Nothing between strokes should depend on the last stroke's opacity.
       writeStrokeOpacity(1)
-      // Painted pixels live only in the target; the tiled layer learns about
-      // them when tile readback lands with undo (ticket 12).
-      targetIsEmpty = false
     },
     render(view) {
-      if (!bindGroup) throw new Error("The render target has not been sized.")
+      if (!presentBindGroup)
+        throw new Error("No composition has been set to present.")
       const encoder = device.createCommandEncoder()
       const pass = encoder.beginRenderPass({
         colorAttachments: [
@@ -650,21 +821,26 @@ export function createRenderer(
         ],
       })
       pass.setPipeline(pipeline)
-      pass.setBindGroup(0, bindGroup)
+      pass.setBindGroup(0, presentBindGroup)
       pass.draw(3)
       pass.end()
       device.queue.submit([encoder.finish()])
     },
     destroy() {
-      target?.destroy()
-      stroke?.destroy()
-      target = undefined
+      for (const surface of surfaces.values()) surface.texture.destroy()
+      surfaces.clear()
+      stroke?.texture.destroy()
+      below?.texture.destroy()
+      above?.texture.destroy()
       stroke = undefined
-      targetView = undefined
-      strokeView = undefined
-      bindGroup = undefined
+      below = undefined
+      above = undefined
+      active = undefined
+      presentBindGroup = undefined
       stampBindGroup = undefined
-      compositeBindGroup = undefined
+      composition = undefined
+      cachedFrom = undefined
+      placeholder.destroy()
       tipTexture.destroy()
       grainTexture.destroy()
       uniform.destroy()
@@ -685,7 +861,9 @@ function packUniform(
     for (let row = 0; row < 3; row++)
       data[column * 4 + row] = rowMajor[row * 3 + column]
   data.set([...background, 1], 12)
-  // Stroke opacity, rewritten per stroke; opaque until one begins.
+  // Stroke opacity, rewritten per stroke; opaque until one begins. The active
+  // layer is opaque, and the cache flags stay zero until a composition sets them.
   data[STROKE_OPACITY_OFFSET / 4] = 1
+  data[ACTIVE_OPACITY_OFFSET / 4] = 1
   return data
 }

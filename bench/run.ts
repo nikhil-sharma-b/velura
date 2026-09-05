@@ -13,9 +13,10 @@
  * during painting, which D30 forbids outright — that is a rule, not a
  * measurement, and breaking it fails the run.
  *
- * `--sweep` runs the document-size ladder instead of the two passes. It is how
- * the size scaling in `docs/design/benchmark.md` was measured, and it exists so
- * that table can be reproduced rather than taken on trust.
+ * `--sweep` runs the document-size ladder instead of the two passes, and
+ * `--layers` the layer-count one. They are how the tables in
+ * `docs/design/benchmark.md` were measured, and they exist so those tables can
+ * be reproduced rather than taken on trust.
  */
 
 import { spawn } from "node:child_process"
@@ -249,11 +250,55 @@ async function sweep(): Promise<void> {
   console.log()
 }
 
+/**
+ * The layer ladder, unpaced: the same painting on a document of two layers and
+ * on one of fifty. D19 claims a frame costs a constant number of texture reads
+ * whatever the stack is, and this is the measurement that claim answers to — a
+ * per-frame cost that climbed with the layer count would mean the caches were
+ * not doing their job, whatever the pass counts said.
+ */
+const LAYER_COUNTS = [2, 50]
+
+/**
+ * Smaller than the recorded workload. Every layer holding pixels is a
+ * canvas-sized `rgba16float` texture until the per-layer atlases land (D-6.1),
+ * and fifty of those at 8192² is tens of gigabytes. What is being measured is
+ * how the cost moves with the layer count, and that is visible at any size.
+ */
+const LAYER_SWEEP_SIZE = 1024
+
+async function layerSweep(): Promise<void> {
+  const pass = PASSES.find((entry) => entry.name === "unpaced")!
+  console.log("\n  layers      ms/frame   mean fps   sustained fps   frames")
+  for (const layers of LAYER_COUNTS) {
+    const { report } = await measure(pass, {
+      ...BENCHMARK_WORKLOAD,
+      width: LAYER_SWEEP_SIZE,
+      height: LAYER_SWEEP_SIZE,
+      strokes: SWEEP_STROKES,
+      layers,
+    })
+    const perFrame = report.frameIntervalMs.mean
+    console.log(
+      `  ${String(layers).padStart(4)}      ${fixed(perFrame, 3).padStart(10)}   ` +
+        `${fixed(1000 / perFrame).padStart(8)}   ` +
+        `${fixed(report.frameRate.sustained).padStart(13)}   ` +
+        `${String(report.frames).padStart(6)}`
+    )
+  }
+  console.log()
+}
+
 async function main(): Promise<void> {
   const stop = await serve()
-  if (process.argv.includes("--sweep")) {
+  const ladder = process.argv.includes("--sweep")
+    ? sweep
+    : process.argv.includes("--layers")
+      ? layerSweep
+      : null
+  if (ladder) {
     try {
-      await sweep()
+      await ladder()
     } finally {
       stop()
     }

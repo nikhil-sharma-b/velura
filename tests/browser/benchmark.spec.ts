@@ -11,7 +11,10 @@ import { summarize } from "../../bench/report"
 const WORKLOAD = {
   width: 512,
   height: 512,
-  strokes: 2,
+  // Three short strokes rather than two: the frame counts below are what say
+  // the loop ran at all, and two strokes on a loaded machine land close enough
+  // to the floor to fail for scheduling reasons rather than for engine ones.
+  strokes: 3,
   sampleRateHz: 240,
   penSpeed: 900,
   seed: 3,

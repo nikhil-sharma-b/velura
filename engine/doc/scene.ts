@@ -1,9 +1,5 @@
 import { decodeTransfer, srgbToWorking } from "../color/display-transform"
-import {
-  createTiledLayer,
-  type LinearColor,
-  type TiledLayer,
-} from "./tiled-layer"
+import type { LinearColor, TiledLayer } from "./tiled-layer"
 
 /** The canvas backdrop, authored as sRGB bytes and held in the working space. */
 export const BACKGROUND = srgbToWorking([
@@ -27,11 +23,10 @@ export const SHAPES = [
 ] as const
 
 /**
- * The hardcoded document. Nothing is drawable yet; this exists so the storage
- * and colour foundations render something an eye and a golden image can check.
+ * The hardcoded content of a new document, painted into a layer's own surface.
+ * Nothing here is drawable yet; it exists so the storage and colour
+ * foundations render something an eye and a golden image can check.
  */
-export function createScene(width: number, height: number): TiledLayer {
-  const layer = createTiledLayer({ width, height })
-  for (const shape of SHAPES) layer.fillRect(shape.rect, shape.color)
-  return layer
+export function seedScene(surface: TiledLayer): void {
+  for (const shape of SHAPES) surface.fillRect(shape.rect, shape.color)
 }

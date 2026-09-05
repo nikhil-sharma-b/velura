@@ -148,6 +148,88 @@ export async function describeEnvironment(
   }
 }
 
+/** Canvas pixels to client pixels: the canvas is a window onto a larger document. */
+export type ToClient = {
+  toClientX: (x: number) => number
+  toClientY: (y: number) => number
+}
+
+/**
+ * One short mark on the active layer, drawn and composited, so the layer holds
+ * pixels of its own. Exported because the compositor's browser tests need the
+ * same thing and a second copy of it would drift.
+ */
+export async function markActiveLayer(
+  canvas: HTMLCanvasElement,
+  at: { x: number; y: number },
+  toClient: ToClient
+): Promise<void> {
+  const event = (type: string, offset: number) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: 1,
+        pointerType: "pen",
+        isPrimary: true,
+        bubbles: true,
+        cancelable: true,
+        clientX: toClient.toClientX(at.x + offset),
+        clientY: toClient.toClientY(at.y),
+        pressure: 0.7,
+        tiltX: 0,
+        tiltY: 0,
+      })
+    )
+  event("pointerdown", 0)
+  event("pointerrawupdate", 40)
+  event("pointermove", 40)
+  event("pointerup", 40)
+  // One frame draws the mark, the next composites it into the layer.
+  await nextFrame()
+  await nextFrame()
+}
+
+/** The canvas as its own coordinate space, for a document shown at its own size. */
+export function clientMapper(canvas: HTMLCanvasElement): ToClient {
+  const bounds = canvas.getBoundingClientRect()
+  return {
+    toClientX: (x) => bounds.left + (x * bounds.width) / canvas.width,
+    toClientY: (y) => bounds.top + (y * bounds.height) / canvas.height,
+  }
+}
+
+/**
+ * Builds the document the workload is painted on: `layers` layers, each with a
+ * mark of its own so the compositor has something to flatten, and the pen left
+ * on one in the middle of the stack — the arrangement with a cache on both
+ * sides, which is the one the per-frame cost is a claim about (D19).
+ *
+ * Setup, not measurement: no frame is observed until this returns.
+ */
+export async function buildLayerStack(
+  engine: Engine,
+  canvas: HTMLCanvasElement,
+  layers: number,
+  toClient: ToClient = clientMapper(canvas)
+): Promise<void> {
+  if (layers <= 1) return
+  const { width, height } = engine.getSnapshot()
+  for (let i = 1; i < layers; i++) {
+    await engine.dispatch({ type: "addLayer" })
+    // Spread the marks down the canvas so the layers overlap partially rather
+    // than stacking one identical mark, which a compositor could shortcut.
+    await markActiveLayer(
+      canvas,
+      { x: width * 0.1, y: ((i + 1) / (layers + 1)) * height },
+      toClient
+    )
+  }
+  const stack = engine.getSnapshot().layers
+  await engine.dispatch({
+    type: "selectLayer",
+    id: stack[stack.length >> 1].id,
+  })
+}
+
 export async function runBenchmark(
   engine: Engine,
   canvas: HTMLCanvasElement,
@@ -175,6 +257,11 @@ export async function runBenchmark(
     bounds.left + (x * bounds.width) / canvas.width
   const toClientY = (y: number) =>
     bounds.top + (y * bounds.height) / canvas.height
+
+  await buildLayerStack(engine, canvas, workload.options.layers ?? 1, {
+    toClientX,
+    toClientY,
+  })
 
   const frames: FrameTiming[] = []
   engine.observeFrames((frame) => frames.push(frame))

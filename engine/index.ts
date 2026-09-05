@@ -23,8 +23,21 @@ import {
   chooseOutputColorSpace,
   type OutputColorSpace,
 } from "./color/display-transform"
-import { BACKGROUND, createScene } from "./doc/scene"
-import type { TiledLayer } from "./doc/tiled-layer"
+import {
+  activeLayer,
+  addLayer,
+  createDocument,
+  type Layer,
+  type LayerPatch,
+  moveLayer,
+  type PaintDocument,
+  planComposite,
+  removeLayer,
+  resizeDocument,
+  selectLayer,
+  setLayer,
+} from "./doc/document"
+import { BACKGROUND } from "./doc/scene"
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
 import {
@@ -77,6 +90,19 @@ export type EngineCommand =
       /** Replaces the dynamics graph outright; see `evaluateDynamics`. */
       dynamics?: Modulator[]
     }
+  /** Adds an empty layer above the active one and selects it. */
+  | { type: "addLayer" }
+  /** Removes a layer. The document always keeps at least one. */
+  | { type: "removeLayer"; id: string }
+  /** Chooses where the pen paints, which is what the caches are built around. */
+  | { type: "selectLayer"; id: string }
+  /** Moves a layer to a position in the stack, counted from the bottom. */
+  | { type: "moveLayer"; id: string; index: number }
+  /**
+   * A layer's own settings. Every field is optional and unnamed ones are left
+   * alone, so a control that owns one property need not know the rest.
+   */
+  | ({ type: "setLayer"; id: string } & LayerPatch)
 
 export type EngineSnapshot = Readonly<{
   status:
@@ -94,8 +120,14 @@ export type EngineSnapshot = Readonly<{
   stabilization: number
   /** The brush in the hand: serialisable data, never code (D23). */
   brush: Brush
+  /** The stack, bottom to top. Pixels are not in here; the panel reads this. */
+  layers: readonly LayerSummary[]
+  activeLayerId: string
   error: string | null
 }>
+
+/** A layer as the UI sees it: everything but the pixels. */
+export type LayerSummary = Readonly<Omit<Layer, "surface">>
 
 /**
  * What a host shows before an engine exists. Exported so the React host and
@@ -108,6 +140,9 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   outputColorSpace: "srgb",
   stabilization: DEFAULT_STABILIZATION,
   brush: Object.freeze(cloneBrush(DEFAULT_BRUSH)),
+  // A host that has not started an engine has no document to describe.
+  layers: Object.freeze([]),
+  activeLayerId: "",
   error: null,
 })
 
@@ -178,7 +213,10 @@ export function createEngine(
   let initialization: Promise<void> | undefined
   let viewport = { width: 1, height: 1, devicePixelRatio: 1 }
   let renderer: Renderer | undefined
-  let layer: TiledLayer | undefined
+  // The document: the layer stack and its pixels. Undefined until a device is
+  // acquired, because the canvas size the layers are tiled at is not known
+  // before then.
+  let doc: PaintDocument | undefined
   let disposed = false
 
   // The stroke path. Every buffer here is allocated once, at construction:
@@ -254,7 +292,7 @@ export function createEngine(
     samples.clear()
     renderer?.destroy()
     renderer = undefined
-    layer = undefined
+    doc = undefined
     context?.unconfigure()
     context = null
     device?.destroy()
@@ -279,22 +317,75 @@ export function createEngine(
     const pixelWidth = Math.max(1, Math.round(width * scale))
     const pixelHeight = Math.max(1, Math.round(height * scale))
     // Re-tiling and re-uploading the document is wasted work at the same size.
-    if (
-      layer &&
-      pixelWidth === snapshot.width &&
-      pixelHeight === snapshot.height
-    )
+    if (doc && pixelWidth === snapshot.width && pixelHeight === snapshot.height)
       return
     if (canvas.width !== pixelWidth) canvas.width = pixelWidth
     if (canvas.height !== pixelHeight) canvas.height = pixelHeight
     if (renderer) {
       // The document is authored in canvas pixels for now, so a resize
       // re-tiles it; sparse tiles make that cost what is actually covered.
-      layer = createScene(pixelWidth, pixelHeight)
+      if (doc) resizeDocument(doc, pixelWidth, pixelHeight)
+      else doc = createDocument({ width: pixelWidth, height: pixelHeight })
+      // Every texture went with the old size, so every layer is uploaded
+      // again and the caches are built from scratch.
       renderer.resize(pixelWidth, pixelHeight)
-      renderer.upload(layer)
+      uploadLayers()
+      syncComposition()
     }
-    publish({ width: pixelWidth, height: pixelHeight })
+    publish({
+      width: pixelWidth,
+      height: pixelHeight,
+      ...(doc ? describeLayers(doc) : {}),
+    })
+  }
+
+  /** Hands the renderer whatever pixels each layer's surface has gained. */
+  function uploadLayers() {
+    if (!renderer || !doc) return
+    for (const layer of doc.layers)
+      renderer.uploadLayer(layer.id, layer.surface)
+  }
+
+  /**
+   * Tells the compositor what the stack is now. The renderer compares the plan
+   * against the one in force and rebuilds the two caches only when it differs,
+   * so this is safe to call after any command and costs nothing after most of
+   * them (D19).
+   */
+  function syncComposition() {
+    if (!renderer || !doc) return
+    renderer.setComposition(planComposite(doc))
+  }
+
+  /** The stack as the snapshot carries it: settings, never pixels. */
+  function describeLayers(document: PaintDocument) {
+    return {
+      layers: Object.freeze(
+        document.layers.map(({ surface: _surface, ...settings }) =>
+          Object.freeze(settings)
+        )
+      ),
+      activeLayerId: document.activeLayerId,
+    }
+  }
+
+  /** Every layer command needs the document, and none can make one. */
+  function requireDocument(): PaintDocument {
+    if (!doc) throw new Error("The graphics device is not ready.")
+    return doc
+  }
+
+  /**
+   * What every layer command does after mutating the document: new surfaces
+   * reach the GPU, the caches catch up, React hears about the structure, and
+   * the frame that shows it is drawn.
+   */
+  function applyLayerChange() {
+    const document = requireDocument()
+    uploadLayers()
+    syncComposition()
+    publish(describeLayers(document))
+    if (snapshot.status === "ready") render()
   }
 
   /**
@@ -475,7 +566,10 @@ export function createEngine(
     time: number,
     origin: number
   ) {
-    if (snapshot.status !== "ready") return
+    if (snapshot.status !== "ready" || !doc) return
+    // A locked layer is one the painter has said not to touch, and the pen is
+    // the one place that has to be told so.
+    if (activeLayer(doc).locked) return
     strokeOrigin = origin
     // Stroke opacity is applied once, at composite, so it is decided once,
     // here — from the pen state the stroke opened with. Nothing derived from
@@ -732,6 +826,31 @@ export function createEngine(
           brush = next
           applyBrushTextures()
           publish({ brush: Object.freeze(cloneBrush(next)) })
+          break
+        }
+        case "addLayer":
+          addLayer(requireDocument())
+          applyLayerChange()
+          break
+        case "removeLayer":
+          removeLayer(requireDocument(), command.id)
+          // The texture goes with the layer; a document with fifty layers must
+          // not keep paying for the ones it no longer has.
+          renderer?.releaseLayer(command.id)
+          applyLayerChange()
+          break
+        case "selectLayer":
+          selectLayer(requireDocument(), command.id)
+          applyLayerChange()
+          break
+        case "moveLayer":
+          moveLayer(requireDocument(), command.id, command.index)
+          applyLayerChange()
+          break
+        case "setLayer": {
+          const { type: _type, id, ...patch } = command
+          setLayer(requireDocument(), id, patch)
+          applyLayerChange()
           break
         }
         case "setStabilization": {

@@ -1,5 +1,8 @@
 import {
+  buildLayerStack,
+  clientMapper,
   describeEnvironment,
+  markActiveLayer,
   runBenchmark,
   type RunResult,
 } from "../../bench/driver"
@@ -50,6 +53,10 @@ declare global {
     /** The performance benchmark (D30), driven by `bench/run.ts`. */
     runBenchmark(options: WorkloadOptions): Promise<RunResult>
     describeEnvironment: typeof describeEnvironment
+    /** A document of `count` layers, each holding a mark, for the compositor tests. */
+    buildLayerStack(count: number): Promise<void>
+    /** One short mark on whichever layer is active. */
+    markActiveLayer(): Promise<void>
   }
 }
 
@@ -63,6 +70,12 @@ window.remountEngine = () => {
 
 window.runBenchmark = (options) => runBenchmark(window.engine, canvas, options)
 window.describeEnvironment = describeEnvironment
+// The same pen the benchmark uses, so the compositor's tests and its
+// measurements are driving one routine rather than two that resemble each other.
+window.buildLayerStack = (count) =>
+  buildLayerStack(window.engine, canvas, count)
+window.markActiveLayer = () =>
+  markActiveLayer(canvas, { x: 20, y: 20 }, clientMapper(canvas))
 
 window.openStrokeBufferProbe = async (width, height) => {
   // Created on demand rather than sitting in the page: the other tests locate
@@ -88,6 +101,13 @@ window.openStrokeBufferProbe = async (width, height) => {
     feather: BRUSH_FEATHER,
   })
   renderer.resize(width, height)
+  // The probe drives the stroke path alone, so its document is one empty layer
+  // — enough for the compositor to have somewhere to put the mark.
+  renderer.setComposition({
+    below: [],
+    active: { id: "probe", opacity: 1, blend: "normal", clip: false },
+    above: [],
+  })
   const instances = new Float32Array(1024 * STAMP_STRIDE)
   const textures = createTextureLibrary()
   const texture = (id: string) => {

@@ -45,6 +45,13 @@ export type WorkloadOptions = {
   /** Nominal hand speed in canvas pixels per second, before variation. */
   penSpeed: number
   seed: number
+  /**
+   * How many layers the document holds while the workload is painted. Each one
+   * is given a mark of its own, so the compositor has something to flatten,
+   * and the workload is painted onto a layer in the middle of the stack — with
+   * a cache above it and a cache below it. Defaults to one.
+   */
+  layers?: number
 }
 
 /**
@@ -164,6 +171,11 @@ export function createWorkload(options: WorkloadOptions): Workload {
   positive(options.penSpeed, "pen speed")
   if (!Number.isInteger(options.strokes) || options.strokes < 1)
     throw new Error("A workload must have at least one stroke.")
+  if (
+    options.layers !== undefined &&
+    (!Number.isInteger(options.layers) || options.layers < 1)
+  )
+    throw new Error("A workload must have at least one layer.")
   const random = createRandom(options.seed)
   const strokes: BenchStroke[] = []
   for (let i = 0; i < options.strokes; i++)
