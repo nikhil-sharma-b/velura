@@ -233,54 +233,59 @@ The architecture document holds the full decision record with rationale (40 entr
 
 ### What makes a good test here
 
-A good test in this codebase asserts on **what an artist would observe** — the pixels that end up on the canvas, the state the UI reports, the bytes that reach storage — and never on how the engine arrived there. Tile counts, cache-rebuild timing, internal data structures, and the shape of intermediate buffers are all implementation detail; a test that names any of them will fail during ordinary refactoring while catching nothing an artist cares about.
+A good test in this codebase asserts on **what an artist would observe** — the pixels that end up on the canvas, the state the UI reports, the bytes that reach storage — or on **a contract that survives how the engine is built** — a curve mapping a pressure value to a size, a path resampled to even spacing. It never asserts on how the engine arrived there. Atlas layout, cache-rebuild timing, buffer shapes, and the order in which tiles are touched are all implementation detail; a test naming any of them will fail during ordinary refactoring while catching nothing an artist cares about.
 
-This matters more than usual here because the engine's internals are expected to churn: the Worker migration, atlas eviction strategy, and compute-shader brushes will all rewrite internals without changing behaviour. Tests written against internals would have to be rewritten by each of those changes, which in practice means they would be deleted.
+This matters more than usual here because parts of the engine are expected to churn: the Web Worker migration, atlas eviction, and compute-shader brushes will each rewrite internals without changing behaviour. The criterion for whether something may be tested directly is therefore **contract stability under those planned rewrites** — not whether the function happens to be pure, and not whether the contract is externally defined.
 
-Concretely, a good test drives the engine the way the UI does — issue commands, then read back the composited image or the reported state.
+Applying that criterion sorts the engine cleanly. Path resampling, the stabilizer, dynamics evaluation, tile coordinate math, and compression round-trips are untouched by all three rewrites: the Worker migration changes transport, atlas eviction changes storage, and compute brushes change how stamp parameters are *consumed*, not how they are *computed*. Everything requiring a graphics device sits on the other side of the line, where the rewrites actually land.
 
 ### Seams
 
-There is **no prior art in this repository**: no tests, no test runner configured in the package manifest, and no existing seams to prefer. Every seam below is new, and they were chosen to be as few and as high as possible.
+There is **no prior art in this repository**: no tests, no test runner configured in the package manifest, and no existing seams to prefer. Every seam below is new, and they were chosen to be as few and as high as the above criterion permits.
 
 **1. The engine facade — the primary seam.**
 
-The engine's public command-and-snapshot surface. Tests issue commands and assert on the composited output and on reported state. Everything beneath — brush dynamics, path resampling, the stabilizer, the tile grid, the layer tree, undo, blend modes, the compositor — is covered *through* this seam rather than addressed directly.
+The engine's public command-and-snapshot surface. Tests issue commands and assert on the composited output and on reported state. Everything that touches the GPU — brush marks, blend modes, the layer tree, groups, masks, clipping, undo, the compositor, colour correctness — is covered *through* this seam and never addressed directly.
 
-This is deliberately the **only** seam for client behaviour. It requires a real graphics device, so these tests run in headless Chrome driven by a browser automation harness. That is slower than testing pure functions in isolation, and it is the right trade: it is the only way to catch the failures that actually matter, which are visual.
+These tests require a real graphics device, so they run in headless Chrome under a browser automation harness. That is slower than testing in isolation, and it is the right trade for this category: these failures are visual, and rendering is exactly the area the planned rewrites will disturb, so pinning anything beneath the facade here would create tests that the rewrites delete.
 
-**Note on a reversal:** the architecture document proposes additionally unit-testing the pure layer — resampling, dynamics evaluation, tile coordinates, hashing, compression round-trips — on the grounds that most bugs live there. This spec does not carry that recommendation forward as a separate seam. Those functions are reached through the engine facade, and giving them their own seam would mean two sets of tests over one behaviour, with the lower set pinning internal signatures that the Worker migration is expected to change. The exception is **compression and hashing round-trips**, which are tested directly: they are a genuine boundary with an externally-defined contract — bytes in, identical bytes out — rather than an internal implementation step, and a silent corruption there destroys artwork rather than merely rendering it wrongly.
+**2. The stable-contract functions — tested directly.**
 
-**2. `TileStore` — dependency injection, not a new seam.**
+Path resampling, the stabilizer, dynamics-graph evaluation, tile coordinate math, and tile compression and hashing are tested as functions, without a graphics device.
 
-The storage interface the architecture already requires so the blob backend can be swapped. Substituting an in-memory implementation lets the sync path — dirty tracking, coalesced flushing, deduplication, cache-first reads, retry behaviour — be exercised through the engine facade with no network. Because this boundary exists for architectural reasons regardless of testing, using it costs nothing in extra surface area.
+This is not duplicated coverage of the facade tests. The facade asserts on **marks**; these assert on **parameters** — that a pressure of 0.5 through a given curve yields a specific size, that a fast and a slow stroke resample to the same spacing, that bytes round-trip through compression unchanged. The two overlap in what they exercise but not in what they pin, and only the facade tests know anything about pixels.
 
-**3. Backend functions.**
+Two reasons this tier earns its place despite the general preference for fewer seams. The first milestone *is* brush-engine development, where curve response and spacing are tuned by constant iteration, and a millisecond-scale test loop rather than a headless-browser one is the difference between tuning by experiment and tuning by patience. And golden images localise failure poorly: a bad curve, wrong spacing, a broken transfer function and a shader regression all surface as the same "image differs" signal, where direct tests turn the first two into named assertions.
+
+**3. `TileStore` — dependency injection, not an additional seam.**
+
+The storage interface the architecture already requires so the blob backend can be swapped. Substituting an in-memory implementation lets the sync path — dirty tracking, coalesced flushing, deduplication, cache-first reads, retry behaviour — be exercised through the engine facade with no network. Because this boundary exists for architectural reasons regardless of testing, using it adds no surface area.
+
+**4. Backend functions.**
 
 Necessarily separate, since backend code cannot run inside the browser test. Tested with the backend platform's own test harness, covering schema validity, the flush and dedup path, retention decay, and the mark-and-sweep collector — the last of which deletes user data permanently and therefore needs tests demonstrating that it never removes a referenced or in-flight blob.
 
 ### What gets tested
 
-| Area | Through which seam | Notes |
+| Area | Where | Notes |
 |---|---|---|
-| Brush dynamics producing expected marks | Engine facade | Golden images across a set of canonical strokes |
-| Pressure, tilt, and velocity response | Engine facade | Synthetic pointer sequences with known values |
-| Even stamp spacing regardless of speed | Engine facade | Fast and slow synthetic strokes compared |
+| Dynamics evaluation | Direct | Named assertions on parameters: a given source value through a given curve yields a specific target |
+| Path resampling and stabilizer | Direct | Fast and slow synthetic strokes resample to the same spacing |
+| Tile coordinate math | Direct | Pixel-to-tile mapping and dirty-region bounds |
+| Compression and hashing | Direct | Byte-exact round-trip; silent corruption loses artwork |
+| Brush marks under pressure, tilt, velocity | Engine facade | Golden images over canonical strokes with synthetic pointer sequences |
 | Coverage versus buildup accumulation | Engine facade | The behaviour a separate stroke buffer exists to provide |
 | Blend modes | Engine facade | Golden image per mode over a fixed pair of layers |
 | Groups, masks, clipping | Engine facade | Composited output against expectation |
 | Colour correctness | Engine facade | Linear-light blending, and export matching canvas |
-| Undo and redo | Engine facade | Including deep histories that cross the compression and spill tiers |
-| Tile compression and hashing | Directly | An external contract; silent corruption loses artwork |
+| Undo and redo | Engine facade | Including deep histories crossing the compression and spill tiers |
 | Flush, dedup, cache-first reads, retry | Engine facade with in-memory store | No network involved |
 | Backend schema, retention, collection | Backend harness | Collection tests must prove referenced blobs survive |
 | Performance against the stated target | Scripted benchmark | Tracked over time, not a pass/fail gate |
 
 ### Prior art
 
-None. The first test written establishes the pattern; it should be a golden-image test through the engine facade, since that is the pattern most of the suite will follow.
-
----
+None. Two patterns get established by the first tests written, and both should be written early: a direct test of dynamics evaluation, and a golden-image test through the engine facade. Most of the suite follows one or the other.
 
 ## Out of Scope
 

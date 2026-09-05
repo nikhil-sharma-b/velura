@@ -356,9 +356,11 @@ WGSL lives in `.wgsl` files under `engine/shaders/`, assembled by a small (~40 l
 
 ## 11. Testing (D36)
 
+**Criterion for what may be tested directly:** contract stability under the planned rewrites — not function purity, and not whether the contract is externally defined. The Worker migration changes transport, atlas eviction changes storage, and compute-shader brushes change how stamp parameters are consumed rather than how they are computed. Anything all three leave untouched can be tested as a function; anything needing a `GPUDevice` goes through the engine facade, because that is precisely where the rewrites land.
+
 | Layer | Approach |
 |---|---|
-| Pure math — resampling, stabilizer, dynamics evaluation, tile coordinates, hashing, zstd round-trip, manifest diffing | Bun unit tests. This is where most engine bugs live. |
+| Stable contracts — resampling, stabilizer, dynamics evaluation, tile coordinates, hashing, zstd round-trip, manifest diffing | Bun unit tests, no GPU. Fast iteration during M1 brush tuning, and named assertions on parameters where a golden image would only say "differs". |
 | Convex functions — schema, flush path, dedup, GC sweep, retention | Convex function tests. |
 | GPU — brush rendering, blend modes, display transform | Playwright golden-image snapshots in headless Chrome over a small set of canonical strokes. |
 | Performance | Scripted benchmark against D30: 120 fps at 8192², under 10 ms pointer-to-pixel. Tracked, not gated. |
