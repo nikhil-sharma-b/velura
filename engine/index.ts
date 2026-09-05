@@ -1,3 +1,11 @@
+import {
+  chooseOutputColorSpace,
+  type OutputColorSpace,
+} from "./color/display-transform"
+import { BACKGROUND, createScene } from "./doc/scene"
+import type { TiledLayer } from "./doc/tiled-layer"
+import { createRenderer, type Renderer } from "./gpu/renderer"
+
 export type EngineCommand =
   | { type: "initialize" }
   | { type: "resize"; width: number; height: number; devicePixelRatio: number }
@@ -12,6 +20,8 @@ export type EngineSnapshot = Readonly<{
     | "disposed"
   width: number
   height: number
+  /** The colour space pixels are presented in: wide gamut where available. */
+  outputColorSpace: OutputColorSpace
   error: string | null
 }>
 
@@ -20,6 +30,8 @@ export type RenderedPixels = {
   height: number
   /** Display-encoded RGBA8, tightly packed, top row first. */
   data: Uint8Array
+  /** The colour space `data` is encoded in. */
+  colorSpace: OutputColorSpace
 }
 
 export interface Engine {
@@ -39,6 +51,7 @@ export function createEngine(
     status: "idle",
     width: 1,
     height: 1,
+    outputColorSpace: "srgb",
     error: null,
   })
   const listeners = new Set<() => void>()
@@ -47,6 +60,8 @@ export function createEngine(
   let format: GPUTextureFormat = "bgra8unorm"
   let initialization: Promise<void> | undefined
   let viewport = { width: 1, height: 1, devicePixelRatio: 1 }
+  let renderer: Renderer | undefined
+  let layer: TiledLayer | undefined
   let disposed = false
 
   function publish(update: Partial<EngineSnapshot>) {
@@ -64,6 +79,9 @@ export function createEngine(
   }
 
   function release() {
+    renderer?.destroy()
+    renderer = undefined
+    layer = undefined
     context?.unconfigure()
     context = null
     device?.destroy()
@@ -87,29 +105,69 @@ export function createEngine(
     const scale = Math.min(1, limit / width, limit / height)
     const pixelWidth = Math.max(1, Math.round(width * scale))
     const pixelHeight = Math.max(1, Math.round(height * scale))
+    // Re-tiling and re-uploading the document is wasted work at the same size.
+    if (
+      layer &&
+      pixelWidth === snapshot.width &&
+      pixelHeight === snapshot.height
+    )
+      return
     if (canvas.width !== pixelWidth) canvas.width = pixelWidth
     if (canvas.height !== pixelHeight) canvas.height = pixelHeight
+    if (renderer) {
+      // The document is authored in canvas pixels for now, so a resize
+      // re-tiles it; sparse tiles make that cost what is actually covered.
+      layer = createScene(pixelWidth, pixelHeight)
+      renderer.resize(pixelWidth, pixelHeight)
+      renderer.upload(layer)
+    }
     publish({ width: pixelWidth, height: pixelHeight })
   }
 
   function render(): GPUTexture {
-    if (!device || !context)
+    if (!device || !context || !renderer)
       throw new Error("The graphics device is not ready.")
     const texture = context.getCurrentTexture()
-    const encoder = device.createCommandEncoder()
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: texture.createView(),
-          clearValue: { r: 24 / 255, g: 24 / 255, b: 27 / 255, a: 1 },
-          loadOp: "clear",
-          storeOp: "store",
-        },
-      ],
-    })
-    pass.end()
-    device.queue.submit([encoder.finish()])
+    renderer.render(texture.createView())
     return texture
+  }
+
+  /**
+   * Wide gamut needs a display that can show it and a swap chain that can
+   * present it. Configuring is the only honest test of the second, so an
+   * unsupported colour space falls back rather than failing to start.
+   */
+  function configureOutput(
+    target: GPUCanvasContext,
+    acquired: GPUDevice
+  ): OutputColorSpace {
+    const configuration = {
+      device: acquired,
+      format,
+      alphaMode: "opaque",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    } as const
+    const displaySupportsP3 =
+      globalThis.matchMedia?.("(color-gamut: p3)").matches ?? false
+    const chosen = chooseOutputColorSpace({
+      displaySupportsP3,
+      gpuSupportsP3: displaySupportsP3 && acceptsP3(target, configuration),
+    })
+    target.configure({ ...configuration, colorSpace: chosen })
+    return chosen
+  }
+
+  /** Whether this swap chain will take a P3 configuration at all. */
+  function acceptsP3(
+    target: GPUCanvasContext,
+    configuration: GPUCanvasConfiguration
+  ): boolean {
+    try {
+      target.configure({ ...configuration, colorSpace: "display-p3" })
+      return true
+    } catch {
+      return false
+    }
   }
 
   async function initialize() {
@@ -145,12 +203,13 @@ export function createEngine(
       if (!context) throw new Error("Could not create a WebGPU canvas context.")
       format = gpu.getPreferredCanvasFormat()
       acquired.pushErrorScope("validation")
-      context.configure({
-        device: acquired,
+      const colorSpace = configureOutput(context, acquired)
+      renderer = createRenderer(acquired, {
         format,
-        alphaMode: "opaque",
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        outputColorSpace: colorSpace,
+        background: BACKGROUND,
       })
+      publish({ outputColorSpace: colorSpace })
       resize()
       render()
       const error = await acquired.popErrorScope()
@@ -238,7 +297,7 @@ export function createEngine(
           for (let i = 0; i < data.length; i += 4)
             [data[i], data[i + 2]] = [data[i + 2], data[i]]
         }
-        return { width, height, data }
+        return { width, height, data, colorSpace: snapshot.outputColorSpace }
       } finally {
         buffer.destroy()
       }

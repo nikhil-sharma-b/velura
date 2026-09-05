@@ -7,6 +7,7 @@ const initialSnapshot: EngineSnapshot = Object.freeze({
   status: "idle",
   width: 1,
   height: 1,
+  outputColorSpace: "srgb",
   error: null,
 })
 const getInitialSnapshot = () => initialSnapshot

@@ -16,7 +16,8 @@
     "format": "oxfmt --write \"**/*.{ts,tsx}\"",
     "format:check": "oxfmt --check \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
-    "test": "bun run test:browser",
+    "test": "bun run test:unit && bun run test:browser",
+    "test:unit": "bun test tests/unit",
     "test:browser": "playwright test"
   },
   "dependencies": {
@@ -40,6 +41,7 @@
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4.2.1",
+    "@types/bun": "^1.4.1",
     "@types/node": "^25.5.0",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.14",

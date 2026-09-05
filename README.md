@@ -54,25 +54,49 @@ and call `dispose()` when detaching. Snapshots report lifecycle and backing-stor
 size; unchanged state does not notify subscribers. React uses `useSyncExternalStore`.
 The host observes layout and checks display density without updating React each frame.
 
-The engine clears an opaque display-encoded charcoal surface on startup and resize.
-This is only the canvas host, not the future linear-light document compositor.
 Missing WebGPU or an unavailable adapter shows browser guidance; request/configuration
 errors and device loss show a separate retryable failure. Retry recreates the device;
 restoring document content from the tile cache belongs to subsequent tickets.
+
+## Tiles and colour
+
+Pixels live in sparse 256x256 `rgba16float` tiles, premultiplied, in linear light
+(`engine/doc/`). A tile is allocated only when something is written into it; an
+absent tile reads as fully transparent. `engine/doc/scene.ts` holds the hardcoded
+shape shown until drawing exists.
+
+The working space is linear Display P3, so a wide-gamut display can show colours
+sRGB cannot reach. A single present pass (`engine/shaders/display-transform.ts`)
+composites the layer over the backdrop in linear light, converts working-space
+primaries to the output space, and applies the transfer function. That is the only
+place colour is encoded; export and previews must reuse it, or they will diverge
+from the canvas. The swap chain is configured for Display P3 when the display
+reports a P3 gamut and the swap chain accepts it, and falls back to sRGB with a
+real primary conversion otherwise. `getSnapshot().outputColorSpace` reports which.
 
 Oxlint restricts `engine/**` to engine-local imports and prohibits imports from
 `app/`, `features/`, `components/`, `hooks/`, and `lib/`, including relative paths.
 New framework-free package dependencies must be explicitly allowed in the engine
 override in `.oxlintrc.json`. Framework packages must remain outside the engine.
 
-### Browser tests
+### Tests
+
+`bun run test` runs both suites: Bun unit tests for contracts that need no GPU,
+then the Playwright browser suite.
 
 ```sh
 bunx playwright install chromium
 bun run test
-# Focused feedback loop:
+# Focused feedback loops:
+bun run test:unit
 bun run test:browser tests/browser/engine.spec.ts
 ```
+
+Unit tests in `tests/unit/` cover tile coordinate math, dirty-region bounds,
+sparse tile allocation, half-float storage, and the display-transform colour
+math. These are the contracts the Worker migration, atlas eviction, and compute
+brushes all leave untouched; everything needing a `GPUDevice` is tested through
+the engine facade instead.
 
 Playwright uses headless Chromium with SwiftShader (software WebGPU); a missing
 adapter fails the GPU tests rather than silently skipping them. These flags are
@@ -84,11 +108,12 @@ outside the Next route tree and is not part of the production app.
 `readPixels()` returns actual rendered RGBA8 bytes with GPU row padding removed
 and BGRA normalized to RGBA. It is an explicit asynchronous readback, never part
 of the interactive render path. Pixel tests use literal expected colors, including
-non-aligned row widths. Host tests cover viewport and density changes, unavailable
-WebGPU, startup failures, retry, and device loss. Future pure-contract unit tests
-can use Bun's test runner when the corresponding math/storage modules arrive.
+non-aligned row widths, and report the colour space they were encoded in, so the
+golden-image test asserts against the display transform for whichever gamut the
+swap chain actually presented. Host tests cover viewport and density changes,
+unavailable WebGPU, startup failures, retry, and device loss.
 
 GitHub Actions installs the pinned Bun version and Chromium, then runs lint,
-formatting, typechecking, the browser suite, and a production build. Failed browser
+formatting, typechecking, both test suites, and a production build. Failed browser
 runs retain Playwright traces in the `browser-test-results` artifact. Software GPU
 tests check correctness; hardware performance still needs a separate benchmark.
