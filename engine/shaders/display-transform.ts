@@ -1,8 +1,9 @@
 /**
  * The present pass. One full-screen triangle composites the linear-light layer
- * over the background, converts working-space primaries to the output colour
- * space and applies the transfer function. Export and preview render through
- * this same shader (D10); nothing else may encode colour.
+ * and the stroke in flight over the background, converts working-space
+ * primaries to the output colour space and applies the transfer function.
+ * Export and preview render through this same shader (D10); nothing else may
+ * encode colour.
  *
  * `encodeTransfer` below mirrors the CPU reference in
  * `engine/color/display-transform.ts`; the golden-image test pins them together.
@@ -18,10 +19,14 @@ struct Present {
   toOutput: mat3x3<f32>,
   // Background in the working space, opaque.
   background: vec4<f32>,
+  // Opacity of the stroke in flight, in [0, 1].
+  strokeOpacity: f32,
 }
 
 @group(0) @binding(0) var<uniform> present: Present;
 @group(0) @binding(1) var layer: texture_2d<f32>;
+// The stroke in flight. Empty between strokes, so this pass is unconditional.
+@group(0) @binding(2) var stroke: texture_2d<f32>;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -43,7 +48,11 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   // Texel-for-texel: the layer target is the size of the swap chain.
   let painted = textureLoad(layer, vec2<i32>(position.xy), 0);
   // Premultiplied "over" in linear light, before any encoding.
-  let composited = painted.rgb + present.background.rgb * (1.0 - painted.a);
+  let onBackground = painted.rgb + present.background.rgb * (1.0 - painted.a);
+  // The stroke buffer sits above the layer and is shown at the stroke's
+  // opacity, so the mark on screen matches the one that will be composited.
+  let inFlight = textureLoad(stroke, vec2<i32>(position.xy), 0) * present.strokeOpacity;
+  let composited = inFlight.rgb + onBackground * (1.0 - inFlight.a);
   return vec4<f32>(encodeTransfer(present.toOutput * composited), 1.0);
 }
 `

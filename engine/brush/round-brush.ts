@@ -28,5 +28,30 @@ const INK = srgbToWorking([
   decodeTransfer(245 / 255),
 ])
 
-/** Premultiplied linear-light ink. Opaque, so overlapping dabs do not darken. */
+/** Premultiplied linear-light ink. Stroke opacity is applied at composite. */
 export const BRUSH_COLOR: LinearColor = [INK[0], INK[1], INK[2], 1]
+
+/**
+ * How dabs within one stroke combine (D27).
+ *
+ * - `coverage` takes the maximum: a stroke that crosses itself reads as one
+ *   flat mark, which is what a marker or an airbrush does.
+ * - `buildup` accumulates: each dab adds, as wet and dry media do.
+ */
+export type Accumulation = "coverage" | "buildup"
+
+/** Marker-like by default: the crossing of a stroke should not darken. */
+export const BRUSH_ACCUMULATION: Accumulation = "coverage"
+
+/**
+ * Opacity of the whole stroke, applied once when the stroke buffer is
+ * composited — never per dab, or a crossing would darken whatever the mode.
+ */
+export const BRUSH_OPACITY = 1
+
+/**
+ * Opacity of a single dab. Flow is what accumulation acts on: dabs at full
+ * flow replace each other whichever mode is set, and it is only below one that
+ * a buildup brush visibly darkens where a stroke crosses itself.
+ */
+export const BRUSH_FLOW = 1

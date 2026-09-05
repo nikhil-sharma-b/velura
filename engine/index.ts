@@ -1,6 +1,10 @@
 import {
+  type Accumulation,
+  BRUSH_ACCUMULATION,
   BRUSH_COLOR,
   BRUSH_FEATHER,
+  BRUSH_FLOW,
+  BRUSH_OPACITY,
   BRUSH_RADIUS,
   BRUSH_SPACING,
 } from "./brush/round-brush"
@@ -16,9 +20,8 @@ import {
   createRenderer,
   MAX_STAMPS_PER_DRAW,
   type Renderer,
-  STAMP,
-  STAMP_STRIDE,
 } from "./gpu/renderer"
+import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
 import { attachPointerSampler } from "./input/pointer-sampler"
 import { createSampleBuffer } from "./input/sample-buffer"
 
@@ -37,6 +40,13 @@ export type EngineCommand =
   | { type: "resize"; width: number; height: number; devicePixelRatio: number }
   /** Stabilizer strength in [0, 1]; zero restores the raw unfiltered path. */
   | { type: "setStabilization"; strength: number }
+  /** The brush properties that decide how a stroke lays ink down (D27). */
+  | {
+      type: "setBrush"
+      accumulation?: Accumulation
+      opacity?: number
+      flow?: number
+    }
 
 export type EngineSnapshot = Readonly<{
   status:
@@ -52,6 +62,12 @@ export type EngineSnapshot = Readonly<{
   outputColorSpace: OutputColorSpace
   /** Stabilizer strength in [0, 1]. Structural state, so React may see it. */
   stabilization: number
+  /** Whether dabs within a stroke take maximum coverage or accumulate. */
+  accumulation: Accumulation
+  /** Opacity of a whole stroke, in [0, 1]. */
+  brushOpacity: number
+  /** Opacity of a single dab, in [0, 1]. */
+  flow: number
   error: string | null
 }>
 
@@ -65,6 +81,9 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   height: 1,
   outputColorSpace: "srgb",
   stabilization: DEFAULT_STABILIZATION,
+  accumulation: BRUSH_ACCUMULATION,
+  brushOpacity: BRUSH_OPACITY,
+  flow: BRUSH_FLOW,
   error: null,
 })
 
@@ -115,6 +134,8 @@ export function createEngine(
   // Where the pen actually was, before stabilization pulled the path behind it.
   let rawX = 0
   let rawY = 0
+  // Mirrors the snapshot so the per-dab path reads a number, not an object.
+  let flow = BRUSH_FLOW
   let frame: number | undefined
   let detachSampler: (() => void) | undefined
   stabilizer.setStrength(DEFAULT_STABILIZATION)
@@ -192,9 +213,10 @@ export function createEngine(
     stamps[offset + STAMP.CENTER_X] = x
     stamps[offset + STAMP.CENTER_Y] = y
     stamps[offset + STAMP.RADIUS] = BRUSH_RADIUS
-    // Fixed opacity for now; pressure and the dynamics graph land in later
-    // tickets and modulate exactly these two slots.
-    stamps[offset + STAMP.OPACITY] = 1
+    // Flow: the dab's own opacity, not the stroke's, which is applied once
+    // when the buffer is composited. Pressure and the dynamics graph land in
+    // later tickets and modulate exactly these two slots.
+    stamps[offset + STAMP.OPACITY] = flow
     stampCount++
   }
 
@@ -231,6 +253,10 @@ export function createEngine(
       // lifted instead of stopping a pull radius short of it.
       resampler.extend(rawX, rawY, emitStamp)
       resampler.end(emitStamp)
+      flushStamps()
+      // The whole mark is in the buffer now, so it goes into the layer once,
+      // at the stroke's opacity (D27).
+      renderer?.endStroke()
     }
     flushStamps()
     try {
@@ -248,6 +274,11 @@ export function createEngine(
 
   function beginStroke(x: number, y: number, pressure: number) {
     if (snapshot.status !== "ready") return
+    // Dabs land in the stroke buffer, not the layer, until the pen lifts.
+    renderer?.beginStroke({
+      accumulation: snapshot.accumulation,
+      opacity: snapshot.brushOpacity,
+    })
     stroking = true
     opening = true
     samples.push(x, y, pressure)
@@ -409,6 +440,23 @@ export function createEngine(
             fail(error)
           }
           break
+        case "setBrush": {
+          for (const value of [command.opacity, command.flow])
+            if (
+              value !== undefined &&
+              (!Number.isFinite(value) || value < 0 || value > 1)
+            )
+              throw new Error(
+                "Brush opacity and flow must be finite values in [0, 1]."
+              )
+          publish({
+            accumulation: command.accumulation ?? snapshot.accumulation,
+            brushOpacity: command.opacity ?? snapshot.brushOpacity,
+            flow: command.flow ?? snapshot.flow,
+          })
+          flow = snapshot.flow
+          break
+        }
         case "setStabilization": {
           if (!Number.isFinite(command.strength))
             throw new Error("Stabilization strength must be finite.")
