@@ -1,13 +1,22 @@
 import {
+  type Brush,
+  brushSpacing,
+  cloneBrush,
+  DEFAULT_BRUSH,
+} from "./brush/brush"
+import {
+  evaluateDynamics,
+  type Modulator,
+  NEUTRAL_STAMP_PARAMS,
+  type StampParams,
+  validateDynamics,
+} from "./brush/dynamics"
+import {
   type Accumulation,
-  BRUSH_ACCUMULATION,
   BRUSH_COLOR,
   BRUSH_FEATHER,
-  BRUSH_FLOW,
-  BRUSH_OPACITY,
-  BRUSH_RADIUS,
-  BRUSH_SPACING,
 } from "./brush/round-brush"
+import { createStampContextTracker } from "./brush/stamp-context"
 import {
   chooseOutputColorSpace,
   type OutputColorSpace,
@@ -40,12 +49,20 @@ export type EngineCommand =
   | { type: "resize"; width: number; height: number; devicePixelRatio: number }
   /** Stabilizer strength in [0, 1]; zero restores the raw unfiltered path. */
   | { type: "setStabilization"; strength: number }
-  /** The brush properties that decide how a stroke lays ink down (D27). */
+  /**
+   * The brush. Every field is optional and unnamed ones are left alone, so a
+   * control that owns one property need not know the rest of the brush.
+   */
   | {
       type: "setBrush"
       accumulation?: Accumulation
       opacity?: number
       flow?: number
+      radius?: number
+      /** Stamp spacing as a fraction of the dab diameter. */
+      spacing?: number
+      /** Replaces the dynamics graph outright; see `evaluateDynamics`. */
+      dynamics?: Modulator[]
     }
 
 export type EngineSnapshot = Readonly<{
@@ -62,12 +79,8 @@ export type EngineSnapshot = Readonly<{
   outputColorSpace: OutputColorSpace
   /** Stabilizer strength in [0, 1]. Structural state, so React may see it. */
   stabilization: number
-  /** Whether dabs within a stroke take maximum coverage or accumulate. */
-  accumulation: Accumulation
-  /** Opacity of a whole stroke, in [0, 1]. */
-  brushOpacity: number
-  /** Opacity of a single dab, in [0, 1]. */
-  flow: number
+  /** The brush in the hand: serialisable data, never code (D23). */
+  brush: Brush
   error: string | null
 }>
 
@@ -81,9 +94,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   height: 1,
   outputColorSpace: "srgb",
   stabilization: DEFAULT_STABILIZATION,
-  accumulation: BRUSH_ACCUMULATION,
-  brushOpacity: BRUSH_OPACITY,
-  flow: BRUSH_FLOW,
+  brush: Object.freeze(cloneBrush(DEFAULT_BRUSH)),
   error: null,
 })
 
@@ -124,18 +135,35 @@ export function createEngine(
   // a frame of drawing performs no allocation at all (D30).
   const samples = createSampleBuffer(SAMPLE_CAPACITY)
   const stabilizer = createStabilizer()
-  const resampler = createStrokeResampler(BRUSH_SPACING)
+  // Rebuilt only when the brush changes its spacing, which never happens
+  // inside a stroke: a frame of drawing still allocates nothing (D30).
+  let resampler = createStrokeResampler(brushSpacing(DEFAULT_BRUSH))
+  const dynamics = createStampContextTracker()
+  const params: StampParams = { ...NEUTRAL_STAMP_PARAMS }
+  // Evaluated once per stroke rather than per dab, so it is kept apart from
+  // `params` instead of borrowing it and being overwritten by the first dab.
+  const strokeParams: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   const stamps = new Float32Array(MAX_STAMPS_PER_DRAW * STAMP_STRIDE)
   let stampCount = 0
   let stroking = false
   // The pen-down sample opens the path, and it arrives through the buffer like
   // every other sample: nothing is drawn from inside an event handler.
   let opening = false
-  // Where the pen actually was, before stabilization pulled the path behind it.
+  // Where the pen actually was, before stabilization pulled the path behind it,
+  // and what it reported there: the tail flushed on pen-up reuses all of it.
   let rawX = 0
   let rawY = 0
-  // Mirrors the snapshot so the per-dab path reads a number, not an object.
-  let flow = BRUSH_FLOW
+  let rawPressure = 1
+  let rawTiltX = 0
+  let rawTiltY = 0
+  let rawTime = 0
+  // Mirrors the snapshot so the per-dab path reads plain fields off one object
+  // rather than a frozen snapshot that is replaced on every publish.
+  let brush = cloneBrush(DEFAULT_BRUSH)
+  // Jitter is seeded per stroke, so a `random` mapping differs between marks
+  // while any one mark stays reproducible — which is what lets a stroke be
+  // replayed from the log identically (D26).
+  let strokeSeed = 0
   let frame: number | undefined
   let detachSampler: (() => void) | undefined
   stabilizer.setStrength(DEFAULT_STABILIZATION)
@@ -206,17 +234,35 @@ export function createEngine(
     publish({ width: pixelWidth, height: pixelHeight })
   }
 
-  /** Collects one dab, drawing early if the instance buffer would overflow. */
-  function emitStamp(x: number, y: number) {
+  /**
+   * Collects one dab, drawing early if the instance buffer would overflow.
+   *
+   * This is where the dynamics graph (D23) meets the renderer: the pen state
+   * interpolated to this dab becomes a stamp context, the graph turns that
+   * into a modulation, and the modulation scales the brush's own radius and
+   * flow. Targets the stamp cannot yet express — tip angle, grain, scatter —
+   * are evaluated all the same and land when their renderers do (D24).
+   */
+  function emitStamp(
+    x: number,
+    y: number,
+    pressure: number,
+    tiltX: number,
+    tiltY: number,
+    time: number
+  ) {
+    // The tracker was opened by the pen going down, so every dab advances it:
+    // the first one has not moved from that point and so has no speed yet.
+    const context = dynamics.next(x, y, pressure, tiltX, tiltY, time)
+    evaluateDynamics(brush.dynamics, context, params)
     if (stampCount === MAX_STAMPS_PER_DRAW) flushStamps()
     const offset = stampCount * STAMP_STRIDE
     stamps[offset + STAMP.CENTER_X] = x
     stamps[offset + STAMP.CENTER_Y] = y
-    stamps[offset + STAMP.RADIUS] = BRUSH_RADIUS
+    stamps[offset + STAMP.RADIUS] = brush.shape.radius * params.size
     // Flow: the dab's own opacity, not the stroke's, which is applied once
-    // when the buffer is composited. Pressure and the dynamics graph land in
-    // later tickets and modulate exactly these two slots.
-    stamps[offset + STAMP.OPACITY] = flow
+    // when the buffer is composited (D27).
+    stamps[offset + STAMP.OPACITY] = brush.rendering.flow * params.flow
     stampCount++
   }
 
@@ -231,17 +277,30 @@ export function createEngine(
    * resample it by arc length, stamp, present. React is never told.
    */
   /** Hoisted so draining allocates no closure on any frame of a stroke. */
-  function consumeSample(x: number, y: number) {
+  function consumeSample(
+    x: number,
+    y: number,
+    pressure: number,
+    tiltX: number,
+    tiltY: number,
+    time: number
+  ) {
     rawX = x
     rawY = y
+    rawPressure = pressure
+    rawTiltX = tiltX
+    rawTiltY = tiltY
+    rawTime = time
     if (opening) {
       opening = false
       stabilizer.begin(x, y)
-      resampler.begin(x, y, emitStamp)
+      resampler.begin(x, y, pressure, tiltX, tiltY, time, emitStamp)
       return
     }
+    // Only position is stabilized: what the pen reported belongs to the sample
+    // it was reported with, wherever the pulled string put the mark.
     const point = stabilizer.filter(x, y)
-    resampler.extend(point.x, point.y, emitStamp)
+    resampler.extend(point.x, point.y, pressure, tiltX, tiltY, time, emitStamp)
   }
 
   function drawFrame() {
@@ -251,7 +310,15 @@ export function createEngine(
     if (!stroking && !opening) {
       // The string is released on pen-up, so the mark reaches where the pen
       // lifted instead of stopping a pull radius short of it.
-      resampler.extend(rawX, rawY, emitStamp)
+      resampler.extend(
+        rawX,
+        rawY,
+        rawPressure,
+        rawTiltX,
+        rawTiltY,
+        rawTime,
+        emitStamp
+      )
       resampler.end(emitStamp)
       flushStamps()
       // The whole mark is in the buffer now, so it goes into the layer once,
@@ -272,16 +339,34 @@ export function createEngine(
     if (frame === undefined) frame = requestAnimationFrame(drawFrame)
   }
 
-  function beginStroke(x: number, y: number, pressure: number) {
+  function beginStroke(
+    x: number,
+    y: number,
+    pressure: number,
+    tiltX: number,
+    tiltY: number,
+    time: number
+  ) {
     if (snapshot.status !== "ready") return
+    // Stroke opacity is applied once, at composite, so it is decided once,
+    // here — from the pen state the stroke opened with. Nothing derived from
+    // movement is known yet, so a mapping onto `opacity` reads what the pen
+    // reported and not how it was moved; per-dab response is what `flow` is
+    // for. Opening the tracker here is also what makes the first dab's own
+    // context an advance rather than a restart.
+    evaluateDynamics(
+      brush.dynamics,
+      dynamics.begin(x, y, pressure, tiltX, tiltY, time, ++strokeSeed),
+      strokeParams
+    )
     // Dabs land in the stroke buffer, not the layer, until the pen lifts.
     renderer?.beginStroke({
-      accumulation: snapshot.accumulation,
-      opacity: snapshot.brushOpacity,
+      accumulation: brush.rendering.accumulation,
+      opacity: brush.rendering.opacity * strokeParams.opacity,
     })
     stroking = true
     opening = true
-    samples.push(x, y, pressure)
+    samples.push(x, y, pressure, tiltX, tiltY, time)
     scheduleFrame()
   }
 
@@ -449,12 +534,35 @@ export function createEngine(
               throw new Error(
                 "Brush opacity and flow must be finite values in [0, 1]."
               )
-          publish({
-            accumulation: command.accumulation ?? snapshot.accumulation,
-            brushOpacity: command.opacity ?? snapshot.brushOpacity,
-            flow: command.flow ?? snapshot.flow,
-          })
-          flow = snapshot.flow
+          for (const value of [command.radius, command.spacing])
+            if (value !== undefined && (!Number.isFinite(value) || value <= 0))
+              throw new Error("Brush radius and spacing must be positive.")
+          if (command.dynamics) validateDynamics(command.dynamics)
+          const next: Brush = {
+            ...brush,
+            shape: {
+              ...brush.shape,
+              radius: command.radius ?? brush.shape.radius,
+              spacing: command.spacing ?? brush.shape.spacing,
+            },
+            rendering: {
+              accumulation:
+                command.accumulation ?? brush.rendering.accumulation,
+              opacity: command.opacity ?? brush.rendering.opacity,
+              flow: command.flow ?? brush.rendering.flow,
+            },
+            // Cloned on the way in: the engine owns its brush, and a caller
+            // mutating the list it passed must not change a stroke in flight.
+            dynamics: command.dynamics
+              ? structuredClone(command.dynamics)
+              : brush.dynamics,
+          }
+          // Spacing is fixed for the life of a resampler, so a brush that
+          // changes it needs a new one. Never mid-stroke: the pen is up.
+          if (brushSpacing(next) !== brushSpacing(brush))
+            resampler = createStrokeResampler(brushSpacing(next))
+          brush = next
+          publish({ brush: Object.freeze(cloneBrush(next)) })
           break
         }
         case "setStabilization": {

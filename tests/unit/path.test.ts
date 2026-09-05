@@ -11,8 +11,9 @@ function collect(
   const stamps: Stamp[] = []
   const emit = (x: number, y: number) => stamps.push({ x, y })
   const resampler = createStrokeResampler(spacing)
-  resampler.begin(points[0].x, points[0].y, emit)
-  for (const point of points.slice(1)) resampler.extend(point.x, point.y, emit)
+  resampler.begin(points[0].x, points[0].y, 1, 0, 0, 0, emit)
+  for (const point of points.slice(1))
+    resampler.extend(point.x, point.y, 1, 0, 0, 0, emit)
   if (close) resampler.end(emit)
   return stamps
 }
@@ -126,12 +127,12 @@ describe("arc-length resampling", () => {
   test("a resampler can be reused for a second stroke", () => {
     const resampler = createStrokeResampler(5)
     const first: Stamp[] = []
-    resampler.begin(0, 0, (x, y) => first.push({ x, y }))
-    resampler.extend(30, 0, (x, y) => first.push({ x, y }))
+    resampler.begin(0, 0, 1, 0, 0, 0, (x, y) => first.push({ x, y }))
+    resampler.extend(30, 0, 1, 0, 0, 0, (x, y) => first.push({ x, y }))
     resampler.end((x, y) => first.push({ x, y }))
     const second: Stamp[] = []
-    resampler.begin(100, 100, (x, y) => second.push({ x, y }))
-    resampler.extend(130, 100, (x, y) => second.push({ x, y }))
+    resampler.begin(100, 100, 1, 0, 0, 0, (x, y) => second.push({ x, y }))
+    resampler.extend(130, 100, 1, 0, 0, 0, (x, y) => second.push({ x, y }))
     resampler.end((x, y) => second.push({ x, y }))
     expect(second[0]).toEqual({ x: 100, y: 100 })
     // No carried distance and no stale control points leak across strokes.
@@ -147,10 +148,69 @@ describe("arc-length resampling", () => {
     const emit = () => {
       count++
     }
-    resampler.begin(0, 0, emit)
+    resampler.begin(0, 0, 1, 0, 0, 0, emit)
     for (let i = 1; i <= 2000; i++)
-      resampler.extend(i, Math.sin(i / 10) * 20, emit)
+      resampler.extend(i, Math.sin(i / 10) * 20, 1, 0, 0, 0, emit)
     resampler.end(emit)
     expect(count).toBeGreaterThan(1000)
+  })
+})
+
+describe("pen state along the path", () => {
+  type Dab = {
+    x: number
+    pressure: number
+    tiltX: number
+    time: number
+  }
+
+  /** A straight run from 0 to 100 with pressure and tilt ramping across it. */
+  function ramp(): Dab[] {
+    const dabs: Dab[] = []
+    const emit = (
+      x: number,
+      _y: number,
+      pressure: number,
+      tiltX: number,
+      _tiltY: number,
+      time: number
+    ) => dabs.push({ x, pressure, tiltX, time })
+    const resampler = createStrokeResampler(5)
+    resampler.begin(0, 0, 0, 0, 0, 0, emit)
+    for (let i = 1; i <= 5; i++)
+      resampler.extend(i * 20, 0, i / 5, i * 10, 0, i * 100, emit)
+    resampler.end(emit)
+    return dabs
+  }
+
+  test("pressure rises with the dab, not in steps at the input samples", () => {
+    const dabs = ramp()
+    // Pressure was reported at 20-pixel intervals and dabs land every 5, so a
+    // held value would repeat four times over before jumping.
+    for (let i = 1; i < dabs.length; i++)
+      expect(dabs[i].pressure).toBeGreaterThan(dabs[i - 1].pressure)
+  })
+
+  test("pen state is the reported value where a sample actually falls", () => {
+    const dabs = ramp()
+    const atForty = dabs.find((dab) => Math.abs(dab.x - 40) < 1e-6)!
+    // The pen reported 0.4 at x = 40; the interpolation must not smear it.
+    expect(atForty.pressure).toBeCloseTo(0.4, 3)
+    expect(atForty.tiltX).toBeCloseTo(20, 3)
+    expect(atForty.time).toBeCloseTo(200, 3)
+  })
+
+  test("interpolated values never leave the range the pen reported", () => {
+    for (const dab of ramp()) {
+      expect(dab.pressure).toBeGreaterThanOrEqual(0)
+      expect(dab.pressure).toBeLessThanOrEqual(1)
+      expect(dab.tiltX).toBeLessThanOrEqual(50)
+    }
+  })
+
+  test("the clock advances monotonically along the stroke", () => {
+    const dabs = ramp()
+    for (let i = 1; i < dabs.length; i++)
+      expect(dabs[i].time).toBeGreaterThanOrEqual(dabs[i - 1].time)
   })
 })

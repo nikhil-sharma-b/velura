@@ -5,11 +5,18 @@ import * as React from "react"
 import { ArrowCounterClockwiseIcon, TrashIcon } from "@phosphor-icons/react"
 import { cva, type VariantProps } from "class-variance-authority"
 
+import {
+  type CurvePoint,
+  curveSegment,
+  sampleCurve,
+} from "@/engine/brush/curve"
+
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { clamp, cn } from "@/lib/utils"
 
-export type PressureCurvePoint = { x: number; y: number }
+/** The engine's curve point, named for the control that edits it. */
+export type PressureCurvePoint = CurvePoint
 
 const GRID_W = 150
 const GRID_H = 100
@@ -31,64 +38,26 @@ export const DEFAULT_PRESSURE_CURVE = pressureCurvePreset(
   DEFAULT_PRESET_POSITION
 )
 
-// Catmull-Rom control points for the segment starting at points[i], in unit space.
-function segmentControls(points: PressureCurvePoint[], i: number) {
-  const p0 = points[i - 1] ?? points[i]
-  const p1 = points[i]
-  const p2 = points[i + 1]
-  const p3 = points[i + 2] ?? p2
-  return {
-    p1,
-    c1: {
-      x: p1.x + (p2.x - p0.x) / 6,
-      y: clamp(p1.y + (p2.y - p0.y) / 6, 0, 1),
-    },
-    c2: {
-      x: p2.x - (p3.x - p1.x) / 6,
-      y: clamp(p2.y - (p3.y - p1.y) / 6, 0, 1),
-    },
-    p2,
-  }
-}
-
-function cubicBezier(a: number, b: number, c: number, d: number, t: number) {
-  const u = 1 - t
-  return u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d
-}
-
 // Spline through every point, emitted as cubic beziers in grid coordinates.
+// The segments come from the engine, so the drawn curve and the curve a brush
+// is evaluated against cannot drift apart.
 function buildPath(points: PressureCurvePoint[]) {
   if (points.length < 2) return ""
   const px = (p: PressureCurvePoint) => `${p.x * GRID_W} ${(1 - p.y) * GRID_H}`
   let d = `M ${px(points[0])}`
   for (let i = 0; i < points.length - 1; i++) {
-    const { c1, c2, p2 } = segmentControls(points, i)
+    const { c1, c2, p2 } = curveSegment(points, i)
     d += ` C ${px(c1)}, ${px(c2)}, ${px(p2)}`
   }
   return d
 }
 
-// Output multiplier for a raw pressure reading, both in [0, 1]. The segment's
-// x(t) is monotonic (control xs lie between the endpoints), so binary search.
+/** Output multiplier for a raw pressure reading, both in [0, 1]. */
 export function samplePressureCurve(
   points: PressureCurvePoint[],
   pressure: number
 ) {
-  if (points.length < 2) return clamp(pressure, 0, 1)
-  const x = clamp(pressure, 0, 1)
-  let i = 0
-  while (i < points.length - 2 && points[i + 1].x < x) i++
-  const { p1, c1, c2, p2 } = segmentControls(points, i)
-  let lo = 0
-  let hi = 1
-  for (let k = 0; k < 24; k++) {
-    if (cubicBezier(p1.x, c1.x, c2.x, p2.x, (lo + hi) / 2) < x) {
-      lo = (lo + hi) / 2
-    } else {
-      hi = (lo + hi) / 2
-    }
-  }
-  return clamp(cubicBezier(p1.y, c1.y, c2.y, p2.y, (lo + hi) / 2), 0, 1)
+  return sampleCurve(points, pressure)
 }
 
 const pressureCurveVariants = cva("flex w-full flex-col", {

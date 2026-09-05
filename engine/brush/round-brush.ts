@@ -2,9 +2,14 @@ import { decodeTransfer, srgbToWorking } from "../color/display-transform"
 import type { LinearColor } from "../doc/tiled-layer"
 
 /**
- * The one brush that exists so far: a plain round dab at fixed size and
- * opacity. Expressiveness — pressure, tilt, tip textures, the dynamics graph
- * (D23, D24) — arrives in later tickets and reads these as its defaults.
+ * The defaults the round brush is built from, and the ink every stroke is
+ * drawn in.
+ *
+ * A brush proper is data — see `brush.ts`, which assembles these into
+ * `DEFAULT_BRUSH` — and what it does with pressure and tilt is the dynamics
+ * graph's business (D23). These are only the numbers a brush starts at, kept
+ * apart because the renderer needs the ink and the feather before any brush
+ * has been chosen.
  */
 
 /** Dab radius in canvas pixels. */
@@ -16,8 +21,6 @@ export const BRUSH_RADIUS = 6
  * enough that a frame's worth of stamps stays a small draw.
  */
 export const BRUSH_SPACING_RATIO = 0.25
-
-export const BRUSH_SPACING = BRUSH_RADIUS * 2 * BRUSH_SPACING_RATIO
 
 /** Softness of the dab edge, in pixels of falloff inside the rim. */
 export const BRUSH_FEATHER = 1

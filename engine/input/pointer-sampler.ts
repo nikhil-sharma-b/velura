@@ -15,7 +15,14 @@ import type { SampleBuffer } from "./sample-buffer"
 
 export interface StrokeHandlers {
   /** The pen went down, in canvas backing-store pixels. */
-  begin(x: number, y: number, pressure: number): void
+  begin(
+    x: number,
+    y: number,
+    pressure: number,
+    tiltX: number,
+    tiltY: number,
+    time: number
+  ): void
   /** The pen lifted or the stroke was cancelled. */
   end(): void
 }
@@ -35,6 +42,11 @@ export function attachPointerSampler(
   let originY = 0
   let scaleX = 1
   let scaleY = 1
+  // Timestamps are made relative to the pen going down. The document clock
+  // runs to millions of milliseconds on a long session, and the ring stores
+  // samples as float32: an absolute reading would lose the sub-millisecond
+  // resolution that a velocity mapping is derived from.
+  let strokeStart = 0
 
   function measure() {
     const bounds = canvas.getBoundingClientRect()
@@ -49,8 +61,24 @@ export function attachPointerSampler(
   const canvasX = (event: PointerEvent) => (event.clientX - originX) * scaleX
   const canvasY = (event: PointerEvent) => (event.clientY - originY) * scaleY
 
+  /**
+   * Force, or a full press from a device that cannot report one. Whether
+   * there is a sensor is a fact about the device, so it is decided here and
+   * once — a pen that genuinely reports zero as it lands must keep its zero,
+   * or the taper a pressure mapping draws is inverted at both ends.
+   */
+  const canvasPressure = (event: PointerEvent) =>
+    event.pointerType === "mouse" ? 1 : event.pressure
+
   function record(event: PointerEvent) {
-    buffer.push(canvasX(event), canvasY(event), event.pressure)
+    buffer.push(
+      canvasX(event),
+      canvasY(event),
+      canvasPressure(event),
+      event.tiltX,
+      event.tiltY,
+      event.timeStamp - strokeStart
+    )
   }
 
   function onPointerDown(event: PointerEvent) {
@@ -58,11 +86,26 @@ export function attachPointerSampler(
     activePointer = event.pointerId
     // Capture keeps the stroke alive when the pen leaves the canvas, so a
     // gesture that overshoots the edge still ends where the pen lifted.
-    canvas.setPointerCapture(event.pointerId)
+    // Capture throws for a pointer the browser no longer considers active,
+    // and losing it is not a reason to lose the stroke: without it the stroke
+    // simply ends where the pen leaves the canvas.
+    try {
+      canvas.setPointerCapture(event.pointerId)
+    } catch {
+      // Left uncaptured on purpose.
+    }
     measure()
     event.preventDefault()
     buffer.clear()
-    handlers.begin(canvasX(event), canvasY(event), event.pressure)
+    strokeStart = event.timeStamp
+    handlers.begin(
+      canvasX(event),
+      canvasY(event),
+      canvasPressure(event),
+      event.tiltX,
+      event.tiltY,
+      0
+    )
   }
 
   function onPointerUpdate(event: PointerEvent) {
