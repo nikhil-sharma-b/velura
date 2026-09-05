@@ -27,6 +27,7 @@ import {
   activeLayer,
   addLayer,
   createDocument,
+  duplicateLayer,
   type Layer,
   type LayerPatch,
   moveLayer,
@@ -48,6 +49,8 @@ import {
 import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
 import { attachPointerSampler } from "./input/pointer-sampler"
 import { createSampleBuffer } from "./input/sample-buffer"
+
+export { blendModes, type BlendMode } from "./shaders/blend-modes"
 
 /**
  * Two frames of the fastest plausible pen (240 Hz) plus slack. Overrunning
@@ -92,6 +95,8 @@ export type EngineCommand =
     }
   /** Adds an empty layer above the active one and selects it. */
   | { type: "addLayer" }
+  /** Copies a layer's pixels and settings above it, then selects the copy. */
+  | { type: "duplicateLayer"; id: string }
   /** Removes a layer. The document always keeps at least one. */
   | { type: "removeLayer"; id: string }
   /** Chooses where the pen paints, which is what the caches are built around. */
@@ -830,6 +835,13 @@ export function createEngine(
         }
         case "addLayer":
           addLayer(requireDocument())
+          applyLayerChange()
+          break
+        case "duplicateLayer":
+          renderer?.duplicateLayer(
+            command.id,
+            duplicateLayer(requireDocument(), command.id)
+          )
           applyLayerChange()
           break
         case "removeLayer":

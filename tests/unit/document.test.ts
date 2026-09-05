@@ -4,6 +4,7 @@ import {
   cacheKey,
   compositionKey,
   createDocument,
+  duplicateLayer,
   moveLayer,
   planComposite,
   removeLayer,
@@ -44,6 +45,37 @@ describe("the layer tree", () => {
     addLayer(doc)
     addLayer(doc)
     expect(order(doc)).toEqual(["Layer 1", "Layer 2", "Layer 3"])
+  })
+
+  test("duplicating a layer copies its pixels and settings into an independent layer", () => {
+    const doc = document()
+    const original = doc.layers[0]
+    setLayer(doc, original.id, {
+      name: "Ink",
+      opacity: 0.4,
+      visible: false,
+      locked: true,
+      blend: "multiply",
+    })
+
+    const copyId = duplicateLayer(doc, original.id)
+    const copy = doc.layers[1]
+
+    expect(copy).toMatchObject({
+      id: copyId,
+      name: "Ink copy",
+      opacity: 0.4,
+      visible: false,
+      locked: true,
+      blend: "multiply",
+    })
+    expect(doc.activeLayerId).toBe(copyId)
+    expect(Array.from(copy.surface.readPixel(10, 10))).toEqual(
+      Array.from(original.surface.readPixel(10, 10))
+    )
+
+    copy.surface.fillRect({ x: 60, y: 20, width: 1, height: 1 }, [1, 0, 0, 1])
+    expect(Array.from(original.surface.readPixel(60, 20))).toEqual([0, 0, 0, 0])
   })
 
   test("removing the active layer selects the one under it, and the last cannot go", () => {

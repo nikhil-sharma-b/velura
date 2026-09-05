@@ -2,7 +2,11 @@ import type { BlendMode } from "../shaders/blend-modes"
 export type { BlendMode } from "../shaders/blend-modes"
 
 import { seedScene } from "./scene"
-import { createTiledLayer, type TiledLayer } from "./tiled-layer"
+import {
+  cloneTiledLayer,
+  createTiledLayer,
+  type TiledLayer,
+} from "./tiled-layer"
 
 /**
  * The document: an ordered stack of layers over a fixed pixel canvas (§4.1).
@@ -125,6 +129,21 @@ export function addLayer(doc: PaintDocument): string {
   doc.layers.splice(indexOf(doc, doc.activeLayerId) + 1, 0, layer)
   doc.activeLayerId = layer.id
   return layer.id
+}
+
+/** Places an independent pixel copy directly above its source and selects it. */
+export function duplicateLayer(doc: PaintDocument, id: string): string {
+  const sourceIndex = indexOf(doc, id)
+  const source = doc.layers[sourceIndex]
+  const copy = {
+    ...source,
+    id: `layer-${++nextId}`,
+    name: `${source.name} copy`,
+    surface: cloneTiledLayer(source.surface),
+  }
+  doc.layers.splice(sourceIndex + 1, 0, copy)
+  doc.activeLayerId = copy.id
+  return copy.id
 }
 
 export function removeLayer(doc: PaintDocument, id: string): void {

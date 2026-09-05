@@ -76,6 +76,8 @@ export interface Renderer {
    * layers cost nothing.
    */
   uploadLayer(id: string, surface: TiledLayer): void
+  /** Copies the authoritative GPU pixels into a new independent layer. */
+  duplicateLayer(sourceId: string, copyId: string): void
   /** Frees a removed layer's storage. */
   releaseLayer(id: string): void
   /**
@@ -791,6 +793,20 @@ export function createRenderer(
       // cache, and the cache was flattened before they existed.
       composition = undefined
       cachedFrom = undefined
+    },
+    duplicateLayer(sourceId, copyId) {
+      const source = surfaces.get(sourceId)
+      // An absent surface is an empty layer, which should stay allocation-free.
+      if (!source) return
+      const copy = ensureSurface(copyId)
+      const encoder = device.createCommandEncoder()
+      encoder.copyTextureToTexture(
+        { texture: source.texture },
+        { texture: copy.texture },
+        { width, height }
+      )
+      device.queue.submit([encoder.finish()])
+      copy.empty = source.empty
     },
     releaseLayer(id) {
       surfaces.get(id)?.texture.destroy()

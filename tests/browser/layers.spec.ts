@@ -153,6 +153,37 @@ test("a locked layer refuses the pen", async ({ page }) => {
   expect(channel(after, IN_GREEN, 0)).toBe(channel(before, IN_GREEN, 0))
 })
 
+test("duplicating a painted layer copies its committed pixels", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const sourceId = await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "addLayer" })
+    return window.engine.getSnapshot().activeLayerId
+  })
+  await paintThroughGreen(page, origin)
+  const sourceVisible = await painted(page)
+
+  const copyId = await page.evaluate(async (id) => {
+    await window.engine.dispatch({ type: "duplicateLayer", id })
+    return window.engine.getSnapshot().activeLayerId
+  }, sourceId)
+  await page.evaluate(
+    ([source, copy]) =>
+      Promise.all([
+        window.engine.dispatch({
+          type: "setLayer",
+          id: source,
+          visible: false,
+        }),
+        window.engine.dispatch({ type: "selectLayer", id: copy }),
+      ]),
+    [sourceId, copyId]
+  )
+
+  expect((await painted(page)).data).toEqual(sourceVisible.data)
+})
+
 /**
  * Counts render passes while the page runs one of the harness's own routines.
  * The claim in D19 is about how much work a frame is, so it is checked by

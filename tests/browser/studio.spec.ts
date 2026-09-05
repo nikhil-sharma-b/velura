@@ -37,6 +37,65 @@ test("canvas fills the viewport and follows window and density changes", async (
   })
 })
 
+test("the layer panel manages the stack and explains locked painting", async ({
+  page,
+}) => {
+  await page.goto("/")
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+
+  const layers = page.getByRole("region", { name: "Layers" })
+  await expect(layers.getByText("Layer 1")).toBeVisible()
+  await layers.getByRole("button", { name: "Add layer" }).click()
+  await expect(layers.getByText("Layer 2")).toBeVisible()
+
+  await layers.getByText("Layer 2").dblclick()
+  const name = layers.getByRole("textbox", { name: "Layer name" })
+  await name.fill("Highlights")
+  await name.press("Enter")
+  await expect(layers.getByText("Highlights")).toBeVisible()
+
+  await layers.getByRole("button", { name: "Duplicate Highlights" }).click()
+  await expect(layers.getByText("Highlights copy")).toBeVisible()
+  await layers.getByRole("button", { name: "Hide Highlights copy" }).click()
+  await expect(
+    layers.getByRole("button", { name: "Show Highlights copy" })
+  ).toBeVisible()
+
+  await layers.getByRole("button", { name: "Lock Highlights copy" }).click()
+  await page.getByRole("img", { name: "Drawing canvas" }).click({
+    position: { x: 400, y: 300 },
+  })
+  await expect(page.getByRole("status")).toContainText(
+    "Highlights copy is locked"
+  )
+
+  const opacity = layers.getByRole("slider", { name: "Layer opacity" })
+  await opacity.press("End")
+  for (let step = 0; step < 45; step++) await opacity.press("ArrowLeft")
+  await expect(layers.getByText("55%")).toBeVisible()
+  await layers.getByRole("combobox", { name: "Blend mode" }).click()
+  await page.getByRole("option", { name: "Multiply" }).click()
+
+  const copy = layers.getByTestId("layer-row-Highlights copy")
+  const original = layers.getByTestId("layer-row-Highlights")
+  await copy.dragTo(original)
+  await expect(layers.locator("[data-layer-row]").first()).toHaveAttribute(
+    "data-testid",
+    "layer-row-Highlights"
+  )
+
+  await layers.getByRole("button", { name: "Delete Highlights copy" }).click()
+  await expect(layers.getByText("Highlights copy")).toHaveCount(0)
+
+  await page.getByRole("button", { name: "Collapse panels" }).click()
+  await expect(layers).toBeHidden()
+  await page.getByRole("button", { name: "Expand panels" }).click()
+  await expect(layers).toBeVisible()
+})
+
 test("missing WebGPU explains browser requirements", async ({ page }) => {
   await page.addInitScript(() =>
     Object.defineProperty(navigator, "gpu", { value: undefined })

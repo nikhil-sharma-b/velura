@@ -1,15 +1,29 @@
 "use client"
 
+import {
+  EraserIcon,
+  HandIcon,
+  LockIcon,
+  MagnifyingGlassIcon,
+  PaintBrushIcon,
+  SidebarSimpleIcon,
+} from "@phosphor-icons/react"
 import { useCallback, useState, useSyncExternalStore } from "react"
+
+import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { createEngine, type Engine, INITIAL_SNAPSHOT } from "@/engine"
+
+import { LayerPanel } from "./layer-panel"
 
 const getInitialSnapshot = () => INITIAL_SNAPSHOT
 const subscribeToNothing = () => () => {}
 
 export function CanvasHost() {
   const [engine, setEngine] = useState<Engine | null>(null)
+  const [panelsOpen, setPanelsOpen] = useState(true)
+  const [paintNotice, setPaintNotice] = useState<string | null>(null)
   const snapshot = useSyncExternalStore(
     engine?.subscribe ?? subscribeToNothing,
     engine?.getSnapshot ?? getInitialSnapshot,
@@ -64,31 +78,105 @@ export function CanvasHost() {
         ref={attach}
         role="img"
         aria-label="Drawing canvas"
+        onPointerDown={() => {
+          const selected = snapshot.layers.find(
+            (layer) => layer.id === snapshot.activeLayerId
+          )
+          if (selected?.locked)
+            setPaintNotice(`${selected.name} is locked. Unlock it to paint.`)
+        }}
         // Touch and pen gestures belong to the stroke, not to the scroller.
         className="block h-full w-full touch-none"
       />
       {snapshot.status === "ready" && (
-        <div className="absolute bottom-6 left-6 w-56 space-y-2 rounded-lg border bg-background/80 p-4 backdrop-blur">
-          <div className="flex items-baseline justify-between">
-            <Label id="smoothing-label">Smoothing</Label>
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {Math.round(snapshot.stabilization * 100)}%
-            </span>
+        <>
+          <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-full border bg-background/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
+            Untitled artwork
           </div>
-          <Slider
-            aria-labelledby="smoothing-label"
-            min={0}
-            max={100}
-            step={1}
-            value={[Math.round(snapshot.stabilization * 100)]}
-            onValueChange={([percent]) =>
-              void engine?.dispatch({
-                type: "setStabilization",
-                strength: percent / 100,
-              })
-            }
-          />
-        </div>
+          <div className="absolute top-1/2 left-3 flex -translate-y-1/2 flex-col gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl">
+            <Button
+              size="icon"
+              aria-label="Brush tool"
+              aria-pressed="true"
+              className="rounded-lg"
+            >
+              <PaintBrushIcon />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Eraser tool"
+              className="rounded-lg"
+            >
+              <EraserIcon />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Hand tool"
+              className="rounded-lg"
+            >
+              <HandIcon />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Zoom tool"
+              className="rounded-lg"
+            >
+              <MagnifyingGlassIcon />
+            </Button>
+          </div>
+
+          <div className="absolute bottom-3 left-3 w-56 space-y-2 rounded-xl border bg-background/88 p-3 shadow-lg backdrop-blur-xl">
+            <div className="flex items-baseline justify-between">
+              <Label id="smoothing-label">Smoothing</Label>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {Math.round(snapshot.stabilization * 100)}%
+              </span>
+            </div>
+            <Slider
+              aria-labelledby="smoothing-label"
+              min={0}
+              max={100}
+              step={1}
+              value={[Math.round(snapshot.stabilization * 100)]}
+              onValueChange={([percent]) =>
+                void engine?.dispatch({
+                  type: "setStabilization",
+                  strength: percent / 100,
+                })
+              }
+            />
+          </div>
+
+          {engine && panelsOpen && (
+            <aside className="absolute top-3 right-3 bottom-3 flex w-72 flex-col overflow-hidden rounded-xl border bg-background/88 shadow-xl backdrop-blur-xl">
+              <LayerPanel engine={engine} snapshot={snapshot} />
+            </aside>
+          )}
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label={panelsOpen ? "Collapse panels" : "Expand panels"}
+            onClick={() => setPanelsOpen((open) => !open)}
+            className={`absolute top-3 rounded-lg bg-background/88 shadow-md backdrop-blur-xl transition-[right] ${
+              panelsOpen ? "right-[18.75rem]" : "right-3"
+            }`}
+          >
+            <SidebarSimpleIcon />
+          </Button>
+
+          {paintNotice && (
+            <div
+              role="status"
+              className="absolute bottom-5 left-1/2 -translate-x-1/2 rounded-lg border border-brand-gold/40 bg-background/95 px-4 py-2 text-sm shadow-lg"
+            >
+              <LockIcon className="mr-2 inline size-4 text-brand-gold" />
+              {paintNotice}
+            </div>
+          )}
+        </>
       )}
       {snapshot.status !== "ready" && (
         <div className="absolute inset-0 grid place-items-center bg-background p-6">

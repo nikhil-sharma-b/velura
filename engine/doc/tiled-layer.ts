@@ -43,9 +43,29 @@ export function createTiledLayer(size: {
   width: number
   height: number
 }): TiledLayer {
+  return createTiledLayerFromTiles(size, [])
+}
+
+/** Copies sparse pixel storage so duplicated layers can diverge safely. */
+export function cloneTiledLayer(source: TiledLayer): TiledLayer {
+  return createTiledLayerFromTiles(
+    { width: source.width, height: source.height },
+    source.tiles()
+  )
+}
+
+function createTiledLayerFromTiles(
+  size: { width: number; height: number },
+  initialTiles: readonly Tile[]
+): TiledLayer {
   const { width, height } = size
   const canvas: PixelRect = { x: 0, y: 0, width, height }
-  const tiles = new Map<string, Tile>()
+  const tiles = new Map<string, Tile>(
+    initialTiles.map((tile) => [
+      tileKey(tile.x, tile.y),
+      { x: tile.x, y: tile.y, texels: new Uint16Array(tile.texels) },
+    ])
+  )
   const dirty = createDirtyRegion()
 
   function allocate(coord: TileCoord): Tile {
