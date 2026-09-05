@@ -12,8 +12,14 @@ import {
   TILE_SIZE,
   tileBounds,
 } from "../doc/tile-grid"
-import { cacheKey, compositionKey, type CompositePlan } from "../doc/document"
+import {
+  cacheKey,
+  compositionKey,
+  type CompositePlan,
+  type CompositeItem,
+} from "../doc/document"
 import type { TiledLayer } from "../doc/tiled-layer"
+import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
 import { stampShader } from "../shaders/stamp"
 import { surfaceCompositeShader } from "../shaders/surface-composite"
@@ -137,17 +143,47 @@ export function createRenderer(
     feather: number
   }
 ): Renderer {
-  const shader = device.createShaderModule({ code: displayTransformShader })
-  const pipeline = device.createRenderPipeline({
-    layout: "auto",
-    vertex: { module: shader, entryPoint: "vertexMain" },
-    fragment: {
-      module: shader,
-      entryPoint: "fragmentMain",
-      targets: [{ format: options.format }],
-    },
-    primitive: { topology: "triangle-list" },
-  })
+  const presentPipelines = new Map<BlendMode, GPURenderPipeline>()
+  function presentPipeline(mode: BlendMode): GPURenderPipeline {
+    const existing = presentPipelines.get(mode)
+    if (existing) return existing
+    const shader = device.createShaderModule({
+      code: displayTransformShader(mode),
+    })
+    const pipeline = device.createRenderPipeline({
+      label: `present:${mode}`,
+      layout: "auto",
+      vertex: { module: shader, entryPoint: "vertexMain" },
+      fragment: {
+        module: shader,
+        entryPoint: "fragmentMain",
+        targets: [{ format: options.format }],
+      },
+      primitive: { topology: "triangle-list" },
+    })
+    presentPipelines.set(mode, pipeline)
+    return pipeline
+  }
+  let pipeline: GPURenderPipeline
+  const blendPipelines = new Map<BlendMode, GPURenderPipeline>()
+  function blendPipeline(mode: BlendMode): GPURenderPipeline {
+    const existing = blendPipelines.get(mode)
+    if (existing) return existing
+    const shader = device.createShaderModule({ code: blendShader(mode) })
+    const pipeline = device.createRenderPipeline({
+      label: `blend:${mode}`,
+      layout: "auto",
+      vertex: { module: shader, entryPoint: "vertexMain" },
+      fragment: {
+        module: shader,
+        entryPoint: "fragmentMain",
+        targets: [{ format: LAYER_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    })
+    blendPipelines.set(mode, pipeline)
+    return pipeline
+  }
 
   const uniform = device.createBuffer({
     size: UNIFORM_BYTES,
@@ -390,6 +426,12 @@ export function createRenderer(
   // when there is nothing on that side, which is a document of one layer.
   let below: Surface | undefined
   let above: Surface | undefined
+  // Blend modes above the pen depend on its live pixels and cannot be flattened
+  // independently. Normal-only upper stacks retain the constant-cost path.
+  let liveAbove: CompositeItem[] = []
+  let activeItem: CompositeItem | undefined
+  let blendScratch: Surface | undefined
+  let frame: Surface | undefined
   let active: Surface | undefined
   let presentBindGroup: GPUBindGroup | undefined
   /** The plan in force. Undefined forces the next one to be applied in full. */
@@ -414,6 +456,7 @@ export function createRenderer(
   const SURFACE_USAGE =
     GPUTextureUsage.TEXTURE_BINDING |
     GPUTextureUsage.COPY_DST |
+    GPUTextureUsage.COPY_SRC |
     GPUTextureUsage.RENDER_ATTACHMENT
 
   function createSurface(): Surface {
@@ -496,13 +539,55 @@ export function createRenderer(
     destination.empty = false
   }
 
+  /** Snapshot the destination: WebGPU cannot sample a render attachment. */
+  function blendSurface(
+    source: Surface,
+    destination: Surface,
+    item: Pick<CompositeItem, "opacity" | "blend">,
+    inFlight = false
+  ) {
+    blendScratch ??= createSurface()
+    const pipeline = blendPipeline(item.blend)
+    const encoder = device.createCommandEncoder()
+    encoder.copyTextureToTexture(
+      { texture: destination.texture },
+      { texture: blendScratch.texture },
+      { width, height }
+    )
+    device.queue.writeBuffer(
+      compositeUniform,
+      0,
+      new Float32Array([item.opacity, inFlight ? strokeOpacity : 0])
+    )
+    const bindings = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: compositeUniform } },
+        { binding: 1, resource: source.view },
+        { binding: 2, resource: blendScratch.view },
+        { binding: 3, resource: inFlight ? stroke!.view : placeholderView },
+      ],
+    })
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: destination.view, loadOp: "load", storeOp: "store" },
+      ],
+    })
+    pass.setPipeline(pipeline)
+    pass.setBindGroup(0, bindings)
+    pass.draw(3)
+    pass.end()
+    device.queue.submit([encoder.finish()])
+    destination.empty = false
+  }
+
   /**
    * Flattens one side of the stack into its cache, allocating the cache only
    * if there is anything to put in it. Layers with no texture have never held
    * a pixel, so they are skipped rather than drawn as transparent.
    */
   function buildCache(
-    items: readonly { id: string; opacity: number }[],
+    items: readonly CompositeItem[],
     cache: Surface | undefined
   ): Surface | undefined {
     const drawable = items.filter((item) => surfaces.has(item.id))
@@ -513,7 +598,9 @@ export function createRenderer(
     const target = cache ?? createSurface()
     if (!target.empty) clearSurface(target)
     for (const item of drawable)
-      compositeSurface(surfaces.get(item.id)!, target, item.opacity)
+      if (item.blend === "normal")
+        compositeSurface(surfaces.get(item.id)!, target, item.opacity)
+      else blendSurface(surfaces.get(item.id)!, target, item)
     return target
   }
 
@@ -523,9 +610,9 @@ export function createRenderer(
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uniform } },
-        { binding: 1, resource: below?.view ?? placeholderView },
-        { binding: 2, resource: active.view },
-        { binding: 3, resource: stroke.view },
+        { binding: 1, resource: frame?.view ?? below?.view ?? placeholderView },
+        { binding: 2, resource: frame ? placeholderView : active.view },
+        { binding: 3, resource: frame ? placeholderView : stroke.view },
         { binding: 4, resource: above?.view ?? placeholderView },
       ],
     })
@@ -635,6 +722,12 @@ export function createRenderer(
       stroke?.texture.destroy()
       below?.texture.destroy()
       above?.texture.destroy()
+      blendScratch?.texture.destroy()
+      frame?.texture.destroy()
+      blendScratch = undefined
+      frame = undefined
+      liveAbove = []
+      activeItem = undefined
       below = undefined
       above = undefined
       active = undefined
@@ -715,11 +808,21 @@ export function createRenderer(
       // Flattening is the expensive half, and most plans do not change what
       // goes into it: fading the active layer or selecting nothing new leaves
       // both caches exactly as they are.
+      activeItem = { ...plan.active }
+      liveAbove = plan.above.some((item) => item.blend !== "normal")
+        ? plan.above.map((item) => ({ ...item }))
+        : []
+      if (liveAbove.length) frame ??= createSurface()
+      else {
+        frame?.texture.destroy()
+        frame = undefined
+      }
+      pipeline = presentPipeline(frame ? "normal" : plan.active.blend)
       const caches = cacheKey(plan)
       if (caches !== cachedFrom) {
         cachedFrom = caches
         below = buildCache(plan.below, below)
-        above = buildCache(plan.above, above)
+        above = buildCache(frame ? [] : plan.above, above)
       }
       // The active layer is drawn into, so it needs storage whether or not it
       // has ever held a pixel.
@@ -727,7 +830,11 @@ export function createRenderer(
       device.queue.writeBuffer(
         uniform,
         ACTIVE_OPACITY_OFFSET,
-        new Float32Array([plan.active.opacity, below ? 1 : 0, above ? 1 : 0])
+        new Float32Array([
+          frame ? 0 : plan.active.opacity,
+          frame || below ? 1 : 0,
+          above ? 1 : 0,
+        ])
       )
       refreshPresentBindGroup()
     },
@@ -809,6 +916,15 @@ export function createRenderer(
     render(view) {
       if (!presentBindGroup)
         throw new Error("No composition has been set to present.")
+      if (frame) {
+        clearSurface(frame)
+        if (below) compositeSurface(below, frame, 1)
+        blendSurface(active!, frame, activeItem!, true)
+        for (const item of liveAbove) {
+          const source = surfaces.get(item.id)
+          if (source) blendSurface(source, frame, item)
+        }
+      }
       const encoder = device.createCommandEncoder()
       const pass = encoder.beginRenderPass({
         colorAttachments: [
@@ -832,6 +948,12 @@ export function createRenderer(
       stroke?.texture.destroy()
       below?.texture.destroy()
       above?.texture.destroy()
+      blendScratch?.texture.destroy()
+      frame?.texture.destroy()
+      blendScratch = undefined
+      frame = undefined
+      liveAbove = []
+      activeItem = undefined
       stroke = undefined
       below = undefined
       above = undefined

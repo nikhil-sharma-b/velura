@@ -204,9 +204,11 @@ Cached above/below (D19):
 
 Caches rebuild when layer selection, order, visibility, opacity, blend mode, or clipping changes — not when pixels change on the active layer. Clipping masks and groups are resolved during cache construction.
 
+Ticket 09 correction to D19: an above cache is valid only when all contributing upper layers use Normal. Other modes depend on the changing backdrop and cannot be represented by one RGBA image independent of the active layer (Overlay is a direct counterexample). In that case the below cache still stays fixed, but the renderer composites the active layer and replays the upper stack each frame into a reusable float surface. This path costs one pass per upper layer; the Normal-only path remains independent of layer count. A future transfer-function cache could optimize selected modes, but must preserve this backdrop dependency.
+
 ### 6.4 Blend modes
 
-Generated pipeline per mode (D20), from shared WGSL snippets. Separable modes first (Normal, Multiply, Screen, Overlay, Darken, Lighten, Color Dodge, Color Burn, Hard Light, Soft Light, Difference, Exclusion, Add, Subtract); non-separable modes (Hue, Saturation, Color, Luminosity) as a second batch, since they need the full HSL/luminosity math.
+Generated pipeline per mode (D20), from shared `.wgsl` snippets expanded by a small include/define preprocessor. Pipelines are cached per renderer and created on first use. The layer stack is isolated: transparent document pixels do not blend with the display-only canvas background. Opacity scales premultiplied RGBA before source-over composition; colour is unpremultiplied only inside the blend operation. Add clamps the channel sum at one; Subtract clamps backdrop minus source at zero. Separable modes first (Normal, Multiply, Screen, Overlay, Darken, Lighten, Color Dodge, Color Burn, Hard Light, Soft Light, Difference, Exclusion, Add, Subtract); non-separable modes (Hue, Saturation, Color, Luminosity) as a second batch, since they need the full HSL/luminosity math.
 
 ---
 
@@ -362,6 +364,8 @@ WGSL lives in `.wgsl` files under `engine/shaders/`, assembled by a small (~40 l
 ## 11. Testing (D36)
 
 **Criterion for what may be tested directly:** contract stability under the planned rewrites — not function purity, and not whether the contract is externally defined. The Worker migration changes transport, atlas eviction changes storage, and compute-shader brushes change how stamp parameters are consumed rather than how they are computed. Anything all three leave untouched can be tested as a function; anything needing a `GPUDevice` goes through the engine facade, because that is precisely where the rewrites land.
+
+GPU command behaviour stays covered through the engine facade. A narrow exception is the existing renderer-probe harness: deterministic pixel fixtures and stroke-buffer operations that the current command API cannot express may exercise the renderer directly, with companion facade tests for the corresponding public commands. These probes remain test-only and must not introduce fixture-loading production APIs. The blend probe uses this exception for fixed float-colour/alpha layer pairs; facade tests cover blend settings, snapshots, opacity and layer selection.
 
 | Layer | Approach |
 |---|---|

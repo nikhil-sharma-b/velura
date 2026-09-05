@@ -1,3 +1,4 @@
+import { openBlendProbe, type BlendProbe } from "./blend-probe"
 import {
   buildLayerStack,
   clientMapper,
@@ -44,6 +45,8 @@ type StrokeBufferProbe = {
 
 declare global {
   interface Window {
+    openBlendProbe: typeof openBlendProbe
+    blendProbe: BlendProbe
     engine: Engine
     remountEngine(): void
     /** Snapshot notifications counted by the stroke tests. */
@@ -59,6 +62,8 @@ declare global {
     markActiveLayer(): Promise<void>
   }
 }
+
+window.openBlendProbe = openBlendProbe
 
 const canvas = document.querySelector("canvas")!
 window.engine = createEngine(canvas)

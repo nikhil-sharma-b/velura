@@ -289,3 +289,48 @@ test("the caches rebuild on structure and not on paint", async ({ page }) => {
   })
   expect(fadingActive).toBeLessThan(restructuring)
 })
+
+test("blend commands update snapshots and pixels through the engine facade", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const scene = await painted(page)
+  await page.evaluate(() => window.engine.dispatch({ type: "addLayer" }))
+  await paintThroughGreen(page, origin)
+  const normal = await painted(page)
+  expect(channel(normal, IN_GREEN, 0)).toBeGreaterThan(200)
+
+  const state = await page.evaluate(async () => {
+    const { activeLayerId: id } = window.engine.getSnapshot()
+    await window.engine.dispatch({
+      type: "setLayer",
+      id,
+      blend: "multiply",
+      opacity: 0.5,
+    })
+    return window.engine.getSnapshot()
+  })
+  expect(state.layers[1]).toMatchObject({ blend: "multiply", opacity: 0.5 })
+  const multiplied = await painted(page)
+  // The light neutral ink cannot turn green into white under Multiply.
+  expect(channel(multiplied, IN_GREEN, 0)).toBe(channel(scene, IN_GREEN, 0))
+  expect(channel(multiplied, IN_GREEN, 1)).toBeGreaterThan(200)
+  await page.evaluate(
+    (id) => window.engine.dispatch({ type: "selectLayer", id }),
+    state.layers[0].id
+  )
+  const selectedBelow = await painted(page)
+  expect(selectedBelow.data).toEqual(multiplied.data)
+  await page.evaluate(
+    (id) =>
+      window.engine.dispatch({
+        type: "setLayer",
+        id,
+        blend: "normal",
+        opacity: 1,
+      }),
+    state.layers[1].id
+  )
+  const restored = await painted(page)
+  expect(restored.data).toEqual(normal.data)
+})

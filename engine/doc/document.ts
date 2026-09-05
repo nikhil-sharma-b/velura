@@ -1,3 +1,6 @@
+import type { BlendMode } from "../shaders/blend-modes"
+export type { BlendMode } from "../shaders/blend-modes"
+
 import { seedScene } from "./scene"
 import { createTiledLayer, type TiledLayer } from "./tiled-layer"
 
@@ -10,14 +13,10 @@ import { createTiledLayer, type TiledLayer } from "./tiled-layer"
  * is what makes the cached compositor (D19) possible at all: a plan that
  * cannot mention pixels cannot be invalidated by painting.
  *
- * Groups, masks and the rest of the tree arrive with ticket 11, and blend
- * modes past `normal` with ticket 09. Both are already carried through the
- * plan and the composition key, so adding them rebuilds the caches without
- * touching this seam.
+ * Groups, masks and the rest of the tree arrive with ticket 11. Blend modes
+ * are carried through the plan and composition key, so changing them rebuilds
+ * the affected caches without touching this seam.
  */
-
-/** Separable blend modes (D20) land in ticket 09; the field exists now. */
-export type BlendMode = "normal"
 
 export type Layer = {
   readonly id: string
@@ -52,9 +51,9 @@ export type CompositeItem = {
 }
 
 /**
- * The frame, as the compositor sees it. Everything under the active layer is
- * one flattened cache and everything over it is another, so a frame costs a
- * constant number of texture reads however deep the stack is (D19).
+ * The frame, as the compositor sees it. Below is flattened once; above may
+ * also be flattened when every mode is Normal. Backdrop-dependent upper
+ * layers must instead be applied to the live active layer in order (D19).
  */
 export type CompositePlan = {
   below: CompositeItem[]
