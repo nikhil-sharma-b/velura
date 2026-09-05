@@ -21,11 +21,12 @@ import {
  * Grain and tip textures (D24) are referenced by id, never embedded: the
  * texture is an asset, the brush is the recipe.
  *
- * The sections architecture 7.1 names but that nothing renders yet — grain,
- * scatter, and the blend mode — are deliberately absent rather than present
- * and ignored: they arrive with the renderers that read them (D24, D20), and
- * a field no code consumes is a field nothing keeps honest. The dynamics
- * graph already carries their targets, so adding them is additive.
+ * The sections architecture 7.1 names but that nothing renders yet — scatter,
+ * the blend mode, and grain movement, which belongs with the view matrix that
+ * navigation brings (D28) — are deliberately absent rather than present and
+ * ignored: they arrive with the renderers that read them (D20), and a field
+ * no code consumes is a field nothing keeps honest. The dynamics graph
+ * already carries their targets, so adding them is additive.
  */
 
 export type BrushShape = {
@@ -43,6 +44,24 @@ export type BrushShape = {
   tipTextureId?: string
 }
 
+/**
+ * The paper the brush draws on (D24).
+ *
+ * Grain is sampled in canvas space, so it belongs to the surface rather than
+ * to the dab: the same pixel is bitten the same way however the brush passed
+ * over it. `scale` stretches the texture across the canvas and `depth` says
+ * how much of the mark the paper is allowed to take away, which is what the
+ * dynamics graph's `grainDepth` target scales per dab.
+ */
+export type BrushGrain = {
+  /** Greyscale grain texture, sampled in canvas space (D24). */
+  textureId: string
+  /** Size of one tile of the texture, as a multiple of its own pixels. */
+  scale: number
+  /** How strongly the paper bites, in [0, 1]. Zero is a smooth surface. */
+  depth: number
+}
+
 export type BrushRendering = {
   /** Whether dabs within a stroke take the maximum or accumulate (D27). */
   accumulation: Accumulation
@@ -57,6 +76,8 @@ export type Brush = {
   id: string
   name: string
   shape: BrushShape
+  /** Absent means the brush lays ink on a perfectly smooth surface. */
+  grain?: BrushGrain
   rendering: BrushRendering
   /** Applied in order; see `evaluateDynamics`. */
   dynamics: Modulator[]

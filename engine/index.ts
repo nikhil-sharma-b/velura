@@ -1,5 +1,6 @@
 import {
   type Brush,
+  type BrushGrain,
   brushSpacing,
   cloneBrush,
   DEFAULT_BRUSH,
@@ -17,6 +18,7 @@ import {
   BRUSH_FEATHER,
 } from "./brush/round-brush"
 import { createStampContextTracker } from "./brush/stamp-context"
+import { createTextureLibrary } from "./brush/texture"
 import {
   chooseOutputColorSpace,
   type OutputColorSpace,
@@ -61,6 +63,17 @@ export type EngineCommand =
       radius?: number
       /** Stamp spacing as a fraction of the dab diameter. */
       spacing?: number
+      /** Width of the tip against its length, in (0, 1]. */
+      roundness?: number
+      /** Rotation of the tip, as a turn clockwise. */
+      angle?: number
+      /**
+       * Greyscale tip texture, by id (D24). Null restores the procedural disc,
+       * which is what makes the round brush reachable again from a textured one.
+       */
+      tipTextureId?: string | null
+      /** The paper, by texture id, with its scale and depth. Null is smooth. */
+      grain?: BrushGrain | null
       /** Replaces the dynamics graph outright; see `evaluateDynamics`. */
       dynamics?: Modulator[]
     }
@@ -116,6 +129,16 @@ export interface Engine {
   dispose(): void
 }
 
+/** A grain setting is input like any other brush field, so it is checked once. */
+function validateGrain(grain: BrushGrain): void {
+  if (typeof grain.textureId !== "string" || grain.textureId === "")
+    throw new Error("Grain must name a texture.")
+  if (!Number.isFinite(grain.scale) || grain.scale <= 0)
+    throw new Error("Grain scale must be positive.")
+  if (!Number.isFinite(grain.depth) || grain.depth < 0 || grain.depth > 1)
+    throw new Error("Grain depth must be a finite value in [0, 1].")
+}
+
 /** Canvas attachment is a lifecycle operation; commands contain only values. */
 export function createEngine(
   canvas: HTMLCanvasElement | OffscreenCanvas
@@ -139,6 +162,9 @@ export function createEngine(
   // inside a stroke: a frame of drawing still allocates nothing (D30).
   let resampler = createStrokeResampler(brushSpacing(DEFAULT_BRUSH))
   const dynamics = createStampContextTracker()
+  // Ids in a brush are resolved here, so the brush stays data and the pixels
+  // stay an asset (D24). Imported textures register into this same library.
+  const textures = createTextureLibrary()
   const params: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   // Evaluated once per stroke rather than per dab, so it is kept apart from
   // `params` instead of borrowing it and being overwritten by the first dab.
@@ -164,6 +190,9 @@ export function createEngine(
   // while any one mark stays reproducible — which is what lets a stroke be
   // replayed from the log identically (D26).
   let strokeSeed = 0
+  // What the renderer was last told the brush's textures are. Undefined means
+  // a renderer that has been told nothing, which a fresh one has not.
+  let appliedTextures: string | undefined
   let frame: number | undefined
   let detachSampler: (() => void) | undefined
   stabilizer.setStrength(DEFAULT_STABILIZATION)
@@ -263,7 +292,40 @@ export function createEngine(
     // Flow: the dab's own opacity, not the stroke's, which is applied once
     // when the buffer is composited (D27).
     stamps[offset + STAMP.OPACITY] = brush.rendering.flow * params.flow
+    // Angle offsets the brush's own rotation and roundness scales its own
+    // squash, which is what lets one dynamics list read the same on any tip.
+    stamps[offset + STAMP.ANGLE] = brush.shape.angle + params.angle
+    stamps[offset + STAMP.ROUNDNESS] = brush.shape.roundness * params.roundness
+    // The brush's own grain depth is in the uniform; this is what the graph
+    // does to it per dab, so a light touch can skim the paper (D24).
+    stamps[offset + STAMP.GRAIN_DEPTH] = params.grainDepth
     stampCount++
+  }
+
+  /**
+   * Hands the renderer the pixels behind the brush's texture ids. Called when
+   * the brush changes and when a renderer is created, since a renderer starts
+   * with no textures and the brush may already name some.
+   */
+  function applyBrushTextures() {
+    if (!renderer) return
+    const grain = brush.grain
+    // Uploading a texture and rebuilding a bind group is real work, and
+    // `setBrush` is what a dragged slider calls: a radius that changed must
+    // not re-upload the paper the brush was already drawing on.
+    const key = `${brush.shape.tipTextureId ?? ""}|${grain?.textureId ?? ""}|${grain?.scale ?? 1}|${grain?.depth ?? 0}`
+    if (key === appliedTextures) return
+    appliedTextures = key
+    renderer.setTip(
+      brush.shape.tipTextureId
+        ? (textures.get(brush.shape.tipTextureId) ?? null)
+        : null
+    )
+    renderer.setGrain(
+      grain ? (textures.get(grain.textureId) ?? null) : null,
+      grain?.scale ?? 1,
+      grain?.depth ?? 0
+    )
   }
 
   function flushStamps() {
@@ -465,6 +527,9 @@ export function createEngine(
         ink: BRUSH_COLOR,
         feather: BRUSH_FEATHER,
       })
+      // A new renderer holds no textures, whatever the brush was told before.
+      appliedTextures = undefined
+      applyBrushTextures()
       publish({ outputColorSpace: colorSpace })
       resize()
       render()
@@ -537,13 +602,45 @@ export function createEngine(
           for (const value of [command.radius, command.spacing])
             if (value !== undefined && (!Number.isFinite(value) || value <= 0))
               throw new Error("Brush radius and spacing must be positive.")
+          if (
+            command.roundness !== undefined &&
+            (!Number.isFinite(command.roundness) ||
+              command.roundness <= 0 ||
+              command.roundness > 1)
+          )
+            throw new Error("Brush roundness must be in (0, 1].")
+          if (command.angle !== undefined && !Number.isFinite(command.angle))
+            throw new Error("Brush angle must be finite.")
           if (command.dynamics) validateDynamics(command.dynamics)
+          // Textures are named, not carried, so a name that resolves to
+          // nothing is caught here rather than silently drawing untextured.
+          if (command.tipTextureId && !textures.get(command.tipTextureId))
+            throw new Error(
+              `No texture is registered as ${command.tipTextureId}.`
+            )
+          if (command.grain) {
+            validateGrain(command.grain)
+            if (!textures.get(command.grain.textureId))
+              throw new Error(
+                `No texture is registered as ${command.grain.textureId}.`
+              )
+          }
+          const grain =
+            command.grain === undefined
+              ? brush.grain
+              : (command.grain ?? undefined)
           const next: Brush = {
             ...brush,
             shape: {
               ...brush.shape,
               radius: command.radius ?? brush.shape.radius,
               spacing: command.spacing ?? brush.shape.spacing,
+              roundness: command.roundness ?? brush.shape.roundness,
+              angle: command.angle ?? brush.shape.angle,
+              tipTextureId:
+                command.tipTextureId === undefined
+                  ? brush.shape.tipTextureId
+                  : (command.tipTextureId ?? undefined),
             },
             rendering: {
               accumulation:
@@ -557,11 +654,16 @@ export function createEngine(
               ? structuredClone(command.dynamics)
               : brush.dynamics,
           }
+          // Absent rather than present-and-null, so a brush stays exactly the
+          // JSON it round-trips as (D23).
+          if (grain) next.grain = { ...grain }
+          else delete next.grain
           // Spacing is fixed for the life of a resampler, so a brush that
           // changes it needs a new one. Never mid-stroke: the pen is up.
           if (brushSpacing(next) !== brushSpacing(brush))
             resampler = createStrokeResampler(brushSpacing(next))
           brush = next
+          applyBrushTextures()
           publish({ brush: Object.freeze(cloneBrush(next)) })
           break
         }

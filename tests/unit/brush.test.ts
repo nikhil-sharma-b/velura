@@ -19,6 +19,7 @@ const PENCIL: Brush = {
     spacing: 0.1,
     tipTextureId: "graphite",
   },
+  grain: { textureId: "paper", scale: 1.5, depth: 0.7 },
   rendering: { accumulation: "buildup", opacity: 0.9, flow: 0.3 },
   dynamics: [
     {
@@ -74,7 +75,9 @@ describe("brush definition", () => {
     expect(copy).toEqual(PENCIL)
     copy.dynamics[0].range = [0, 0]
     copy.shape.radius = 99
+    copy.grain!.depth = 0
     expect(PENCIL.dynamics[0].range).toEqual([0.3, 1])
     expect(PENCIL.shape.radius).toBe(4)
+    expect(PENCIL.grain!.depth).toBe(0.7)
   })
 })

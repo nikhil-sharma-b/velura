@@ -1,4 +1,5 @@
 import type { Accumulation } from "../brush/round-brush"
+import type { GrayscaleTexture } from "../brush/texture"
 import {
   type ColorMatrix,
   type OutputColorSpace,
@@ -26,8 +27,17 @@ const BYTES_PER_TEXEL = TILE_CHANNELS * 2
 const UNIFORM_BYTES = 80
 /** Where the stroke opacity sits in that buffer: after matrix and background. */
 const STROKE_OPACITY_OFFSET = 64
-/** vec2 viewport, feather and padding, then one vec4 of ink. */
-const STAMP_UNIFORM_BYTES = 32
+/**
+ * vec2 viewport, feather and the tip flag, one vec4 of ink, then the grain's
+ * scale and depth padded out to the 16-byte alignment a uniform requires.
+ */
+const STAMP_UNIFORM_BYTES = 48
+/** Where the tip flag sits in that buffer: after the viewport and feather. */
+const USE_TIP_OFFSET = 12
+/** Where the grain's scale and depth sit: after the ink. */
+const GRAIN_OFFSET = 32
+/** Greyscale, because a tip is coverage and grain is how much gets through. */
+const TEXTURE_FORMAT: GPUTextureFormat = "r8unorm"
 /** One f32 of stroke opacity, padded to the minimum uniform binding size. */
 const COMPOSITE_UNIFORM_BYTES = 16
 /**
@@ -65,6 +75,17 @@ export interface Renderer {
    * changed nothing, if the stroke has outrun the log it replays from.
    */
   discardStamps(count: number): boolean
+  /**
+   * Sets the dab's shape: a greyscale tip texture sampled in stamp space, or
+   * the procedural feathered disc when there is none (D24).
+   */
+  setTip(texture: GrayscaleTexture | null): void
+  /**
+   * Sets the paper. `scale` sizes one tile of the texture against its own
+   * pixels and `depth` is how hard it bites, both fixed for a stroke; the
+   * dynamics graph varies the bite per dab on top of this.
+   */
+  setGrain(texture: GrayscaleTexture | null, scale: number, depth: number): void
   /** Composites the stroke buffer into the layer, once, at stroke opacity. */
   endStroke(): void
   render(view: GPUTextureView): void
@@ -143,6 +164,26 @@ export function createRenderer(
         visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
         buffer: { type: "uniform" },
       },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: "filtering" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: "filtering" },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      },
     ],
   })
   const stampPipelineLayout = device.createPipelineLayout({
@@ -172,6 +213,21 @@ export function createRenderer(
               {
                 shaderLocation: 2,
                 offset: STAMP.OPACITY * 4,
+                format: "float32",
+              },
+              {
+                shaderLocation: 3,
+                offset: STAMP.ANGLE * 4,
+                format: "float32",
+              },
+              {
+                shaderLocation: 4,
+                offset: STAMP.ROUNDNESS * 4,
+                format: "float32",
+              },
+              {
+                shaderLocation: 5,
+                offset: STAMP.GRAIN_DEPTH * 4,
                 format: "float32",
               },
             ],
@@ -214,10 +270,68 @@ export function createRenderer(
     primitive: { topology: "triangle-list" },
   })
 
+  /**
+   * A brush with no texture still has to bind one, so the shader can sample
+   * unconditionally: fully white is the identity for both. The tip is never
+   * read while `useTip` is zero, and white grain lets every dab through whole.
+   */
+  function createWhiteTexture(): GPUTexture {
+    const texture = device.createTexture({
+      size: { width: 1, height: 1 },
+      format: TEXTURE_FORMAT,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    })
+    device.queue.writeTexture(
+      { texture },
+      new Uint8Array([255]),
+      { bytesPerRow: 1 },
+      { width: 1, height: 1 }
+    )
+    return texture
+  }
+
+  function uploadTexture(source: GrayscaleTexture): GPUTexture {
+    const texture = device.createTexture({
+      size: { width: source.width, height: source.height },
+      format: TEXTURE_FORMAT,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    })
+    device.queue.writeTexture(
+      { texture },
+      source.data,
+      { bytesPerRow: source.width, rowsPerImage: source.height },
+      { width: source.width, height: source.height }
+    )
+    return texture
+  }
+
+  // Linear filtering on both: a tip is magnified well past its own resolution
+  // on a large dab, and grain is minified as the canvas zooms out.
+  const tipSampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+  })
+  const grainSampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+    addressModeU: "repeat",
+    addressModeV: "repeat",
+  })
+  let tipTexture = createWhiteTexture()
+  let grainTexture = createWhiteTexture()
+
   const stampUniform = device.createBuffer({
     size: STAMP_UNIFORM_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
+  // The parts of the stamp uniform that belong to the brush rather than to the
+  // surface: written once here so a brush that sets nothing still draws in ink
+  // on a smooth surface, and rewritten by `setTip` and `setGrain`.
+  device.queue.writeBuffer(
+    stampUniform,
+    0,
+    new Float32Array([1, 1, options.feather, 0, ...options.ink, 1, 0, 0, 0])
+  )
   const stampInstances = device.createBuffer({
     size: MAX_STAMPS_PER_DRAW * STAMP_STRIDE * 4,
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
@@ -267,6 +381,20 @@ export function createRenderer(
       painted.right = Math.max(painted.right, x + radius)
       painted.bottom = Math.max(painted.bottom, y + radius)
     }
+  }
+
+  /** Rebuilt whenever a texture is replaced: a bind group holds views, not ids. */
+  function refreshStampBindGroup() {
+    stampBindGroup = device.createBindGroup({
+      layout: stampBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: stampUniform } },
+        { binding: 1, resource: tipSampler },
+        { binding: 2, resource: grainSampler },
+        { binding: 3, resource: tipTexture.createView() },
+        { binding: 4, resource: grainTexture.createView() },
+      ],
+    })
   }
 
   /** Both passes that fade the stroke read its opacity from a uniform. */
@@ -365,17 +493,16 @@ export function createRenderer(
         format: LAYER_FORMAT,
         usage,
       })
+      // Only the viewport changes with a resize; the tip flag, the ink and the
+      // grain settings are the brush's and outlive it.
       device.queue.writeBuffer(
         stampUniform,
         0,
-        new Float32Array([width, height, options.feather, 0, ...options.ink])
+        new Float32Array([width, height, options.feather])
       )
       targetView = target.createView()
       strokeView = stroke.createView()
-      stampBindGroup = device.createBindGroup({
-        layout: stampBindGroupLayout,
-        entries: [{ binding: 0, resource: { buffer: stampUniform } }],
-      })
+      refreshStampBindGroup()
       compositeBindGroup = device.createBindGroup({
         layout: compositePipeline.getBindGroupLayout(0),
         entries: [
@@ -442,6 +569,32 @@ export function createRenderer(
       log.append(instances, count)
       growPainted(instances, count)
       drawStamps(instances, 0, count)
+    },
+    setTip(texture) {
+      tipTexture.destroy()
+      tipTexture = texture ? uploadTexture(texture) : createWhiteTexture()
+      device.queue.writeBuffer(
+        stampUniform,
+        USE_TIP_OFFSET,
+        new Float32Array([texture ? 1 : 0])
+      )
+      refreshStampBindGroup()
+    },
+    setGrain(texture, scale, depth) {
+      if (!Number.isFinite(scale) || scale <= 0)
+        throw new Error("Grain scale must be positive.")
+      if (!Number.isFinite(depth) || depth < 0 || depth > 1)
+        throw new Error("Grain depth must be a finite value in [0, 1].")
+      grainTexture.destroy()
+      grainTexture = texture ? uploadTexture(texture) : createWhiteTexture()
+      device.queue.writeBuffer(
+        stampUniform,
+        GRAIN_OFFSET,
+        // A brush with no grain texture keeps a depth of zero whatever it
+        // asked for: white paper bites nothing, and saying so is cheaper.
+        new Float32Array([scale, texture ? depth : 0])
+      )
+      refreshStampBindGroup()
     },
     discardStamps(count) {
       // Coverage blending forgets what a dab covered, so the tail comes off by
@@ -512,6 +665,8 @@ export function createRenderer(
       bindGroup = undefined
       stampBindGroup = undefined
       compositeBindGroup = undefined
+      tipTexture.destroy()
+      grainTexture.destroy()
       uniform.destroy()
       stampUniform.destroy()
       stampInstances.destroy()
