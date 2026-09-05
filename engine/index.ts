@@ -1,25 +1,26 @@
 import {
-  chooseOutputColorSpace,
-  type OutputColorSpace,
-} from "./color/display-transform"
-import {
   BRUSH_COLOR,
   BRUSH_FEATHER,
   BRUSH_RADIUS,
   BRUSH_SPACING,
 } from "./brush/round-brush"
+import {
+  chooseOutputColorSpace,
+  type OutputColorSpace,
+} from "./color/display-transform"
 import { BACKGROUND, createScene } from "./doc/scene"
 import type { TiledLayer } from "./doc/tiled-layer"
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
-import { attachPointerSampler } from "./input/pointer-sampler"
-import { createSampleBuffer } from "./input/sample-buffer"
 import {
   createRenderer,
   MAX_STAMPS_PER_DRAW,
   type Renderer,
+  STAMP,
   STAMP_STRIDE,
 } from "./gpu/renderer"
+import { attachPointerSampler } from "./input/pointer-sampler"
+import { createSampleBuffer } from "./input/sample-buffer"
 
 /**
  * Two frames of the fastest plausible pen (240 Hz) plus slack. Overrunning
@@ -54,6 +55,19 @@ export type EngineSnapshot = Readonly<{
   error: string | null
 }>
 
+/**
+ * What a host shows before an engine exists. Exported so the React host and
+ * the engine cannot drift apart on the shape or the defaults.
+ */
+export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
+  status: "idle",
+  width: 1,
+  height: 1,
+  outputColorSpace: "srgb",
+  stabilization: DEFAULT_STABILIZATION,
+  error: null,
+})
+
 export type RenderedPixels = {
   width: number
   height: number
@@ -76,14 +90,7 @@ export interface Engine {
 export function createEngine(
   canvas: HTMLCanvasElement | OffscreenCanvas
 ): Engine {
-  let snapshot: EngineSnapshot = Object.freeze({
-    status: "idle",
-    width: 1,
-    height: 1,
-    outputColorSpace: "srgb",
-    stabilization: DEFAULT_STABILIZATION,
-    error: null,
-  })
+  let snapshot: EngineSnapshot = INITIAL_SNAPSHOT
   const listeners = new Set<() => void>()
   let device: GPUDevice | undefined
   let context: GPUCanvasContext | null = null
@@ -102,6 +109,9 @@ export function createEngine(
   const stamps = new Float32Array(MAX_STAMPS_PER_DRAW * STAMP_STRIDE)
   let stampCount = 0
   let stroking = false
+  // The pen-down sample opens the path, and it arrives through the buffer like
+  // every other sample: nothing is drawn from inside an event handler.
+  let opening = false
   // Where the pen actually was, before stabilization pulled the path behind it.
   let rawX = 0
   let rawY = 0
@@ -127,6 +137,7 @@ export function createEngine(
     if (frame !== undefined) cancelAnimationFrame(frame)
     frame = undefined
     stroking = false
+    opening = false
     stampCount = 0
     samples.clear()
     renderer?.destroy()
@@ -178,12 +189,12 @@ export function createEngine(
   function emitStamp(x: number, y: number) {
     if (stampCount === MAX_STAMPS_PER_DRAW) flushStamps()
     const offset = stampCount * STAMP_STRIDE
-    stamps[offset] = x
-    stamps[offset + 1] = y
-    stamps[offset + 2] = BRUSH_RADIUS
+    stamps[offset + STAMP.CENTER_X] = x
+    stamps[offset + STAMP.CENTER_Y] = y
+    stamps[offset + STAMP.RADIUS] = BRUSH_RADIUS
     // Fixed opacity for now; pressure and the dynamics graph land in later
     // tickets and modulate exactly these two slots.
-    stamps[offset + 3] = 1
+    stamps[offset + STAMP.OPACITY] = 1
     stampCount++
   }
 
@@ -197,15 +208,25 @@ export function createEngine(
    * One frame of drawing: drain everything the pen reported, stabilize it,
    * resample it by arc length, stamp, present. React is never told.
    */
+  /** Hoisted so draining allocates no closure on any frame of a stroke. */
+  function consumeSample(x: number, y: number) {
+    rawX = x
+    rawY = y
+    if (opening) {
+      opening = false
+      stabilizer.begin(x, y)
+      resampler.begin(x, y, emitStamp)
+      return
+    }
+    const point = stabilizer.filter(x, y)
+    resampler.extend(point.x, point.y, emitStamp)
+  }
+
   function drawFrame() {
     frame = undefined
-    samples.drain((x, y) => {
-      rawX = x
-      rawY = y
-      const point = stabilizer.filter(x, y)
-      resampler.extend(point.x, point.y, emitStamp)
-    })
-    if (!stroking) {
+    samples.drain(consumeSample)
+    // A stroke that ended before its opening sample was drained drew nothing.
+    if (!stroking && !opening) {
       // The string is released on pen-up, so the mark reaches where the pen
       // lifted instead of stopping a pull radius short of it.
       resampler.extend(rawX, rawY, emitStamp)
@@ -225,13 +246,11 @@ export function createEngine(
     if (frame === undefined) frame = requestAnimationFrame(drawFrame)
   }
 
-  function beginStroke(x: number, y: number) {
+  function beginStroke(x: number, y: number, pressure: number) {
     if (snapshot.status !== "ready") return
     stroking = true
-    rawX = x
-    rawY = y
-    stabilizer.begin(x, y)
-    resampler.begin(x, y, emitStamp)
+    opening = true
+    samples.push(x, y, pressure)
     scheduleFrame()
   }
 

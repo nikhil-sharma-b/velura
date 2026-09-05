@@ -46,12 +46,11 @@ export function attachPointerSampler(
     scaleY = bounds.height > 0 ? canvas.height / bounds.height : 1
   }
 
+  const canvasX = (event: PointerEvent) => (event.clientX - originX) * scaleX
+  const canvasY = (event: PointerEvent) => (event.clientY - originY) * scaleY
+
   function record(event: PointerEvent) {
-    buffer.push(
-      (event.clientX - originX) * scaleX,
-      (event.clientY - originY) * scaleY,
-      event.pressure
-    )
+    buffer.push(canvasX(event), canvasY(event), event.pressure)
   }
 
   function onPointerDown(event: PointerEvent) {
@@ -63,11 +62,7 @@ export function attachPointerSampler(
     measure()
     event.preventDefault()
     buffer.clear()
-    handlers.begin(
-      (event.clientX - originX) * scaleX,
-      (event.clientY - originY) * scaleY,
-      event.pressure
-    )
+    handlers.begin(canvasX(event), canvasY(event), event.pressure)
   }
 
   function onPointerUpdate(event: PointerEvent) {

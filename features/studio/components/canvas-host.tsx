@@ -1,24 +1,11 @@
 "use client"
 
 import { useCallback, useState, useSyncExternalStore } from "react"
-import {
-  createEngine,
-  DEFAULT_STABILIZATION,
-  type Engine,
-  type EngineSnapshot,
-} from "@/engine"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
+import { createEngine, type Engine, INITIAL_SNAPSHOT } from "@/engine"
 
-const initialSnapshot: EngineSnapshot = Object.freeze({
-  status: "idle",
-  width: 1,
-  height: 1,
-  outputColorSpace: "srgb",
-  stabilization: DEFAULT_STABILIZATION,
-  error: null,
-})
-const getInitialSnapshot = () => initialSnapshot
+const getInitialSnapshot = () => INITIAL_SNAPSHOT
 const subscribeToNothing = () => () => {}
 
 export function CanvasHost() {

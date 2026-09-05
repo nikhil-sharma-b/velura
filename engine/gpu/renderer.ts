@@ -19,12 +19,24 @@ const BYTES_PER_TEXEL = TILE_CHANNELS * 2
 const UNIFORM_BYTES = 64
 /** vec2 viewport, feather and padding, then one vec4 of ink. */
 const STAMP_UNIFORM_BYTES = 32
-/** Floats per dab instance: centre, radius, opacity. */
+/**
+ * Layout of one dab instance. Named because three places agree on it: the
+ * vertex attributes below, the engine that fills the array, and the shader's
+ * locations. Pressure-driven size and opacity will move exactly these slots.
+ */
+export const STAMP = {
+  CENTER_X: 0,
+  CENTER_Y: 1,
+  RADIUS: 2,
+  OPACITY: 3,
+} as const
+
+/** Floats per dab instance. */
 export const STAMP_STRIDE = 4
 /**
- * Dabs drawn in one submission. A 120 Hz frame of the fastest plausible
- * stroke is a few hundred; the ceiling exists so the instance buffer can be
- * allocated once, and a frame beyond it simply draws in more than one pass.
+ * Dabs drawn in one submission. A 120 Hz frame of the fastest plausible stroke
+ * is a few hundred; the ceiling exists so the instance buffer can be allocated
+ * once, and the caller draws early rather than overrunning it.
  */
 export const MAX_STAMPS_PER_DRAW = 2048
 
@@ -35,7 +47,8 @@ export interface Renderer {
   upload(layer: TiledLayer): void
   /**
    * Draws `count` dabs from `instances`, packed as centre x, centre y, radius
-   * and opacity. The caller owns the array and reuses it across frames.
+   * and opacity. The caller owns the array, reuses it across frames, and draws
+   * before it exceeds `MAX_STAMPS_PER_DRAW`.
    */
   stamp(instances: Float32Array, count: number): void
   render(view: GPUTextureView): void
@@ -95,9 +108,13 @@ export function createRenderer(
           arrayStride: STAMP_STRIDE * 4,
           stepMode: "instance",
           attributes: [
-            { shaderLocation: 0, offset: 0, format: "float32x2" },
-            { shaderLocation: 1, offset: 8, format: "float32" },
-            { shaderLocation: 2, offset: 12, format: "float32" },
+            {
+              shaderLocation: 0,
+              offset: STAMP.CENTER_X * 4,
+              format: "float32x2",
+            },
+            { shaderLocation: 1, offset: STAMP.RADIUS * 4, format: "float32" },
+            { shaderLocation: 2, offset: STAMP.OPACITY * 4, format: "float32" },
           ],
         },
       ],
@@ -197,35 +214,32 @@ export function createRenderer(
       if (!targetView || !stampBindGroup)
         throw new Error("The render target has not been sized.")
       if (count <= 0) return
-      for (let first = 0; first < count; first += MAX_STAMPS_PER_DRAW) {
-        const batch = Math.min(MAX_STAMPS_PER_DRAW, count - first)
-        // One submission per batch: every batch rewrites the same instance
-        // buffer, so its draw must be queued before the next write lands.
-        const encoder = device.createCommandEncoder()
-        device.queue.writeBuffer(
-          stampInstances,
-          0,
-          instances,
-          first * STAMP_STRIDE,
-          batch * STAMP_STRIDE
-        )
-        const pass = encoder.beginRenderPass({
-          colorAttachments: [
-            {
-              view: targetView,
-              // The target holds the painting so far: dabs blend onto it.
-              loadOp: "load",
-              storeOp: "store",
-            },
-          ],
-        })
-        pass.setPipeline(stampPipeline)
-        pass.setBindGroup(0, stampBindGroup)
-        pass.setVertexBuffer(0, stampInstances)
-        pass.draw(6, batch)
-        pass.end()
-        device.queue.submit([encoder.finish()])
-      }
+      if (count > MAX_STAMPS_PER_DRAW)
+        throw new Error("Too many dabs for one draw.")
+      device.queue.writeBuffer(
+        stampInstances,
+        0,
+        instances,
+        0,
+        count * STAMP_STRIDE
+      )
+      const encoder = device.createCommandEncoder()
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: targetView,
+            // The target holds the painting so far: dabs blend onto it.
+            loadOp: "load",
+            storeOp: "store",
+          },
+        ],
+      })
+      pass.setPipeline(stampPipeline)
+      pass.setBindGroup(0, stampBindGroup)
+      pass.setVertexBuffer(0, stampInstances)
+      pass.draw(6, count)
+      pass.end()
+      device.queue.submit([encoder.finish()])
       // Painted pixels now live only in the target; the tiled layer learns
       // about them when the stroke buffer is composited back (ticket 04).
       targetIsEmpty = false
