@@ -1,6 +1,5 @@
 import { Caveat, Geist_Mono, Instrument_Serif, Karla } from "next/font/google"
 
-import { Topbar } from "@/components/layout/topbar"
 import { ThemeProvider } from "@/components/theme-provider"
 import { APP_NAME } from "@/lib/constants"
 import { cn } from "@/lib/utils"
@@ -51,10 +50,7 @@ export default function RootLayout({
       )}
     >
       <body>
-        <ThemeProvider>
-          <Topbar />
-          {children}
-        </ThemeProvider>
+        <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>
   )

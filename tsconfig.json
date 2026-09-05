@@ -20,7 +20,8 @@
     ],
     "paths": {
       "@/*": ["./*"]
-    }
+    },
+    "types": ["node", "@webgpu/types"]
   },
   "include": [
     "next-env.d.ts",

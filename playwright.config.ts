@@ -1,0 +1,32 @@
+import { defineConfig } from "@playwright/test"
+
+export default defineConfig({
+  testDir: "./tests/browser",
+  fullyParallel: true,
+  forbidOnly: !!process.env.CI,
+  retries: process.env.CI ? 1 : 0,
+  workers: process.env.CI ? 2 : undefined,
+  use: {
+    baseURL: "http://localhost:3000",
+    trace: "retain-on-failure",
+    launchOptions: {
+      args: [
+        "--enable-unsafe-webgpu",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+      ],
+    },
+  },
+  webServer: [
+    {
+      command: "bun run dev --hostname localhost --port 3000",
+      url: "http://localhost:3000",
+      reuseExistingServer: !process.env.CI,
+    },
+    {
+      command: "bunx vite --host 127.0.0.1 --port 3101 --strictPort",
+      url: "http://127.0.0.1:3101/tests/harness/",
+      reuseExistingServer: !process.env.CI,
+    },
+  ],
+})

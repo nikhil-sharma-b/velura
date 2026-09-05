@@ -15,7 +15,9 @@
     "lint:fix": "oxlint --fix",
     "format": "oxfmt --write \"**/*.{ts,tsx}\"",
     "format:check": "oxfmt --check \"**/*.{ts,tsx}\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun run test:browser",
+    "test:browser": "playwright test"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.4.0",
@@ -36,14 +38,19 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4.2.1",
     "@types/node": "^25.5.0",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@webgpu/types": "^0.1.72",
     "oxfmt": "^0.66.0",
     "oxlint": "^1.81.0",
+    "pngjs": "^7.0.0",
     "postcss": "^8",
     "tailwindcss": "^4.2.1",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
   }
 }
