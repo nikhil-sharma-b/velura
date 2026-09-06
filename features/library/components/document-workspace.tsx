@@ -16,6 +16,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import { createConvexRemoteIndex } from "@/features/library/lib/convex-remote-index"
+import { useConvexPaletteStore } from "@/features/color/lib/convex-palette-store"
 import { CanvasHost } from "@/features/studio/components/canvas-host"
 
 /**
@@ -69,6 +70,9 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
     () => createConvexRemoteIndex(convex, documentId),
     [convex, documentId]
   )
+  // Palettes belong to the artist rather than to this document, which is what
+  // lets a scheme built on one machine be there on the next (23).
+  const palettes = useConvexPaletteStore()
   const sessionId = useSessionId()
   useHeartbeat(documentId, sessionId)
   const openElsewhere = useQuery(api.sessions.openElsewhere, {
@@ -81,6 +85,7 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
     <CanvasHost
       documentId={documentId}
       remote={remote}
+      palettes={palettes}
       openElsewhere={openElsewhere ?? false}
     />
   )

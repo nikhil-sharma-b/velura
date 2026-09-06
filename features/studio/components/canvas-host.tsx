@@ -15,9 +15,16 @@ import {
   MagnifyingGlassMinusIcon,
   MagnifyingGlassPlusIcon,
   PaintBrushIcon,
+  PaletteIcon,
   SidebarSimpleIcon,
 } from "@phosphor-icons/react"
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react"
 
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -31,6 +38,10 @@ import {
   type RemoteIndex,
   type SyncStatus,
 } from "@/engine"
+
+import { ColorPanel } from "@/features/color/components/color-panel"
+import { createLocalPaletteStore } from "@/features/color/lib/local-palette-store"
+import type { PaletteStore } from "@/features/color/lib/palette-store"
 
 import { LayerPanel } from "./layer-panel"
 import { VersionPanel } from "./version-panel"
@@ -117,9 +128,17 @@ function findLayer(
 export function CanvasHost({
   documentId,
   remote,
+  palettes,
   openElsewhere = false,
 }: {
   documentId?: string
+  /**
+   * Where palettes are kept. The cloud host passes an account-backed store so
+   * they follow the artist between machines; a host that passes none — the
+   * anonymous studio, which mounts outside the Convex provider — gets one
+   * backed by this browser.
+   */
+  palettes?: PaletteStore
   /** The cloud-sync backend, when this document has an owned Convex row to sync to. */
   remote?: RemoteIndex
   /** Whether another tab or device currently has this same document open. */
@@ -128,7 +147,12 @@ export function CanvasHost({
   const [engine, setEngine] = useState<Engine | null>(null)
   const [panelsOpen, setPanelsOpen] = useState(true)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [colorOpen, setColorOpen] = useState(false)
   const [paintNotice, setPaintNotice] = useState<string | null>(null)
+  // Created once per host: the store owns the subscription the picker reads
+  // through, so a new one each render would resubscribe on every keystroke.
+  const localPalettes = useMemo(() => createLocalPaletteStore(), [])
+  const paletteStore = palettes ?? localPalettes
   const snapshot = useSyncExternalStore(
     engine?.subscribe ?? subscribeToNothing,
     engine?.getSnapshot ?? getInitialSnapshot,
@@ -341,6 +365,21 @@ export function CanvasHost({
             >
               <MagnifyingGlassIcon />
             </Button>
+            <Button
+              variant={colorOpen ? "default" : "ghost"}
+              size="icon"
+              aria-label="Colour"
+              aria-pressed={colorOpen}
+              onClick={() => {
+                setColorOpen((open) => !open)
+                setPanelsOpen(true)
+              }}
+              className="rounded-lg"
+            >
+              {/* The rail swatch is the current ink, so the colour in the hand
+                  is visible without opening anything. */}
+              <PaletteIcon style={{ color: snapshot.color.hex }} />
+            </Button>
             {/* Restore points only exist for a document with a cloud copy
                 behind it (§9.4), so an anonymous local document has no ladder
                 to offer and is not shown a door to one. */}
@@ -502,7 +541,15 @@ export function CanvasHost({
           </div>
 
           {engine && panelsOpen && (
-            <aside className="absolute top-3 right-3 bottom-3 flex w-72 flex-col overflow-hidden rounded-xl border bg-background/88 shadow-xl backdrop-blur-xl">
+            <aside className="absolute top-3 right-3 bottom-3 flex w-72 flex-col overflow-y-auto rounded-xl border bg-background/88 shadow-xl backdrop-blur-xl">
+              {colorOpen && (
+                <ColorPanel
+                  engine={engine}
+                  snapshot={snapshot}
+                  store={paletteStore}
+                  onClose={() => setColorOpen(false)}
+                />
+              )}
               <LayerPanel engine={engine} snapshot={snapshot} />
             </aside>
           )}

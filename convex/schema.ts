@@ -121,6 +121,28 @@ export default defineSchema({
     retainedInGraceCount: v.number(),
   }).index("by_started", ["startedAt"]),
 
+  // A named palette of swatches (23). Colours are sRGB hex strings, ordered:
+  // the order is the artist's arrangement of the scheme, so it is stored as an
+  // array rather than as rows, which would need a separate sort key and could
+  // not be reordered in one write.
+  palettes: defineTable({
+    ownerId: v.id("users"),
+    name: v.string(),
+    colors: v.array(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_owner_created", ["ownerId", "createdAt"]),
+
+  // At most one row per artist: the colours most recently painted with,
+  // newest first. On the account rather than on the document, because the
+  // working set an artist carries is theirs and follows them between pieces
+  // and between machines.
+  colorRecents: defineTable({
+    ownerId: v.id("users"),
+    colors: v.array(v.string()),
+    updatedAt: v.number(),
+  }).index("by_owner", ["ownerId"]),
+
   // One row per tab/device with a document open, heartbeat-refreshed while it
   // stays open (18). This is what lets a session opening a document already
   // open elsewhere warn instead of letting two tabs silently race each

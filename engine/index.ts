@@ -22,9 +22,11 @@ import { createTextureLibrary } from "./brush/texture"
 import {
   chooseOutputColorSpace,
   decodeTransfer,
+  displayTransform,
   type OutputColorSpace,
   srgbToWorking,
 } from "./color/display-transform"
+import { hexToWorking, parseHex, workingToHex } from "./color/oklch"
 import {
   activeLayer,
   addGroup,
@@ -133,6 +135,13 @@ export type EngineColor = Readonly<{
   blue: number
   alpha: number
   colorSpace: OutputColorSpace
+  /**
+   * The same colour as sRGB hex. Carried here rather than derived by the
+   * picker so that the hex an artist sees is the engine's own answer, in the
+   * one place the working-space conversion lives — a colour eyedropped from a
+   * P3 canvas has no other honest way back to a hex field.
+   */
+  hex: string
 }>
 
 /**
@@ -151,6 +160,13 @@ export type EngineCommand =
   /** Stabilizer strength in [0, 1]; zero restores the raw unfiltered path. */
   | { type: "setStabilization"; strength: number }
   | { type: "setTool"; tool: PaintTool }
+  /**
+   * The ink, as authored sRGB hex. Hex rather than the working space because
+   * that is the one colour notation the artist can also type, and the picker
+   * (`features/color`) already owns the perceptual space above it — the engine
+   * only needs the one conversion into linear light.
+   */
+  | { type: "setColor"; hex: string }
   /**
    * The brush. Every field is optional and unnamed ones are left alone, so a
    * control that owns one property need not know the rest of the brush.
@@ -301,6 +317,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
     blue: 245 / 255,
     alpha: 1,
     colorSpace: "srgb",
+    hex: "#f4f4f5",
   }),
   brush: Object.freeze(cloneBrush(DEFAULT_BRUSH)),
   // A host that has not started an engine has no document to describe.
@@ -1402,8 +1419,17 @@ export function createEngine(
       // A new renderer holds no textures, whatever the brush was told before.
       appliedTextures = undefined
       applyBrushTextures()
-      target.setInk(ink)
       publish({ outputColorSpace: colorSpace })
+      // Re-published rather than assigned, because the snapshot's colour is
+      // encoded for the output space and this is where that space is decided:
+      // on a wide-gamut display the ink chosen before initialization would
+      // otherwise still be described in sRGB.
+      setInk(
+        ink[3] > 0
+          ? ([ink[0] / ink[3], ink[1] / ink[3], ink[2] / ink[3]] as const)
+          : ([0, 0, 0] as const),
+        ink[3]
+      )
       resize()
       // Whatever this device already holds of the document replaces the empty
       // canvas before a single frame of it is shown. A restore that cannot be
@@ -1454,6 +1480,39 @@ export function createEngine(
   }
 
   /**
+   * The one place the ink changes, whether it came from the picker or from the
+   * eyedropper. Painting is premultiplied linear light; the snapshot carries
+   * the display-encoded value instead, because that is what a swatch has to
+   * paint and what a hex field has to say.
+   */
+  function setInk(
+    working: readonly [number, number, number],
+    alpha = 1,
+    /**
+     * The display-encoded value, when the caller already has an exact one.
+     * The eyedropper does: it read those bytes off the canvas, and deriving
+     * them back through the matrices would return a colour a hair away from
+     * the pixel the artist actually pointed at.
+     */
+    encoded?: readonly [number, number, number]
+  ) {
+    ink = [working[0] * alpha, working[1] * alpha, working[2] * alpha, alpha]
+    renderer?.setInk(ink)
+    const [red, green, blue] =
+      encoded ?? displayTransform(working, snapshot.outputColorSpace)
+    publish({
+      color: Object.freeze({
+        red,
+        green,
+        blue,
+        alpha,
+        colorSpace: snapshot.outputColorSpace,
+        hex: workingToHex(working),
+      }),
+    })
+  }
+
+  /**
    * Reads one presented pixel. Eyedropping is an explicit interaction, so its
    * one-pixel asynchronous readback is outside the frame-critical paint path.
    */
@@ -1483,13 +1542,6 @@ export function createEngine(
       const green = mapped[1] / 255
       const blue = (format === "bgra8unorm" ? mapped[0] : mapped[2]) / 255
       const alpha = mapped[3] / 255
-      const color = Object.freeze({
-        red,
-        green,
-        blue,
-        alpha,
-        colorSpace: snapshot.outputColorSpace,
-      })
       const decoded = [red, green, blue].map(decodeTransfer) as [
         number,
         number,
@@ -1497,10 +1549,8 @@ export function createEngine(
       ]
       const working =
         snapshot.outputColorSpace === "srgb" ? srgbToWorking(decoded) : decoded
-      ink = [working[0] * alpha, working[1] * alpha, working[2] * alpha, alpha]
-      renderer?.setInk(ink)
-      publish({ color })
-      return color
+      setInk(working, alpha, [red, green, blue])
+      return snapshot.color
     } finally {
       buffer.destroy()
     }
@@ -1803,6 +1853,12 @@ export function createEngine(
           tool = command.tool
           publish({ tool })
           break
+        case "setColor": {
+          if (!parseHex(command.hex))
+            throw new Error(`Not a colour: ${command.hex}`)
+          setInk(hexToWorking(command.hex))
+          break
+        }
       }
     },
     observeFrames(observer) {

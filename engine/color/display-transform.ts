@@ -51,6 +51,17 @@ export function srgbToWorking(
 }
 
 /**
+ * The working space back to linear sRGB: the inverse of `srgbToWorking`, and
+ * the route anything narrower than the working space has to take. The picker
+ * needs it to reach Oklab, whose matrices are defined against linear sRGB.
+ */
+export function workingToSrgb(
+  working: readonly [number, number, number]
+): [number, number, number] {
+  return applyMatrix(P3_TO_SRGB, working)
+}
+
+/**
  * The sRGB OETF, shared by both outputs: Display P3 uses the same curve.
  * `engine/shaders/display-transform.ts` mirrors this on the GPU; the two are
  * pinned together by the golden-image test, which renders through the shader
