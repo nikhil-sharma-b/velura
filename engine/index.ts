@@ -73,6 +73,20 @@ import {
 import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
 import { attachPointerSampler } from "./input/pointer-sampler"
 import { createSampleBuffer } from "./input/sample-buffer"
+import { attachViewGestures } from "./input/view-gestures"
+import {
+  type CanvasView,
+  DEFAULT_VIEW,
+  docToScreen,
+  fitView as fitCanvasView,
+  flipView,
+  IDENTITY_MATRIX,
+  panView,
+  rotateView,
+  screenToDoc,
+  type ViewMatrix,
+  zoomView,
+} from "./view/view-transform"
 
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
 
@@ -149,6 +163,28 @@ export type EngineCommand =
    * alone, so a control that owns one property need not know the rest.
    */
   | ({ type: "setLayer"; id: string } & LayerPatch)
+  /**
+   * Moves the canvas under the window, in CSS pixels — the units a pointer
+   * event reports, so a host never has to know the backing store's density.
+   */
+  | { type: "panView"; dx: number; dy: number }
+  /**
+   * Multiplies the zoom. The anchor, in CSS pixels from the canvas's
+   * top-left, is held still: that is what makes a wheel or a pinch feel attached to the
+   * canvas rather than to the window. Without one the viewport's centre holds.
+   */
+  | { type: "zoomView"; factor: number; anchor?: { x: number; y: number } }
+  /**
+   * Turns the canvas. Relative by default, since a twist and a rotate key
+   * both report a delta, and snapping to square unless told otherwise.
+   */
+  | { type: "rotateView"; radians: number; absolute?: boolean; snap?: boolean }
+  /** Mirrors the view horizontally, and back: the fresh-eyes check. */
+  | { type: "flipView" }
+  /** The whole piece in the window, at the angle it is being worked at. */
+  | { type: "fitView" }
+  /** Back to square: no pan, no zoom, no rotation, no flip. */
+  | { type: "resetView" }
   /** Takes back the last stroke or layer operation. Nothing to undo is a no-op. */
   | { type: "undo" }
   | { type: "redo" }
@@ -177,6 +213,11 @@ export type EngineSnapshot = Readonly<{
   layers: readonly LayerSummary[]
   activeLayerId: string
   paintingMask: boolean
+  /**
+   * How the artist is looking at the canvas (D28). View state only: no
+   * command here changes a texel, and an export ignores it entirely.
+   */
+  view: CanvasView
   /** Whether there is a step to take back, and one to put back (D21). */
   canUndo: boolean
   canRedo: boolean
@@ -219,6 +260,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   layers: Object.freeze([]),
   activeLayerId: "",
   paintingMask: false,
+  view: DEFAULT_VIEW,
   canUndo: false,
   canRedo: false,
   error: null,
@@ -317,6 +359,12 @@ export function createEngine(
   let initialization: Promise<void> | undefined
   let viewport = { width: 1, height: 1, devicePixelRatio: 1 }
   let renderer: Renderer | undefined
+  // The view (D28). Held here rather than in the host so that the pen, the
+  // present pass and the snapshot cannot disagree about where the canvas is.
+  let view: CanvasView = DEFAULT_VIEW
+  // Screen pixels to document pixels, rebuilt whenever the view or the canvas
+  // size changes. Cached because every pen sample is mapped through it.
+  let toDoc: ViewMatrix = IDENTITY_MATRIX
   // The document: the layer stack and its pixels. Undefined until a device is
   // acquired, because the canvas size the layers are tiled at is not known
   // before then.
@@ -368,6 +416,7 @@ export function createEngine(
   let appliedTextures: string | undefined
   let frame: number | undefined
   let detachSampler: (() => void) | undefined
+  let detachGestures: (() => void) | undefined
   // Frame instrumentation. All of it is inert until an observer is attached.
   let frameObserver: ((frame: FrameTiming) => void) | null = null
   /** The page clock reading that this stroke's sample times are relative to. */
@@ -450,6 +499,66 @@ export function createEngine(
       height: pixelHeight,
       ...(doc ? describeLayers(doc) : {}),
     })
+    // The viewport the view is centred in just changed, so the matrix the
+    // present pass and the pen share has to be rebuilt against the new size.
+    applyView()
+  }
+
+  /**
+   * The document's extent, which is also the viewport's: the canvas is
+   * authored in backing-store pixels for now. Both are named because the view
+   * maps between them, and only this function changes when they diverge.
+   */
+  function extent() {
+    return { width: snapshot.width, height: snapshot.height }
+  }
+
+  /**
+   * Tells the present pass where the document sits on screen, and keeps the
+   * inverse the pen is mapped through in step with it. Nothing here touches a
+   * texel: the view is a matrix, and that is the whole of it (D28).
+   */
+  function applyView() {
+    const size = extent()
+    const matrix = docToScreen(view, size, size)
+    toDoc = screenToDoc(view, size, size)
+    renderer?.setView(matrix)
+  }
+
+  /**
+   * CSS pixels to backing-store pixels, per axis. The host speaks the units
+   * the DOM gave it; the canvas is drawn, and painted on, at device
+   * resolution. Both axes are scaled separately because the backing store is
+   * capped against the device's texture limit, which need not divide the two
+   * dimensions by the same amount.
+   */
+  function toBackingX(value: number): number {
+    return value * (snapshot.width / Math.max(1, viewport.width))
+  }
+
+  function toBackingY(value: number): number {
+    return value * (snapshot.height / Math.max(1, viewport.height))
+  }
+
+  /**
+   * The view, inverted, applied to one point. Written out rather than routed
+   * through `applyMatrix` because this runs per pen sample, and a frame of
+   * drawing allocates nothing (D30).
+   */
+  function toDocX(x: number, y: number): number {
+    return toDoc[0] * x + toDoc[2] * y + toDoc[4]
+  }
+
+  function toDocY(x: number, y: number): number {
+    return toDoc[1] * x + toDoc[3] * y + toDoc[5]
+  }
+
+  /** Publishes a new view, redraws through it, and leaves the pixels alone. */
+  function setView(next: CanvasView) {
+    view = next
+    applyView()
+    publish({ view })
+    if (snapshot.status === "ready") render()
   }
 
   /** Hands the renderer whatever pixels each layer's surface has gained. */
@@ -647,13 +756,19 @@ export function createEngine(
    */
   /** Hoisted so draining allocates no closure on any frame of a stroke. */
   function consumeSample(
-    x: number,
-    y: number,
+    screenX: number,
+    screenY: number,
     pressure: number,
     tiltX: number,
     tiltY: number,
     time: number
   ) {
+    // The pen reports where it is on screen; everything downstream — the
+    // stabilizer, the resampler, the dabs — works in document pixels, so the
+    // view is inverted here and nowhere else. This is what puts the mark
+    // under the pen at any zoom, rotation and flip.
+    const x = toDocX(screenX, screenY)
+    const y = toDocY(screenX, screenY)
     rawX = x
     rawY = y
     rawPressure = pressure
@@ -742,8 +857,8 @@ export function createEngine(
   }
 
   function beginStroke(
-    x: number,
-    y: number,
+    screenX: number,
+    screenY: number,
     pressure: number,
     tiltX: number,
     tiltY: number,
@@ -754,6 +869,10 @@ export function createEngine(
     // A locked layer is one the painter has said not to touch, and the pen is
     // the one place that has to be told so.
     if (activeLayer(doc).locked) return
+    // The opening pen state is read in document space too, so a mapping onto
+    // position means the same thing at any view.
+    const x = toDocX(screenX, screenY)
+    const y = toDocY(screenX, screenY)
     strokeOrigin = origin
     // Stroke opacity is applied once, at composite, so it is decided once,
     // here — from the pen state the stroke opened with. Nothing derived from
@@ -774,8 +893,29 @@ export function createEngine(
     })
     stroking = true
     opening = true
-    samples.push(x, y, pressure, tiltX, tiltY, time)
+    // Pushed as the pen reported it: the buffer carries screen pixels and the
+    // frame loop maps every sample the same way.
+    samples.push(screenX, screenY, pressure, tiltX, tiltY, time)
     scheduleFrame()
+  }
+
+  /**
+   * Drops the mark in flight without compositing it. A navigation gesture
+   * that began as a stroke ends this way: what the artist wanted was to move
+   * the canvas, not to leave a dot on it.
+   */
+  function cancelStroke() {
+    if (!stroking && !opening) return
+    stroking = false
+    opening = false
+    // The frame already scheduled would see a stroke that has just ended and
+    // flush its tail into the layer, which is the very mark being taken back.
+    if (frame !== undefined) cancelAnimationFrame(frame)
+    frame = undefined
+    stampCount = 0
+    samples.clear()
+    renderer?.cancelStroke()
+    if (snapshot.status === "ready") render()
   }
 
   function endStroke() {
@@ -908,7 +1048,7 @@ export function createEngine(
       render()
       publish({ status: "ready" })
       // Input is attached only once there is something to draw into.
-      if (!detachSampler && canvas instanceof HTMLCanvasElement)
+      if (!detachSampler && canvas instanceof HTMLCanvasElement) {
         detachSampler = attachPointerSampler(canvas, samples, {
           begin: beginStroke,
           end: endStroke,
@@ -916,6 +1056,25 @@ export function createEngine(
             void sampleColor(x, y).catch(fail)
           },
         })
+        // Navigation is input too, and it belongs to the same canvas. Holding
+        // it here rather than in the host is what keeps the pen, the present
+        // pass and the snapshot agreeing about where the canvas is (D28).
+        detachGestures = attachViewGestures(canvas, {
+          pan: (dx, dy) =>
+            setView(panView(view, toBackingX(dx), toBackingY(dy))),
+          zoom: (factor, anchor) =>
+            setView(
+              zoomView(view, factor, {
+                anchor: { x: toBackingX(anchor.x), y: toBackingY(anchor.y) },
+                viewport: extent(),
+              })
+            ),
+          // A twist is continuous: it snaps at the cardinal angles like any
+          // other rotation, which is what `rotateView` does by default.
+          rotate: (radians) => setView(rotateView(view, radians)),
+          cancelStroke,
+        })
+      }
     } catch (error) {
       fail(error)
     }
@@ -1215,6 +1374,51 @@ export function createEngine(
           applyLayerChange()
           break
         }
+        case "panView":
+          if (![command.dx, command.dy].every(Number.isFinite))
+            throw new Error("Pan must be finite.")
+          setView(panView(view, toBackingX(command.dx), toBackingY(command.dy)))
+          break
+        case "zoomView": {
+          const anchor = command.anchor
+          if (anchor && ![anchor.x, anchor.y].every(Number.isFinite))
+            throw new Error("A zoom anchor must be finite.")
+          setView(
+            zoomView(
+              view,
+              command.factor,
+              anchor
+                ? {
+                    anchor: {
+                      x: toBackingX(anchor.x),
+                      y: toBackingY(anchor.y),
+                    },
+                    viewport: extent(),
+                  }
+                : undefined
+            )
+          )
+          break
+        }
+        case "rotateView":
+          setView(
+            rotateView(view, command.radians, {
+              absolute: command.absolute,
+              snap: command.snap,
+            })
+          )
+          break
+        case "flipView":
+          setView(flipView(view))
+          break
+        case "fitView": {
+          const size = extent()
+          setView(fitCanvasView(view, size, size))
+          break
+        }
+        case "resetView":
+          setView(DEFAULT_VIEW)
+          break
         case "setStabilization": {
           if (!Number.isFinite(command.strength))
             throw new Error("Stabilization strength must be finite.")
@@ -1248,6 +1452,9 @@ export function createEngine(
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
       })
       try {
+        // The artwork is what was painted, not how it is being looked at, so
+        // the export presents through the identity rather than the view (D28).
+        renderer?.setView(IDENTITY_MATRIX)
         // Acquire, render and copy in one task: the swap-chain texture expires at presentation.
         const texture = render()
         const encoder = acquired.createCommandEncoder()
@@ -1272,6 +1479,10 @@ export function createEngine(
         return { width, height, data, colorSpace: snapshot.outputColorSpace }
       } finally {
         buffer.destroy()
+        // Back to the artist's view, and drawn again: the canvas must not be
+        // left showing the export's framing.
+        applyView()
+        if (snapshot.status === "ready") render()
       }
     },
     sampleColor,
@@ -1280,6 +1491,8 @@ export function createEngine(
       disposed = true
       detachSampler?.()
       detachSampler = undefined
+      detachGestures?.()
+      detachGestures = undefined
       // A disposed engine has no frames to report, and holding the observer
       // would keep whatever it closes over alive with it.
       frameObserver = null

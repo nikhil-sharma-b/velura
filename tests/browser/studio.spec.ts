@@ -263,3 +263,55 @@ test("undo and redo are reachable by button and by keystroke", async ({
   await page.keyboard.press("ControlOrMeta+z")
   await expect(layers.getByText("Layer 1")).toBeHidden()
 })
+
+test("the canvas is navigated by button and by keystroke", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 600 })
+  await page.goto("/")
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  const zoom = page.getByLabel("Zoom level")
+  await expect(zoom).toHaveText("100%")
+
+  await page.getByRole("button", { name: "Zoom in" }).click()
+  await expect(zoom).toHaveText("125%")
+  await page.getByRole("button", { name: "Zoom out" }).click()
+  await expect(zoom).toHaveText("100%")
+
+  // Unmodified, because the hand reaching for these is not holding the pen.
+  await page.keyboard.press("=")
+  await expect(zoom).toHaveText("125%")
+  // Fitting is the overview; the document is the window's own size, so it
+  // comes back a little under a hundred percent with its margin.
+  await page.keyboard.press("0")
+  await expect(zoom).toHaveText("96%")
+  // And shift is the way back to square.
+  await page.keyboard.press("Shift+0")
+  await expect(zoom).toHaveText("100%")
+
+  const flip = page.getByRole("button", { name: "Flip canvas horizontally" })
+  await expect(flip).toHaveAttribute("aria-pressed", "false")
+  await flip.click()
+  await expect(flip).toHaveAttribute("aria-pressed", "true")
+  await page.keyboard.press("h")
+  await expect(flip).toHaveAttribute("aria-pressed", "false")
+
+  // The arrows nudge the canvas: the document exactly fills the window, so
+  // panning has to reveal the backdrop behind it.
+  const canvas = page.getByRole("img", { name: "Drawing canvas" })
+  const square = await canvas.screenshot()
+  await page.keyboard.press("ArrowLeft")
+  await expect(async () =>
+    expect(Buffer.compare(square, await canvas.screenshot())).not.toBe(0)
+  ).toPass()
+  await page.getByRole("button", { name: "Reset view" }).click()
+
+  // Rotating and then resetting leaves nothing behind: the view is state, and
+  // one action returns all of it.
+  await page.keyboard.press("]")
+  await page.getByRole("button", { name: "Fit to window" }).click()
+  await expect(zoom).not.toHaveText("100%")
+  await page.getByRole("button", { name: "Reset view" }).click()
+  await expect(zoom).toHaveText("100%")
+})
