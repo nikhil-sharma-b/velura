@@ -2,7 +2,12 @@
 
 import { v } from "convex/values"
 
-import { presignTileGet, presignTilePut } from "./lib/r2"
+import {
+  presignPreviewGet,
+  presignPreviewPut,
+  presignTileGet,
+  presignTilePut,
+} from "./lib/r2"
 import { action } from "./_generated/server"
 import { api } from "./_generated/api"
 
@@ -30,5 +35,21 @@ export const presignDownloads = action({
     return await Promise.all(
       hashes.map(async (hash) => ({ hash, url: await presignTileGet(hash) }))
     )
+  },
+})
+
+export const presignPreviewUpload = action({
+  args: { documentId: v.id("documents") },
+  handler: async (ctx, { documentId }) => {
+    await ctx.runQuery(api.documents.get, { documentId })
+    return await presignPreviewPut(documentId)
+  },
+})
+
+export const presignPreviewDownload = action({
+  args: { documentId: v.id("documents") },
+  handler: async (ctx, { documentId }) => {
+    await ctx.runQuery(api.documents.get, { documentId })
+    return await presignPreviewGet(documentId)
   },
 })

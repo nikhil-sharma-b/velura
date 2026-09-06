@@ -32,7 +32,7 @@ function sources(directory: string): string[] {
  */
 const SANCTIONED = {
   "index.ts": [
-    { from: "async function sampleColor(", to: "\n  return {" },
+    { from: "async function sampleColor(", to: "\n  const engine: Engine = {" },
     { from: "async readPixels()", to: "    sampleColor," },
   ],
   "gpu/renderer.ts": [

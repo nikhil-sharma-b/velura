@@ -85,6 +85,17 @@ export const commitFlush = mutation({
   },
 })
 
+/** Makes a successfully uploaded preview visible to reactive library clients. */
+export const commitPreview = mutation({
+  args: { documentId: v.id("documents") },
+  handler: async (ctx, { documentId }) => {
+    const document = await requireOwnDocument(ctx, documentId)
+    await ctx.db.patch(documentId, {
+      previewVersion: (document.previewVersion ?? 0) + 1,
+    })
+  },
+})
+
 async function upsertTile(
   ctx: MutationCtx,
   documentId: Id<"documents">,

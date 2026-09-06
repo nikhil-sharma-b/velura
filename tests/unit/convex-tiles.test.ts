@@ -79,6 +79,7 @@ describe("flush", () => {
       metrics: { putCount: 1, mutationCount: 1 },
     }
     await artist.mutation(api.tiles.commitFlush, flush)
+    await artist.mutation(api.tiles.commitPreview, { documentId })
     // Retry after a dropped response: same call, must not duplicate rows.
     await artist.mutation(api.tiles.commitFlush, flush)
 
@@ -90,6 +91,9 @@ describe("flush", () => {
       y: 0,
       hash: "hash-a",
     })
+    expect(
+      (await artist.query(api.documents.get, { documentId })).previewVersion
+    ).toBe(1)
   })
 
   test("a later flush overwrites the hash at the same tile coordinate", async () => {

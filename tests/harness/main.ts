@@ -15,6 +15,7 @@ import { decodeFloat16 } from "../../engine/doc/float16"
 import { createRenderer, type StrokeMode } from "../../engine/gpu/renderer"
 import { STAMP_STRIDE } from "../../engine/gpu/stamp-instance"
 import { createEngine, type Engine } from "../../engine"
+import { encodePreview } from "../../engine/store/preview"
 
 type EngineOptions = Parameters<typeof createEngine>[1]
 
@@ -70,10 +71,12 @@ declare global {
     buildLayerStack(count: number): Promise<void>
     /** One short mark on whichever layer is active. */
     markActiveLayer(): Promise<void>
+    encodePreview: typeof encodePreview
   }
 }
 
 window.openBlendProbe = openBlendProbe
+window.encodePreview = encodePreview
 
 const canvas = document.querySelector("canvas")!
 window.engine = createEngine(canvas)

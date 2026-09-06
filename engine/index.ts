@@ -81,6 +81,7 @@ import {
   createFlushScheduler,
   type FlushScheduler,
 } from "./store/flush-scheduler"
+import { encodePreview } from "./store/preview"
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
 import {
@@ -1230,6 +1231,10 @@ export function createEngine(
               structure: captureStructure(requireDocument()),
               surfaces: past.tileIndex(),
             }),
+            // readPixels presents through the renderer's one display-transform
+            // pass. PNG encoding and scaling happen after the GPU readback,
+            // off the stroke frame and only when the flush scheduler fires.
+            preview: async () => encodePreview(await engine.readPixels()),
             onError: cloud.onError ?? fail,
           })
           flushScheduler = createFlushScheduler({
@@ -1344,7 +1349,7 @@ export function createEngine(
     }
   }
 
-  return {
+  const engine: Engine = {
     getSnapshot: () => snapshot,
     subscribe(listener) {
       listeners.add(listener)
@@ -1674,19 +1679,28 @@ export function createEngine(
         size: bytesPerRow * height,
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
       })
+      const output = acquired.createTexture({
+        size: { width, height },
+        format,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+      })
       try {
         // The artwork is what was painted, not how it is being looked at, so
         // the export presents through the identity rather than the view (D28).
         renderer?.setView(IDENTITY_MATRIX)
-        // Acquire, render and copy in one task: the swap-chain texture expires at presentation.
-        const texture = render()
+        // Preview/export rendering has its own target. It never replaces the
+        // visible swap-chain frame while its asynchronous readback completes.
+        renderer?.render(output.createView())
         const encoder = acquired.createCommandEncoder()
         encoder.copyTextureToBuffer(
-          { texture },
+          { texture: output },
           { buffer, bytesPerRow },
           { width, height }
         )
         acquired.queue.submit([encoder.finish()])
+        // Restore the interactive uniform before yielding to the browser. The
+        // submitted export work is ordered before this queue write.
+        applyView()
         await buffer.mapAsync(GPUMapMode.READ)
         const mapped = new Uint8Array(buffer.getMappedRange())
         const data = new Uint8Array(width * height * 4)
@@ -1702,10 +1716,9 @@ export function createEngine(
         return { width, height, data, colorSpace: snapshot.outputColorSpace }
       } finally {
         buffer.destroy()
-        // Back to the artist's view, and drawn again: the canvas must not be
-        // left showing the export's framing.
+        output.destroy()
+        // Also restore after an early failure before the normal restoration.
         applyView()
-        if (snapshot.status === "ready") render()
       }
     },
     sampleColor,
@@ -1724,4 +1737,5 @@ export function createEngine(
       listeners.clear()
     },
   }
+  return engine
 }

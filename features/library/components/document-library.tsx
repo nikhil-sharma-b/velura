@@ -12,11 +12,12 @@ import {
   AuthLoading,
   Unauthenticated,
   useMutation,
+  useAction,
   useQuery,
 } from "convex/react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
 
 import {
@@ -108,7 +109,7 @@ function DocumentList() {
   }
 
   return (
-    <ul className="flex flex-col divide-y">
+    <ul className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
       {documents.map((document) => (
         <DocumentRow key={document._id} document={document} />
       ))}
@@ -122,6 +123,7 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
   const remove = useMutation(api.documents.remove)
   const [editing, setEditing] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [previewUrl, retryPreview] = useDocumentPreview(document)
 
   const commitRename = async (name: string) => {
     setEditing(false)
@@ -130,67 +132,129 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
   }
 
   return (
-    <li className="flex items-center gap-4 py-3">
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        {editing ? (
-          <Input
-            autoFocus
-            defaultValue={document.name}
-            aria-label={`Rename ${document.name}`}
-            onBlur={(event) => void commitRename(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter")
-                void commitRename(event.currentTarget.value)
-              if (event.key === "Escape") setEditing(false)
-            }}
+    <li className="group overflow-hidden rounded-xl border bg-card shadow-sm">
+      <Link
+        href={`/d/${document._id}`}
+        aria-label={`Open ${document.name}`}
+        className="flex aspect-[4/3] items-center justify-center overflow-hidden bg-muted"
+      >
+        {previewUrl ? (
+          // The URL is a short-lived, authenticated R2 signature. Sending it
+          // through Next's server-side image optimiser would leak that
+          // capability outside this signed-in browser session.
+          // oxlint-disable-next-line next/no-img-element
+          <img
+            src={previewUrl}
+            alt=""
+            className="h-full w-full object-contain"
+            onError={retryPreview}
           />
         ) : (
-          <Link
-            href={`/d/${document._id}`}
-            className="truncate hover:underline"
-          >
-            {document.name}
-          </Link>
+          <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,var(--muted),var(--background))] text-sm text-muted-foreground">
+            Blank canvas
+          </div>
         )}
-        <span className="font-mono text-xs text-muted-foreground">
-          {document.width}×{document.height}
-        </span>
+      </Link>
+      <div className="flex items-center gap-1 p-3">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          {editing ? (
+            <Input
+              autoFocus
+              defaultValue={document.name}
+              aria-label={`Rename ${document.name}`}
+              onBlur={(event) => void commitRename(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter")
+                  void commitRename(event.currentTarget.value)
+                if (event.key === "Escape") setEditing(false)
+              }}
+            />
+          ) : (
+            <Link
+              href={`/d/${document._id}`}
+              className="truncate hover:underline"
+            >
+              {document.name}
+            </Link>
+          )}
+          <span className="font-mono text-xs text-muted-foreground">
+            {document.width}×{document.height}
+          </span>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={`Rename ${document.name}`}
+          onClick={() => setEditing(true)}
+        >
+          <PencilSimpleIcon />
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={`Duplicate ${document.name}`}
+          onClick={async () => {
+            await duplicate({ documentId: document._id })
+            toast.success(`Duplicated ${document.name}`)
+          }}
+        >
+          <CopyIcon />
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={`Delete ${document.name}`}
+          onClick={() => setConfirmingDelete(true)}
+        >
+          <TrashIcon />
+        </Button>
+        <DeleteDialog
+          open={confirmingDelete}
+          onOpenChange={setConfirmingDelete}
+          name={document.name}
+          onConfirm={() => remove({ documentId: document._id })}
+        />
       </div>
-      <Button
-        variant="ghost"
-        size="sm"
-        aria-label={`Rename ${document.name}`}
-        onClick={() => setEditing(true)}
-      >
-        <PencilSimpleIcon />
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        aria-label={`Duplicate ${document.name}`}
-        onClick={async () => {
-          await duplicate({ documentId: document._id })
-          toast.success(`Duplicated ${document.name}`)
-        }}
-      >
-        <CopyIcon />
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        aria-label={`Delete ${document.name}`}
-        onClick={() => setConfirmingDelete(true)}
-      >
-        <TrashIcon />
-      </Button>
-      <DeleteDialog
-        open={confirmingDelete}
-        onOpenChange={setConfirmingDelete}
-        name={document.name}
-        onConfirm={() => remove({ documentId: document._id })}
-      />
     </li>
   )
+}
+
+function useDocumentPreview(
+  document: Doc<"documents">
+): readonly [string | null, () => void] {
+  const previewDownload = useAction(api.tilesActions.presignPreviewDownload)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
+  const retry = useCallback(() => {
+    setPreviewUrl(null)
+    setAttempt((value) => value + 1)
+  }, [])
+
+  useEffect(() => {
+    if (document.previewVersion === undefined) return
+    let current = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let retryMs = 1_000
+    const load = () => {
+      void previewDownload({ documentId: document._id }).then(
+        (url) => {
+          if (current) setPreviewUrl(url)
+        },
+        () => {
+          if (!current) return
+          timer = setTimeout(load, retryMs)
+          retryMs = Math.min(retryMs * 2, 60_000)
+        }
+      )
+    }
+    load()
+    return () => {
+      current = false
+      if (timer) clearTimeout(timer)
+    }
+  }, [attempt, document._id, document.previewVersion, previewDownload])
+
+  return [previewUrl, retry]
 }
 
 function DeleteDialog({
