@@ -25,18 +25,27 @@ import {
 } from "./color/display-transform"
 import {
   activeLayer,
+  addGroup,
   addLayer,
+  addMask,
   createDocument,
   duplicateLayer,
+  findLayer,
   type Layer,
+  type LayerGroup,
+  type LayerMask,
+  type LayerNode,
   type LayerPatch,
   moveLayer,
   type PaintDocument,
   planComposite,
   removeLayer,
+  removeMask,
   resizeDocument,
   selectLayer,
+  selectMask,
   setLayer,
+  setMaskEnabled,
 } from "./doc/document"
 import { BACKGROUND } from "./doc/scene"
 import { createStrokeResampler } from "./geom/path"
@@ -95,6 +104,7 @@ export type EngineCommand =
     }
   /** Adds an empty layer above the active one and selects it. */
   | { type: "addLayer" }
+  | { type: "addGroup"; ids?: string[] }
   /** Copies a layer's pixels and settings above it, then selects the copy. */
   | { type: "duplicateLayer"; id: string }
   /** Removes a layer. The document always keeps at least one. */
@@ -102,7 +112,11 @@ export type EngineCommand =
   /** Chooses where the pen paints, which is what the caches are built around. */
   | { type: "selectLayer"; id: string }
   /** Moves a layer to a position in the stack, counted from the bottom. */
-  | { type: "moveLayer"; id: string; index: number }
+  | { type: "moveLayer"; id: string; index: number; parentId?: string }
+  | { type: "addMask"; id: string }
+  | { type: "selectMask"; id: string }
+  | { type: "setMaskEnabled"; id: string; enabled: boolean }
+  | { type: "removeMask"; id: string }
   /**
    * A layer's own settings. Every field is optional and unnamed ones are left
    * alone, so a control that owns one property need not know the rest.
@@ -128,11 +142,22 @@ export type EngineSnapshot = Readonly<{
   /** The stack, bottom to top. Pixels are not in here; the panel reads this. */
   layers: readonly LayerSummary[]
   activeLayerId: string
+  paintingMask: boolean
   error: string | null
 }>
 
-/** A layer as the UI sees it: everything but the pixels. */
-export type LayerSummary = Readonly<Omit<Layer, "surface">>
+export type MaskSummary = Readonly<Omit<LayerMask, "surface">>
+export type RasterLayerSummary = Readonly<
+  Omit<Layer, "surface" | "mask"> & { mask?: MaskSummary }
+>
+export type GroupSummary = Readonly<
+  Omit<LayerGroup, "children" | "mask"> & {
+    mask?: MaskSummary
+    children: readonly LayerSummary[]
+  }
+>
+/** The recursive tree as the UI sees it: settings, never pixels. */
+export type LayerSummary = RasterLayerSummary | GroupSummary
 
 /**
  * What a host shows before an engine exists. Exported so the React host and
@@ -148,6 +173,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   // A host that has not started an engine has no document to describe.
   layers: Object.freeze([]),
   activeLayerId: "",
+  paintingMask: false,
   error: null,
 })
 
@@ -347,8 +373,17 @@ export function createEngine(
   /** Hands the renderer whatever pixels each layer's surface has gained. */
   function uploadLayers() {
     if (!renderer || !doc) return
-    for (const layer of doc.layers)
-      renderer.uploadLayer(layer.id, layer.surface)
+    const target = renderer
+    const upload = (node: LayerNode) => {
+      if (node.mask) target.uploadMask(node.mask.id, node.mask.surface)
+      if (node.kind === "group") {
+        node.children.forEach(upload)
+        return
+      }
+      const layer = node
+      target.uploadLayer(layer.id, layer.surface)
+    }
+    doc.layers.forEach(upload)
   }
 
   /**
@@ -364,13 +399,25 @@ export function createEngine(
 
   /** The stack as the snapshot carries it: settings, never pixels. */
   function describeLayers(document: PaintDocument) {
+    const describe = (node: LayerNode): LayerSummary => {
+      const mask = node.mask
+        ? Object.freeze({ id: node.mask.id, enabled: node.mask.enabled })
+        : undefined
+      if (node.kind === "group") {
+        const { children, mask: _mask, ...settings } = node
+        return Object.freeze({
+          ...settings,
+          ...(mask ? { mask } : {}),
+          children: Object.freeze(children.map(describe)),
+        })
+      }
+      const { surface: _surface, mask: _mask, ...settings } = node
+      return Object.freeze({ ...settings, ...(mask ? { mask } : {}) })
+    }
     return {
-      layers: Object.freeze(
-        document.layers.map(({ surface: _surface, ...settings }) =>
-          Object.freeze(settings)
-        )
-      ),
+      layers: Object.freeze(document.layers.map(describe)),
       activeLayerId: document.activeLayerId,
+      paintingMask: document.paintingMask,
     }
   }
 
@@ -837,18 +884,32 @@ export function createEngine(
           addLayer(requireDocument())
           applyLayerChange()
           break
+        case "addGroup":
+          addGroup(requireDocument(), command.ids)
+          applyLayerChange()
+          break
         case "duplicateLayer":
-          renderer?.duplicateLayer(
-            command.id,
-            duplicateLayer(requireDocument(), command.id)
-          )
+          {
+            const document = requireDocument()
+            const source = findLayer(document, command.id)
+            const copyId = duplicateLayer(document, command.id)
+            const copy = findLayer(document, copyId)
+            renderer?.duplicateLayer(command.id, copyId)
+            if (source.mask && copy.mask)
+              renderer?.duplicateLayer(source.mask.id, copy.mask.id)
+          }
           applyLayerChange()
           break
         case "removeLayer":
-          removeLayer(requireDocument(), command.id)
-          // The texture goes with the layer; a document with fifty layers must
-          // not keep paying for the ones it no longer has.
-          renderer?.releaseLayer(command.id)
+          {
+            const removed = removeLayer(requireDocument(), command.id)
+            const releaseNode = (node: LayerNode) => {
+              if (node.mask) renderer?.releaseLayer(node.mask.id)
+              if (node.kind === "group") node.children.forEach(releaseNode)
+              renderer?.releaseLayer(node.id)
+            }
+            releaseNode(removed)
+          }
           applyLayerChange()
           break
         case "selectLayer":
@@ -856,9 +917,32 @@ export function createEngine(
           applyLayerChange()
           break
         case "moveLayer":
-          moveLayer(requireDocument(), command.id, command.index)
+          moveLayer(
+            requireDocument(),
+            command.id,
+            command.index,
+            command.parentId
+          )
           applyLayerChange()
           break
+        case "addMask":
+          addMask(requireDocument(), command.id)
+          applyLayerChange()
+          break
+        case "selectMask":
+          selectMask(requireDocument(), command.id)
+          applyLayerChange()
+          break
+        case "setMaskEnabled":
+          setMaskEnabled(requireDocument(), command.id, command.enabled)
+          applyLayerChange()
+          break
+        case "removeMask": {
+          const mask = removeMask(requireDocument(), command.id)
+          renderer?.releaseLayer(mask.id)
+          applyLayerChange()
+          break
+        }
         case "setLayer": {
           const { type: _type, id, ...patch } = command
           setLayer(requireDocument(), id, patch)

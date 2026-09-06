@@ -19,6 +19,7 @@ import {
   type CompositeItem,
 } from "../doc/document"
 import type { TiledLayer } from "../doc/tiled-layer"
+import type { TiledMask } from "../doc/tiled-mask"
 import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
 import { stampShader } from "../shaders/stamp"
@@ -76,6 +77,8 @@ export interface Renderer {
    * layers cost nothing.
    */
   uploadLayer(id: string, surface: TiledLayer): void
+  /** Uploads sparse single-channel mask tiles into their GPU paint target. */
+  uploadMask(id: string, surface: TiledMask): void
   /** Copies the authoritative GPU pixels into a new independent layer. */
   duplicateLayer(sourceId: string, copyId: string): void
   /** Frees a removed layer's storage. */
@@ -405,6 +408,8 @@ export function createRenderer(
     size: COMPOSITE_UNIFORM_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
+  const compositeValues = new Float32Array(COMPOSITE_UNIFORM_BYTES / 4)
+  const blendBindGroups = new Map<string, GPUBindGroup>()
   let stampBindGroup: GPUBindGroup | undefined
 
   /**
@@ -413,6 +418,7 @@ export function createRenderer(
    * this: what differs is only when they are written and what reads them.
    */
   type Surface = {
+    id: number
     texture: GPUTexture
     view: GPUTextureView
     /** Reads this surface, for the pass that flattens it into another. */
@@ -432,8 +438,19 @@ export function createRenderer(
   // independently. Normal-only upper stacks retain the constant-cost path.
   let liveAbove: CompositeItem[] = []
   let activeItem: CompositeItem | undefined
+  let paintTarget: Surface | undefined
   let blendScratch: Surface | undefined
   let frame: Surface | undefined
+  let complexOutput: Surface | undefined
+  let complexStages: CompositePlan["stages"]
+  let stageBelow: (Surface | undefined)[] = []
+  let stageAbove: (Surface | undefined)[] = []
+  let stageClipBase: (Surface | undefined)[] = []
+  let stageLiveAbove: boolean[] = []
+  let stageFrames: Surface[] = []
+  const groupCaches = new Map<string, Surface>()
+  const validGroupCaches = new Set<string>()
+  const coverageCaches = new Map<string, Surface>()
   let active: Surface | undefined
   let presentBindGroup: GPUBindGroup | undefined
   /** The plan in force. Undefined forces the next one to be applied in full. */
@@ -461,6 +478,8 @@ export function createRenderer(
     GPUTextureUsage.COPY_SRC |
     GPUTextureUsage.RENDER_ATTACHMENT
 
+  let nextSurfaceId = 0
+
   function createSurface(): Surface {
     if (width === 0) throw new Error("The render target has not been sized.")
     const texture = device.createTexture({
@@ -470,6 +489,7 @@ export function createRenderer(
     })
     const view = texture.createView()
     return {
+      id: ++nextSurfaceId,
       texture,
       view,
       readBindGroup: device.createBindGroup({
@@ -524,7 +544,11 @@ export function createRenderer(
   ) {
     // The uniform is written per composite rather than per surface: these
     // passes are rare, and one buffer is cheaper than a bind group each.
-    device.queue.writeBuffer(compositeUniform, 0, new Float32Array([opacity]))
+    compositeValues[0] = opacity
+    compositeValues[1] = 0
+    compositeValues[2] = 0
+    compositeValues[3] = 0
+    device.queue.writeBuffer(compositeUniform, 0, compositeValues)
     const encoder = device.createCommandEncoder()
     const pass = encoder.beginRenderPass({
       colorAttachments: [
@@ -541,35 +565,70 @@ export function createRenderer(
     destination.empty = false
   }
 
+  function blendBindings(
+    mode: BlendMode,
+    source: Surface,
+    maskId: string | undefined,
+    clipBase: Surface | undefined,
+    usesStroke: boolean
+  ): GPUBindGroup {
+    blendScratch ??= createSurface()
+    const mask = maskId ? surfaces.get(maskId) : undefined
+    const bindingKey = `${mode}:${source.id}:${mask?.id ?? 0}:${clipBase?.id ?? 0}:${usesStroke ? 1 : 0}`
+    const existing = blendBindGroups.get(bindingKey)
+    if (existing) return existing
+    const bindings = device.createBindGroup({
+      layout: blendPipeline(mode).getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: compositeUniform } },
+        { binding: 1, resource: source.view },
+        { binding: 2, resource: blendScratch.view },
+        {
+          binding: 3,
+          resource: usesStroke ? stroke!.view : placeholderView,
+        },
+        { binding: 4, resource: mask?.view ?? placeholderView },
+        { binding: 5, resource: clipBase?.view ?? placeholderView },
+      ],
+    })
+    blendBindGroups.set(bindingKey, bindings)
+    return bindings
+  }
+
   /** Snapshot the destination: WebGPU cannot sample a render attachment. */
   function blendSurface(
     source: Surface,
     destination: Surface,
     item: Pick<CompositeItem, "opacity" | "blend">,
-    inFlight = false
+    inFlight = false,
+    maskId?: string,
+    clipBase?: Surface,
+    maskInFlight = false
   ) {
     blendScratch ??= createSurface()
     const pipeline = blendPipeline(item.blend)
+    const bindings = blendBindings(
+      item.blend,
+      source,
+      maskId,
+      clipBase,
+      inFlight || maskInFlight
+    )
     const encoder = device.createCommandEncoder()
     encoder.copyTextureToTexture(
       { texture: destination.texture },
       { texture: blendScratch.texture },
       { width, height }
     )
-    device.queue.writeBuffer(
-      compositeUniform,
-      0,
-      new Float32Array([item.opacity, inFlight ? strokeOpacity : 0])
-    )
-    const bindings = device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: compositeUniform } },
-        { binding: 1, resource: source.view },
-        { binding: 2, resource: blendScratch.view },
-        { binding: 3, resource: inFlight ? stroke!.view : placeholderView },
-      ],
-    })
+    compositeValues[0] = item.opacity
+    compositeValues[1] = inFlight
+      ? strokeOpacity
+      : maskInFlight
+        ? -strokeOpacity
+        : 0
+    compositeValues[2] = maskId && surfaces.has(maskId) ? 1 : 0
+    compositeValues[3] = clipBase ? 1 : 0
+    device.queue.writeBuffer(compositeUniform, 0, compositeValues)
     const pass = encoder.beginRenderPass({
       colorAttachments: [
         { view: destination.view, loadOp: "load", storeOp: "store" },
@@ -583,6 +642,84 @@ export function createRenderer(
     destination.empty = false
   }
 
+  function itemSurface(item: CompositeItem): Surface | undefined {
+    if (item.kind !== "group") return surfaces.get(item.id)
+    const children = item.children ?? []
+    const target = groupCaches.get(item.id) ?? createSurface()
+    groupCaches.set(item.id, target)
+    if (validGroupCaches.has(item.id)) return target.empty ? undefined : target
+    if (!target.empty) clearSurface(target)
+    renderItems(children, target)
+    validGroupCaches.add(item.id)
+    return target.empty ? undefined : target
+  }
+
+  /** The alpha shape clipping reads, after the base item's mask and opacity. */
+  function coverageSurface(
+    item: CompositeItem,
+    source: Surface,
+    maskInFlight = false
+  ): Surface {
+    if (!item.maskId && item.opacity === 1 && !maskInFlight) return source
+    const target = coverageCaches.get(item.id) ?? createSurface()
+    coverageCaches.set(item.id, target)
+    if (!target.empty) clearSurface(target)
+    blendSurface(
+      source,
+      target,
+      { opacity: item.opacity, blend: "normal" },
+      false,
+      item.maskId,
+      undefined,
+      maskInFlight
+    )
+    return target
+  }
+
+  function renderItems(
+    items: readonly CompositeItem[],
+    target: Surface,
+    initialClipBase?: Surface
+  ) {
+    let clipBase = initialClipBase
+    for (const item of items) {
+      const source = itemSurface(item)
+      if (!source) continue
+      if (item.blend === "normal" && !item.maskId && !item.clip)
+        compositeSurface(source, target, item.opacity)
+      else
+        blendSurface(
+          source,
+          target,
+          item,
+          false,
+          item.maskId,
+          item.clip ? clipBase : undefined
+        )
+      if (!item.clip) clipBase = coverageSurface(item, source)
+    }
+  }
+
+  function prepareItems(
+    items: readonly CompositeItem[],
+    initialClipBase?: Surface
+  ) {
+    let clipBase = initialClipBase
+    for (const item of items) {
+      const source = itemSurface(item)
+      if (!source) continue
+      if (item.blend !== "normal" || item.maskId || item.clip)
+        blendBindings(
+          item.blend,
+          source,
+          item.maskId,
+          item.clip ? clipBase : undefined,
+          false
+        )
+      if (!item.clip) clipBase = coverageSurface(item, source)
+    }
+  }
+
   /**
    * Flattens one side of the stack into its cache, allocating the cache only
    * if there is anything to put in it. Layers with no texture have never held
@@ -592,17 +729,16 @@ export function createRenderer(
     items: readonly CompositeItem[],
     cache: Surface | undefined
   ): Surface | undefined {
-    const drawable = items.filter((item) => surfaces.has(item.id))
+    const drawable = items.filter(
+      (item) => item.kind === "group" || surfaces.has(item.id)
+    )
     if (drawable.length === 0) {
       cache?.texture.destroy()
       return undefined
     }
     const target = cache ?? createSurface()
     if (!target.empty) clearSurface(target)
-    for (const item of drawable)
-      if (item.blend === "normal")
-        compositeSurface(surfaces.get(item.id)!, target, item.opacity)
-      else blendSurface(surfaces.get(item.id)!, target, item)
+    renderItems(drawable, target)
     return target
   }
 
@@ -612,7 +748,14 @@ export function createRenderer(
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uniform } },
-        { binding: 1, resource: frame?.view ?? below?.view ?? placeholderView },
+        {
+          binding: 1,
+          resource:
+            complexOutput?.view ??
+            frame?.view ??
+            below?.view ??
+            placeholderView,
+        },
         { binding: 2, resource: frame ? placeholderView : active.view },
         { binding: 3, resource: frame ? placeholderView : stroke.view },
         { binding: 4, resource: above?.view ?? placeholderView },
@@ -721,13 +864,27 @@ export function createRenderer(
     resize(nextWidth, nextHeight) {
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
+      for (const surface of groupCaches.values()) surface.texture.destroy()
+      groupCaches.clear()
+      validGroupCaches.clear()
+      for (const surface of coverageCaches.values()) surface.texture.destroy()
+      coverageCaches.clear()
+      blendBindGroups.clear()
       stroke?.texture.destroy()
       below?.texture.destroy()
       above?.texture.destroy()
       blendScratch?.texture.destroy()
       frame?.texture.destroy()
+      for (const surface of stageFrames) surface.texture.destroy()
+      stageFrames = []
       blendScratch = undefined
       frame = undefined
+      complexOutput = undefined
+      complexStages = undefined
+      stageBelow = []
+      stageAbove = []
+      stageClipBase = []
+      stageLiveAbove = []
       liveAbove = []
       activeItem = undefined
       below = undefined
@@ -794,6 +951,37 @@ export function createRenderer(
       composition = undefined
       cachedFrom = undefined
     },
+    uploadMask(id, mask) {
+      if (!surfaces.has(id) && mask.tileCount() === 0) return
+      const surface = ensureSurface(id)
+      const dirty = mask.dirtyBounds()
+      if (!surface.empty && !dirty) return
+      const canvas = { x: 0, y: 0, width, height }
+      let wrote = false
+      for (const tile of mask.tiles()) {
+        const bounds = tileBounds(tile)
+        const visible = intersectRect(bounds, canvas)
+        if (!visible) continue
+        if (!surface.empty && dirty && !intersectRect(bounds, dirty)) continue
+        // Masks stay single-channel in the document. The current paint target
+        // is RGBA, so expand only while uploading and put coverage in alpha.
+        const rgba = new Uint16Array(TILE_SIZE * TILE_SIZE * TILE_CHANNELS)
+        for (let texel = 0; texel < tile.texels.length; texel++)
+          rgba[texel * TILE_CHANNELS + 3] = tile.texels[texel]
+        device.queue.writeTexture(
+          { texture: surface.texture, origin: { x: visible.x, y: visible.y } },
+          rgba,
+          { bytesPerRow: TILE_SIZE * BYTES_PER_TEXEL, rowsPerImage: TILE_SIZE },
+          { width: visible.width, height: visible.height }
+        )
+        wrote = true
+      }
+      mask.clearDirty()
+      if (!wrote) return
+      surface.empty = false
+      composition = undefined
+      cachedFrom = undefined
+    },
     duplicateLayer(sourceId, copyId) {
       const source = surfaces.get(sourceId)
       // An absent surface is an empty layer, which should stay allocation-free.
@@ -810,7 +998,14 @@ export function createRenderer(
     },
     releaseLayer(id) {
       surfaces.get(id)?.texture.destroy()
-      if (surfaces.delete(id)) {
+      groupCaches.get(id)?.texture.destroy()
+      coverageCaches.get(id)?.texture.destroy()
+      const releasedSurface = surfaces.delete(id)
+      const releasedGroup = groupCaches.delete(id)
+      validGroupCaches.delete(id)
+      const releasedCoverage = coverageCaches.delete(id)
+      if (releasedSurface || releasedGroup || releasedCoverage) {
+        blendBindGroups.clear()
         composition = undefined
         cachedFrom = undefined
       }
@@ -821,6 +1016,76 @@ export function createRenderer(
       const key = compositionKey(plan)
       if (key === composition) return
       composition = key
+      validGroupCaches.clear()
+      active = ensureSurface(plan.active.id)
+      paintTarget = ensureSurface(plan.paintTargetId ?? plan.active.id)
+      const plannedStages = plan.stages
+      const complex =
+        !!plannedStages &&
+        (plannedStages.length > 1 ||
+          !!plan.active.maskId ||
+          plan.active.clip ||
+          plan.paintTargetId !== plan.active.id)
+      if (complex) {
+        complexStages = plannedStages
+        liveAbove = []
+        activeItem = { ...plan.active }
+        pipeline = presentPipeline("normal")
+        stageBelow = complexStages!.map((stage, index) =>
+          buildCache(stage.below, stageBelow[index])
+        )
+        stageClipBase = complexStages!.map((stage) => {
+          const base = [...stage.below].reverse().find((item) => !item.clip)
+          const source = base ? itemSurface(base) : undefined
+          return base && source ? coverageSurface(base, source) : undefined
+        })
+        stageLiveAbove = complexStages!.map(
+          (stage) =>
+            stage.above[0]?.clip === true ||
+            stage.above.some((item) => item.blend !== "normal")
+        )
+        stageAbove = complexStages!.map((stage, index) =>
+          stageLiveAbove[index]
+            ? undefined
+            : buildCache(stage.above, stageAbove[index])
+        )
+        while (stageFrames.length < complexStages!.length)
+          stageFrames.push(createSurface())
+        complexOutput = stageFrames[complexStages!.length - 1]
+        let source = active
+        let sourceItem = activeItem
+        for (let index = 0; index < complexStages!.length; index++) {
+          const clipBase = sourceItem!.clip ? stageClipBase[index] : undefined
+          blendBindings(
+            sourceItem!.blend,
+            source!,
+            sourceItem!.maskId,
+            clipBase,
+            index === 0
+          )
+          if (stageLiveAbove[index]) {
+            const aboveBase = sourceItem!.clip
+              ? stageClipBase[index]
+              : coverageSurface(
+                  sourceItem!,
+                  source!,
+                  index === 0 && paintTarget !== active
+                )
+            prepareItems(complexStages![index].above, aboveBase)
+          }
+          source = stageFrames[index]
+          sourceItem = complexStages![index].container ?? sourceItem
+        }
+        device.queue.writeBuffer(
+          uniform,
+          ACTIVE_OPACITY_OFFSET,
+          new Float32Array([0, 1, 0])
+        )
+        refreshPresentBindGroup()
+        return
+      }
+      complexStages = undefined
+      complexOutput = undefined
       // Flattening is the expensive half, and most plans do not change what
       // goes into it: fading the active layer or selecting nothing new leaves
       // both caches exactly as they are.
@@ -842,7 +1107,6 @@ export function createRenderer(
       }
       // The active layer is drawn into, so it needs storage whether or not it
       // has ever held a pixel.
-      active = ensureSurface(plan.active.id)
       device.queue.writeBuffer(
         uniform,
         ACTIVE_OPACITY_OFFSET,
@@ -915,14 +1179,14 @@ export function createRenderer(
       return true
     },
     endStroke() {
-      if (!stroke || !active)
+      if (!stroke || !paintTarget)
         throw new Error("There is no active layer to paint into.")
       const region = paintedScissor()
       log.reset()
       resetPainted()
       if (!region) return
       // The mark goes into the layer at the stroke's opacity, once (D27).
-      compositeSurface(stroke, active, strokeOpacity, region)
+      compositeSurface(stroke, paintTarget, strokeOpacity, region)
       // The mark now lives in the layer's texture; the buffer must not show it
       // a second time through the present pass.
       clearStroke()
@@ -932,7 +1196,40 @@ export function createRenderer(
     render(view) {
       if (!presentBindGroup)
         throw new Error("No composition has been set to present.")
-      if (frame) {
+      if (complexStages) {
+        let current = active!
+        let currentItem = activeItem!
+        for (let index = 0; index < complexStages.length; index++) {
+          const target = stageFrames[index]
+          clearSurface(target)
+          if (stageBelow[index]) compositeSurface(stageBelow[index]!, target, 1)
+          blendSurface(
+            current,
+            target,
+            currentItem,
+            index === 0 && paintTarget === active,
+            currentItem.maskId,
+            currentItem.clip ? stageClipBase[index] : undefined,
+            index === 0 && paintTarget !== active
+          )
+          if (stageLiveAbove[index]) {
+            const aboveBase = currentItem.clip
+              ? stageClipBase[index]
+              : coverageSurface(
+                  currentItem,
+                  current,
+                  index === 0 && paintTarget !== active
+                )
+            renderItems(complexStages[index].above, target, aboveBase)
+          } else if (stageAbove[index]) {
+            compositeSurface(stageAbove[index]!, target, 1)
+          }
+          current = target
+          const container = complexStages[index].container
+          if (container) currentItem = container
+        }
+        complexOutput = current
+      } else if (frame) {
         clearSurface(frame)
         if (below) compositeSurface(below, frame, 1)
         blendSurface(active!, frame, activeItem!, true)
@@ -961,11 +1258,19 @@ export function createRenderer(
     destroy() {
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
+      for (const surface of groupCaches.values()) surface.texture.destroy()
+      groupCaches.clear()
+      validGroupCaches.clear()
+      for (const surface of coverageCaches.values()) surface.texture.destroy()
+      coverageCaches.clear()
+      blendBindGroups.clear()
       stroke?.texture.destroy()
       below?.texture.destroy()
       above?.texture.destroy()
       blendScratch?.texture.destroy()
       frame?.texture.destroy()
+      for (const surface of stageFrames) surface.texture.destroy()
+      stageFrames = []
       blendScratch = undefined
       frame = undefined
       liveAbove = []

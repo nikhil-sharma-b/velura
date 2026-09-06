@@ -13,12 +13,30 @@ import { useCallback, useState, useSyncExternalStore } from "react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
-import { createEngine, type Engine, INITIAL_SNAPSHOT } from "@/engine"
+import {
+  createEngine,
+  type Engine,
+  INITIAL_SNAPSHOT,
+  type LayerSummary,
+} from "@/engine"
 
 import { LayerPanel } from "./layer-panel"
 
 const getInitialSnapshot = () => INITIAL_SNAPSHOT
 const subscribeToNothing = () => () => {}
+
+function findLayer(
+  nodes: readonly LayerSummary[],
+  id: string
+): LayerSummary | undefined {
+  for (const node of nodes) {
+    if (node.id === id) return node
+    if (node.kind === "group") {
+      const found = findLayer(node.children, id)
+      if (found) return found
+    }
+  }
+}
 
 export function CanvasHost() {
   const [engine, setEngine] = useState<Engine | null>(null)
@@ -79,10 +97,8 @@ export function CanvasHost() {
         role="img"
         aria-label="Drawing canvas"
         onPointerDown={() => {
-          const selected = snapshot.layers.find(
-            (layer) => layer.id === snapshot.activeLayerId
-          )
-          if (selected?.locked)
+          const selected = findLayer(snapshot.layers, snapshot.activeLayerId)
+          if (selected?.kind === "raster" && selected.locked)
             setPaintNotice(`${selected.name} is locked. Unlock it to paint.`)
         }}
         // Touch and pen gestures belong to the stroke, not to the scroller.

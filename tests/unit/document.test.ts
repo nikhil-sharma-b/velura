@@ -1,15 +1,22 @@
 import { describe, expect, test } from "bun:test"
 import {
+  addGroup,
   addLayer,
+  addMask,
   cacheKey,
   compositionKey,
   createDocument,
   duplicateLayer,
+  findLayer,
+  findNode,
   moveLayer,
   planComposite,
   removeLayer,
+  removeMask,
   resizeDocument,
   selectLayer,
+  selectMask,
+  setMaskEnabled,
   setLayer,
 } from "../../engine/doc/document"
 
@@ -26,7 +33,9 @@ describe("the layer tree", () => {
     expect(doc.layers[0].kind).toBe("raster")
     expect(doc.activeLayerId).toBe(doc.layers[0].id)
     // The seeded scene lives in the bottom layer's own surface.
-    expect(doc.layers[0].surface.tileCount()).toBeGreaterThan(0)
+    expect(
+      findLayer(doc, doc.layers[0].id).surface.tileCount()
+    ).toBeGreaterThan(0)
   })
 
   test("a new layer goes above the active one and becomes active", () => {
@@ -49,7 +58,7 @@ describe("the layer tree", () => {
 
   test("duplicating a layer copies its pixels and settings into an independent layer", () => {
     const doc = document()
-    const original = doc.layers[0]
+    const original = findLayer(doc, doc.layers[0].id)
     setLayer(doc, original.id, {
       name: "Ink",
       opacity: 0.4,
@@ -59,7 +68,7 @@ describe("the layer tree", () => {
     })
 
     const copyId = duplicateLayer(doc, original.id)
-    const copy = doc.layers[1]
+    const copy = findLayer(doc, doc.layers[1].id)
 
     expect(copy).toMatchObject({
       id: copyId,
@@ -99,6 +108,52 @@ describe("the layer tree", () => {
     expect(doc.activeLayerId).toBe(top)
     moveLayer(doc, bottom, 2)
     expect(doc.layers.map((layer) => layer.id)[2]).toBe(bottom)
+  })
+
+  test("groups and groups within groups preserve sibling order", () => {
+    const doc = document()
+    const bottom = doc.activeLayerId
+    const top = addLayer(doc)
+    const inner = addGroup(doc, [bottom, top])
+    expect(findNode(doc, inner)).toMatchObject({
+      kind: "group",
+      children: [{ id: bottom }, { id: top }],
+    })
+    const outer = addGroup(doc, [inner])
+    expect(findNode(doc, outer)).toMatchObject({
+      kind: "group",
+      children: [{ id: inner, kind: "group" }],
+    })
+  })
+
+  test("moves nodes into groups and refuses cycles", () => {
+    const doc = document()
+    const bottom = doc.activeLayerId
+    const top = addLayer(doc)
+    const group = addGroup(doc, [bottom])
+    moveLayer(doc, top, 1, group)
+    expect(findNode(doc, group)).toMatchObject({
+      children: [{ id: bottom }, { id: top }],
+    })
+    expect(() => moveLayer(doc, group, 0, group)).toThrow(
+      "A group cannot be moved inside itself."
+    )
+  })
+
+  test("masks are reversible paint targets and can be removed", () => {
+    const doc = document()
+    const layer = findLayer(doc, doc.activeLayerId)
+    const maskId = addMask(doc, layer.id)
+    layer.mask!.surface.fillRect({ x: 0, y: 0, width: 1, height: 1 }, 0.5)
+    expect(layer.mask!.surface.tiles()[0].texels).toHaveLength(256 * 256)
+    expect(layer.mask!.surface.readPixel(0, 0)).toBeCloseTo(0.5, 3)
+    selectMask(doc, layer.id)
+    expect(planComposite(doc).paintTargetId).toBe(maskId)
+    setMaskEnabled(doc, layer.id, false)
+    expect(planComposite(doc).active?.maskId).toBeUndefined()
+    expect(doc.paintingMask).toBe(false)
+    expect(removeMask(doc, layer.id).id).toBe(maskId)
+    expect(layer.mask).toBeUndefined()
   })
 
   test("rejects nonsense", () => {
@@ -153,6 +208,21 @@ describe("the composite plan", () => {
       { id: bottom, opacity: 0.25, blend: "normal", clip: true },
     ])
   })
+
+  test("describes every group around the active layer from inside out", () => {
+    const doc = document()
+    const active = addLayer(doc)
+    const inner = addGroup(doc, [active])
+    const outer = addGroup(doc, [inner])
+    setLayer(doc, inner, { opacity: 0.6, blend: "multiply" })
+    setLayer(doc, outer, { visible: false })
+    const plan = planComposite(doc)
+    expect(plan.stages?.map((stage) => stage.container)).toEqual([
+      expect.objectContaining({ id: inner, opacity: 0.6, blend: "multiply" }),
+      expect.objectContaining({ id: outer, opacity: 0 }),
+      null,
+    ])
+  })
 })
 
 describe("the composition key", () => {
@@ -186,7 +256,7 @@ describe("the composition key", () => {
   test("does not change when pixels do", () => {
     const doc = document()
     const before = key(doc)
-    doc.layers[0].surface.fillRect(
+    findLayer(doc, doc.layers[0].id).surface.fillRect(
       { x: 0, y: 0, width: 8, height: 8 },
       [1, 0, 0, 1]
     )
@@ -242,8 +312,10 @@ describe("resizing", () => {
     expect(doc.width).toBe(128)
     expect(doc.layers).toHaveLength(2)
     expect(doc.layers[1]).toMatchObject({ id: top, opacity: 0.4, name: "Ink" })
-    expect(doc.layers[1].surface.width).toBe(128)
-    expect(doc.layers[0].surface.tileCount()).toBeGreaterThan(0)
+    expect(findLayer(doc, doc.layers[1].id).surface.width).toBe(128)
+    expect(
+      findLayer(doc, doc.layers[0].id).surface.tileCount()
+    ).toBeGreaterThan(0)
     expect(doc.activeLayerId).toBe(top)
   })
 })

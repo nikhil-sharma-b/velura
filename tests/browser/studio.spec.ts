@@ -96,6 +96,32 @@ test("the layer panel manages the stack and explains locked painting", async ({
   await expect(layers).toBeVisible()
 })
 
+test("the layer panel groups layers and manages a reversible mask", async ({
+  page,
+}) => {
+  await page.goto("/")
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  const layers = page.getByRole("region", { name: "Layers" })
+  await layers.getByRole("button", { name: "Add layer" }).click()
+  await layers.getByRole("button", { name: "Group active layer" }).click()
+  await expect(layers.getByText(/^Group /)).toBeVisible()
+  await expect(layers.getByText("Layer 2")).toBeVisible()
+
+  await layers.getByRole("button", { name: "Selected Layer 2" }).click()
+  await layers.getByRole("button", { name: "Add mask" }).click()
+  await expect(layers.getByRole("button", { name: "Paint mask" })).toBeVisible()
+  await layers.getByRole("button", { name: "Paint mask" }).click()
+  await layers.getByRole("button", { name: "Disable mask" }).click()
+  await expect(
+    layers.getByRole("button", { name: "Enable mask" })
+  ).toBeVisible()
+  await layers.getByRole("button", { name: "Remove mask" }).click()
+  await expect(layers.getByRole("button", { name: "Add mask" })).toBeVisible()
+})
+
 test("missing WebGPU explains browser requirements", async ({ page }) => {
   await page.addInitScript(() =>
     Object.defineProperty(navigator, "gpu", { value: undefined })

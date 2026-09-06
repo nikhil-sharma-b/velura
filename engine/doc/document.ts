@@ -2,71 +2,86 @@ import type { BlendMode } from "../shaders/blend-modes"
 export type { BlendMode } from "../shaders/blend-modes"
 
 import { seedScene } from "./scene"
+import { cloneTiledMask, createTiledMask, type TiledMask } from "./tiled-mask"
 import {
   cloneTiledLayer,
   createTiledLayer,
   type TiledLayer,
 } from "./tiled-layer"
 
-/**
- * The document: an ordered stack of layers over a fixed pixel canvas (§4.1).
- *
- * Pure data and pure operations. Nothing here knows about a GPU — what the
- * compositor needs is `planComposite`, which is a description of an order and
- * some numbers, and deliberately not a description of any pixels. That split
- * is what makes the cached compositor (D19) possible at all: a plan that
- * cannot mention pixels cannot be invalidated by painting.
- *
- * Groups, masks and the rest of the tree arrive with ticket 11. Blend modes
- * are carried through the plan and composition key, so changing them rebuilds
- * the affected caches without touching this seam.
- */
-
-export type Layer = {
+export type LayerMask = {
   readonly id: string
-  /** Vector layers are a later renderer over the same slot (D1). */
-  readonly kind: "raster"
+  enabled: boolean
+  /** Sparse hidden coverage: absent pixels reveal the layer. */
+  surface: TiledMask
+}
+
+type NodeSettings = {
+  readonly id: string
   name: string
-  /** In [0, 1], applied to the whole layer at composite time. */
   opacity: number
   visible: boolean
-  locked: boolean
   blend: BlendMode
-  /** Clips to the layer beneath it (ticket 11). */
   clip: boolean
-  /** The layer's own pixels: sparse, tiled, linear-light (D3). */
+  mask?: LayerMask
+}
+
+export type Layer = NodeSettings & {
+  readonly kind: "raster"
+  locked: boolean
   surface: TiledLayer
 }
+
+export type LayerGroup = NodeSettings & {
+  readonly kind: "group"
+  children: LayerNode[]
+}
+
+export type LayerNode = Layer | LayerGroup
 
 export type PaintDocument = {
   width: number
   height: number
-  /** Bottom to top: the order the compositor draws in. */
-  layers: Layer[]
+  /** Bottom to top at every level. */
+  layers: LayerNode[]
+  /** Always a raster layer: groups organise paint targets but are not one. */
   activeLayerId: string
+  paintingMask: boolean
 }
 
-/** What one layer contributes to a composite: no pixels, only how they land. */
 export type CompositeItem = {
   id: string
+  /** Omitted by older direct renderer probes, where raster is the default. */
+  kind?: "raster" | "group"
   opacity: number
   blend: BlendMode
   clip: boolean
+  maskId?: string
+  children?: CompositeItem[]
 }
 
-/**
- * The frame, as the compositor sees it. Below is flattened once; above may
- * also be flattened when every mode is Normal. Backdrop-dependent upper
- * layers must instead be applied to the live active layer in order (D19).
- */
-export type CompositePlan = {
+/** One level around the active leaf, from its parent out to the document. */
+export type CompositeStage = {
   below: CompositeItem[]
-  /** Null only for a document with no layers, which cannot be constructed. */
+  above: CompositeItem[]
+  /** The group that owns this level; null is the document root. */
+  container: CompositeItem | null
+}
+
+export type CompositePlan = {
+  /** Root-level aliases retained for simple stacks and renderer probes. */
+  below: CompositeItem[]
   active: CompositeItem | null
   above: CompositeItem[]
+  stages?: CompositeStage[]
+  paintTargetId?: string
 }
 
 let nextId = 0
+
+function base(name: string, id: string): NodeSettings {
+  return { id, name, opacity: 1, visible: true, blend: "normal", clip: false }
+}
 
 function createLayer(
   width: number,
@@ -75,14 +90,9 @@ function createLayer(
   id = `layer-${++nextId}`
 ): Layer {
   return {
-    id,
+    ...base(name, id),
     kind: "raster",
-    name,
-    opacity: 1,
-    visible: true,
     locked: false,
-    blend: "normal",
-    clip: false,
     surface: createTiledLayer({ width, height }),
   }
 }
@@ -94,84 +104,184 @@ export function createDocument(size: {
   const layer = createLayer(size.width, size.height, "Layer 1")
   seedScene(layer.surface)
   return {
-    width: size.width,
-    height: size.height,
+    ...size,
     layers: [layer],
     activeLayerId: layer.id,
+    paintingMask: false,
   }
 }
 
-/** Throws rather than returning null: every caller here has an id from us. */
-function indexOf(doc: PaintDocument, id: string): number {
-  const index = doc.layers.findIndex((layer) => layer.id === id)
-  if (index < 0) throw new Error(`No layer ${id} is in this document.`)
-  return index
+type Located = { node: LayerNode; siblings: LayerNode[]; index: number }
+
+function locate(nodes: LayerNode[], id: string): Located | undefined {
+  for (let index = 0; index < nodes.length; index++) {
+    const node = nodes[index]
+    if (node.id === id) return { node, siblings: nodes, index }
+    if (node.kind === "group") {
+      const nested = locate(node.children, id)
+      if (nested) return nested
+    }
+  }
+}
+
+function requireNode(doc: PaintDocument, id: string): Located {
+  const found = locate(doc.layers, id)
+  if (!found) throw new Error(`No layer ${id} is in this document.`)
+  return found
+}
+
+export function findNode(doc: PaintDocument, id: string): LayerNode {
+  return requireNode(doc, id).node
 }
 
 export function findLayer(doc: PaintDocument, id: string): Layer {
-  return doc.layers[indexOf(doc, id)]
+  const node = findNode(doc, id)
+  if (node.kind !== "raster") throw new Error(`${id} is a group, not a layer.`)
+  return node
 }
 
 export function activeLayer(doc: PaintDocument): Layer {
   return findLayer(doc, doc.activeLayerId)
 }
 
-/**
- * Adds an empty layer directly above the active one and selects it, which is
- * where a painter expects the next mark to go. Returns the new layer's id.
- */
+export function rasterLayers(nodes: readonly LayerNode[]): Layer[] {
+  return nodes.flatMap((node) =>
+    node.kind === "raster" ? [node] : rasterLayers(node.children)
+  )
+}
+
 export function addLayer(doc: PaintDocument): string {
+  const active = requireNode(doc, doc.activeLayerId)
   const layer = createLayer(
     doc.width,
     doc.height,
-    `Layer ${doc.layers.length + 1}`
+    `Layer ${rasterLayers(doc.layers).length + 1}`
   )
-  doc.layers.splice(indexOf(doc, doc.activeLayerId) + 1, 0, layer)
+  active.siblings.splice(active.index + 1, 0, layer)
   doc.activeLayerId = layer.id
+  doc.paintingMask = false
   return layer.id
 }
 
-/** Places an independent pixel copy directly above its source and selects it. */
-export function duplicateLayer(doc: PaintDocument, id: string): string {
-  const sourceIndex = indexOf(doc, id)
-  const source = doc.layers[sourceIndex]
-  const copy = {
-    ...source,
-    id: `layer-${++nextId}`,
-    name: `${source.name} copy`,
-    surface: cloneTiledLayer(source.surface),
+function cloneLayer(node: Layer): Layer {
+  const id = `layer-${++nextId}`
+  const mask = node.mask
+    ? {
+        ...node.mask,
+        id: `mask-${++nextId}`,
+        surface: cloneTiledMask(node.mask.surface),
+      }
+    : undefined
+  return {
+    ...node,
+    id,
+    name: `${node.name} copy`,
+    mask,
+    surface: cloneTiledLayer(node.surface),
   }
-  doc.layers.splice(sourceIndex + 1, 0, copy)
+}
+
+export function duplicateLayer(doc: PaintDocument, id: string): string {
+  const source = requireNode(doc, id)
+  if (source.node.kind !== "raster")
+    throw new Error("Groups cannot be duplicated as layers.")
+  const copy = cloneLayer(source.node)
+  source.siblings.splice(source.index + 1, 0, copy)
   doc.activeLayerId = copy.id
+  doc.paintingMask = false
   return copy.id
 }
 
-export function removeLayer(doc: PaintDocument, id: string): void {
-  const index = indexOf(doc, id)
-  if (doc.layers.length === 1)
+export function addGroup(
+  doc: PaintDocument,
+  ids: readonly string[] = [doc.activeLayerId]
+): string {
+  if (ids.length === 0) throw new Error("A group needs at least one layer.")
+  const locations = ids.map((id) => requireNode(doc, id))
+  const siblings = locations[0].siblings
+  if (locations.some((item) => item.siblings !== siblings))
+    throw new Error("Only sibling layers can be grouped together.")
+  const sorted = [...locations].sort((a, b) => a.index - b.index)
+  if (sorted.some((item, index) => item.index !== sorted[0].index + index))
+    throw new Error("Grouped layers must be adjacent.")
+  const children = sorted.map((item) => item.node)
+  siblings.splice(sorted[0].index, children.length)
+  const sequence = ++nextId
+  const group: LayerGroup = {
+    ...base(`Group ${sequence}`, `group-${sequence}`),
+    kind: "group",
+    children,
+  }
+  siblings.splice(sorted[0].index, 0, group)
+  return group.id
+}
+
+function nearestRaster(
+  nodes: readonly LayerNode[],
+  before: number
+): Layer | undefined {
+  for (let index = Math.min(before, nodes.length - 1); index >= 0; index--) {
+    const node = nodes[index]
+    if (node.kind === "raster") return node
+    const child = rasterLayers(node.children).at(-1)
+    if (child) return child
+  }
+}
+
+export function removeLayer(doc: PaintDocument, id: string): LayerNode {
+  const found = requireNode(doc, id)
+  if (rasterLayers(doc.layers).length - rasterLayers([found.node]).length < 1)
     throw new Error("A document must keep at least one layer.")
-  doc.layers.splice(index, 1)
-  // The layer under the hole, or the bottom of the stack when there was none.
-  if (doc.activeLayerId === id)
-    doc.activeLayerId = doc.layers[Math.max(0, index - 1)].id
+  found.siblings.splice(found.index, 1)
+  if (
+    rasterLayers([found.node]).some((layer) => layer.id === doc.activeLayerId)
+  ) {
+    const replacement =
+      nearestRaster(found.siblings, found.index - 1) ??
+      nearestRaster(found.siblings, found.index) ??
+      rasterLayers(doc.layers)[0]
+    doc.activeLayerId = replacement.id
+    doc.paintingMask = false
+  }
+  return found.node
 }
 
 export function selectLayer(doc: PaintDocument, id: string): void {
   doc.activeLayerId = findLayer(doc, id).id
+  doc.paintingMask = false
 }
 
-/** `index` is the destination position in the stack, counted from the bottom. */
-export function moveLayer(doc: PaintDocument, id: string, index: number): void {
-  if (!Number.isInteger(index) || index < 0 || index >= doc.layers.length)
+export function moveLayer(
+  doc: PaintDocument,
+  id: string,
+  index: number,
+  parentId?: string
+): void {
+  const source = requireNode(doc, id)
+  const destination = parentId
+    ? (() => {
+        const parent = findNode(doc, parentId)
+        if (parent.kind !== "group")
+          throw new Error(`${parentId} is not a group.`)
+        return parent.children
+      })()
+    : source.siblings
+  if (!Number.isInteger(index) || index < 0 || index > destination.length)
     throw new Error("A layer cannot move outside the stack.")
-  const [layer] = doc.layers.splice(indexOf(doc, id), 1)
-  doc.layers.splice(index, 0, layer)
+  if (
+    source.node.kind === "group" &&
+    (parentId === source.node.id ||
+      locate(source.node.children, parentId ?? ""))
+  )
+    throw new Error("A group cannot be moved inside itself.")
+  source.siblings.splice(source.index, 1)
+  destination.splice(index, 0, source.node)
 }
 
-/** Everything about a layer except the pixels: what a panel shows and edits. */
-export type LayerSettings = Omit<Layer, "id" | "kind" | "surface">
-
-/** A change to some of them. Unnamed fields are left alone. */
+export type LayerSettings = Pick<
+  LayerNode,
+  "name" | "opacity" | "visible" | "blend" | "clip"
+> & { locked?: boolean }
 export type LayerPatch = Partial<LayerSettings>
 
 export function setLayer(
@@ -179,7 +289,7 @@ export function setLayer(
   id: string,
   patch: LayerPatch
 ): void {
-  const layer = findLayer(doc, id)
+  const node = findNode(doc, id)
   if (patch.opacity !== undefined) {
     if (
       !Number.isFinite(patch.opacity) ||
@@ -187,24 +297,59 @@ export function setLayer(
       patch.opacity > 1
     )
       throw new Error("Layer opacity must be a finite value in [0, 1].")
-    layer.opacity = patch.opacity
+    node.opacity = patch.opacity
   }
   if (patch.name !== undefined) {
     if (patch.name === "") throw new Error("A layer must have a name.")
-    layer.name = patch.name
+    node.name = patch.name
   }
-  if (patch.visible !== undefined) layer.visible = patch.visible
-  if (patch.locked !== undefined) layer.locked = patch.locked
-  if (patch.blend !== undefined) layer.blend = patch.blend
-  if (patch.clip !== undefined) layer.clip = patch.clip
+  if (patch.visible !== undefined) node.visible = patch.visible
+  if (patch.blend !== undefined) node.blend = patch.blend
+  if (patch.clip !== undefined) node.clip = patch.clip
+  if (patch.locked !== undefined) {
+    if (node.kind !== "raster") throw new Error("Groups cannot be locked.")
+    node.locked = patch.locked
+  }
 }
 
-/**
- * Re-tiles every layer at a new canvas size, keeping the stack, its settings
- * and the selection. Painted pixels do not survive: the document is authored
- * in canvas pixels until the view matrix lands (ticket 13), so a resize is a
- * different document at the same structure.
- */
+export function addMask(doc: PaintDocument, id: string): string {
+  const node = findNode(doc, id)
+  if (node.mask) throw new Error(`${node.name} already has a mask.`)
+  node.mask = {
+    id: `mask-${++nextId}`,
+    enabled: true,
+    surface: createTiledMask({ width: doc.width, height: doc.height }),
+  }
+  return node.mask.id
+}
+
+export function setMaskEnabled(
+  doc: PaintDocument,
+  id: string,
+  enabled: boolean
+): void {
+  const node = findNode(doc, id)
+  if (!node.mask) throw new Error(`${node.name} has no mask.`)
+  node.mask.enabled = enabled
+  if (!enabled && id === doc.activeLayerId) doc.paintingMask = false
+}
+
+export function removeMask(doc: PaintDocument, id: string): LayerMask {
+  const node = findNode(doc, id)
+  if (!node.mask) throw new Error(`${node.name} has no mask.`)
+  const mask = node.mask
+  delete node.mask
+  if (id === doc.activeLayerId) doc.paintingMask = false
+  return mask
+}
+
+export function selectMask(doc: PaintDocument, id: string): void {
+  const layer = findLayer(doc, id)
+  if (!layer.mask) throw new Error(`${layer.name} has no mask.`)
+  doc.activeLayerId = id
+  doc.paintingMask = true
+}
+
 export function resizeDocument(
   doc: PaintDocument,
   width: number,
@@ -212,53 +357,91 @@ export function resizeDocument(
 ): void {
   doc.width = width
   doc.height = height
-  doc.layers = doc.layers.map((layer) => ({
-    ...layer,
-    surface: createTiledLayer({ width, height }),
-  }))
-  seedScene(doc.layers[0].surface)
+  const resize = (node: LayerNode): LayerNode => {
+    const mask = node.mask
+      ? { ...node.mask, surface: createTiledMask({ width, height }) }
+      : undefined
+    return node.kind === "raster"
+      ? { ...node, mask, surface: createTiledLayer({ width, height }) }
+      : { ...node, mask, children: node.children.map(resize) }
+  }
+  doc.layers = doc.layers.map(resize)
+  seedScene(rasterLayers(doc.layers)[0].surface)
 }
 
-const item = (layer: Layer): CompositeItem => ({
-  id: layer.id,
-  // Hidden and fully transparent composite identically, and saying so here
-  // means the compositor never needs to know about visibility at all.
-  opacity: layer.visible ? layer.opacity : 0,
-  blend: layer.blend,
-  clip: layer.clip,
-})
+const contributes = (node: LayerNode) => node.visible && node.opacity > 0
 
-export function planComposite(doc: PaintDocument): CompositePlan {
-  const split = indexOf(doc, doc.activeLayerId)
-  const contributes = (layer: Layer) => layer.visible && layer.opacity > 0
+function item(node: LayerNode): CompositeItem {
   return {
-    below: doc.layers.slice(0, split).filter(contributes).map(item),
-    // The active layer stays in the plan even when it is hidden: it is where
-    // the pen is painting, and the caches are built around it either way.
-    active: item(doc.layers[split]),
-    above: doc.layers
-      .slice(split + 1)
-      .filter(contributes)
-      .map(item),
+    id: node.id,
+    ...(node.kind === "group" ? { kind: "group" as const } : {}),
+    opacity: node.visible ? node.opacity : 0,
+    blend: node.blend,
+    clip: node.clip,
+    ...(node.mask?.enabled ? { maskId: node.mask.id } : {}),
+    ...(node.kind === "group"
+      ? { children: node.children.filter(contributes).map(item) }
+      : {}),
   }
 }
 
-/**
- * A plan's identity: what the compositor has been told, all of it. A plan that
- * hashes the same asks for nothing to be done. Pixels are absent from it by
- * construction, which is the rule in §6.3 — structure, not paint — and so is a
- * layer's name, which is not structure the compositor can see.
- */
+function pathTo(
+  nodes: LayerNode[],
+  id: string
+): { siblings: LayerNode[]; index: number; groups: LayerGroup[] } | undefined {
+  for (let index = 0; index < nodes.length; index++) {
+    const node = nodes[index]
+    if (node.id === id) return { siblings: nodes, index, groups: [] }
+    if (node.kind === "group") {
+      const nested = pathTo(node.children, id)
+      if (nested) return { ...nested, groups: [node, ...nested.groups] }
+    }
+  }
+}
+
+export function planComposite(doc: PaintDocument): CompositePlan {
+  const path = pathTo(doc.layers, doc.activeLayerId)
+  if (!path)
+    throw new Error(`No layer ${doc.activeLayerId} is in this document.`)
+  const stages: CompositeStage[] = []
+  let siblings = path.siblings
+  let index = path.index
+  const innerToOuter = [...path.groups].reverse()
+  for (const container of innerToOuter) {
+    stages.push({
+      below: siblings.slice(0, index).filter(contributes).map(item),
+      above: siblings
+        .slice(index + 1)
+        .filter(contributes)
+        .map(item),
+      container: item({ ...container, children: [] }),
+    })
+    const parent = requireNode(doc, container.id)
+    siblings = parent.siblings
+    index = parent.index
+  }
+  stages.push({
+    below: siblings.slice(0, index).filter(contributes).map(item),
+    above: siblings
+      .slice(index + 1)
+      .filter(contributes)
+      .map(item),
+    container: null,
+  })
+  const active = findLayer(doc, doc.activeLayerId)
+  return {
+    below: stages.at(-1)!.below,
+    active: item(active),
+    above: stages.at(-1)!.above,
+    stages,
+    paintTargetId: doc.paintingMask ? active.mask!.id : active.id,
+  }
+}
+
 export function compositionKey(plan: CompositePlan): string {
   return JSON.stringify(plan)
 }
 
-/**
- * The part of a plan the two caches are built from. Narrower than the plan on
- * purpose: the active layer is in neither cache, so fading it is a uniform to
- * rewrite rather than two caches to flatten again. Only its identity matters
- * here, because that is what decides where the stack is cut.
- */
 export function cacheKey(plan: CompositePlan): string {
-  return JSON.stringify([plan.below, plan.active?.id, plan.above])
+  return JSON.stringify(plan.stages ?? [plan.below, plan.above])
 }

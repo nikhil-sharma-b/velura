@@ -5,8 +5,11 @@ import {
   DotsSixVerticalIcon,
   EyeIcon,
   EyeSlashIcon,
+  FolderPlusIcon,
+  IntersectIcon,
   LockIcon,
   LockOpenIcon,
+  MaskHappyIcon,
   PlusIcon,
   TrashIcon,
 } from "@phosphor-icons/react"
@@ -31,27 +34,52 @@ import {
   type LayerSummary,
 } from "@/engine"
 
-type LayerPanelProps = {
-  engine: Engine
-  snapshot: EngineSnapshot
+type LayerPanelProps = { engine: Engine; snapshot: EngineSnapshot }
+
+function findSummary(
+  nodes: readonly LayerSummary[],
+  id: string
+): LayerSummary | undefined {
+  for (const node of nodes) {
+    if (node.id === id) return node
+    if (node.kind === "group") {
+      const found = findSummary(node.children, id)
+      if (found) return found
+    }
+  }
+}
+
+function rasterCount(nodes: readonly LayerSummary[]): number {
+  return nodes.reduce(
+    (count, node) =>
+      count + (node.kind === "raster" ? 1 : rasterCount(node.children)),
+    0
+  )
 }
 
 function LayerRow({
   engine,
   layer,
   index,
-  layerCount,
-  active,
+  parentId,
+  depth,
+  selected,
+  activeLayerId,
+  totalRasters,
+  onSelect,
 }: {
   engine: Engine
   layer: LayerSummary
   index: number
-  layerCount: number
-  active: boolean
+  parentId?: string
+  depth: number
+  selected: boolean
+  activeLayerId: string
+  totalRasters: number
+  onSelect(id: string): void
 }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(layer.name)
-
   const finishRename = () => {
     const nextName = name.trim()
     if (nextName && nextName !== layer.name)
@@ -59,138 +87,194 @@ function LayerRow({
     else setName(layer.name)
     setEditing(false)
   }
+  const removedRasters =
+    layer.kind === "raster" ? 1 : rasterCount(layer.children)
 
   return (
-    <div
-      draggable={!editing}
-      data-layer-row
-      data-testid={`layer-row-${layer.name}`}
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = "move"
-        event.dataTransfer.setData("text/plain", layer.id)
-      }}
-      onDragOver={(event) => {
-        event.preventDefault()
-        event.dataTransfer.dropEffect = "move"
-      }}
-      onDrop={(event) => {
-        event.preventDefault()
-        const id = event.dataTransfer.getData("text/plain")
-        if (id && id !== layer.id)
-          void engine.dispatch({ type: "moveLayer", id, index })
-      }}
-      className={`group border-b border-border/70 ${
-        active ? "bg-accent/80" : "bg-background/80 hover:bg-muted/60"
-      }`}
-    >
-      <div className="flex min-h-14 items-center gap-1.5 px-2 py-1.5">
-        <DotsSixVerticalIcon
-          className="size-3.5 shrink-0 text-muted-foreground opacity-50"
-          aria-hidden="true"
-        />
-        <button
-          type="button"
-          aria-label={`${active ? "Selected" : "Select"} ${layer.name}`}
-          onClick={() =>
-            void engine.dispatch({ type: "selectLayer", id: layer.id })
-          }
-          className="flex min-w-0 flex-1 items-center gap-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <span className="grid size-9 shrink-0 place-items-center border bg-[linear-gradient(45deg,var(--muted)_25%,transparent_25%,transparent_75%,var(--muted)_75%),linear-gradient(45deg,var(--muted)_25%,transparent_25%,transparent_75%,var(--muted)_75%)] bg-[length:8px_8px] bg-[position:0_0,4px_4px]">
-            <span className="size-5 rounded-full bg-gradient-to-br from-brand-violet/70 to-brand-coral/70" />
-          </span>
-          {editing ? (
-            <Input
-              autoFocus
-              aria-label="Layer name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              onBlur={finishRename}
-              onClick={(event) => event.stopPropagation()}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") finishRename()
-                if (event.key === "Escape") {
-                  setName(layer.name)
-                  setEditing(false)
-                }
-              }}
-              className="h-7"
-            />
-          ) : (
-            <span
-              onDoubleClick={(event) => {
-                event.stopPropagation()
-                setName(layer.name)
-                setEditing(true)
-              }}
-              className="min-w-0 flex-1 truncate text-xs font-medium"
-            >
-              {layer.name}
+    <>
+      <div
+        draggable={!editing}
+        data-layer-row
+        data-testid={`layer-row-${layer.name}`}
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = "move"
+          event.dataTransfer.setData("text/plain", layer.id)
+        }}
+        onDragOver={(event) => {
+          event.preventDefault()
+          event.dataTransfer.dropEffect = "move"
+        }}
+        onDrop={(event) => {
+          event.preventDefault()
+          const id = event.dataTransfer.getData("text/plain")
+          if (id && id !== layer.id)
+            void engine.dispatch({ type: "moveLayer", id, index, parentId })
+        }}
+        className={`group border-b border-border/70 ${
+          selected ? "bg-accent/80" : "bg-background/80 hover:bg-muted/60"
+        }`}
+        style={{ paddingLeft: `${depth * 14}px` }}
+      >
+        <div className="flex min-h-12 items-center gap-1.5 px-2 py-1.5">
+          <DotsSixVerticalIcon className="size-3.5 shrink-0 text-muted-foreground opacity-50" />
+          <button
+            type="button"
+            aria-label={`${selected ? "Selected" : "Select"} ${layer.name}`}
+            onClick={() => {
+              onSelect(layer.id)
+              if (layer.kind === "raster")
+                void engine.dispatch({ type: "selectLayer", id: layer.id })
+            }}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <span className="grid size-8 shrink-0 place-items-center border bg-muted/50 text-xs">
+              {layer.kind === "group" ? "▣" : layer.mask ? "◐" : "●"}
             </span>
+            {editing ? (
+              <Input
+                autoFocus
+                aria-label="Layer name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                onBlur={finishRename}
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") finishRename()
+                  if (event.key === "Escape") {
+                    setName(layer.name)
+                    setEditing(false)
+                  }
+                }}
+                className="h-7"
+              />
+            ) : (
+              <span
+                onDoubleClick={(event) => {
+                  event.stopPropagation()
+                  setName(layer.name)
+                  setEditing(true)
+                }}
+                className="min-w-0 flex-1 truncate text-xs font-medium"
+              >
+                {layer.name}
+              </span>
+            )}
+          </button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={`${layer.visible ? "Hide" : "Show"} ${layer.name}`}
+            onClick={() =>
+              void engine.dispatch({
+                type: "setLayer",
+                id: layer.id,
+                visible: !layer.visible,
+              })
+            }
+          >
+            {layer.visible ? <EyeIcon /> : <EyeSlashIcon />}
+          </Button>
+          {layer.kind === "raster" && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
+              onClick={() =>
+                void engine.dispatch({
+                  type: "setLayer",
+                  id: layer.id,
+                  locked: !layer.locked,
+                })
+              }
+            >
+              {layer.locked ? <LockIcon /> : <LockOpenIcon />}
+            </Button>
           )}
-        </button>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label={`${layer.visible ? "Hide" : "Show"} ${layer.name}`}
-          onClick={() =>
-            void engine.dispatch({
-              type: "setLayer",
-              id: layer.id,
-              visible: !layer.visible,
-            })
-          }
-        >
-          {layer.visible ? <EyeIcon /> : <EyeSlashIcon />}
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
-          onClick={() =>
-            void engine.dispatch({
-              type: "setLayer",
-              id: layer.id,
-              locked: !layer.locked,
-            })
-          }
-        >
-          {layer.locked ? <LockIcon /> : <LockOpenIcon />}
-        </Button>
-        {active && (
-          <>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              aria-label={`Duplicate ${layer.name}`}
-              onClick={() =>
-                void engine.dispatch({ type: "duplicateLayer", id: layer.id })
-              }
-            >
-              <CopyIcon />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              aria-label={`Delete ${layer.name}`}
-              disabled={layerCount === 1}
-              onClick={() =>
-                void engine.dispatch({ type: "removeLayer", id: layer.id })
-              }
-            >
-              <TrashIcon />
-            </Button>
-          </>
-        )}
+          {(selected || layer.id === activeLayerId) && (
+            <>
+              {layer.kind === "raster" && (
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`Duplicate ${layer.name}`}
+                  onClick={() =>
+                    void engine.dispatch({
+                      type: "duplicateLayer",
+                      id: layer.id,
+                    })
+                  }
+                >
+                  <CopyIcon />
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label={`Delete ${layer.name}`}
+                disabled={totalRasters === removedRasters}
+                onClick={() =>
+                  void engine.dispatch({ type: "removeLayer", id: layer.id })
+                }
+              >
+                <TrashIcon />
+              </Button>
+            </>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   )
 }
 
+function Rows({
+  engine,
+  nodes,
+  selectedId,
+  activeLayerId,
+  totalRasters,
+  onSelect,
+}: {
+  engine: Engine
+  nodes: readonly LayerSummary[]
+  selectedId: string
+  activeLayerId: string
+  totalRasters: number
+  onSelect(id: string): void
+}) {
+  const render = (
+    items: readonly LayerSummary[],
+    depth: number,
+    parentId?: string
+  ): React.ReactNode[] =>
+    [...items].reverse().flatMap((layer, reverseIndex) => {
+      const index = items.length - reverseIndex - 1
+      return [
+        <LayerRow
+          key={layer.id}
+          engine={engine}
+          layer={layer}
+          index={index}
+          parentId={parentId}
+          depth={depth}
+          selected={layer.id === selectedId}
+          activeLayerId={activeLayerId}
+          totalRasters={totalRasters}
+          onSelect={onSelect}
+        />,
+        ...(layer.kind === "group"
+          ? render(layer.children, depth + 1, layer.id)
+          : []),
+      ]
+    })
+  return <>{render(nodes, 0)}</>
+}
+
 export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
-  const active = snapshot.layers.find(
-    (layer) => layer.id === snapshot.activeLayerId
-  )
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const selected =
+    findSummary(snapshot.layers, selectedId ?? snapshot.activeLayerId) ??
+    findSummary(snapshot.layers, snapshot.activeLayerId)
+  const count = rasterCount(snapshot.layers)
 
   return (
     <section
@@ -202,39 +286,104 @@ export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
         <h2 className="text-xs font-semibold tracking-wide uppercase">
           Layers
         </h2>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Add layer"
-          onClick={() => void engine.dispatch({ type: "addLayer" })}
-        >
-          <PlusIcon />
-        </Button>
+        <div className="flex">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Group active layer"
+            onClick={() => void engine.dispatch({ type: "addGroup" })}
+          >
+            <FolderPlusIcon />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Add layer"
+            onClick={() => void engine.dispatch({ type: "addLayer" })}
+          >
+            <PlusIcon />
+          </Button>
+        </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {[...snapshot.layers].reverse().map((layer) => (
-          <LayerRow
-            key={layer.id}
-            engine={engine}
-            layer={layer}
-            index={snapshot.layers.findIndex((item) => item.id === layer.id)}
-            layerCount={snapshot.layers.length}
-            active={layer.id === snapshot.activeLayerId}
-          />
-        ))}
+        <Rows
+          engine={engine}
+          nodes={snapshot.layers}
+          selectedId={selected?.id ?? snapshot.activeLayerId}
+          activeLayerId={snapshot.activeLayerId}
+          totalRasters={count}
+          onSelect={setSelectedId}
+        />
       </div>
 
-      {active && (
+      {selected && (
         <div className="shrink-0 space-y-3 border-t bg-background/95 p-3">
+          <div className="flex items-center gap-1">
+            <Button
+              variant={selected.clip ? "secondary" : "outline"}
+              size="sm"
+              aria-pressed={selected.clip}
+              onClick={() =>
+                void engine.dispatch({
+                  type: "setLayer",
+                  id: selected.id,
+                  clip: !selected.clip,
+                })
+              }
+            >
+              <IntersectIcon /> Clip
+            </Button>
+            {selected.kind === "raster" && (
+              <Button
+                variant={snapshot.paintingMask ? "secondary" : "outline"}
+                size="sm"
+                onClick={() =>
+                  void engine.dispatch(
+                    selected.mask
+                      ? { type: "selectMask", id: selected.id }
+                      : { type: "addMask", id: selected.id }
+                  )
+                }
+              >
+                <MaskHappyIcon /> {selected.mask ? "Paint mask" : "Add mask"}
+              </Button>
+            )}
+          </div>
+          {selected.mask && (
+            <div className="flex gap-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  void engine.dispatch({
+                    type: "setMaskEnabled",
+                    id: selected.id,
+                    enabled: !selected.mask!.enabled,
+                  })
+                }
+              >
+                {selected.mask.enabled ? "Disable mask" : "Enable mask"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  void engine.dispatch({ type: "removeMask", id: selected.id })
+                }
+              >
+                Remove mask
+              </Button>
+            </div>
+          )}
           <div className="flex items-center justify-between gap-3">
             <Label htmlFor="blend-mode">Blend</Label>
             <Select
-              value={active.blend}
+              value={selected.blend}
               onValueChange={(blend: BlendMode) =>
                 void engine.dispatch({
                   type: "setLayer",
-                  id: active.id,
+                  id: selected.id,
                   blend,
                 })
               }
@@ -260,7 +409,7 @@ export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
             <div className="flex items-center justify-between">
               <Label id="layer-opacity-label">Opacity</Label>
               <span className="text-xs text-muted-foreground tabular-nums">
-                {Math.round(active.opacity * 100)}%
+                {Math.round(selected.opacity * 100)}%
               </span>
             </div>
             <Slider
@@ -268,11 +417,11 @@ export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
               min={0}
               max={100}
               step={1}
-              value={[Math.round(active.opacity * 100)]}
+              value={[Math.round(selected.opacity * 100)]}
               onValueChange={([opacity]) =>
                 void engine.dispatch({
                   type: "setLayer",
-                  id: active.id,
+                  id: selected.id,
                   opacity: opacity / 100,
                 })
               }
