@@ -25,6 +25,11 @@ import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
 import { stampShader } from "../shaders/stamp"
 import { surfaceCompositeShader } from "../shaders/surface-composite"
+import {
+  IDENTITY_MATRIX,
+  invertMatrix,
+  type ViewMatrix,
+} from "../view/view-transform"
 import { STAMP, STAMP_STRIDE } from "./stamp-instance"
 import { createStampLog } from "./stamp-log"
 
@@ -32,9 +37,10 @@ const LAYER_FORMAT: GPUTextureFormat = "rgba16float"
 const BYTES_PER_TEXEL = TILE_CHANNELS * 2
 /**
  * mat3x3 occupies three 16-byte columns, then one vec4 of background, then the
- * four floats the present pass needs to know about the stack it is showing.
+ * four floats the present pass needs to know about the stack it is showing,
+ * then the view (D28) as a second mat3x3 and the document's size.
  */
-const UNIFORM_BYTES = 80
+const UNIFORM_BYTES = 144
 /** Where the stroke opacity sits in that buffer: after matrix and background. */
 const STROKE_OPACITY_OFFSET = 64
 /**
@@ -42,6 +48,10 @@ const STROKE_OPACITY_OFFSET = 64
  * cache exists. All three are written together, as one plan's answer.
  */
 const ACTIVE_OPACITY_OFFSET = 68
+/** The screen-to-document matrix of the view (D28): three 16-byte columns. */
+const VIEW_OFFSET = 80
+/** The document's size in pixels, which the view is inverted against. */
+const DOC_SIZE_OFFSET = 128
 /**
  * vec2 viewport, feather and the tip flag, one vec4 of ink, then the grain's
  * scale and depth padded out to the 16-byte alignment a uniform requires.
@@ -126,6 +136,13 @@ export interface Renderer {
    */
   endStroke(): PixelRect | null
   /**
+   * Abandons the stroke in flight: the buffer is emptied and nothing is
+   * composited. This is what a navigation gesture starting mid-mark needs —
+   * painting and navigating are different acts, and the half-drawn mark is
+   * not one the artist asked for.
+   */
+  cancelStroke(): void
+  /**
    * Reads whole tiles back off a surface, zero-filled where they hang past the
    * canvas and where the surface holds nothing. Asynchronous and off the
    * interactive path: this runs on pen-up and on undo, never per frame (D30).
@@ -136,6 +153,12 @@ export interface Renderer {
     id: string,
     tiles: readonly (TileCoord & { texels: Uint16Array | null })[]
   ): void
+  /**
+   * How the document is placed on screen (D28), as the document-to-screen
+   * affine. View state, never pixels: the surfaces are untouched and only the
+   * present pass reads it, so exporting simply presents with the identity.
+   */
+  setView(matrix: ViewMatrix): void
   render(view: GPUTextureView): void
   destroy(): void
 }
@@ -485,6 +508,39 @@ export function createRenderer(
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
   })
   const placeholderView = placeholder.createView()
+  /**
+   * The present pass reads the document through the view (D28), so it filters
+   * rather than fetching texels. Clamped, because the shader has already
+   * decided that anything off the canvas is backdrop.
+   */
+  const viewSampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+    addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
+  })
+
+  /**
+   * Writes the view the present pass reads: the screen-to-document affine, as
+   * the three columns a WGSL `mat3x3` is laid out in.
+   */
+  function writeView(matrix: ViewMatrix) {
+    const [a, b, c, d, e, f] = invertMatrix(matrix)
+    device.queue.writeBuffer(
+      uniform,
+      VIEW_OFFSET,
+      new Float32Array([a, b, 0, 0, c, d, 0, 0, e, f, 1, 0])
+    )
+  }
+
+  /** The document's size, which the view is inverted against. */
+  function writeDocSize(sizeWidth: number, sizeHeight: number) {
+    device.queue.writeBuffer(
+      uniform,
+      DOC_SIZE_OFFSET,
+      new Float32Array([sizeWidth, sizeHeight])
+    )
+  }
   /** Applied when the stroke is composited, and shown in flight at the same value. */
   let strokeOpacity = 1
 
@@ -775,6 +831,7 @@ export function createRenderer(
         { binding: 2, resource: frame ? placeholderView : active.view },
         { binding: 3, resource: frame ? placeholderView : stroke.view },
         { binding: 4, resource: above?.view ?? placeholderView },
+        { binding: 5, resource: viewSampler },
       ],
     })
   }
@@ -915,6 +972,7 @@ export function createRenderer(
       resetPainted()
       width = nextWidth
       height = nextHeight
+      writeDocSize(nextWidth, nextHeight)
       // The stroke buffer matches a layer texel for texel, so a dab lands at
       // the same pixel in both and the composite is a straight copy. §6.2 wants
       // it bounded to the stroke's region; it narrows to a tiled surface with
@@ -1194,6 +1252,13 @@ export function createRenderer(
       log.replay(MAX_STAMPS_PER_DRAW, drawStamps)
       return true
     },
+    cancelStroke() {
+      if (!stroke) return
+      log.reset()
+      resetPainted()
+      clearStroke()
+      writeStrokeOpacity(1)
+    },
     endStroke() {
       if (!stroke || !paintTarget)
         throw new Error("There is no active layer to paint into.")
@@ -1277,6 +1342,9 @@ export function createRenderer(
       // These pixels may sit inside a cache that was flattened before them.
       composition = undefined
       cachedFrom = undefined
+    },
+    setView(matrix) {
+      writeView(matrix)
     },
     render(view) {
       if (!presentBindGroup)
@@ -1393,5 +1461,9 @@ function packUniform(
   // layer is opaque, and the cache flags stay zero until a composition sets them.
   data[STROKE_OPACITY_OFFSET / 4] = 1
   data[ACTIVE_OPACITY_OFFSET / 4] = 1
+  // The identity view, so a renderer nobody has navigated presents the
+  // document at its own size, texel for texel.
+  const [a, b, c, d, e, f] = IDENTITY_MATRIX
+  data.set([a, b, 0, 0, c, d, 0, 0, e, f, 1, 0], VIEW_OFFSET / 4)
   return data
 }
