@@ -4,6 +4,7 @@ import { useAuthActions } from "@convex-dev/auth/react"
 import {
   CopyIcon,
   PencilSimpleIcon,
+  ShareNetworkIcon,
   SignOutIcon,
   TrashIcon,
 } from "@phosphor-icons/react"
@@ -32,6 +33,14 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Spinner } from "@/components/ui/spinner"
 import { api } from "@/convex/_generated/api"
 import type { Doc } from "@/convex/_generated/dataModel"
@@ -125,6 +134,10 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
   const remove = useMutation(api.documents.remove)
   const [editing, setEditing] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [sharing, setSharing] = useState(false)
+  const [shareToken, setShareToken] = useState<string | null>(null)
+  const createShare = useMutation(api.shareLinks.create)
+  const revokeShare = useMutation(api.shareLinks.revoke)
   const [previewUrl, retryPreview] = useDocumentPreview(document)
 
   const commitRename = async (name: string) => {
@@ -186,6 +199,18 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
         <Button
           variant="ghost"
           size="sm"
+          aria-label={`Share ${document.name}`}
+          onClick={async () => {
+            setSharing(true)
+            const result = await createShare({ documentId: document._id })
+            setShareToken(result.token)
+          }}
+        >
+          <ShareNetworkIcon />
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
           aria-label={`Rename ${document.name}`}
           onClick={() => setEditing(true)}
         >
@@ -216,8 +241,76 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
           name={document.name}
           onConfirm={() => remove({ documentId: document._id })}
         />
+        <ShareDialog
+          open={sharing}
+          onOpenChange={setSharing}
+          name={document.name}
+          token={shareToken}
+          onRevoke={async () => {
+            await revokeShare({ documentId: document._id })
+            setShareToken(null)
+          }}
+        />
       </div>
     </li>
+  )
+}
+
+function ShareDialog({
+  open,
+  onOpenChange,
+  name,
+  token,
+  onRevoke,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  name: string
+  token: string | null
+  onRevoke: () => Promise<void>
+}) {
+  const url = token === null ? null : `${window.location.origin}/s/${token}`
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Share {name}</DialogTitle>
+          <DialogDescription>
+            Anyone with this unlisted link can see the latest synced preview,
+            but cannot open or edit the layered document.
+          </DialogDescription>
+        </DialogHeader>
+        <Input
+          aria-label="Share link"
+          readOnly
+          value={url ?? "Creating link…"}
+          onFocus={(event) => event.currentTarget.select()}
+        />
+        <DialogFooter>
+          <Button
+            variant="destructive"
+            disabled={url === null}
+            onClick={async () => {
+              await onRevoke()
+              onOpenChange(false)
+              toast.success("Share link revoked")
+            }}
+          >
+            Revoke link
+          </Button>
+          <Button
+            disabled={url === null}
+            onClick={async () => {
+              if (url === null) return
+              await navigator.clipboard.writeText(url)
+              toast.success("Share link copied")
+            }}
+          >
+            Copy link
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

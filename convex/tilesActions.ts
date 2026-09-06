@@ -10,6 +10,8 @@ import {
 } from "./lib/r2"
 import { action } from "./_generated/server"
 import { api } from "./_generated/api"
+import { internal } from "./_generated/api"
+import type { Id } from "./_generated/dataModel"
 
 /**
  * One batch mint per flush: every missing hash gets a presigned PUT in a
@@ -50,6 +52,23 @@ export const presignPreviewDownload = action({
   args: { documentId: v.id("documents") },
   handler: async (ctx, { documentId }) => {
     await ctx.runQuery(api.documents.get, { documentId })
+    return await presignPreviewGet(documentId)
+  },
+})
+
+/**
+ * The share token is checked on every image request. The returned capability
+ * names only the flattened preview object; no tile or structure URL is ever
+ * minted for a public visitor.
+ */
+export const presignSharedPreviewDownload = action({
+  args: { token: v.string() },
+  handler: async (ctx, { token }): Promise<string | null> => {
+    const documentId: Id<"documents"> | null = await ctx.runQuery(
+      internal.shareLinks.resolveDocumentId,
+      { token }
+    )
+    if (documentId === null) return null
     return await presignPreviewGet(documentId)
   },
 })

@@ -24,6 +24,7 @@ import type * as lib_r2 from "../lib/r2.js"
 import type * as lib_retention from "../lib/retention.js"
 import type * as palettes from "../palettes.js"
 import type * as sessions from "../sessions.js"
+import type * as shareLinks from "../shareLinks.js"
 import type * as tiles from "../tiles.js"
 import type * as tilesActions from "../tilesActions.js"
 import type * as versions from "../versions.js"
@@ -51,6 +52,7 @@ declare const fullApi: ApiFromModules<{
   "lib/retention": typeof lib_retention
   palettes: typeof palettes
   sessions: typeof sessions
+  shareLinks: typeof shareLinks
   tiles: typeof tiles
   tilesActions: typeof tilesActions
   versions: typeof versions

@@ -47,6 +47,17 @@ export default defineSchema({
     .index("by_owner_updated", ["ownerId", "updatedAt"])
     .index("by_owner_anonymous_source", ["ownerId", "anonymousSourceId"]),
 
+  // One opaque capability per shared document. Public readers resolve this
+  // row to the flattened preview only; the document id, owner and structure
+  // never cross the public query boundary.
+  shareLinks: defineTable({
+    documentId: v.id("documents"),
+    token: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_document", ["documentId"])
+    .index("by_token", ["token"]),
+
   // One row per (document, surface, tile coordinate). D13: independently
   // mutable rows so concurrent flushes never contend on a single document
   // blob, and a reopen can page/subscribe tile-by-tile instead of loading
