@@ -18,7 +18,11 @@ import {
   BRUSH_FEATHER,
 } from "./brush/round-brush"
 import { createStampContextTracker } from "./brush/stamp-context"
-import { BUILTIN_TEXTURE_IDS, createTextureLibrary } from "./brush/texture"
+import {
+  BUILTIN_TEXTURE_IDS,
+  createTextureLibrary,
+  type GrayscaleTexture,
+} from "./brush/texture"
 import {
   chooseOutputColorSpace,
   decodeTransfer,
@@ -116,6 +120,20 @@ import {
 
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
 export type {
+  Brush,
+  BrushGrain,
+  BrushShape,
+  BrushRendering,
+} from "./brush/brush"
+export {
+  BUILTIN_BRUSHES,
+  BUILTIN_BRUSH_PREFIX,
+  builtinBrush,
+  DEFAULT_LIBRARY_BRUSH_ID,
+  isBuiltinBrush,
+} from "./brush/presets"
+export type { GrayscaleTexture } from "./brush/texture"
+export type {
   RemoteIndex,
   RestorePoint,
   SyncMetrics,
@@ -173,6 +191,13 @@ export type EngineCommand =
    */
   | {
       type: "setBrush"
+      /**
+       * Which brush this is, when the whole of one is being put in the hand
+       * (D25). A slider that owns one parameter names neither, so an edit
+       * leaves the brush's identity where it was.
+       */
+      id?: string
+      name?: string
       accumulation?: Accumulation
       opacity?: number
       flow?: number
@@ -195,6 +220,12 @@ export type EngineCommand =
       /** Replaces the dynamics graph outright; see `evaluateDynamics`. */
       dynamics?: Modulator[]
     }
+  /**
+   * Makes a greyscale texture resolvable by id (24), so a brush that names
+   * it can be painted with. This is the seam an imported or synced texture
+   * arrives through: the pixels are an asset, and the brush stays data.
+   */
+  | { type: "registerTexture"; id: string; texture: GrayscaleTexture }
   /** Adds an empty layer above the active one and selects it. */
   | { type: "addLayer" }
   | { type: "addGroup"; ids?: string[] }
@@ -1666,8 +1697,12 @@ export function createEngine(
             command.grain === undefined
               ? brush.grain
               : (command.grain ?? undefined)
+          if (command.id !== undefined && !command.id)
+            throw new Error("A brush id must not be empty.")
           const next: Brush = {
             ...brush,
+            id: command.id ?? brush.id,
+            name: command.name ?? brush.name,
             shape: {
               ...brush.shape,
               radius: command.radius ?? brush.shape.radius,
@@ -1708,6 +1743,19 @@ export function createEngine(
           brush = next
           applyBrushTextures()
           publish({ brush: Object.freeze(cloneBrush(next)) })
+          break
+        }
+        case "registerTexture": {
+          if (!command.id) throw new Error("A texture needs an id.")
+          // `register` validates the pixels; ids are ours to check. A texture
+          // arriving from a file or another machine is input, so it is
+          // rejected here rather than at the point a stroke wants it.
+          textures.register(command.id, command.texture)
+          publish({ textures: Object.freeze(textures.ids()) })
+          // The brush in the hand may already name this texture — a document
+          // reopened before its assets arrived — so what it draws with is
+          // reapplied rather than waiting for the next edit.
+          applyBrushTextures()
           break
         }
         case "addLayer": {

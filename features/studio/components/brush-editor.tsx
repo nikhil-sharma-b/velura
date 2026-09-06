@@ -1,6 +1,7 @@
 "use client"
 
 import { PlusIcon, TrashIcon } from "@phosphor-icons/react"
+import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -116,17 +117,43 @@ function TextureSelect({
   textures,
   noneLabel,
   onChange,
+  onImport,
 }: {
   label: string
   value: string | null
   textures: readonly string[]
   noneLabel: string
   onChange(id: string | null): void
+  /** Brings a texture in from a file and selects it (24/25). */
+  onImport?(file: File): void
 }) {
   const NONE = "__none__"
   return (
     <div className="space-y-1.5">
-      <Label className="text-xs">{label}</Label>
+      <div className="flex items-center justify-between">
+        <Label className="text-xs">{label}</Label>
+        {onImport && (
+          // A file input rather than a button that opens one: the browser's
+          // own picker is the only way to a file, and dressing it up as
+          // something else costs the keyboard path to it.
+          <label className="cursor-pointer text-xs text-muted-foreground underline underline-offset-2">
+            Import…
+            <input
+              type="file"
+              accept="image/*"
+              aria-label={`Import a ${label.toLowerCase()} texture`}
+              className="sr-only"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                // Cleared, so importing the same file twice in a row is a
+                // change the input reports rather than silently swallows.
+                event.target.value = ""
+                if (file) onImport(file)
+              }}
+            />
+          </label>
+        )}
+      </div>
       <Select
         value={value ?? NONE}
         onValueChange={(next) => onChange(next === NONE ? null : next)}
@@ -285,8 +312,10 @@ export function BrushEditor({
   brush,
   textures,
   edited,
+  problem,
   onOpenChange,
   onEdit,
+  onImportTexture,
   onSave,
   onRevert,
 }: {
@@ -297,14 +326,42 @@ export function BrushEditor({
   textures: readonly string[]
   /** Whether the working brush has moved away from the saved one. */
   edited: boolean
+  /** Why keeping the brush failed, if it did. A brush is an hour's work. */
+  problem?: string | null
   onOpenChange(open: boolean): void
   onEdit(next: Brush): void
+  /**
+   * Brings a texture in from a file and resolves with the id it is stored
+   * under, so the brush can name it. Absent in a host with nowhere to keep
+   * one, and then no import is offered rather than one that loses the file.
+   */
+  onImportTexture?(file: File, name: string): Promise<string>
   onSave(): void
   onRevert(): void
 }) {
   const apply = (edit: BrushEdit) => onEdit(editBrush(brush, edit))
   const dynamics = brush.dynamics
   const grain = brush.grain
+  const [importProblem, setImportProblem] = useState<string | null>(null)
+
+  /**
+   * Imports a file and puts the result where it was asked for. The texture is
+   * selected only once it is stored: a tip the brush named before the store
+   * had it would be a brush pointing at nothing on the next machine.
+   */
+  const importTexture = (file: File, select: (id: string) => void) => {
+    if (!onImportTexture) return
+    setImportProblem(null)
+    void onImportTexture(file, file.name.replace(/\.[^.]+$/, "")).then(
+      select,
+      (error: unknown) =>
+        setImportProblem(
+          error instanceof Error
+            ? error.message
+            : "That image could not be imported."
+        )
+    )
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -319,6 +376,11 @@ export function BrushEditor({
           brush={brush}
           className="h-24 w-full border border-border/70 bg-card text-foreground"
         />
+        {(importProblem ?? problem) && (
+          <p role="alert" className="text-xs text-destructive">
+            {importProblem ?? problem}
+          </p>
+        )}
         <Tabs defaultValue="shape">
           <TabsList>
             <TabsTrigger value="shape">Shape</TabsTrigger>
@@ -334,6 +396,13 @@ export function BrushEditor({
               textures={textures}
               noneLabel="Round (procedural)"
               onChange={(tipTextureId) => apply({ shape: { tipTextureId } })}
+              onImport={
+                onImportTexture &&
+                ((file) =>
+                  importTexture(file, (tipTextureId) =>
+                    apply({ shape: { tipTextureId } })
+                  ))
+              }
             />
             <SliderSetting
               label="Size"
@@ -390,6 +459,20 @@ export function BrushEditor({
               value={grain?.textureId ?? null}
               textures={textures}
               noneLabel="Smooth (no grain)"
+              onImport={
+                onImportTexture &&
+                ((file) =>
+                  importTexture(file, (textureId) =>
+                    apply({
+                      grain: {
+                        scale: grain?.scale ?? 1,
+                        depth: grain?.depth ?? 0.6,
+                        movement: grain?.movement ?? 0,
+                        textureId,
+                      },
+                    })
+                  ))
+              }
               onChange={(textureId) =>
                 apply({
                   grain: textureId

@@ -271,8 +271,18 @@ layers       { docId, parentId?, kind: "raster"|"group", order,
                name, blend, opacity, visible, locked, clip, maskLayerId? }
 tiles        { layerId, x, y, hash, bytes, version, updatedAt }   // one row per tile
 versions     { docId, label?, createdAt, snapshot }               // pinned tile-hash set
-brushes      { ownerId?, builtin, name, definition }
+brushes      { ownerId, name, set, order, definition }        // built-ins ship in the client
+brushTextures{ ownerId, name, width, height, data }           // one byte per texel
+brushUse     { ownerId, docId, brushId, radius }              // what a document was left with
 ```
+
+Built-in brushes have no rows (25). They ship in `engine/brush/presets.ts`, which is
+what makes them indestructible: a table of copies would need a `builtin` flag, a guard
+on every write, and a migration each time a preset changed. `set` and `order` are the
+artist's arrangement; a set is a name on a brush rather than a row, so an empty set is
+one nothing is shelved in. Texture bytes sit on the row rather than in R2 because a tip
+is kilobytes and is read by every session that paints with the brush — the R2 split
+(D11) is for megabyte-scale immutable pixels.
 
 `tiles` as independent rows (D13) is what avoids OCC write conflicts under rapid autosave and lets a client subscribe to exactly the tiles that changed.
 

@@ -143,6 +143,56 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_owner", ["ownerId"]),
 
+  // A brush the artist made (25). The definition is the serialisable brush of
+  // `engine/brush/brush.ts` — shape, grain, rendering and the dynamics list —
+  // opaque here and normalised on the way in by `convex/lib/brush.ts`, the way
+  // `documents.structure` is opaque to this table. Kept on the account rather
+  // than on a document, because a tool belongs to the artist and follows them
+  // to whatever they open next, and to whatever machine they open it on.
+  //
+  // `set` and `order` are the artist's arrangement of a growing library. A set
+  // is a name on a brush rather than a row of its own: an empty set is one
+  // nothing is shelved in, which is the same thing as it not existing, and a
+  // set with rows would need deleting, renaming and garbage collecting to say
+  // exactly that.
+  brushes: defineTable({
+    ownerId: v.id("users"),
+    name: v.string(),
+    set: v.string(),
+    order: v.number(),
+    definition: v.any(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_owner", ["ownerId"]),
+
+  // A greyscale texture a brush names (24): a tip in stamp space or paper in
+  // canvas space. Bytes on the row rather than a blob in R2 — a tip is
+  // kilobytes, it is read on every session that paints with the brush, and the
+  // point of the tile store's R2 split is megabyte-scale immutable pixels, not
+  // this. One byte per texel, top row first, exactly as the uploader wants it.
+  brushTextures: defineTable({
+    ownerId: v.id("users"),
+    name: v.string(),
+    width: v.number(),
+    height: v.number(),
+    data: v.bytes(),
+    createdAt: v.number(),
+  }).index("by_owner", ["ownerId"]),
+
+  // What was in the hand when a document was last painted in (25). On the
+  // account and against the document, so reopening a piece on any machine
+  // picks the brush back up rather than starting from a default that has
+  // nothing to do with what is on the canvas. Size is stored beside the brush
+  // id because size is adjusted constantly and almost never saved into a
+  // brush: restoring the brush without it would still be the wrong tool.
+  brushUse: defineTable({
+    ownerId: v.id("users"),
+    documentId: v.id("documents"),
+    brushId: v.string(),
+    radius: v.number(),
+    updatedAt: v.number(),
+  }).index("by_owner_document", ["ownerId", "documentId"]),
+
   // One row per tab/device with a document open, heartbeat-refreshed while it
   // stays open (18). This is what lets a session opening a document already
   // open elsewhere warn instead of letting two tabs silently race each

@@ -9,12 +9,14 @@
  */
 
 import type * as auth from "../auth.js"
+import type * as brushes from "../brushes.js"
 import type * as collection from "../collection.js"
 import type * as collectionActions from "../collectionActions.js"
 import type * as crons from "../crons.js"
 import type * as documents from "../documents.js"
 import type * as http from "../http.js"
 import type * as lib_branding from "../lib/branding.js"
+import type * as lib_brush from "../lib/brush.js"
 import type * as lib_collection from "../lib/collection.js"
 import type * as lib_documents from "../lib/documents.js"
 import type * as lib_palette from "../lib/palette.js"
@@ -34,12 +36,14 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth
+  brushes: typeof brushes
   collection: typeof collection
   collectionActions: typeof collectionActions
   crons: typeof crons
   documents: typeof documents
   http: typeof http
   "lib/branding": typeof lib_branding
+  "lib/brush": typeof lib_brush
   "lib/collection": typeof lib_collection
   "lib/documents": typeof lib_documents
   "lib/palette": typeof lib_palette

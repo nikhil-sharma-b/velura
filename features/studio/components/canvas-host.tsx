@@ -16,6 +16,7 @@ import {
   MagnifyingGlassPlusIcon,
   PaintBrushIcon,
   PaletteIcon,
+  BookmarksSimpleIcon,
   SlidersIcon,
   SidebarSimpleIcon,
 } from "@phosphor-icons/react"
@@ -23,6 +24,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react"
@@ -44,7 +46,13 @@ import { createLocalPaletteStore } from "@/features/color/lib/local-palette-stor
 import type { PaletteStore } from "@/features/color/lib/palette-store"
 
 import { brushCommand, isBrushEdited } from "../lib/brush-draft"
+import { createLocalBrushStore } from "../lib/local-brush-store"
+import type { BrushStore } from "../lib/brush-store"
+import { resolveLibraryBrush, setForNewBrush } from "../lib/brush-shelf"
+import { DEFAULT_LIBRARY_BRUSH_ID } from "@/engine/brush/presets"
+import { readTextureFile } from "../lib/texture-import"
 import { BrushEditor } from "./brush-editor"
+import { BrushLibrary } from "./brush-library"
 import { SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
 import { VersionPanel } from "./version-panel"
@@ -132,6 +140,7 @@ export function CanvasHost({
   documentId,
   remote,
   palettes,
+  brushes,
   openElsewhere = false,
 }: {
   documentId?: string
@@ -142,6 +151,12 @@ export function CanvasHost({
    * backed by this browser.
    */
   palettes?: PaletteStore
+  /**
+   * Where brushes are kept (25). As with palettes, the cloud host passes an
+   * account-backed store so they follow the artist between machines and the
+   * anonymous one gets this browser.
+   */
+  brushes?: BrushStore
   /** The cloud-sync backend, when this document has an owned Convex row to sync to. */
   remote?: RemoteIndex
   /** Whether another tab or device currently has this same document open. */
@@ -152,6 +167,7 @@ export function CanvasHost({
   const [historyOpen, setHistoryOpen] = useState(false)
   const [colorOpen, setColorOpen] = useState(false)
   const [brushOpen, setBrushOpen] = useState(false)
+  const [libraryOpen, setLibraryOpen] = useState(false)
   /**
    * The brush as it was last saved. The engine holds the *working* brush — so
    * an edit paints immediately, which is the whole point of a live editor —
@@ -160,11 +176,16 @@ export function CanvasHost({
    * outlive the session.
    */
   const [savedBrush, setSavedBrush] = useState<Brush | null>(null)
+  /** Why the last attempt to keep a brush failed, if it did. */
+  const [brushProblem, setBrushProblem] = useState<string | null>(null)
   const [paintNotice, setPaintNotice] = useState<string | null>(null)
   // Created once per host: the store owns the subscription the picker reads
   // through, so a new one each render would resubscribe on every keystroke.
   const localPalettes = useMemo(() => createLocalPaletteStore(), [])
   const paletteStore = palettes ?? localPalettes
+  const localBrushes = useMemo(() => createLocalBrushStore(), [])
+  const brushStore = brushes ?? localBrushes
+  const library = brushStore.useBrushLibrary(documentId)
   const snapshot = useSyncExternalStore(
     engine?.subscribe ?? subscribeToNothing,
     engine?.getSnapshot ?? getInitialSnapshot,
@@ -274,6 +295,92 @@ export function CanvasHost({
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [engine])
+
+  // A brush names its textures and never carries them (24), so a library
+  // synced from another machine arrives as definitions pointing at assets this
+  // engine has never seen. Registering them is what makes those brushes
+  // paintable here rather than refused as naming nothing.
+  useEffect(() => {
+    if (!engine) return
+    for (const texture of library.textures)
+      void engine
+        .dispatch({
+          type: "registerTexture",
+          id: texture.id,
+          texture: texture.texture,
+        })
+        .catch(() => {
+          // One unreadable asset must not stop the rest of the library
+          // loading; a brush naming it will say so when it is picked up.
+        })
+  }, [engine, library.textures])
+
+  /**
+   * The brush this session starts with (25): the one this document was last
+   * painted with, or a ready-made one if it has never been painted in.
+   *
+   * The engine's own default is the plain round brush of ticket 04 — no tip,
+   * no paper, no dynamics — which is a starting point for the renderer and not
+   * a brush anyone would choose. Putting a shipped brush in the hand here is
+   * what "opens to a set of ready-made brushes and can work immediately"
+   * actually means at the moment the canvas appears.
+   *
+   * Once per document. After this, what is in the hand is whatever the artist
+   * has since picked up, and re-applying a remembered brush because a query
+   * re-resolved would take the pen out of their hand mid-session.
+   */
+  const restoredFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!engine || !documentId || !library.loaded) return
+    if (restoredFor.current === documentId) return
+    restoredFor.current = documentId
+    const last = library.lastUsed
+    // A remembered brush that has since been deleted falls back to the
+    // ready-made one rather than leaving the session on the engine's default.
+    const entry =
+      (last ? resolveLibraryBrush(last.brushId, library.brushes) : undefined) ??
+      resolveLibraryBrush(DEFAULT_LIBRARY_BRUSH_ID, library.brushes)
+    if (!entry) return
+    const restored =
+      // The size is restored beside the brush, since size is adjusted
+      // constantly and almost never saved into one — the brush without it is
+      // still the wrong tool.
+      last && entry.id === last.brushId
+        ? {
+            ...entry.brush,
+            shape: { ...entry.brush.shape, radius: last.radius },
+          }
+        : entry.brush
+    void engine.dispatch(brushCommand(restored)).then(
+      () => setSavedBrush(restored),
+      () => {}
+    )
+  }, [engine, documentId, library])
+
+  /**
+   * Remembers what is in the hand, so the next session can put it back.
+   *
+   * Settled rather than continuous: size is a dragged slider, and a write per
+   * frame of that drag would be a mutation per frame. Waiting for the hand to
+   * stop costs nothing an artist can perceive — the value written is the one
+   * they left it at either way.
+   */
+  const currentBrushId = snapshot.brush.id
+  const currentRadius = snapshot.brush.shape.radius
+  useEffect(() => {
+    // Never before the restore has run: writing on the way in would record
+    // the default brush over the one this document was actually left with.
+    if (!documentId || !library.loaded || restoredFor.current !== documentId)
+      return
+    const timer = setTimeout(() => {
+      void brushStore
+        .recordLastUsed(documentId, currentBrushId, currentRadius)
+        .catch(() => {
+          // Which brush was in the hand is a convenience, not the painting.
+        })
+    }, 1_000)
+    return () => clearTimeout(timer)
+  }, [brushStore, documentId, library.loaded, currentBrushId, currentRadius])
 
   // The engine starts from the same brush the initial snapshot describes, so
   // the baseline needs no effect to establish: an unsaved session is measured
@@ -408,6 +515,19 @@ export function CanvasHost({
             >
               <SlidersIcon />
             </Button>
+            <Button
+              variant={libraryOpen ? "default" : "ghost"}
+              size="icon"
+              aria-label="Brush library"
+              aria-pressed={libraryOpen}
+              onClick={() => {
+                setLibraryOpen((open) => !open)
+                setPanelsOpen(true)
+              }}
+              className="rounded-lg"
+            >
+              <BookmarksSimpleIcon />
+            </Button>
             {/* Restore points only exist for a document with a cloud copy
                 behind it (§9.4), so an anonymous local document has no ladder
                 to offer and is not shown a door to one. */}
@@ -433,7 +553,47 @@ export function CanvasHost({
               edited={brushEdited}
               onOpenChange={setBrushOpen}
               onEdit={(next) => void engine.dispatch(brushCommand(next))}
-              onSave={() => setSavedBrush(snapshot.brush)}
+              onImportTexture={async (file, name) => {
+                const texture = await readTextureFile(file)
+                const id = await brushStore.saveTexture(name, texture)
+                // Registered here as well as by the sync effect, so the
+                // texture is selectable in the dialog that imported it rather
+                // than only once the store has answered.
+                await engine.dispatch({ type: "registerTexture", id, texture })
+                return id
+              }}
+              problem={brushProblem}
+              onSave={() => {
+                const working = snapshot.brush
+                const stored = library.brushes.find(
+                  (brush) => brush.id === working.id
+                )
+                setBrushProblem(null)
+                // A built-in has no row to write over, so saving an edit to
+                // one keeps it and creates the artist's own brush beside it —
+                // which is what makes a shipped brush a starting point rather
+                // than a dead end.
+                const write: Promise<Brush> = stored
+                  ? brushStore.update(stored.id, working).then(() => working)
+                  : brushStore
+                      .save(working.name, setForNewBrush(stored), working)
+                      .then(async (id) => {
+                        // The brush in the hand becomes the brush that was
+                        // saved, id and all: without that, the editor would go
+                        // on measuring it against something it no longer is
+                        // and call a saved brush unsaved.
+                        const next = { ...working, id }
+                        await engine.dispatch(brushCommand(next))
+                        return next
+                      })
+                void write.then(setSavedBrush, (error: unknown) =>
+                  setBrushProblem(
+                    error instanceof Error
+                      ? error.message
+                      : "That brush could not be saved."
+                  )
+                )
+              }}
               onRevert={() => void engine.dispatch(brushCommand(saved))}
             />
           )}
@@ -600,6 +760,19 @@ export function CanvasHost({
 
           {engine && panelsOpen && (
             <aside className="absolute top-3 right-3 bottom-3 flex w-72 flex-col overflow-y-auto rounded-xl border bg-background/88 shadow-xl backdrop-blur-xl">
+              {libraryOpen && (
+                <BrushLibrary
+                  library={library}
+                  store={brushStore}
+                  brush={snapshot.brush}
+                  edited={brushEdited}
+                  onSelect={(next) => {
+                    void engine.dispatch(brushCommand(next))
+                    setSavedBrush(next)
+                  }}
+                  onClose={() => setLibraryOpen(false)}
+                />
+              )}
               {colorOpen && (
                 <ColorPanel
                   engine={engine}

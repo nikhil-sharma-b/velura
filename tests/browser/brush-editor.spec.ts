@@ -33,15 +33,29 @@ function slider(page: Page, name: string) {
   return page.getByRole("slider", { name, exact: true })
 }
 
+/**
+ * The diameter the size readout shows, in the "12.0 px" form it is written in.
+ *
+ * Read rather than assumed: the studio opens on a brush from the library (25),
+ * so what size it starts at is a property of that brush and not of this spec.
+ * What is under test is that the control moves it, not what it moves it from.
+ */
+async function diameter(page: Page, offsetPixels = 0): Promise<string> {
+  const radius = Number(await slider(page, "Size").getAttribute("aria-valuenow"))
+  return `${(radius * 2 + offsetPixels).toFixed(1)} px`
+}
+
 test("size and opacity stay adjustable without opening the editor", async ({
   page,
 }) => {
   await openStudio(page)
   await expect(page.getByRole("dialog")).toHaveCount(0)
   const size = slider(page, "Size")
+  // One press is half a pixel of radius, which is a whole pixel of diameter.
+  const wider = await diameter(page, 1)
   await size.focus()
   await size.press("ArrowRight")
-  await expect(page.getByText("13.0 px")).toBeVisible()
+  await expect(page.getByText(wider)).toBeVisible()
   const opacity = slider(page, "Opacity")
   await opacity.focus()
   await opacity.press("ArrowLeft")
@@ -66,6 +80,8 @@ test("the editor covers shape, grain, rendering and dynamics", async ({
   await dialog.getByRole("tab", { name: "Grain" }).click()
   // A brush with no grain offers the paper to put under it, and nothing else:
   // scale and depth of a texture that is not there would be dead controls.
+  await dialog.getByRole("combobox", { name: "Paper" }).click()
+  await page.getByRole("option", { name: "Smooth (no grain)" }).click()
   await expect(dialog.getByText("perfectly smooth surface")).toBeVisible()
   await dialog.getByRole("combobox", { name: "Paper" }).click()
   await page.getByRole("option", { name: "Paper" }).click()
@@ -85,10 +101,12 @@ test("any input can be mapped onto any parameter, through a curve", async ({
   await openEditor(page)
   const dialog = page.getByRole("dialog")
   await dialog.getByRole("tab", { name: "Dynamics" }).click()
-  await expect(dialog.getByText("Add a mapping")).toBeVisible()
+  // The studio opens on a library brush, which has mappings of its own; the
+  // new one goes on the end of them.
+  const existing = await dialog.getByTestId(/^mapping-/).count()
 
   await dialog.getByRole("button", { name: "Add mapping" }).click()
-  const mapping = dialog.getByTestId("mapping-0")
+  const mapping = dialog.getByTestId(`mapping-${existing}`)
   await expect(mapping).toBeVisible()
   // The curve is the pressure-curve widget the repo already had, over the same
   // engine spline the graph is evaluated with.
@@ -98,20 +116,21 @@ test("any input can be mapped onto any parameter, through a curve", async ({
 
   // Any source onto any target: speed onto roundness is nothing like the
   // pressure-onto-size a mapping is born as.
-  await mapping.getByRole("combobox", { name: "Mapping 1 input" }).click()
+  const label = `Mapping ${existing + 1}`
+  await mapping.getByRole("combobox", { name: `${label} input` }).click()
   await page.getByRole("option", { name: "Speed" }).click()
-  await mapping.getByRole("combobox", { name: "Mapping 1 parameter" }).click()
+  await mapping.getByRole("combobox", { name: `${label} parameter` }).click()
   await page.getByRole("option", { name: "Roundness" }).click()
   await expect(
-    mapping.getByRole("combobox", { name: "Mapping 1 input" })
+    mapping.getByRole("combobox", { name: `${label} input` })
   ).toContainText("Speed")
 
-  // A second mapping stands beside the first, and either can be taken away.
+  // A further mapping stands beside it, and either can be taken away.
   await dialog.getByRole("button", { name: "Add mapping" }).click()
-  await expect(dialog.getByTestId("mapping-1")).toBeVisible()
-  await dialog.getByRole("button", { name: "Remove mapping 1" }).click()
-  await expect(dialog.getByTestId("mapping-1")).toHaveCount(0)
-  await expect(dialog.getByTestId("mapping-0")).toBeVisible()
+  await expect(dialog.getByTestId(`mapping-${existing + 1}`)).toBeVisible()
+  await dialog.getByRole("button", { name: `Remove ${label.toLowerCase()}` }).click()
+  await expect(dialog.getByTestId(`mapping-${existing + 1}`)).toHaveCount(0)
+  await expect(mapping).toBeVisible()
 })
 
 test("an edit paints immediately and is kept only when it is saved", async ({
@@ -124,10 +143,12 @@ test("an edit paints immediately and is kept only when it is saved", async ({
   // The editor writes through to the brush the engine is holding, which is
   // what makes the change something the next stroke draws with rather than
   // something waiting on a save: the canvas's own size readout follows it.
+  const started = await diameter(page)
+  const wider = await diameter(page, 1)
   const size = dialog.getByRole("slider", { name: "Size", exact: true })
   await size.focus()
   await size.press("ArrowRight")
-  await expect(page.getByText("13.0 px")).toHaveCount(2)
+  await expect(page.getByText(wider)).toHaveCount(2)
 
   const hardness = dialog.getByRole("slider", { name: "Hardness" })
   await hardness.focus()
@@ -138,7 +159,7 @@ test("an edit paints immediately and is kept only when it is saved", async ({
   // well as in the dialog, since they are the same brush.
   await dialog.getByRole("button", { name: "Revert" }).click()
   await expect(dialog.getByText("No changes")).toBeVisible()
-  await expect(page.getByText("12.0 px")).toHaveCount(2)
+  await expect(page.getByText(started)).toHaveCount(2)
 
   await hardness.focus()
   await hardness.press("ArrowLeft")

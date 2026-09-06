@@ -17,6 +17,7 @@ import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import { createConvexRemoteIndex } from "@/features/library/lib/convex-remote-index"
 import { useConvexPaletteStore } from "@/features/color/lib/convex-palette-store"
+import { useConvexBrushStore } from "@/features/studio/lib/convex-brush-store"
 import { CanvasHost } from "@/features/studio/components/canvas-host"
 
 /**
@@ -73,6 +74,9 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
   // Palettes belong to the artist rather than to this document, which is what
   // lets a scheme built on one machine be there on the next (23).
   const palettes = useConvexPaletteStore()
+  // Brushes likewise belong to the artist rather than to this document, which
+  // is what makes a tool shaped on one machine available on the next (25).
+  const brushes = useConvexBrushStore()
   const sessionId = useSessionId()
   useHeartbeat(documentId, sessionId)
   const openElsewhere = useQuery(api.sessions.openElsewhere, {
@@ -86,6 +90,7 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
       documentId={documentId}
       remote={remote}
       palettes={palettes}
+      brushes={brushes}
       openElsewhere={openElsewhere ?? false}
     />
   )

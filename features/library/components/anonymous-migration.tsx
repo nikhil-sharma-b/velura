@@ -11,6 +11,8 @@ import { createConvexRemoteIndex } from "@/features/library/lib/convex-remote-in
 import { createLocalPalettes } from "@/features/color/lib/local-palette-store"
 import { migrateLocalPalettes } from "@/features/color/lib/palette-migration"
 import { migrateAnonymousDocuments } from "@/features/studio/lib/anonymous-migration"
+import { createLocalBrushes } from "@/features/studio/lib/local-brush-store"
+import { migrateLocalBrushes } from "@/features/studio/lib/brush-migration"
 import { resetAnonymousDocumentId } from "@/features/studio/lib/anonymous-document"
 
 /** Runs once after authentication; local manifests themselves are retry state. */
@@ -50,6 +52,43 @@ export function AnonymousMigration() {
       () => {
         toast.error(
           "Palettes could not be checked. They remain safe on this device."
+        )
+      }
+    )
+
+    // Brushes go up the same way and for the same reason: a brush shaped
+    // before signing in is work, and it should be on the account rather than
+    // stranded on the browser that made it (25).
+    const brushes = createLocalBrushes(localStorage)
+    void migrateLocalBrushes({
+      local: brushes,
+      remote: {
+        save: async (name, set, definition) =>
+          await convex.mutation(api.brushes.save, { name, set, definition }),
+        saveTexture: async (name, texture) =>
+          await convex.mutation(api.brushes.saveTexture, {
+            name,
+            width: texture.width,
+            height: texture.height,
+            data: texture.data.slice().buffer as ArrayBuffer,
+          }),
+      },
+    }).then(
+      ({ migrated, remaining }) => {
+        if (migrated > 0)
+          toast.success(
+            migrated === 1
+              ? "Your brush is now on your account."
+              : `${migrated} brushes are now on your account.`
+          )
+        if (remaining > 0)
+          toast.error(
+            "Some brushes could not be saved to your account. They are safe on this device and will retry next time."
+          )
+      },
+      () => {
+        toast.error(
+          "Brushes could not be checked. They remain safe on this device."
         )
       }
     )

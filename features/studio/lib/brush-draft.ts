@@ -121,6 +121,12 @@ function equalValues(a: unknown, b: unknown): boolean {
 export function brushCommand(brush: Brush): SetBrushCommand {
   return {
     type: "setBrush",
+    // Identity travels with it, so putting a brush from the library in the
+    // hand really is that brush: what the editor titles and what the library
+    // shows as selected both read the engine's brush, not a parallel note of
+    // which one was clicked.
+    id: brush.id,
+    name: brush.name,
     radius: brush.shape.radius,
     feather: brush.shape.feather,
     roundness: brush.shape.roundness,

@@ -86,6 +86,8 @@ describe("the working brush an editor holds", () => {
     })
     expect(brushCommand(brush)).toEqual({
       type: "setBrush",
+      id: brush.id,
+      name: brush.name,
       radius: 12,
       feather: 3,
       roundness: 0.4,
