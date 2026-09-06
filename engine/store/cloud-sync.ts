@@ -96,6 +96,12 @@ export interface CloudSync {
   status(): SyncStatus
 }
 
+export type UploadRetryOptions = {
+  attempts?: number
+  baseDelayMs?: number
+  sleep?: (delayMs: number) => Promise<void>
+}
+
 export function createCloudSync(options: {
   remote: RemoteIndex
   snapshot: () => DocumentSnapshot
@@ -107,8 +113,16 @@ export function createCloudSync(options: {
   onError?: (error: unknown) => void
   /** Told whenever `status()` may have changed, so a host can re-read it. */
   onStatusChange?: () => void
+  /** Bounded upload retry policy. Overridable so tests need no real clock. */
+  retry?: UploadRetryOptions
 }): CloudSync {
   const put = options.put ?? fetchPut
+  const attempts = Math.max(1, options.retry?.attempts ?? 4)
+  const baseDelayMs = Math.max(0, options.retry?.baseDelayMs ?? 500)
+  const sleep =
+    options.retry?.sleep ??
+    ((delayMs: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, delayMs)))
   let running: Promise<void> | undefined
   let queued = false
   let putCount = 0
@@ -118,6 +132,27 @@ export function createCloudSync(options: {
   // an observation rather than a guess: it only holds while nothing painted
   // since has changed what a flush would upload.
   let syncedKey: string | undefined
+
+  async function upload(
+    url: string,
+    bytes: Uint8Array,
+    contentType?: string
+  ): Promise<void> {
+    let cause: unknown
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        await put(url, bytes, contentType)
+        return
+      } catch (error) {
+        cause = error
+        if (attempt < attempts) await sleep(baseDelayMs * 2 ** (attempt - 1))
+      }
+    }
+    throw new Error(
+      `Upload still failed after ${attempts} attempts. Retry when the connection is stable.`,
+      { cause }
+    )
+  }
 
   function allTiles(surfaces: readonly SurfaceTiles[]): readonly TileRef[] {
     return surfaces.flatMap((surface) => surface.tiles)
@@ -150,7 +185,7 @@ export function createCloudSync(options: {
         await Promise.all(
           urls.map(async ({ hash, url }) => {
             const bytes = await encodeTile(await options.tiles(hash))
-            await put(url, bytes)
+            await upload(url, bytes)
             putCount++
             uploaded.push({ hash, size: bytes.byteLength })
           })
@@ -186,7 +221,7 @@ export function createCloudSync(options: {
       // starts alongside tile work, but none of it runs in a drawing frame.
       if (preview) {
         const [bytes, url] = await preview
-        await put(url, bytes, "image/png")
+        await upload(url, bytes, "image/png")
         putCount++
         await options.remote.commitPreview!()
         mutationCount++

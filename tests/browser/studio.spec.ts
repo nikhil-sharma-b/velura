@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test"
+import { PNG } from "pngjs"
 
 test("anonymous work offers preservation before account navigation", async ({
   page,
@@ -225,9 +226,14 @@ test("adapter initialization errors show a startup failure", async ({
   await expect(
     page.getByRole("heading", { name: "Your graphics device could not start" })
   ).toBeVisible()
+  await expect(page.getByRole("button", { name: "Try again" })).toHaveAttribute(
+    "data-recovery-action",
+    "retry"
+  )
+  await expect(page.getByRole("status")).toContainText("reload Velura")
 })
 
-test("device loss shows a recoverable failure instead of leaving a blank canvas", async ({
+test("device loss rebuilds automatically and restores the in-progress session", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -245,15 +251,32 @@ test("device loss shows a recoverable failure instead of leaving a blank canvas"
     "data-engine-status",
     "ready"
   )
+  const layers = page.getByRole("region", { name: "Layers" })
+  await layers.getByRole("button", { name: "Add layer" }).click()
+  await expect(layers.getByText("Layer 2")).toBeVisible()
+  const canvas = page.getByRole("img", { name: "Drawing canvas" })
+  const box = (await canvas.boundingBox())!
+  await page.mouse.move(box.x + 40, box.y + 40)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 100, box.y + 40, { steps: 12 })
+  await page.mouse.up()
+  await page.waitForTimeout(100)
+  const before = PNG.sync.read(await canvas.screenshot())
   await page.evaluate(() => window.dispatchEvent(new Event("test-device-loss")))
-  await expect(
-    page.getByRole("heading", { name: "Your graphics device could not start" })
-  ).toBeVisible()
-  await page.getByRole("button", { name: "Try again" }).click()
   await expect(page.getByRole("main")).toHaveAttribute(
     "data-engine-status",
-    "ready"
+    "ready",
+    { timeout: 10_000 }
   )
+  await expect(layers.getByText("Layer 2")).toBeVisible()
+  const restored = PNG.sync.read(await canvas.screenshot())
+  const offset = (40 * restored.width + 70) * 4
+  expect(Array.from(before.data.subarray(offset, offset + 3))).not.toEqual([
+    24, 24, 27,
+  ])
+  expect(Array.from(restored.data.subarray(offset, offset + 3))).not.toEqual([
+    24, 24, 27,
+  ])
 })
 
 test("undo and redo are reachable by button and by keystroke", async ({

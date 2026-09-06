@@ -22,6 +22,10 @@ const examples: Record<BlendMode, number> = {
   exclusion: 0.625,
   add: 1,
   subtract: 0,
+  hue: 0.25,
+  saturation: 0.25,
+  colour: 0.25,
+  luminosity: 0.75,
 }
 const colourExamples: Record<BlendMode, readonly [number, number, number]> = {
   normal: [0.75, 0.25, 0.5],
@@ -38,6 +42,10 @@ const colourExamples: Record<BlendMode, readonly [number, number, number]> = {
   exclusion: [0.625, 0.5, 0.5],
   add: [1, 0.75, 1],
   subtract: [0, 0.25, 0.25],
+  hue: [0.775, 0.275, 0.525],
+  saturation: [0.25, 0.5, 0.75],
+  colour: [0.775, 0.275, 0.525],
+  luminosity: [0.225, 0.475, 0.725],
 }
 const modes = Object.keys(examples) as BlendMode[]
 const pixel = (data: number[], x: number, y: number) =>

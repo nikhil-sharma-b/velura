@@ -105,6 +105,7 @@ import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
 import { attachPointerSampler } from "./input/pointer-sampler"
 import { createSampleBuffer } from "./input/sample-buffer"
 import { attachViewGestures } from "./input/view-gestures"
+import { explainFailure, type ExplainedFailure } from "./errors"
 import {
   type CanvasView,
   DEFAULT_VIEW,
@@ -316,6 +317,8 @@ export type EngineSnapshot = Readonly<{
   canUndo: boolean
   canRedo: boolean
   error: string | null
+  /** A non-fatal durability/sync problem with an explicit next action. */
+  problem: ExplainedFailure | null
   /**
    * Genuine upload state — null with no cloud configured, otherwise never an
    * optimistic guess (§9.2/18): "syncing" only while a flush is actually in
@@ -373,6 +376,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   canUndo: false,
   canRedo: false,
   error: null,
+  problem: null,
   syncStatus: null,
   loading: false,
 })
@@ -680,7 +684,23 @@ export function createEngine(
     publish({
       status: "failed",
       error: error instanceof Error ? error.message : String(error),
+      problem: explainFailure(error, "graphics"),
     })
+  }
+
+  /**
+   * A lost device invalidates every GPU object, but not the document already
+   * committed to the local tile cache. Let the current disk write finish,
+   * discard only the dead runtime, and initialize through the normal restore
+   * path. A failed replacement falls through to the ordinary retry screen.
+   */
+  async function recoverDevice(acquired: GPUDevice): Promise<void> {
+    if (disposed || device !== acquired) return
+    publish({ status: "initializing", error: null })
+    await persistence?.settle()
+    if (disposed || device !== acquired) return
+    release()
+    await initialize()
   }
 
   function resize() {
@@ -1355,7 +1375,7 @@ export function createEngine(
   }
 
   async function initialize() {
-    publish({ status: "initializing", error: null })
+    publish({ status: "initializing", error: null, problem: null })
     try {
       const gpu = navigator.gpu
       if (!gpu) {
@@ -1374,12 +1394,7 @@ export function createEngine(
         return
       }
       device = acquired
-      void acquired.lost.then((info) => {
-        if (!disposed && device === acquired)
-          fail(
-            new Error(`Graphics device lost: ${info.message || info.reason}`)
-          )
-      })
+      void acquired.lost.then(() => recoverDevice(acquired))
       acquired.addEventListener("uncapturederror", (event) => {
         if (device === acquired) fail(event.error)
       })
@@ -1448,7 +1463,10 @@ export function createEngine(
             structure: captureStructure(requireDocument()),
             surfaces: past.tileIndex(),
           }),
-          onError: local.onError ?? fail,
+          onError: (error) => {
+            local.onError?.(error)
+            publish({ problem: explainFailure(error, "storage") })
+          },
         })
 
         if (options.cloud) {
@@ -1471,7 +1489,10 @@ export function createEngine(
             // `status()` staying "saved-locally" already says truthfully that
             // it has not left this device yet (18). The next idle tick, tab
             // hide or explicit save tries again.
-            onError: cloud.onError ?? (() => {}),
+            onError: (error) => {
+              cloud.onError?.(error)
+              publish({ problem: explainFailure(error, "upload") })
+            },
             onStatusChange: () => publishSyncStatus(),
           })
           flushScheduler = createFlushScheduler({

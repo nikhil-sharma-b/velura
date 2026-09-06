@@ -15,6 +15,12 @@ import multiply from "./blend/multiply.wgsl"
 import composite from "./blend/composite.wgsl"
 import stroke from "./blend/stroke.wgsl"
 import surface from "./blend/surface.wgsl"
+import hue from "./blend/hue.wgsl"
+import saturation from "./blend/saturation.wgsl"
+import colour from "./blend/colour.wgsl"
+import luminosity from "./blend/luminosity.wgsl"
+import nonSeparable from "./blend/non-separable.wgsl"
+import nonSeparableComposite from "./blend/non-separable-composite.wgsl"
 import { preprocess } from "./preprocess"
 
 /** Adding a mode only adds its snippet and registry entry, never renderer logic. */
@@ -33,13 +39,33 @@ export const blendModes = {
   exclusion: { label: "Exclusion", source: exclusion },
   add: { label: "Add", source: add },
   subtract: { label: "Subtract", source: subtract },
+  hue: { label: "Hue", source: hue, composite: nonSeparableComposite },
+  saturation: {
+    label: "Saturation",
+    source: saturation,
+    composite: nonSeparableComposite,
+  },
+  colour: {
+    label: "Colour",
+    source: colour,
+    composite: nonSeparableComposite,
+  },
+  luminosity: {
+    label: "Luminosity",
+    source: luminosity,
+    composite: nonSeparableComposite,
+  },
 } as const
 export type BlendMode = keyof typeof blendModes
 
 export function blendShader(mode: BlendMode, template = surface): string {
+  const definition = blendModes[mode]
+  const compositeSource =
+    "composite" in definition ? definition.composite : composite
   return preprocess(template, {
-    mode: blendModes[mode].source,
-    composite,
+    mode: definition.source,
+    composite: compositeSource,
+    "non-separable": nonSeparable,
     stroke,
   })
 }

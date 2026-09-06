@@ -204,6 +204,61 @@ describe("flush", () => {
 })
 
 describe("status", () => {
+  test("failed uploads retry with exponential backoff before reporting success", async () => {
+    const { remote } = createFakeRemote()
+    const doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])
+    const delays: number[] = []
+    let attempts = 0
+    const errors: unknown[] = []
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: doc }),
+      tiles: async (hash) => texelsFor(hash),
+      put: async () => {
+        attempts++
+        if (attempts < 3) throw new Error("temporary outage")
+      },
+      retry: {
+        attempts: 3,
+        baseDelayMs: 25,
+        sleep: async (delay) => void delays.push(delay),
+      },
+      onError: (error) => errors.push(error),
+    })
+
+    await sync.flush()
+
+    expect(attempts).toBe(3)
+    expect(delays).toEqual([25, 50])
+    expect(errors).toEqual([])
+    expect(sync.status()).toBe("fully-synced")
+  })
+
+  test("an upload that exhausts automatic retries is reported once", async () => {
+    const { remote } = createFakeRemote()
+    const doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])
+    let attempts = 0
+    const errors: unknown[] = []
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: doc }),
+      tiles: async (hash) => texelsFor(hash),
+      put: async () => {
+        attempts++
+        throw new Error("offline")
+      },
+      retry: { attempts: 3, baseDelayMs: 0, sleep: async () => {} },
+      onError: (error) => errors.push(error),
+    })
+
+    await sync.flush()
+
+    expect(attempts).toBe(3)
+    expect(errors).toHaveLength(1)
+    expect(String(errors[0])).toContain("3 attempts")
+    expect(sync.status()).toBe("saved-locally")
+  })
+
   test("is saved-locally until a flush actually commits, syncing while one is in flight, then fully-synced", async () => {
     const { remote } = createFakeRemote()
     let doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])

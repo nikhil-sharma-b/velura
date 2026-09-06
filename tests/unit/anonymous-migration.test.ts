@@ -121,6 +121,7 @@ describe("anonymous account migration", () => {
         attempts++
         throw new Error("offline")
       },
+      retry: { sleep: async () => {} },
     })
 
     expect(first).toEqual({ migrated: 0, remaining: 1 })
@@ -134,7 +135,7 @@ describe("anonymous account migration", () => {
       },
     })
     expect(second).toEqual({ migrated: 1, remaining: 0 })
-    expect(attempts).toBe(2)
+    expect(attempts).toBe(5)
     expect(await local.load("local-one")).toBeNull()
   })
 

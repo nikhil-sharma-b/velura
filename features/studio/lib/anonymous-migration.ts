@@ -1,6 +1,10 @@
 import type { BlobStore } from "@/engine/store/blob-store"
 import { isAnonymousDocumentId } from "@/lib/anonymous-document-id"
-import { createCloudSync, type RemoteIndex } from "@/engine/store/cloud-sync"
+import {
+  createCloudSync,
+  type RemoteIndex,
+  type UploadRetryOptions,
+} from "@/engine/store/cloud-sync"
 import {
   createDocumentStore,
   type DocumentManifest,
@@ -27,6 +31,8 @@ export async function migrateAnonymousDocuments(options: {
   blobs: BlobStore
   remote: AnonymousMigrationRemote
   put?: (url: string, bytes: Uint8Array, contentType?: string) => Promise<void>
+  /** Override for deterministic tests; production uses bounded backoff. */
+  retry?: UploadRetryOptions
   /** Retires browser identity after confirmation, before local deletion. */
   onConfirmed?: (manifest: DocumentManifest) => void | Promise<void>
 }): Promise<AnonymousMigrationResult> {
@@ -52,6 +58,7 @@ export async function migrateAnonymousDocuments(options: {
           return tile
         },
         ...(options.put ? { put: options.put } : {}),
+        retry: options.retry,
         onError: (error) => {
           failure = error
         },

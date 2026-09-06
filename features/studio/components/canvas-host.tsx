@@ -441,6 +441,15 @@ export function CanvasHost({
               </>
             )}
           </div>
+          {snapshot.problem && (
+            <div
+              role="alert"
+              data-recovery-action={snapshot.problem.action}
+              className="absolute top-14 left-1/2 max-w-xl -translate-x-1/2 rounded-lg border border-destructive/40 bg-background/95 px-4 py-3 text-sm shadow-lg"
+            >
+              {snapshot.problem.message}
+            </div>
+          )}
           {openElsewhere && (
             <div
               role="alert"
@@ -840,12 +849,11 @@ export function CanvasHost({
             {failed && (
               <>
                 <p className="text-muted-foreground">
-                  WebGPU is available, but Velura couldn’t start or keep its
-                  graphics device running. Close other graphics-heavy tabs and
-                  try again. If this continues, restart your browser or update
-                  your graphics driver.
+                  {snapshot.problem?.message ??
+                    "The graphics device could not start. Retry once; if it fails again, reload Velura or restart the browser."}
                 </p>
                 <button
+                  data-recovery-action={snapshot.problem?.action ?? "retry"}
                   className="rounded-md bg-primary px-4 py-2 text-primary-foreground"
                   onClick={() => void engine?.dispatch({ type: "initialize" })}
                 >

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
+import type { BlendMode } from "../../engine"
 
 async function openCanvas(page: Page) {
   await page.goto("http://127.0.0.1:3101/tests/harness/")
@@ -118,6 +119,60 @@ test("clipping is confined to its base inside a group", async ({ page }) => {
   await expect(page.locator("canvas")).toHaveScreenshot(
     "clipping-inside-group.png"
   )
+})
+
+test("non-separable modes compose through group opacity and clipping", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const ids = await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "addLayer" })
+    const base = window.engine.getSnapshot().activeLayerId
+    await window.engine.dispatch({ type: "addLayer" })
+    const shading = window.engine.getSnapshot().activeLayerId
+    return { base, shading }
+  })
+  await stroke(page, origin)
+  const group = await page.evaluate(async ({ base, shading }) => {
+    await window.engine.dispatch({
+      type: "setLayer",
+      id: shading,
+      clip: true,
+      opacity: 0.65,
+    })
+    await window.engine.dispatch({ type: "addGroup", ids: [base, shading] })
+    return window.engine.getSnapshot().layers.at(-1)!.id
+  }, ids)
+
+  const modes: BlendMode[] = ["hue", "saturation", "colour", "luminosity"]
+  for (const blend of modes) {
+    const result = await page.evaluate(
+      async ({ blend, group, shading }) => {
+        await window.engine.dispatch({
+          type: "setLayer",
+          id: shading,
+          blend,
+        })
+        await window.engine.dispatch({
+          type: "setLayer",
+          id: group,
+          blend,
+          opacity: 0.75,
+        })
+        const snapshot = window.engine.getSnapshot()
+        return {
+          pixels: (await window.engine.readPixels()).data.length,
+          group: snapshot.layers.find((layer) => layer.id === group),
+        }
+      },
+      { blend, group, shading: ids.shading }
+    )
+    expect(result.pixels).toBe(200 * 120 * 4)
+    expect(result.group).toMatchObject({ blend, opacity: 0.75 })
+    await expect(page.locator("canvas")).toHaveScreenshot(
+      `non-separable-group-${blend}.png`
+    )
+  }
 })
 
 test("a painted mask hides only part of a layer", async ({ page }) => {
