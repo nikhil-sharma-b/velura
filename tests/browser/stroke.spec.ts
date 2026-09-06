@@ -82,17 +82,26 @@ test("a flicked stroke does not gap where a slow one does not blob", async ({
 
 test("drawing never notifies React", async ({ page }) => {
   const origin = await openCanvas(page)
+  const draw = async (y: number) => {
+    await page.mouse.move(origin.x + 30, origin.y + y)
+    await page.mouse.down()
+    await page.mouse.move(origin.x + 160, origin.y + y + 50, { steps: 40 })
+    await page.mouse.up()
+    await painted(page)
+  }
+  // The first mark makes undo possible, which the interface has to hear about
+  // once; it is counted separately so what follows is measured against a
+  // document whose reported state a stroke can no longer change.
+  await draw(40)
+  await page.waitForFunction(() => window.engine.getSnapshot().canUndo)
   await page.evaluate(() => {
     window.strokeNotifications = 0
     window.engine.subscribe(() => {
       window.strokeNotifications++
     })
   })
-  await page.mouse.move(origin.x + 30, origin.y + 40)
-  await page.mouse.down()
-  await page.mouse.move(origin.x + 160, origin.y + 90, { steps: 40 })
-  await page.mouse.up()
-  await painted(page)
+  await draw(20)
+  await page.waitForFunction(() => window.engine.historyUsage().steps === 2)
   // Snapshots are emitted on structural change only; a stroke is not one.
   expect(await page.evaluate(() => window.strokeNotifications)).toBe(0)
 })

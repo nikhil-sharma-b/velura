@@ -77,6 +77,7 @@ type Pass = {
   /** Dispatched against requested: a shortfall means the pen could not keep up. */
   pen: { dispatched: number; requested: number; elapsedMs: number }
   readbacks: number
+  readbacksTotal: number
   report: Report
 }
 
@@ -156,6 +157,7 @@ async function measure(
         elapsedMs: result.elapsedMs,
       },
       readbacks: result.readbacks,
+      readbacksTotal: result.readbacksTotal,
       report: summarize(result.frames, { warmupFrames: WARMUP_FRAMES }),
       frames: result.frames,
     }
@@ -197,7 +199,8 @@ Velura performance benchmark (D30)
               cpu/frame median ${fixed(paced.report.cpuMs.median, 2)} ms, p95 ${fixed(paced.report.cpuMs.p95, 2)} ms
               target ${PERFORMANCE_TARGET.latencyMs} ms ..... ${verdict(run.meetsTarget.latency)}
 
-  readback    ${readbacks} calls ..... ${readbacks === 0 ? "NONE" : "PRESENT — D30 violated"}
+  readback    ${readbacks} calls while the pen was down ..... ${readbacks === 0 ? "NONE" : "PRESENT — D30 violated"}
+              ${paced.readbacksTotal + unpaced.readbacksTotal} in total, history reading back what each mark landed in (D21)
   overall     ${verdict(run.meetsTarget.overall)}
 `)
   if (

@@ -10,6 +10,7 @@ import {
   type PixelRect,
   TILE_CHANNELS,
   TILE_SIZE,
+  type TileCoord,
   tileBounds,
 } from "../doc/tile-grid"
 import {
@@ -118,8 +119,23 @@ export interface Renderer {
    * dynamics graph varies the bite per dab on top of this.
    */
   setGrain(texture: GrayscaleTexture | null, scale: number, depth: number): void
-  /** Composites the stroke buffer into the active layer, once, at stroke opacity. */
-  endStroke(): void
+  /**
+   * Composites the stroke buffer into the active layer, once, at stroke
+   * opacity. Returns the region the mark landed in, which is the region undo
+   * has to remember, or null when the stroke drew nothing.
+   */
+  endStroke(): PixelRect | null
+  /**
+   * Reads whole tiles back off a surface, zero-filled where they hang past the
+   * canvas and where the surface holds nothing. Asynchronous and off the
+   * interactive path: this runs on pen-up and on undo, never per frame (D30).
+   */
+  readTiles(id: string, coords: readonly TileCoord[]): Promise<Uint16Array[]>
+  /** Puts whole tiles back onto a surface. Null texels clear the tile. */
+  writeTiles(
+    id: string,
+    tiles: readonly (TileCoord & { texels: Uint16Array | null })[]
+  ): void
   render(view: GPUTextureView): void
   destroy(): void
 }
@@ -1184,7 +1200,7 @@ export function createRenderer(
       const region = paintedScissor()
       log.reset()
       resetPainted()
-      if (!region) return
+      if (!region) return null
       // The mark goes into the layer at the stroke's opacity, once (D27).
       compositeSurface(stroke, paintTarget, strokeOpacity, region)
       // The mark now lives in the layer's texture; the buffer must not show it
@@ -1192,6 +1208,75 @@ export function createRenderer(
       clearStroke()
       // Nothing between strokes should depend on the last stroke's opacity.
       writeStrokeOpacity(1)
+      return region
+    },
+    async readTiles(id, coords) {
+      const surface = surfaces.get(id)
+      const blank = () => new Uint16Array(TILE_SIZE * TILE_SIZE * TILE_CHANNELS)
+      // A surface with no texture has never held a pixel, so every tile of it
+      // reads as transparent without asking the GPU anything.
+      if (!surface || coords.length === 0) return coords.map(blank)
+      const canvas = { x: 0, y: 0, width, height }
+      const stride = TILE_SIZE * BYTES_PER_TEXEL
+      const tileBytes = stride * TILE_SIZE
+      const buffer = device.createBuffer({
+        size: tileBytes * coords.length,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      })
+      try {
+        const encoder = device.createCommandEncoder()
+        const regions = coords.map((coord) =>
+          intersectRect(tileBounds(coord), canvas)
+        )
+        regions.forEach((visible, index) => {
+          if (!visible) return
+          encoder.copyTextureToBuffer(
+            {
+              texture: surface.texture,
+              origin: { x: visible.x, y: visible.y },
+            },
+            {
+              buffer,
+              offset: index * tileBytes,
+              bytesPerRow: stride,
+              rowsPerImage: TILE_SIZE,
+            },
+            { width: visible.width, height: visible.height }
+          )
+        })
+        device.queue.submit([encoder.finish()])
+        await buffer.mapAsync(GPUMapMode.READ)
+        const mapped = new Uint16Array(buffer.getMappedRange())
+        return coords.map((_, index) => {
+          const texels = blank()
+          if (!regions[index]) return texels
+          const start = (index * tileBytes) / 2
+          texels.set(mapped.subarray(start, start + texels.length))
+          return texels
+        })
+      } finally {
+        buffer.destroy()
+      }
+    },
+    writeTiles(id, tiles) {
+      if (tiles.length === 0) return
+      const surface = ensureSurface(id)
+      const canvas = { x: 0, y: 0, width, height }
+      const blank = new Uint16Array(TILE_SIZE * TILE_SIZE * TILE_CHANNELS)
+      for (const tile of tiles) {
+        const visible = intersectRect(tileBounds(tile), canvas)
+        if (!visible) continue
+        device.queue.writeTexture(
+          { texture: surface.texture, origin: { x: visible.x, y: visible.y } },
+          tile.texels ?? blank,
+          { bytesPerRow: TILE_SIZE * BYTES_PER_TEXEL, rowsPerImage: TILE_SIZE },
+          { width: visible.width, height: visible.height }
+        )
+      }
+      surface.empty = false
+      // These pixels may sit inside a cache that was flattened before them.
+      composition = undefined
+      cachedFrom = undefined
     },
     render(view) {
       if (!presentBindGroup)

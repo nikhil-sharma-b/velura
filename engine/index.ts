@@ -47,7 +47,20 @@ import {
   setLayer,
   setMaskEnabled,
 } from "./doc/document"
+import {
+  createDocumentHistory,
+  DEFAULT_HOT_BYTES,
+  DEFAULT_WARM_BYTES,
+  type DocumentHistory,
+} from "./doc/history"
 import { BACKGROUND } from "./doc/scene"
+import {
+  captureStructure,
+  type DocumentStructure,
+  restoreStructure,
+  structureSurfaceIds,
+} from "./doc/structure"
+import { createOpfsSpill, createTileStore } from "./doc/tile-store"
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
 import {
@@ -122,6 +135,9 @@ export type EngineCommand =
    * alone, so a control that owns one property need not know the rest.
    */
   | ({ type: "setLayer"; id: string } & LayerPatch)
+  /** Takes back the last stroke or layer operation. Nothing to undo is a no-op. */
+  | { type: "undo" }
+  | { type: "redo" }
 
 export type EngineSnapshot = Readonly<{
   status:
@@ -143,6 +159,9 @@ export type EngineSnapshot = Readonly<{
   layers: readonly LayerSummary[]
   activeLayerId: string
   paintingMask: boolean
+  /** Whether there is a step to take back, and one to put back (D21). */
+  canUndo: boolean
+  canRedo: boolean
   error: string | null
 }>
 
@@ -174,6 +193,8 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   layers: Object.freeze([]),
   activeLayerId: "",
   paintingMask: false,
+  canUndo: false,
+  canRedo: false,
   error: null,
 })
 
@@ -219,6 +240,17 @@ export interface Engine {
    * and never on in the product.
    */
   observeFrames(observer: ((frame: FrameTiming) => void) | null): void
+  /**
+   * What the session's history is holding: how many steps it can take back, the
+   * logical bytes of the tiles behind them, and how much of that is in memory
+   * rather than compressed away or spilled to disk (D21).
+   */
+  historyUsage(): {
+    steps: number
+    heldBytes: number
+    residentBytes: number
+    spilledBytes: number
+  }
   dispose(): void
 }
 
@@ -232,9 +264,22 @@ function validateGrain(grain: BrushGrain): void {
     throw new Error("Grain depth must be a finite value in [0, 1].")
 }
 
+/**
+ * How much of a session's history stays in memory and how much of it is kept
+ * at all (D21). The defaults are the product's; tests set them small so a
+ * synthetic session crosses the compression and spill boundaries in seconds
+ * rather than in an afternoon of painting.
+ */
+export type HistoryBudget = {
+  budgetBytes?: number
+  hotBytes?: number
+  warmBytes?: number
+}
+
 /** Canvas attachment is a lifecycle operation; commands contain only values. */
 export function createEngine(
-  canvas: HTMLCanvasElement | OffscreenCanvas
+  canvas: HTMLCanvasElement | OffscreenCanvas,
+  options: { history?: HistoryBudget } = {}
 ): Engine {
   let snapshot: EngineSnapshot = INITIAL_SNAPSHOT
   const listeners = new Set<() => void>()
@@ -248,6 +293,8 @@ export function createEngine(
   // acquired, because the canvas size the layers are tiled at is not known
   // before then.
   let doc: PaintDocument | undefined
+  // Session-scoped, local undo (D9): tile hashes, tiered by bytes (D21).
+  let history: DocumentHistory | undefined
   let disposed = false
 
   // The stroke path. Every buffer here is allocated once, at construction:
@@ -323,6 +370,8 @@ export function createEngine(
     samples.clear()
     renderer?.destroy()
     renderer = undefined
+    history?.clear()
+    history = undefined
     doc = undefined
     context?.unconfigure()
     context = null
@@ -355,6 +404,9 @@ export function createEngine(
     if (renderer) {
       // The document is authored in canvas pixels for now, so a resize
       // re-tiles it; sparse tiles make that cost what is actually covered.
+      // Every tile moved, so no step recorded against the old grid can be
+      // replayed against this one.
+      history?.clear()
       if (doc) resizeDocument(doc, pixelWidth, pixelHeight)
       else doc = createDocument({ width: pixelWidth, height: pixelHeight })
       // Every texture went with the old size, so every layer is uploaded
@@ -381,6 +433,14 @@ export function createEngine(
         return
       }
       const layer = node
+      // Hashed before the upload clears the mark: these texels are exactly
+      // what the GPU is about to hold, so the first stroke over them knows
+      // what it covered without reading anything back.
+      if (layer.surface.tileCount() > 0 && layer.surface.dirtyBounds())
+        history?.recordUpload(layer.id, layer.surface.tiles(), {
+          width: snapshot.width,
+          height: snapshot.height,
+        })
       target.uploadLayer(layer.id, layer.surface)
     }
     doc.layers.forEach(upload)
@@ -425,6 +485,45 @@ export function createEngine(
   function requireDocument(): PaintDocument {
     if (!doc) throw new Error("The graphics device is not ready.")
     return doc
+  }
+
+  /** Where the pen is painting: the layer itself, or the mask over it. */
+  function paintTargetId(document: PaintDocument): string {
+    const layer = activeLayer(document)
+    return document.paintingMask && layer.mask ? layer.mask.id : layer.id
+  }
+
+  /**
+   * Every id a node owns, itself and everything under it: layers, masks, and
+   * the groups whose caches the renderer holds under their own id.
+   */
+  function nodeIdsOf(node: LayerNode): string[] {
+    const ids =
+      node.kind === "group"
+        ? [node.id, ...node.children.flatMap(nodeIdsOf)]
+        : [node.id]
+    return node.mask ? [...ids, node.mask.id] : ids
+  }
+
+  /**
+   * Records one discrete layer operation against the tree it was performed on,
+   * so undoing it is a structure to restore plus, for an operation that
+   * destroyed or copied pixels, the tiles to put back.
+   */
+  function recordOperation(
+    label: string,
+    before: DocumentStructure,
+    operation?: {
+      removed?: readonly string[]
+      copied?: readonly { from: string; to: string }[]
+      coalesceAs?: string
+    }
+  ) {
+    history?.recordOperation(
+      label,
+      { before, after: captureStructure(requireDocument()) },
+      operation
+    )
   }
 
   /**
@@ -568,7 +667,10 @@ export function createEngine(
       flushStamps()
       // The whole mark is in the buffer now, so it goes into the layer once,
       // at the stroke's opacity (D27).
-      renderer?.endStroke()
+      const region = renderer?.endStroke()
+      // One stroke, one step. The region the mark landed in is read back off
+      // the GPU after the frame, never during one.
+      if (region && doc) history?.recordStroke(paintTargetId(doc), region)
     }
     flushStamps()
     try {
@@ -733,12 +835,33 @@ export function createEngine(
       format = gpu.getPreferredCanvasFormat()
       acquired.pushErrorScope("validation")
       const colorSpace = configureOutput(context, acquired)
-      renderer = createRenderer(acquired, {
+      const target = createRenderer(acquired, {
         format,
         outputColorSpace: colorSpace,
         background: BACKGROUND,
         ink: BRUSH_COLOR,
         feather: BRUSH_FEATHER,
+      })
+      renderer = target
+      history = createDocumentHistory({
+        bridge: {
+          readTiles: (id, coords) => target.readTiles(id, coords),
+          writeTiles: (id, tiles) => target.writeTiles(id, tiles),
+        },
+        // The oldest tiles leave memory for the browser's own filesystem, so
+        // a session's history is bounded by disk rather than by the tab (D21).
+        budgetBytes: options.history?.budgetBytes,
+        store: createTileStore({
+          hotBytes: options.history?.hotBytes ?? DEFAULT_HOT_BYTES,
+          warmBytes: options.history?.warmBytes ?? DEFAULT_WARM_BYTES,
+          spill: createOpfsSpill(),
+        }),
+        onChange: () =>
+          publish({
+            canUndo: history?.canUndo() ?? false,
+            canRedo: history?.canRedo() ?? false,
+          }),
+        onError: fail,
       })
       // A new renderer holds no textures, whatever the brush was told before.
       appliedTextures = undefined
@@ -880,35 +1003,53 @@ export function createEngine(
           publish({ brush: Object.freeze(cloneBrush(next)) })
           break
         }
-        case "addLayer":
+        case "addLayer": {
+          const before = captureStructure(requireDocument())
           addLayer(requireDocument())
+          recordOperation("add layer", before)
           applyLayerChange()
           break
-        case "addGroup":
+        }
+        case "addGroup": {
+          const before = captureStructure(requireDocument())
           addGroup(requireDocument(), command.ids)
+          recordOperation("group layers", before)
           applyLayerChange()
           break
+        }
         case "duplicateLayer":
           {
             const document = requireDocument()
+            const before = captureStructure(document)
             const source = findLayer(document, command.id)
             const copyId = duplicateLayer(document, command.id)
             const copy = findLayer(document, copyId)
             renderer?.duplicateLayer(command.id, copyId)
             if (source.mask && copy.mask)
               renderer?.duplicateLayer(source.mask.id, copy.mask.id)
+            // The copy's pixels are the source's, so history holds one copy of
+            // them however many times a layer is duplicated.
+            recordOperation("duplicate layer", before, {
+              copied: [
+                { from: command.id, to: copyId },
+                ...(source.mask && copy.mask
+                  ? [{ from: source.mask.id, to: copy.mask.id }]
+                  : []),
+              ],
+            })
           }
           applyLayerChange()
           break
         case "removeLayer":
           {
-            const removed = removeLayer(requireDocument(), command.id)
-            const releaseNode = (node: LayerNode) => {
-              if (node.mask) renderer?.releaseLayer(node.mask.id)
-              if (node.kind === "group") node.children.forEach(releaseNode)
-              renderer?.releaseLayer(node.id)
-            }
-            releaseNode(removed)
+            const document = requireDocument()
+            const before = captureStructure(document)
+            const removed = removeLayer(document, command.id)
+            const ids = nodeIdsOf(removed)
+            // Recorded before the textures go: the pixels themselves are in
+            // the tile store, which is what putting the layer back reads from.
+            recordOperation("remove layer", before, { removed: ids })
+            for (const id of ids) renderer?.releaseLayer(id)
           }
           applyLayerChange()
           break
@@ -916,36 +1057,73 @@ export function createEngine(
           selectLayer(requireDocument(), command.id)
           applyLayerChange()
           break
-        case "moveLayer":
+        case "moveLayer": {
+          const before = captureStructure(requireDocument())
           moveLayer(
             requireDocument(),
             command.id,
             command.index,
             command.parentId
           )
+          recordOperation("move layer", before)
           applyLayerChange()
           break
-        case "addMask":
+        }
+        case "addMask": {
+          const before = captureStructure(requireDocument())
           addMask(requireDocument(), command.id)
+          recordOperation("add mask", before)
           applyLayerChange()
           break
+        }
         case "selectMask":
           selectMask(requireDocument(), command.id)
           applyLayerChange()
           break
-        case "setMaskEnabled":
+        case "setMaskEnabled": {
+          const before = captureStructure(requireDocument())
           setMaskEnabled(requireDocument(), command.id, command.enabled)
+          recordOperation("enable mask", before)
           applyLayerChange()
           break
+        }
         case "removeMask": {
-          const mask = removeMask(requireDocument(), command.id)
+          const document = requireDocument()
+          const before = captureStructure(document)
+          const mask = removeMask(document, command.id)
+          recordOperation("remove mask", before, { removed: [mask.id] })
           renderer?.releaseLayer(mask.id)
           applyLayerChange()
           break
         }
         case "setLayer": {
           const { type: _type, id, ...patch } = command
+          const before = captureStructure(requireDocument())
           setLayer(requireDocument(), id, patch)
+          // A dragged slider is one act, however many commands it sends, so a
+          // run of changes to the same fields of the same layer is one step.
+          recordOperation("layer settings", before, {
+            coalesceAs: `${id}:${Object.keys(patch).sort().join(",")}`,
+          })
+          applyLayerChange()
+          break
+        }
+        case "undo":
+        case "redo": {
+          if (!history) break
+          const document = requireDocument()
+          const previous = structureSurfaceIds(captureStructure(document))
+          const applied = await history[command.type]((structure) => {
+            restoreStructure(document, structure)
+            // Uploaded before the entry's tiles are written, so a layer that
+            // came back cannot have its restored pixels overwritten by the
+            // sparse surface it was originally seeded from.
+            uploadLayers()
+          })
+          if (!applied) break
+          const remaining = structureSurfaceIds(captureStructure(document))
+          for (const id of previous)
+            if (!remaining.has(id)) renderer?.releaseLayer(id)
           applyLayerChange()
           break
         }
@@ -961,6 +1139,12 @@ export function createEngine(
     observeFrames(observer) {
       frameObserver = observer
     },
+    historyUsage: () => ({
+      steps: history?.stepsBack() ?? 0,
+      heldBytes: history?.bytes() ?? 0,
+      residentBytes: history?.residentBytes() ?? 0,
+      spilledBytes: history?.spilledBytes() ?? 0,
+    }),
     async readPixels() {
       if (snapshot.status !== "ready" || !device)
         throw new Error("The graphics device is not ready.")

@@ -3,10 +3,13 @@ import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 /**
- * D30 forbids CPU readback in the interactive path outright. `readPixels` is
- * the sanctioned exception — export and previews, asynchronous, never per
- * frame — so the rule is checkable as a fact about the source: nothing else in
- * the engine may name the calls that move pixels back across the bus.
+ * D30 forbids CPU readback in the interactive path outright. Two calls are
+ * sanctioned exceptions, both asynchronous and neither per frame: `readPixels`
+ * for export and previews, and the renderer's `readTiles`, which is how an
+ * undo entry learns what a finished mark left behind (D21). The rule is
+ * checkable as a fact about the source: nothing else in the engine may name
+ * the calls that move pixels back across the bus, and neither exception may
+ * leak the calls into the module around it.
  *
  * The benchmark checks the same claim at runtime by counting those calls while
  * painting; this catches the introduction rather than the consequence.
@@ -21,12 +24,28 @@ function sources(directory: string): string[] {
   })
 }
 
+/**
+ * The one function in each module allowed to name them, and the line that
+ * closes it. Bounded at both ends: a slice that ran to the end of the file
+ * would wave through any readback introduced below the exception.
+ */
+const SANCTIONED = {
+  "index.ts": { from: "async readPixels()", to: "    dispose() {" },
+  "gpu/renderer.ts": {
+    from: "async readTiles(",
+    to: "    writeTiles(id, tiles) {",
+  },
+} as const
+
 describe("the interactive path never reads pixels back", () => {
   const engine = join(import.meta.dir, "..", "..", "engine")
+  const sanctioned = Object.keys(SANCTIONED).map((path) =>
+    join(engine, ...path.split("/"))
+  )
 
-  test("no engine module but the entry point names a readback call", () => {
+  test("no engine module but the two sanctioned ones names a readback call", () => {
     const offenders = sources(engine)
-      .filter((path) => path !== join(engine, "index.ts"))
+      .filter((path) => !sanctioned.includes(path))
       .filter((path) => {
         const source = readFileSync(path, "utf8")
         return READBACK.some((call) => source.includes(call))
@@ -34,14 +53,25 @@ describe("the interactive path never reads pixels back", () => {
     expect(offenders).toEqual([])
   })
 
-  test("the entry point reads back only inside readPixels", () => {
-    const source = readFileSync(join(engine, "index.ts"), "utf8")
-    // Everything from `readPixels` to the end of the object literal it sits in.
-    const readPixels = source.slice(source.indexOf("async readPixels()"))
-    for (const call of READBACK) {
-      const total = source.split(call).length - 1
-      const inside = readPixels.split(call).length - 1
-      expect({ call, outside: total - inside }).toEqual({ call, outside: 0 })
+  test.each(Object.entries(SANCTIONED))(
+    "%s reads back only inside its one sanctioned function",
+    (path, bounds) => {
+      const source = readFileSync(join(engine, ...path.split("/")), "utf8")
+      const start = source.indexOf(bounds.from)
+      const end = source.indexOf(bounds.to, start)
+      // A renamed or reordered function must fail here rather than quietly
+      // widen the exception to the whole file.
+      expect({ path, start: start > -1, end: end > start }).toEqual({
+        path,
+        start: true,
+        end: true,
+      })
+      const exception = source.slice(start, end)
+      for (const call of READBACK) {
+        const total = source.split(call).length - 1
+        const inside = exception.split(call).length - 1
+        expect({ call, outside: total - inside }).toEqual({ call, outside: 0 })
+      }
     }
-  })
+  )
 })

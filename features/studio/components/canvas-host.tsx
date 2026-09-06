@@ -1,6 +1,8 @@
 "use client"
 
 import {
+  ArrowUUpLeftIcon,
+  ArrowUUpRightIcon,
   EraserIcon,
   HandIcon,
   LockIcon,
@@ -8,7 +10,7 @@ import {
   PaintBrushIcon,
   SidebarSimpleIcon,
 } from "@phosphor-icons/react"
-import { useCallback, useState, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -85,6 +87,29 @@ export function CanvasHost() {
     }
   }, [])
 
+  // Undo is a keystroke before it is a button, and the canvas has no focus of
+  // its own to hang it off: the artist's hand is on the pen, not on the page.
+  useEffect(() => {
+    if (!engine) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "z" && event.key.toLowerCase() !== "y")
+        return
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return
+      // A layer being renamed owns its own undo, and it is not this one.
+      const target = event.target as HTMLElement | null
+      if (
+        target?.isContentEditable ||
+        ["INPUT", "TEXTAREA"].includes(target?.tagName ?? "")
+      )
+        return
+      event.preventDefault()
+      const redo = event.key.toLowerCase() === "y" || event.shiftKey
+      void engine.dispatch({ type: redo ? "redo" : "undo" })
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [engine])
+
   const unavailable = snapshot.status === "unavailable"
   const failed = snapshot.status === "failed"
   return (
@@ -141,6 +166,29 @@ export function CanvasHost() {
               className="rounded-lg"
             >
               <MagnifyingGlassIcon />
+            </Button>
+          </div>
+
+          <div className="absolute top-3 left-3 flex gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Undo"
+              disabled={!snapshot.canUndo}
+              onClick={() => void engine?.dispatch({ type: "undo" })}
+              className="rounded-lg"
+            >
+              <ArrowUUpLeftIcon />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Redo"
+              disabled={!snapshot.canRedo}
+              onClick={() => void engine?.dispatch({ type: "redo" })}
+              className="rounded-lg"
+            >
+              <ArrowUUpRightIcon />
             </Button>
           </div>
 

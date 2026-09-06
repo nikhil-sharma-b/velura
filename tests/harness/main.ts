@@ -15,6 +15,8 @@ import { createRenderer } from "../../engine/gpu/renderer"
 import { STAMP_STRIDE } from "../../engine/gpu/stamp-instance"
 import { createEngine, type Engine } from "../../engine"
 
+type EngineOptions = Parameters<typeof createEngine>[1]
+
 /** One dab, as a test writes it. Everything past opacity has a neutral default. */
 type Dab = {
   x: number
@@ -48,7 +50,8 @@ declare global {
     openBlendProbe: typeof openBlendProbe
     blendProbe: BlendProbe
     engine: Engine
-    remountEngine(): void
+    /** A fresh engine on the same canvas, optionally with a small history. */
+    remountEngine(options?: EngineOptions): void
     /** Snapshot notifications counted by the stroke tests. */
     strokeNotifications: number
     openStrokeBufferProbe(width: number, height: number): Promise<void>
@@ -68,9 +71,9 @@ window.openBlendProbe = openBlendProbe
 const canvas = document.querySelector("canvas")!
 window.engine = createEngine(canvas)
 
-window.remountEngine = () => {
+window.remountEngine = (options) => {
   window.engine.dispose()
-  window.engine = createEngine(canvas)
+  window.engine = createEngine(canvas, options)
 }
 
 window.runBenchmark = (options) => runBenchmark(window.engine, canvas, options)

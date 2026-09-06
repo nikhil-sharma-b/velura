@@ -36,6 +36,15 @@ export function tileKey(x: number, y: number): string {
   return `${x},${y}`
 }
 
+/** The coordinate a key was made from. */
+export function tileCoordFromKey(key: string): TileCoord {
+  const [x, y] = key.split(",").map(Number)
+  return { x, y }
+}
+
+/** One tile of premultiplied rgba16float, which is what every tier charges. */
+export const TILE_BYTES = TILE_TEXELS * TILE_CHANNELS * 2
+
 export function isEmptyRect(rect: PixelRect): boolean {
   return rect.width <= 0 || rect.height <= 0
 }

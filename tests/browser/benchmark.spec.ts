@@ -47,6 +47,10 @@ test("the benchmark drives the engine and observes every frame", async ({
 
   // D30's hard rule, checked while painting rather than by reading the source.
   expect(result.readbacks).toBe(0)
+  // What readback there is belongs to history, which reads back the tiles one
+  // finished mark landed in. A 512-square canvas is four tiles, so a stroke
+  // costs at most a copy per tile and one mapping, once, on pen-up.
+  expect(result.readbacksTotal).toBeLessThanOrEqual(5 * WORKLOAD.strokes)
 
   // And the records summarize into a report, which is what gets recorded.
   const report = summarize(result.frames, { warmupFrames: 0 })

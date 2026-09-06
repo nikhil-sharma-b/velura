@@ -211,3 +211,39 @@ test("device loss shows a recoverable failure instead of leaving a blank canvas"
     "ready"
   )
 })
+
+test("undo and redo are reachable by button and by keystroke", async ({
+  page,
+}) => {
+  await page.goto("/")
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  const undo = page.getByRole("button", { name: "Undo" })
+  const redo = page.getByRole("button", { name: "Redo" })
+  await expect(undo).toBeDisabled()
+  await expect(redo).toBeDisabled()
+
+  const layers = page.getByRole("region", { name: "Layers" })
+  await layers.getByRole("button", { name: "Add layer" }).click()
+  await expect(layers.getByText("Layer 2")).toBeVisible()
+  await expect(undo).toBeEnabled()
+
+  await undo.click()
+  await expect(layers.getByText("Layer 2")).toBeHidden()
+  await expect(redo).toBeEnabled()
+
+  // The keystroke reaches the engine wherever the pointer happens to be.
+  await page.keyboard.press("ControlOrMeta+Shift+z")
+  await expect(layers.getByText("Layer 2")).toBeVisible()
+  await page.keyboard.press("ControlOrMeta+z")
+  await expect(layers.getByText("Layer 2")).toBeHidden()
+
+  // A layer being renamed keeps its own undo: the canvas must not steal it.
+  await layers.getByText("Layer 1").dblclick()
+  const name = layers.getByRole("textbox", { name: "Layer name" })
+  await name.fill("Underpainting")
+  await page.keyboard.press("ControlOrMeta+z")
+  await expect(layers.getByText("Layer 1")).toBeHidden()
+})

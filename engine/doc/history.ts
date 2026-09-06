@@ -1,0 +1,355 @@
+import { type DocumentStructure, sameStructure } from "./structure"
+import {
+  intersectRect,
+  type PixelRect,
+  TILE_CHANNELS,
+  TILE_SIZE,
+  type TileCoord,
+  tileBounds,
+  tileCoordFromKey,
+  tileKey,
+  tilesCoveringRect,
+} from "./tile-grid"
+import { createTileStore, type TileStore } from "./tile-store"
+import {
+  createUndoStack,
+  type SurfaceChange,
+  type UndoEntry,
+} from "./undo-stack"
+
+export type { UndoEntry } from "./undo-stack"
+
+/** Texels for one tile, or null where the tile holds nothing at all. */
+export type TileWrite = TileCoord & { texels: Uint16Array | null }
+
+/**
+ * The pixels an undo entry is about. The document's authoritative pixels live
+ * in GPU textures, so history reads and writes them through this rather than
+ * through the sparse CPU surfaces, which are only ever an upload source.
+ */
+export interface SurfaceBridge {
+  /** Whole tiles, zero-filled outside the canvas, in the order asked for. */
+  readTiles(
+    surfaceId: string,
+    coords: readonly TileCoord[]
+  ): Promise<Uint16Array[]>
+  writeTiles(surfaceId: string, tiles: readonly TileWrite[]): void
+}
+
+export interface DocumentHistory {
+  /**
+   * Notes the pixels a CPU surface was just uploaded with, so the first stroke
+   * over them knows what it covered. No readback: these texels are the ones
+   * that went to the GPU.
+   */
+  recordUpload(
+    surfaceId: string,
+    tiles: readonly (TileCoord & { texels: Uint16Array })[],
+    canvas: { width: number; height: number }
+  ): void
+  /** One stroke, one step: reads back what the mark left in `region` (D27). */
+  recordStroke(surfaceId: string, region: PixelRect): void
+  /** One discrete layer operation, as the tree before and after it. */
+  recordOperation(
+    label: string,
+    structure: { before: DocumentStructure; after: DocumentStructure },
+    options?: {
+      /** Surfaces the operation destroyed; their pixels are kept to restore. */
+      removed?: readonly string[]
+      /** Surfaces the operation filled by copying another's pixels. */
+      copied?: readonly { from: string; to: string }[]
+      /**
+       * Names a run of adjustments that is one act to the artist. A dragged
+       * opacity slider dispatches a command per tick, and thirty steps to undo
+       * one drag would bury the stroke underneath it: consecutive operations
+       * sharing a key extend the step already on the stack.
+       */
+      coalesceAs?: string
+    }
+  ): void
+  undo(applyStructure: (structure: DocumentStructure) => void): Promise<boolean>
+  redo(applyStructure: (structure: DocumentStructure) => void): Promise<boolean>
+  canUndo(): boolean
+  canRedo(): boolean
+  depth(): number
+  /** Steps that can still be taken back, which is where the cursor sits. */
+  stepsBack(): number
+  /** Logical bytes of the tiles history is keeping alive. */
+  bytes(): number
+  residentBytes(): number
+  /** Of what history holds, how much has left memory for the spill device. */
+  spilledBytes(): number
+  /** Forgets everything: a resize re-tiles the document past recognition. */
+  clear(): void
+  /** Waits for recording that is still in flight. */
+  settle(): Promise<void>
+  readonly store: TileStore
+}
+
+/**
+ * Half a gigabyte of tiles, which is a few hundred ordinary strokes and a
+ * couple of dozen full-canvas washes. Only the newest of it is uncompressed
+ * and only a slice of the rest is in memory at all (D21).
+ */
+export const DEFAULT_HISTORY_BUDGET_BYTES = 512 * 1024 * 1024
+/** Roughly the ten most recent entries' worth of tiles, kept raw. */
+export const DEFAULT_HOT_BYTES = 64 * 1024 * 1024
+export const DEFAULT_WARM_BYTES = 128 * 1024 * 1024
+
+const TILE_VALUES = TILE_SIZE * TILE_SIZE * TILE_CHANNELS
+
+function isBlank(texels: Uint16Array): boolean {
+  for (let i = 0; i < texels.length; i++) if (texels[i] !== 0) return false
+  return true
+}
+
+/**
+ * A tile as the GPU holds it: the part of it outside the canvas was never
+ * written and reads back as zero, so a CPU tile has to be clipped the same way
+ * before its hash can be compared with one taken from a readback.
+ */
+function clipTile(
+  texels: Uint16Array,
+  coord: TileCoord,
+  canvas: { width: number; height: number }
+): Uint16Array {
+  const bounds = tileBounds(coord)
+  const visible = intersectRect(bounds, {
+    x: 0,
+    y: 0,
+    width: canvas.width,
+    height: canvas.height,
+  })
+  if (!visible) return new Uint16Array(TILE_VALUES)
+  if (visible.width === TILE_SIZE && visible.height === TILE_SIZE) return texels
+  const clipped = new Uint16Array(TILE_VALUES)
+  for (let y = 0; y < visible.height; y++) {
+    const row = y * TILE_SIZE * TILE_CHANNELS
+    clipped.set(texels.subarray(row, row + visible.width * TILE_CHANNELS), row)
+  }
+  return clipped
+}
+
+export function createDocumentHistory(options: {
+  bridge: SurfaceBridge
+  store?: TileStore
+  budgetBytes?: number
+  /** Told whenever undoing or redoing becomes possible or stops being. */
+  onChange?: () => void
+  /**
+   * Told when recording fails. A step that cannot be recorded is a step the
+   * artist cannot take back, which they have to be told about rather than
+   * discover by pressing undo and watching the wrong thing happen.
+   */
+  onError?: (error: unknown) => void
+}): DocumentHistory {
+  const { bridge } = options
+  const store =
+    options.store ??
+    createTileStore({
+      hotBytes: DEFAULT_HOT_BYTES,
+      warmBytes: DEFAULT_WARM_BYTES,
+    })
+  const stack = createUndoStack({
+    store,
+    budgetBytes: options.budgetBytes ?? DEFAULT_HISTORY_BUDGET_BYTES,
+  })
+  /**
+   * What each surface holds right now, by tile. This is the "before" half of
+   * the next entry, and keeping it is what makes a stroke cost one readback
+   * instead of two.
+   */
+  const index = new Map<string, Map<string, string>>()
+  /** Recording is serialized: a readback must not overtake the step after it. */
+  let queue: Promise<void> = Promise.resolve()
+
+  function enqueue(work: () => void | Promise<void>) {
+    queue = queue.then(work).catch((error) => options.onError?.(error))
+  }
+
+  function tilesOf(surfaceId: string): Map<string, string> {
+    const existing = index.get(surfaceId)
+    if (existing) return existing
+    const created = new Map<string, string>()
+    index.set(surfaceId, created)
+    return created
+  }
+
+  /** Moves the index onto `hash`, whose reference it takes over. */
+  function setTile(surfaceId: string, key: string, hash: string | undefined) {
+    const tiles = tilesOf(surfaceId)
+    const previous = tiles.get(key)
+    if (previous === hash) {
+      if (hash) store.release(hash)
+      return
+    }
+    if (previous) store.release(previous)
+    if (hash) tiles.set(key, hash)
+    else tiles.delete(key)
+  }
+
+  /**
+   * Pushes a step and lets go of the references recording was holding on the
+   * pixels it displaced. The stack takes its own on the way in, so a tile the
+   * document no longer shows survives exactly as long as a step names it.
+   */
+  function pushEntry(entry: UndoEntry) {
+    // A command that left the document exactly as it found it is not a step:
+    // a slider nudged back to where it started must not cost an undo.
+    const empty =
+      entry.surfaces.every((surface) => surface.tiles.length === 0) &&
+      (!entry.structure ||
+        sameStructure(entry.structure.before, entry.structure.after))
+    if (!empty) stack.push(entry)
+    for (const surface of entry.surfaces)
+      for (const tile of surface.tiles)
+        if (tile.before) store.release(tile.before)
+    if (!empty) options.onChange?.()
+  }
+
+  /** Every tile a surface currently holds, as an entry that empties it. */
+  function captureRemoval(surfaceId: string): SurfaceChange {
+    const tiles = index.get(surfaceId)
+    const changes = [...(tiles?.entries() ?? [])].map(([key, hash]) => {
+      // The entry needs its own claim on pixels the index is about to drop.
+      store.retain(hash)
+      return { ...tileCoordFromKey(key), before: hash }
+    })
+    for (const [key] of tiles ?? []) setTile(surfaceId, key, undefined)
+    index.delete(surfaceId)
+    return { surfaceId, tiles: changes }
+  }
+
+  function captureCopy(from: string, to: string): SurfaceChange {
+    const source = index.get(from)
+    const changes = [...(source?.entries() ?? [])].map(([key, hash]) => {
+      // The copy's index needs a claim of its own on the source's pixels.
+      store.retain(hash)
+      setTile(to, key, hash)
+      return { ...tileCoordFromKey(key), after: hash }
+    })
+    return { surfaceId: to, tiles: changes }
+  }
+
+  async function applyPixels(entry: UndoEntry, side: "before" | "after") {
+    for (const surface of entry.surfaces) {
+      // Asked for together rather than one after another: at the deepest tier
+      // each tile is a file read and an inflate, and a wash across the canvas
+      // is hundreds of them. Serially, that is what would make a deep undo
+      // feel slow.
+      const writes: TileWrite[] = await Promise.all(
+        surface.tiles.map(async (tile) => ({
+          x: tile.x,
+          y: tile.y,
+          texels: tile[side] ? await store.get(tile[side]!) : null,
+        }))
+      )
+      for (const tile of surface.tiles) {
+        const hash = tile[side]
+        if (hash) store.retain(hash)
+        setTile(surface.surfaceId, tileKey(tile.x, tile.y), hash)
+      }
+      if (writes.length > 0) bridge.writeTiles(surface.surfaceId, writes)
+    }
+  }
+
+  return {
+    store,
+    recordUpload(surfaceId, tiles, canvas) {
+      enqueue(() => {
+        for (const tile of tiles) {
+          const clipped = clipTile(tile.texels, tile, canvas)
+          const key = tileKey(tile.x, tile.y)
+          setTile(
+            surfaceId,
+            key,
+            isBlank(clipped) ? undefined : store.put(clipped)
+          )
+        }
+      })
+    },
+    recordStroke(surfaceId, region) {
+      enqueue(async () => {
+        const coords = tilesCoveringRect(region)
+        if (coords.length === 0) return
+        const texels = await bridge.readTiles(surfaceId, coords)
+        const tiles = coords.flatMap((coord, position) => {
+          const key = tileKey(coord.x, coord.y)
+          const before = index.get(surfaceId)?.get(key)
+          const painted = texels[position]
+          const after = isBlank(painted) ? undefined : store.put(painted)
+          if (before === after) {
+            if (after) store.release(after)
+            return []
+          }
+          if (before) store.retain(before)
+          setTile(surfaceId, key, after)
+          return [{ x: coord.x, y: coord.y, before, after }]
+        })
+        pushEntry({ label: "stroke", surfaces: [{ surfaceId, tiles }] })
+      })
+    },
+    recordOperation(label, structure, operation) {
+      enqueue(() => {
+        const surfaces = [
+          ...(operation?.removed ?? []).map(captureRemoval),
+          ...(operation?.copied ?? []).map(({ from, to }) =>
+            captureCopy(from, to)
+          ),
+        ]
+        const key = operation?.coalesceAs
+        // Extending the step in place keeps the state it started from, which
+        // is where undoing the whole run has to land.
+        if (
+          key &&
+          surfaces.length === 0 &&
+          stack.extendTop(key, structure.after)
+        )
+          return
+        pushEntry({ label, surfaces, structure, coalesceAs: key })
+      })
+    },
+    async undo(applyStructure) {
+      await this.settle()
+      const entry = stack.undo()
+      if (!entry) return false
+      if (entry.structure) applyStructure(entry.structure.before)
+      await applyPixels(entry, "before")
+      options.onChange?.()
+      return true
+    },
+    async redo(applyStructure) {
+      await this.settle()
+      const entry = stack.redo()
+      if (!entry) return false
+      if (entry.structure) applyStructure(entry.structure.after)
+      await applyPixels(entry, "after")
+      options.onChange?.()
+      return true
+    },
+    canUndo: () => stack.canUndo(),
+    canRedo: () => stack.canRedo(),
+    depth: () => stack.depth(),
+    stepsBack: () => stack.stepsBack(),
+    bytes: () => stack.bytes(),
+    residentBytes: () => store.residentBytes(),
+    spilledBytes: () => store.spilledBytes(),
+    clear() {
+      stack.clear()
+      for (const [surfaceId, tiles] of index)
+        for (const [key] of tiles) setTile(surfaceId, key, undefined)
+      index.clear()
+      options.onChange?.()
+    },
+    async settle() {
+      let pending = queue
+      // Recording can queue more recording; drain until it stops.
+      while (true) {
+        await pending
+        if (pending === queue) break
+        pending = queue
+      }
+      await store.settle()
+    },
+  }
+}

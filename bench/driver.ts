@@ -21,10 +21,14 @@ export type RunResult = {
   requested: number
   /**
    * Calls to the two WebGPU entry points that move pixels back to the CPU,
-   * counted for the length of the run. D30 forbids readback in the interactive
-   * path outright, so the only defensible number here is zero.
+   * counted while the pen is down. D30 forbids readback in the interactive
+   * path outright, so the only defensible number here is zero. History reads
+   * the tiles a mark landed in once the pen has lifted (D21), which is off
+   * that path and counted separately.
    */
   readbacks: number
+  /** Readbacks over the whole run, the pen-up ones included. */
+  readbacksTotal: number
   /** Wall-clock milliseconds the pen was down. */
   elapsedMs: number
 }
@@ -40,27 +44,44 @@ const nextFrame = () =>
 
 /**
  * Counts every call that could pull pixels back across the bus, for as long as
- * the run lasts. Patched rather than inspected: the claim is about what the
- * engine does while painting, and only running it can settle that.
+ * the run lasts, and separately those that happen while the pen is down.
+ * Patched rather than inspected: the claim is about what the engine does while
+ * painting, and only running it can settle that.
  */
-function watchForReadback(): { count: () => number; restore: () => void } {
+function watchForReadback(): {
+  count: () => number
+  total: () => number
+  /** Called as the pen goes down and comes up: what makes the path the interactive one. */
+  setPenDown: (down: boolean) => void
+  restore: () => void
+} {
   let count = 0
+  let total = 0
+  let penDown = false
   const buffer = GPUBuffer.prototype
   const encoder = GPUCommandEncoder.prototype
   const mapAsync = buffer.mapAsync
   const copyTextureToBuffer = encoder.copyTextureToBuffer
+  const record = () => {
+    total++
+    if (penDown) count++
+  }
   buffer.mapAsync = function (...args: Parameters<typeof mapAsync>) {
-    count++
+    record()
     return mapAsync.apply(this, args)
   }
   encoder.copyTextureToBuffer = function (
     ...args: Parameters<typeof copyTextureToBuffer>
   ) {
-    count++
+    record()
     return copyTextureToBuffer.apply(this, args)
   }
   return {
     count: () => count,
+    total: () => total,
+    setPenDown(down) {
+      penDown = down
+    },
     restore() {
       buffer.mapAsync = mapAsync
       encoder.copyTextureToBuffer = copyTextureToBuffer
@@ -299,6 +320,7 @@ export async function runBenchmark(
   try {
     for (const stroke of workload.strokes) {
       const [first] = stroke.samples
+      readback.setPenDown(true)
       dispatch("pointerdown", first)
       dispatched++
       // The pen's clock starts now, and every sample is dispatched when it is
@@ -324,6 +346,7 @@ export async function runBenchmark(
         pump.post(step)
       })
       dispatch("pointerup", stroke.samples[stroke.samples.length - 1])
+      readback.setPenDown(false)
       // Two frames: one flushes the tail and composites the stroke, and the
       // loop has stopped by the end of the next.
       await nextFrame()
@@ -349,6 +372,7 @@ export async function runBenchmark(
       0
     ),
     readbacks: readback.count(),
+    readbacksTotal: readback.total(),
     elapsedMs: performance.now() - started,
   }
 }
