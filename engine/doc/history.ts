@@ -19,6 +19,17 @@ import {
 
 export type { UndoEntry } from "./undo-stack"
 
+/**
+ * What one surface holds right now, as content hashes. History keeps this
+ * index in step with every upload, stroke, copy and undo, which makes it the
+ * one place that already knows the document's pixels by hash — so persistence
+ * reads it rather than keeping a second index of its own (§9.2).
+ */
+export type SurfaceTileIndex = {
+  surfaceId: string
+  tiles: { x: number; y: number; hash: string }[]
+}
+
 /** Texels for one tile, or null where the tile holds nothing at all. */
 export type TileWrite = TileCoord & { texels: Uint16Array | null }
 
@@ -83,6 +94,12 @@ export interface DocumentHistory {
   clear(): void
   /** Waits for recording that is still in flight. */
   settle(): Promise<void>
+  /**
+   * Every surface's tiles by content hash, as of the last recorded step. This
+   * is what a document manifest is written from, and the tiles it names are
+   * held in `store` until the entries naming them fall off the stack.
+   */
+  tileIndex(): SurfaceTileIndex[]
   readonly store: TileStore
 }
 
@@ -142,6 +159,12 @@ export function createDocumentHistory(options: {
    * discover by pressing undo and watching the wrong thing happen.
    */
   onError?: (error: unknown) => void
+  /**
+   * Told whenever the tile index moved: a stroke recorded, an operation, an
+   * upload, an undo. Persistence hangs off this rather than off the pen, so
+   * every route a pixel takes into the document is a route to disk.
+   */
+  onCommit?: () => void
 }): DocumentHistory {
   const { bridge } = options
   const store =
@@ -204,7 +227,10 @@ export function createDocumentHistory(options: {
     for (const surface of entry.surfaces)
       for (const tile of surface.tiles)
         if (tile.before) store.release(tile.before)
-    if (!empty) options.onChange?.()
+    if (!empty) {
+      options.onChange?.()
+      options.onCommit?.()
+    }
   }
 
   /** Every tile a surface currently holds, as an entry that empties it. */
@@ -266,6 +292,7 @@ export function createDocumentHistory(options: {
             isBlank(clipped) ? undefined : store.put(clipped)
           )
         }
+        options.onCommit?.()
       })
     },
     recordStroke(surfaceId, region) {
@@ -316,6 +343,7 @@ export function createDocumentHistory(options: {
       if (entry.structure) applyStructure(entry.structure.before)
       await applyPixels(entry, "before")
       options.onChange?.()
+      options.onCommit?.()
       return true
     },
     async redo(applyStructure) {
@@ -325,8 +353,17 @@ export function createDocumentHistory(options: {
       if (entry.structure) applyStructure(entry.structure.after)
       await applyPixels(entry, "after")
       options.onChange?.()
+      options.onCommit?.()
       return true
     },
+    tileIndex: () =>
+      [...index].map(([surfaceId, tiles]) => ({
+        surfaceId,
+        tiles: [...tiles].map(([key, hash]) => ({
+          ...tileCoordFromKey(key),
+          hash,
+        })),
+      })),
     canUndo: () => stack.canUndo(),
     canRedo: () => stack.canRedo(),
     depth: () => stack.depth(),

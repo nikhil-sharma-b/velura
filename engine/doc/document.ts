@@ -79,6 +79,19 @@ export type CompositePlan = {
 
 let nextId = 0
 
+/**
+ * Keeps generated ids clear of ones already in use. A reopened document brings
+ * its own `layer-7` with it, and the counter behind new layers starts at zero
+ * in a fresh tab: without this the next layer added would collide with a
+ * restored one and two surfaces would share a texture.
+ */
+export function reserveIds(ids: Iterable<string>): void {
+  for (const id of ids) {
+    const sequence = /-(\d+)$/.exec(id)
+    if (sequence) nextId = Math.max(nextId, Number(sequence[1]))
+  }
+}
+
 function base(name: string, id: string): NodeSettings {
   return { id, name, opacity: 1, visible: true, blend: "normal", clip: false }
 }

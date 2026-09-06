@@ -91,7 +91,12 @@ function findLayer(
   }
 }
 
-export function CanvasHost() {
+/**
+ * `documentId` names where the work is kept. Every document is stored locally
+ * under its id — the cloud copy is made from that, never instead of it — so a
+ * host that omits one gets a session whose pixels do not outlive the tab.
+ */
+export function CanvasHost({ documentId }: { documentId?: string }) {
   const [engine, setEngine] = useState<Engine | null>(null)
   const [panelsOpen, setPanelsOpen] = useState(true)
   const [paintNotice, setPaintNotice] = useState<string | null>(null)
@@ -102,41 +107,63 @@ export function CanvasHost() {
   )
 
   // React 19 ref cleanup also covers Strict Mode's attach/detach rehearsal.
-  const attach = useCallback((canvas: HTMLCanvasElement | null) => {
-    if (!canvas) return
-    const attached = createEngine(canvas)
-    setEngine(attached)
-    const resize = () => {
-      const bounds = canvas.getBoundingClientRect()
-      void attached.dispatch({
-        type: "resize",
-        width: bounds.width,
-        height: bounds.height,
-        devicePixelRatio: window.devicePixelRatio || 1,
-      })
-    }
-    const observer = new ResizeObserver(resize)
-    observer.observe(canvas)
-    let density = window.devicePixelRatio
-    let frame: number
-    // Density can change without layout or media-query events (e.g. emulation).
-    // Only a change issues a command; steady frames never touch React state.
-    const watchDensity = () => {
-      if (density !== window.devicePixelRatio) {
-        density = window.devicePixelRatio
-        resize()
+  const attach = useCallback(
+    (canvas: HTMLCanvasElement | null) => {
+      if (!canvas) return
+      const attached = createEngine(
+        canvas,
+        documentId ? { persistence: { documentId } } : {}
+      )
+      setEngine(attached)
+      const resize = () => {
+        const bounds = canvas.getBoundingClientRect()
+        void attached.dispatch({
+          type: "resize",
+          width: bounds.width,
+          height: bounds.height,
+          devicePixelRatio: window.devicePixelRatio || 1,
+        })
       }
+      const observer = new ResizeObserver(resize)
+      observer.observe(canvas)
+      let density = window.devicePixelRatio
+      let frame: number
+      // Density can change without layout or media-query events (e.g. emulation).
+      // Only a change issues a command; steady frames never touch React state.
+      const watchDensity = () => {
+        if (density !== window.devicePixelRatio) {
+          density = window.devicePixelRatio
+          resize()
+        }
+        frame = requestAnimationFrame(watchDensity)
+      }
+      resize()
       frame = requestAnimationFrame(watchDensity)
+      void attached.dispatch({ type: "initialize" })
+      return () => {
+        observer.disconnect()
+        cancelAnimationFrame(frame)
+        attached.dispose()
+      }
+    },
+    [documentId]
+  )
+
+  // Completed strokes are already on disk; this is for the save that a commit
+  // queued and the tab is about to outrun. `pagehide` covers the close and the
+  // navigation, `visibilitychange` the switch away that never comes back.
+  useEffect(() => {
+    if (!engine) return
+    const flush = () => {
+      void engine.save()
     }
-    resize()
-    frame = requestAnimationFrame(watchDensity)
-    void attached.dispatch({ type: "initialize" })
+    window.addEventListener("pagehide", flush)
+    document.addEventListener("visibilitychange", flush)
     return () => {
-      observer.disconnect()
-      cancelAnimationFrame(frame)
-      attached.dispose()
+      window.removeEventListener("pagehide", flush)
+      document.removeEventListener("visibilitychange", flush)
     }
-  }, [])
+  }, [engine])
 
   // Undo and navigation are keystrokes before they are buttons, and the canvas
   // has no focus of its own to hang them off: the artist's hand is on the pen,

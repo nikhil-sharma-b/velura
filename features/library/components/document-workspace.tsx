@@ -17,9 +17,10 @@ import type { Id } from "@/convex/_generated/dataModel"
 import { CanvasHost } from "@/features/studio/components/canvas-host"
 
 /**
- * Opens a document to an empty canvas. Pixels are not persisted until ticket
- * 16, so what the document supplies here is identity and access: the row must
- * exist and belong to the signed-in artist before the engine is mounted.
+ * Opens a document. The row supplies identity and access — it must exist and
+ * belong to the signed-in artist before the engine is mounted — and the id it
+ * supplies is what the pixels are stored locally under (§9.2). Uploading those
+ * tiles to the cloud is ticket 17; until then the local copy is the document.
  */
 export function DocumentWorkspace({ documentId }: { documentId: string }) {
   return (
@@ -45,7 +46,7 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
   const document = useQuery(api.documents.get, { documentId })
 
   if (document === undefined) return <CentredSpinner />
-  return <CanvasHost />
+  return <CanvasHost documentId={documentId} />
 }
 
 function RedirectToSignIn() {

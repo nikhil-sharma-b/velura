@@ -42,6 +42,7 @@ import {
   type PaintDocument,
   planComposite,
   removeLayer,
+  reserveIds,
   removeMask,
   resizeDocument,
   selectLayer,
@@ -63,6 +64,12 @@ import {
   structureSurfaceIds,
 } from "./doc/structure"
 import { createOpfsSpill, createTileStore } from "./doc/tile-store"
+import { type BlobStore, createLocalBlobStore } from "./store/blob-store"
+import { createDocumentStore, type DocumentStore } from "./store/document-store"
+import {
+  createDocumentPersistence,
+  type DocumentPersistence,
+} from "./store/local-persistence"
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
 import {
@@ -321,6 +328,12 @@ export interface Engine {
     residentBytes: number
     spilledBytes: number
   }
+  /**
+   * Writes the document to local storage now and waits for it. Strokes already
+   * save themselves; this is for a host that wants the tab-hide or explicit
+   * save to be a promise it can await. A no-op with no persistence configured.
+   */
+  save(): Promise<void>
   dispose(): void
 }
 
@@ -346,10 +359,23 @@ export type HistoryBudget = {
   warmBytes?: number
 }
 
+/**
+ * Where a document is kept between sessions (§9.2). Anonymous work is a real
+ * document with a real id: local storage is the durability guarantee, and the
+ * cloud is a copy of it rather than the other way round.
+ */
+export type PersistenceOptions = {
+  documentId: string
+  /** Defaults to OPFS, or memory where the browser has none. */
+  blobs?: BlobStore
+  /** Told when a save fails, so a host can say that work is not being kept. */
+  onError?: (error: unknown) => void
+}
+
 /** Canvas attachment is a lifecycle operation; commands contain only values. */
 export function createEngine(
   canvas: HTMLCanvasElement | OffscreenCanvas,
-  options: { history?: HistoryBudget } = {}
+  options: { history?: HistoryBudget; persistence?: PersistenceOptions } = {}
 ): Engine {
   let snapshot: EngineSnapshot = INITIAL_SNAPSHOT
   const listeners = new Set<() => void>()
@@ -371,6 +397,15 @@ export function createEngine(
   let doc: PaintDocument | undefined
   // Session-scoped, local undo (D9): tile hashes, tiered by bytes (D21).
   let history: DocumentHistory | undefined
+  let persistence: DocumentPersistence | undefined
+  let documents: DocumentStore | undefined
+  /**
+   * Whether this session may write to local storage. False until the stored
+   * document has been looked for — the empty canvas a session opens on must
+   * not overwrite the work it is about to reopen — and false for good where
+   * that document came back but could not be taken on whole.
+   */
+  let restored = !options.persistence
   let disposed = false
 
   // The stroke path. Every buffer here is allocated once, at construction:
@@ -451,6 +486,8 @@ export function createEngine(
     renderer = undefined
     history?.clear()
     history = undefined
+    persistence = undefined
+    documents = undefined
     doc = undefined
     context?.unconfigure()
     context = null
@@ -789,6 +826,71 @@ export function createEngine(
     resampler.extend(point.x, point.y, pressure, tiltX, tiltY, time, emitStamp)
   }
 
+  /**
+   * Puts the stored document back: the tree, then its pixels, straight into
+   * the GPU surfaces they were read out of (§9.3). Tiles are named by content
+   * hash, so nothing here has to decide whether what the device holds is
+   * current — an immutable tile cannot be stale.
+   *
+   * Answers whether this session may write over what it just read. It may not
+   * where the stored document does not fit the canvas it was reopened on: a
+   * document is authored at canvas size until ticket 29, and a save taken at
+   * the smaller size would write a manifest that no longer names the tiles
+   * outside it. Showing the work and refusing to save it is recoverable; a
+   * save is not.
+   */
+  async function restoreDocument(): Promise<boolean> {
+    const target = renderer
+    const past = history
+    const document = doc
+    const store = documents
+    if (!target || !past || !document || !store) return true
+    const stored = await persistence?.load()
+    if (!stored || disposed) return true
+    // The seeded canvas this session opened on is not part of the document
+    // that was stored, and neither is the upload that recorded it.
+    past.clear()
+    for (const id of structureSurfaceIds(captureStructure(document)))
+      target.releaseLayer(id)
+    reserveIds(structureSurfaceIds(stored.structure))
+    restoreStructure(document, stored.structure)
+    const canvas = { width: snapshot.width, height: snapshot.height }
+    const fits =
+      stored.width === canvas.width && stored.height === canvas.height
+    for (const surface of stored.surfaces) {
+      // A tile is a file read and an inflate, so a surface's tiles are asked
+      // for together rather than one after another.
+      const texels = await Promise.all(
+        surface.tiles.map((tile) => store.readTile(tile.hash))
+      )
+      if (disposed) return true
+      // A tile the manifest names but the device has lost is a hole in the
+      // document rather than the end of the restore.
+      const tiles = surface.tiles.flatMap((tile, position) =>
+        texels[position]
+          ? [{ x: tile.x, y: tile.y, texels: texels[position]! }]
+          : []
+      )
+      if (tiles.length === 0) continue
+      target.writeTiles(surface.surfaceId, tiles)
+      // These texels are exactly what the GPU now holds, so the index history
+      // keeps — and the next manifest written from it — starts out true.
+      if (fits) past.recordUpload(surface.surfaceId, tiles, canvas)
+    }
+    await past.settle()
+    syncComposition()
+    publish(describeLayers(document))
+    if (!fits)
+      options.persistence?.onError?.(
+        new Error(
+          `This document was painted at ${stored.width}x${stored.height} and ` +
+            `this window is ${canvas.width}x${canvas.height}. It is open, but ` +
+            `nothing will be saved until the window is the size it was.`
+        )
+      )
+    return fits
+  }
+
   function drawFrame(timestamp: number) {
     frame = undefined
     const cpuStart = frameObserver ? performance.now() : 0
@@ -1014,6 +1116,11 @@ export function createEngine(
         feather: BRUSH_FEATHER,
       })
       renderer = target
+      const local = options.persistence
+      const store = local
+        ? createDocumentStore(local.blobs ?? createLocalBlobStore())
+        : undefined
+      documents = store
       history = createDocumentHistory({
         bridge: {
           readTiles: (id, coords) => target.readTiles(id, coords),
@@ -1033,13 +1140,43 @@ export function createEngine(
             canRedo: history?.canRedo() ?? false,
           }),
         onError: fail,
+        // Every route a pixel takes into the document — a stroke, a layer
+        // operation, an undo — ends here, which is why the write to disk hangs
+        // off the commit rather than off the pen (§9.2).
+        onCommit: () => {
+          if (restored) void persistence?.save()
+        },
       })
+      if (local && store) {
+        const past = history
+        persistence = createDocumentPersistence({
+          documentId: local.documentId,
+          store,
+          // The texels come out of the store history is already holding them
+          // in, so undo and the local cache share one copy of every tile (D21).
+          tiles: (hash) => past.store.get(hash),
+          snapshot: () => ({
+            width: snapshot.width,
+            height: snapshot.height,
+            structure: captureStructure(requireDocument()),
+            surfaces: past.tileIndex(),
+          }),
+          onError: local.onError ?? fail,
+        })
+      }
       // A new renderer holds no textures, whatever the brush was told before.
       appliedTextures = undefined
       applyBrushTextures()
       target.setInk(ink)
       publish({ outputColorSpace: colorSpace })
       resize()
+      // Whatever this device already holds of the document replaces the empty
+      // canvas before a single frame of it is shown. A restore that cannot be
+      // completed leaves saving switched off — writing over work this session
+      // failed to read would be worse than not saving it — and says so.
+      // A restore that fails outright leaves saving switched off: writing
+      // over work this session could not read would be worse than not saving.
+      restored = await restoreDocument()
       render()
       const error = await acquired.popErrorScope()
       if (disposed || device !== acquired) return
@@ -1434,6 +1571,13 @@ export function createEngine(
     },
     observeFrames(observer) {
       frameObserver = observer
+    },
+    async save() {
+      // The same gate the commit hook uses: a session that could not read the
+      // stored document does not get to write over it, however it is asked.
+      if (!restored) return
+      await history?.settle()
+      await persistence?.save()
     },
     historyUsage: () => ({
       steps: history?.stepsBack() ?? 0,

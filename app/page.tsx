@@ -1,4 +1,4 @@
-import { CanvasHost } from "@/features/studio/components/canvas-host"
+import { AnonymousStudio } from "@/features/studio/components/anonymous-studio"
 import { APP_NAME } from "@/lib/constants"
 import type { Metadata } from "next"
 
@@ -8,5 +8,5 @@ export const metadata: Metadata = {
 }
 
 export default function Page() {
-  return <CanvasHost />
+  return <AnonymousStudio />
 }
