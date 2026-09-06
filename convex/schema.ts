@@ -70,6 +70,26 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_hash", ["hash"]),
 
+  // A restore point: what the document looked like at one flush, as the set
+  // of tile hashes it named then (§9.4). Pixels are not copied — a version
+  // references blobs the `tiles` rows and the GC cron already keep alive, so
+  // a week of history costs rows, not storage. Written at every flush and
+  // thinned on a time decay (convex/lib/retention.ts) by the same mutation,
+  // so history never grows without bound and no cron is needed to bound it.
+  versions: defineTable({
+    documentId: v.id("documents"),
+    createdAt: v.number(),
+    structure: v.any(),
+    tiles: v.array(
+      v.object({
+        surfaceId: v.string(),
+        x: v.number(),
+        y: v.number(),
+        hash: v.string(),
+      })
+    ),
+  }).index("by_document_created", ["documentId", "createdAt"]),
+
   // Per-flush R2 operation counts, so the free-tier Class A budget (the
   // binding cost constraint per architecture.md §9.6) has a real number
   // behind it instead of an estimate.

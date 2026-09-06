@@ -41,6 +41,12 @@ function createFakeCloud() {
     async presignUploads(hashes) {
       return hashes.map((hash) => ({ hash, url: `put:${hash}` }))
     },
+    async listVersions() {
+      return []
+    },
+    async versionSnapshot() {
+      throw new Error("This fake keeps no restore points.")
+    },
     async presignDownloads(hashes) {
       return hashes.map((hash) => ({ hash, url: `get:${hash}` }))
     },

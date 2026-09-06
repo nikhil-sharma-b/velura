@@ -1,6 +1,7 @@
 import { v } from "convex/values"
 
 import { requireOwnDocument } from "./documents"
+import { recordVersion } from "./versions"
 import type { Id } from "./_generated/dataModel"
 import { type MutationCtx, mutation, query } from "./_generated/server"
 
@@ -75,6 +76,11 @@ export const commitFlush = mutation({
       structure,
       updatedAt: Math.max(Date.now(), document.updatedAt + 1),
     })
+
+    // The flush payload is the whole document, not a delta, so the restore
+    // point is that same tile set written down under a time (§9.4) — no
+    // second pass over the tile rows, and no pixels duplicated.
+    await recordVersion(ctx, documentId, { structure, tiles })
 
     await ctx.db.insert("syncMetrics", {
       documentId,

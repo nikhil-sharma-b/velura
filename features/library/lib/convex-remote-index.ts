@@ -42,6 +42,13 @@ export function createConvexRemoteIndex(
       }
     },
     tileIndex: () => client.query(api.tiles.forDocument, { documentId }),
+    listVersions: () => client.query(api.versions.list, { documentId }),
+    versionSnapshot: async (versionId) => {
+      const version = await client.query(api.versions.get, {
+        versionId: versionId as Id<"versions">,
+      })
+      return { structure: version.structure, tiles: version.tiles }
+    },
     presignDownloads: (hashes) =>
       client.action(api.tilesActions.presignDownloads, {
         documentId,

@@ -18,6 +18,9 @@ import { decodeTile, encodeTile } from "./tile-codec"
 /** One tile of one surface, by grid coordinate and by content. */
 export type TileRef = Readonly<{ x: number; y: number; hash: string }>
 
+/** One tile of one surface, named across surfaces: what an index row is. */
+export type SurfaceTileRef = TileRef & Readonly<{ surfaceId: string }>
+
 /** Every tile a layer or mask holds. Absent tiles are transparent. */
 export type SurfaceTiles = Readonly<{
   surfaceId: string

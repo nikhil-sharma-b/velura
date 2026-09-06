@@ -16,6 +16,7 @@ import { createRenderer, type StrokeMode } from "../../engine/gpu/renderer"
 import { STAMP_STRIDE } from "../../engine/gpu/stamp-instance"
 import { createEngine, type Engine, type RemoteIndex } from "../../engine"
 import type { DocumentStructure } from "../../engine/doc/structure"
+import { prunableVersions } from "../../convex/lib/retention"
 import { createLocalBlobStore } from "../../engine/store/blob-store"
 import { createDocumentStore } from "../../engine/store/document-store"
 import { encodePreview } from "../../engine/store/preview"
@@ -111,6 +112,8 @@ type FakeCloud = {
     y: number,
     texels: number[]
   ): Promise<void>
+  /** Backdates every restore point, standing in for a passing day or week. */
+  ageVersions(byMs: number): void
 }
 
 // Presigned uploads and downloads are real `fetch` PUTs and GETs in
@@ -147,6 +150,14 @@ window.createFakeCloud = (size) => {
   let updatedAt = 0
   const tiles: FakeTileRow[] = []
   const knownHashes = new Set<string>()
+  // Restore points, as `convex/versions.ts` keeps them: the flush's own tile
+  // set, thinned by the same retention rule the backend applies (§9.4).
+  const versions: {
+    id: string
+    createdAt: number
+    structure: DocumentStructure
+    tiles: FakeTileRow[]
+  }[] = []
 
   const findRow = (surfaceId: string, x: number, y: number) =>
     tiles.find((t) => t.surfaceId === surfaceId && t.x === x && t.y === y)
@@ -171,6 +182,15 @@ window.createFakeCloud = (size) => {
       for (const blob of payload.uploaded) knownHashes.add(blob.hash)
       structure = payload.structure
       updatedAt = Date.now()
+      const now = Date.now()
+      versions.push({
+        id: `version-${versions.length}-${crypto.randomUUID()}`,
+        createdAt: now,
+        structure: payload.structure,
+        tiles: payload.tiles.map((tile) => ({ ...tile })),
+      })
+      for (const stale of prunableVersions(versions, now))
+        versions.splice(versions.indexOf(stale), 1)
     },
     async documentMeta() {
       return { ...size, structure, updatedAt }
@@ -178,12 +198,25 @@ window.createFakeCloud = (size) => {
     async tileIndex() {
       return tiles.map((tile) => ({ ...tile }))
     },
+    async listVersions() {
+      return [...versions]
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map((version) => ({ id: version.id, createdAt: version.createdAt }))
+    },
+    async versionSnapshot(versionId) {
+      const version = versions.find((candidate) => candidate.id === versionId)
+      if (!version) throw new Error("That restore point is gone.")
+      return { structure: version.structure, tiles: version.tiles }
+    },
   }
 
   return {
     remote,
     setFailing: (value) => {
       failing = value
+    },
+    ageVersions(byMs: number) {
+      for (const version of versions) version.createdAt -= byMs
     },
     async injectRemoteTile(surfaceId, x, y, texels) {
       const hash = `external-${surfaceId}-${x}-${y}-${crypto.randomUUID()}`

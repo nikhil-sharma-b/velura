@@ -14,9 +14,11 @@ import type * as http from "../http.js"
 import type * as lib_branding from "../lib/branding.js"
 import type * as lib_documents from "../lib/documents.js"
 import type * as lib_r2 from "../lib/r2.js"
+import type * as lib_retention from "../lib/retention.js"
 import type * as sessions from "../sessions.js"
 import type * as tiles from "../tiles.js"
 import type * as tilesActions from "../tilesActions.js"
+import type * as versions from "../versions.js"
 
 import type {
   ApiFromModules,
@@ -31,9 +33,11 @@ declare const fullApi: ApiFromModules<{
   "lib/branding": typeof lib_branding
   "lib/documents": typeof lib_documents
   "lib/r2": typeof lib_r2
+  "lib/retention": typeof lib_retention
   sessions: typeof sessions
   tiles: typeof tiles
   tilesActions: typeof tilesActions
+  versions: typeof versions
 }>
 
 /**

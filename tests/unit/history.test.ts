@@ -344,3 +344,147 @@ describe("a long session", () => {
     expect(fixture.history.store.count()).toBe(0)
   })
 })
+
+describe("restoring a stored state", () => {
+  /** The document as one flush left it: two painted tiles on one surface. */
+  function paintedDocument() {
+    const surfaces = createFakeSurfaces()
+    const history = createDocumentHistory({ bridge: surfaces.bridge })
+    const document = createDocument(CANVAS)
+    const structure = captureStructure(document)
+    const surfaceId = structure.layers[0]!.id
+    return { surfaces, history, document, structure, surfaceId }
+  }
+
+  const filled = (value: number) => new Uint16Array(TILE_VALUES).fill(value)
+
+  test("a replacement puts back the stored pixels and drops what came after", async () => {
+    const { surfaces, history, structure, surfaceId } = paintedDocument()
+    // The stored state: tile (0,0) only.
+    history.recordUpload(
+      surfaceId,
+      [{ x: 0, y: 0, texels: filled(11) }],
+      CANVAS
+    )
+    surfaces.paint(surfaceId, { x: 0, y: 0 }, 11)
+    // A later session paints over it and adds a tile the stored state lacks.
+    surfaces.paint(surfaceId, { x: 0, y: 0 }, 22)
+    surfaces.paint(surfaceId, { x: 1, y: 0 }, 33)
+    history.recordStroke(surfaceId, {
+      x: 0,
+      y: 0,
+      width: TILE_SIZE * 2,
+      height: TILE_SIZE,
+    })
+    await history.settle()
+
+    history.recordReplacement(
+      "restore",
+      { before: structure, after: structure },
+      [{ surfaceId, tiles: [{ x: 0, y: 0, texels: filled(11) }] }],
+      CANVAS
+    )
+    await history.settle()
+
+    expect(surfaces.read(surfaceId, { x: 0, y: 0 })).toEqual(filled(11))
+    // The tile the stored state never had is gone, not left painted.
+    expect(surfaces.read(surfaceId, { x: 1, y: 0 })).toBeNull()
+  })
+
+  test("the restore is one undo step, so the artist can take it back", async () => {
+    const { surfaces, history, structure, surfaceId } = paintedDocument()
+    history.recordUpload(
+      surfaceId,
+      [{ x: 0, y: 0, texels: filled(11) }],
+      CANVAS
+    )
+    surfaces.paint(surfaceId, { x: 0, y: 0 }, 22)
+    history.recordStroke(surfaceId, wholeTile({ x: 0, y: 0 }))
+    await history.settle()
+    const stepsBefore = history.stepsBack()
+
+    history.recordReplacement(
+      "restore",
+      { before: structure, after: structure },
+      [{ surfaceId, tiles: [{ x: 0, y: 0, texels: filled(11) }] }],
+      CANVAS
+    )
+    await history.settle()
+    expect(history.stepsBack()).toBe(stepsBefore + 1)
+
+    expect(await history.undo(() => {})).toBe(true)
+
+    // Back to the work the restore covered, not to the state it restored.
+    expect(surfaces.read(surfaceId, { x: 0, y: 0 })).toEqual(filled(22))
+    expect(await history.redo(() => {})).toBe(true)
+    expect(surfaces.read(surfaceId, { x: 0, y: 0 })).toEqual(filled(11))
+  })
+
+  test("the tile index follows the restore, so the next save writes it", async () => {
+    const { surfaces, history, structure, surfaceId } = paintedDocument()
+    surfaces.paint(surfaceId, { x: 1, y: 0 }, 33)
+    history.recordUpload(
+      surfaceId,
+      [{ x: 1, y: 0, texels: filled(33) }],
+      CANVAS
+    )
+    await history.settle()
+
+    history.recordReplacement(
+      "restore",
+      { before: structure, after: structure },
+      [{ surfaceId, tiles: [{ x: 0, y: 0, texels: filled(11) }] }],
+      CANVAS
+    )
+    await history.settle()
+
+    const index = history.tileIndex().find((s) => s.surfaceId === surfaceId)
+    expect(index?.tiles.map((tile) => ({ x: tile.x, y: tile.y }))).toEqual([
+      { x: 0, y: 0 },
+    ])
+  })
+
+  test("a surface the stored state never had is emptied", async () => {
+    const { surfaces, history, document, structure } = paintedDocument()
+    const kept = structure.layers[0]!.id
+    const added = addLayer(document)
+    surfaces.paint(added, { x: 0, y: 0 }, 44)
+    history.recordUpload(added, [{ x: 0, y: 0, texels: filled(44) }], CANVAS)
+    await history.settle()
+
+    history.recordReplacement(
+      "restore",
+      { before: captureStructure(document), after: structure },
+      [{ surfaceId: kept, tiles: [{ x: 0, y: 0, texels: filled(11) }] }],
+      CANVAS
+    )
+    await history.settle()
+
+    expect(surfaces.read(added, { x: 0, y: 0 })).toBeNull()
+    expect(
+      history.tileIndex().find((s) => s.surfaceId === added)
+    ).toBeUndefined()
+  })
+
+  test("restoring the state the document is already in is not a step", async () => {
+    const { surfaces, history, structure, surfaceId } = paintedDocument()
+    surfaces.paint(surfaceId, { x: 0, y: 0 }, 11)
+    history.recordUpload(
+      surfaceId,
+      [{ x: 0, y: 0, texels: filled(11) }],
+      CANVAS
+    )
+    await history.settle()
+    const stepsBefore = history.stepsBack()
+
+    history.recordReplacement(
+      "restore",
+      { before: structure, after: structure },
+      [{ surfaceId, tiles: [{ x: 0, y: 0, texels: filled(11) }] }],
+      CANVAS
+    )
+    await history.settle()
+
+    expect(history.stepsBack()).toBe(stepsBefore)
+  })
+})

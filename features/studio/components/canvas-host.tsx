@@ -2,6 +2,7 @@
 
 import {
   ArrowClockwiseIcon,
+  ClockCounterClockwiseIcon,
   ArrowCounterClockwiseIcon,
   ArrowUUpLeftIcon,
   ArrowUUpRightIcon,
@@ -32,6 +33,7 @@ import {
 } from "@/engine"
 
 import { LayerPanel } from "./layer-panel"
+import { VersionPanel } from "./version-panel"
 
 /** One press of a zoom key or button, which is a comfortable step by eye. */
 const ZOOM_STEP = 1.25
@@ -125,6 +127,7 @@ export function CanvasHost({
 }) {
   const [engine, setEngine] = useState<Engine | null>(null)
   const [panelsOpen, setPanelsOpen] = useState(true)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [paintNotice, setPaintNotice] = useState<string | null>(null)
   const snapshot = useSyncExternalStore(
     engine?.subscribe ?? subscribeToNothing,
@@ -324,7 +327,29 @@ export function CanvasHost({
             >
               <MagnifyingGlassIcon />
             </Button>
+            {/* Restore points only exist for a document with a cloud copy
+                behind it (§9.4), so an anonymous local document has no ladder
+                to offer and is not shown a door to one. */}
+            {remote && (
+              <Button
+                variant={historyOpen ? "default" : "ghost"}
+                size="icon"
+                aria-label="Version history"
+                aria-pressed={historyOpen}
+                onClick={() => setHistoryOpen((open) => !open)}
+                className="rounded-lg"
+              >
+                <ClockCounterClockwiseIcon />
+              </Button>
+            )}
           </div>
+
+          {engine && remote && historyOpen && (
+            <VersionPanel
+              engine={engine}
+              onClose={() => setHistoryOpen(false)}
+            />
+          )}
 
           <div className="absolute top-3 left-3 flex gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl">
             <Button

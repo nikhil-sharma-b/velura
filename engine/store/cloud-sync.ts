@@ -18,6 +18,7 @@ import type { DocumentStructure } from "../doc/structure"
 import type {
   DocumentManifest,
   DocumentStore,
+  SurfaceTileRef,
   SurfaceTiles,
   TileRef,
 } from "./document-store"
@@ -61,7 +62,19 @@ export interface RemoteIndex {
   presignDownloads(
     hashes: readonly string[]
   ): Promise<readonly { hash: string; url: string }[]>
+  /** Restore points for this document, newest first (§9.4). */
+  listVersions(): Promise<readonly RestorePoint[]>
+  /** One restore point in full: the tree it had and the tiles it named. */
+  versionSnapshot(versionId: string): Promise<VersionSnapshot>
 }
+
+/** A restore point as the artist picks one: a time, and a handle to fetch it by. */
+export type RestorePoint = Readonly<{ id: string; createdAt: number }>
+
+export type VersionSnapshot = Readonly<{
+  structure: DocumentStructure
+  tiles: readonly SurfaceTileRef[]
+}>
 
 /** Cumulative R2/Convex operation counts for one painting session (§9.6). */
 export type SyncMetrics = Readonly<{ putCount: number; mutationCount: number }>
@@ -242,6 +255,47 @@ async function fetchGet(url: string): Promise<Uint8Array> {
     )
   }
   return new Uint8Array(await response.arrayBuffer())
+}
+
+/**
+ * The pixels behind a restore point, by hash.
+ *
+ * A version names tiles, never copies them (§9.4), so most of what it names
+ * is already on this device — the tiles the document still holds, and every
+ * tile any session since has cached. Only the genuinely absent ones are
+ * fetched, which is what makes going back an hour cost about what that hour
+ * painted rather than the size of the document.
+ *
+ * A hash neither held nor downloadable is left out rather than thrown over:
+ * a hole in a restored state is still worth showing, the way a hole in a
+ * reopened document is.
+ */
+export async function loadVersionTiles(options: {
+  remote: RemoteIndex
+  local: Pick<DocumentStore, "readTile">
+  hashes: readonly string[]
+  get?: (url: string) => Promise<Uint8Array>
+}): Promise<Map<string, Uint16Array>> {
+  const get = options.get ?? fetchGet
+  const texels = new Map<string, Uint16Array>()
+  const missing: string[] = []
+
+  await Promise.all(
+    [...new Set(options.hashes)].map(async (hash) => {
+      const held = await options.local.readTile(hash)
+      if (held) texels.set(hash, held)
+      else missing.push(hash)
+    })
+  )
+  if (missing.length === 0) return texels
+
+  const urls = await options.remote.presignDownloads(missing)
+  await Promise.all(
+    urls.map(async ({ hash, url }) => {
+      texels.set(hash, await decodeTile(await get(url)))
+    })
+  )
+  return texels
 }
 
 /**

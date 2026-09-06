@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test"
 
 import {
   createCloudSync,
+  loadVersionTiles,
   type RemoteIndex,
 } from "../../engine/store/cloud-sync"
+import { encodeTile } from "../../engine/store/tile-codec"
 import type { DocumentStructure } from "../../engine/doc/structure"
 import { surfaces } from "./helpers/cloud-sync-fixtures"
 
@@ -40,6 +42,12 @@ function createFakeRemote() {
     },
     async tileIndex() {
       return []
+    },
+    async listVersions() {
+      return []
+    },
+    async versionSnapshot() {
+      throw new Error("This fake keeps no restore points.")
     },
     async presignDownloads(hashes) {
       return hashes.map((hash) => ({ hash, url: `https://r2.test/${hash}` }))
@@ -256,5 +264,59 @@ describe("status", () => {
     await sync.flush()
     expect(errors).toHaveLength(1)
     expect(sync.status()).toBe("saved-locally")
+  })
+})
+
+describe("restore points", () => {
+  /** Two tiles: one this device already holds, one it has to fetch. */
+  function versionTiles() {
+    const held = new Map([["hash-local", new Uint16Array(4).fill(7)]])
+    const local = {
+      async readTile(hash: string) {
+        return held.get(hash) ?? null
+      },
+    }
+    return { held, local }
+  }
+
+  test("a tile the device already holds is never downloaded", async () => {
+    const { remote } = createFakeRemote()
+    const { local } = versionTiles()
+    const downloads: string[] = []
+
+    const texels = await loadVersionTiles({
+      remote,
+      local,
+      hashes: ["hash-local"],
+      get: async (url) => {
+        downloads.push(url)
+        return new Uint8Array()
+      },
+    })
+
+    expect(downloads).toEqual([])
+    expect(texels.get("hash-local")).toEqual(new Uint16Array(4).fill(7))
+  })
+
+  test("only the tiles the device lacks are fetched, each once", async () => {
+    const { remote } = createFakeRemote()
+    const { local } = versionTiles()
+    const downloads: string[] = []
+    const absent = await encodeTile(new Uint16Array(4).fill(9))
+
+    const texels = await loadVersionTiles({
+      remote,
+      local,
+      // The same absent tile named twice, as a wash across two coordinates is.
+      hashes: ["hash-local", "hash-absent", "hash-absent"],
+      get: async (url) => {
+        downloads.push(url)
+        return absent
+      },
+    })
+
+    expect(downloads).toEqual(["https://r2.test/hash-absent"])
+    expect(texels.get("hash-absent")).toEqual(new Uint16Array(4).fill(9))
+    expect(texels.size).toBe(2)
   })
 })

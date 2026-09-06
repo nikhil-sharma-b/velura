@@ -64,7 +64,7 @@ import {
   structureSurfaceIds,
 } from "./doc/structure"
 import { createOpfsSpill, createTileStore } from "./doc/tile-store"
-import { tileIndexForPixel } from "./doc/tile-grid"
+import { type TileCoord, tileIndexForPixel } from "./doc/tile-grid"
 import type { SurfaceTiles, TileRef } from "./store/document-store"
 import { type BlobStore, createLocalBlobStore } from "./store/blob-store"
 import { createDocumentStore, type DocumentStore } from "./store/document-store"
@@ -75,8 +75,10 @@ import {
 import {
   createCloudSync,
   hydrateFromRemote,
+  loadVersionTiles,
   type CloudSync,
   type RemoteIndex,
+  type RestorePoint,
   type SyncMetrics,
   type SyncStatus,
 } from "./store/cloud-sync"
@@ -111,7 +113,13 @@ import {
 } from "./view/view-transform"
 
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
-export type { RemoteIndex, SyncMetrics, SyncStatus } from "./store/cloud-sync"
+export type {
+  RemoteIndex,
+  RestorePoint,
+  SyncMetrics,
+  SyncStatus,
+  VersionSnapshot,
+} from "./store/cloud-sync"
 
 /** §9.2's flush trigger: how long a document sits idle before an unforced upload. */
 const DEFAULT_CLOUD_IDLE_MS = 30_000
@@ -369,6 +377,31 @@ export interface Engine {
    * save to be a promise it can await. A no-op with no persistence configured.
    */
   save(): Promise<void>
+  /**
+   * The restore points this document has, newest first (§9.4). Empty where
+   * the document has no cloud copy to have kept any.
+   */
+  restorePoints(): Promise<readonly RestorePoint[]>
+  /**
+   * Puts the document back to how it looked at a restore point, as a single
+   * undoable step (D9): the artist can look at an earlier state and take the
+   * look back, which is what makes previewing one safe. Answers false where
+   * there is nothing to restore from, or where this session is not allowed to
+   * write over what it read.
+   */
+  restoreVersion(versionId: string): Promise<boolean>
+  /**
+   * Whether the last restore is still the step a single undo would take back.
+   * False once the artist has painted over it — from then on the restored
+   * state is part of their work, unpicked with undo like anything else.
+   */
+  canRevertRestore(): boolean
+  /**
+   * Takes back the last restore, where it is still the top step. This is what
+   * makes looking at an old state safe: the caller does not have to know how
+   * many entries a restore costs, or whether history has moved since.
+   */
+  revertRestore(): Promise<boolean>
   /** Cumulative R2/Convex operation counts for this session, or null with no cloud sync. */
   cloudMetrics(): SyncMetrics | null
   dispose(): void
@@ -454,6 +487,13 @@ export function createEngine(
   let persistence: DocumentPersistence | undefined
   let documents: DocumentStore | undefined
   let cloudSync: CloudSync | undefined
+  /**
+   * How deep history stood right after the last restore. Compared with the
+   * depth now, it answers whether that restore is still the step undo would
+   * reach — which is the whole of what "this preview is still reversible"
+   * means, and belongs here rather than in a panel counting steps.
+   */
+  let restoreDepth: number | undefined
   let flushScheduler: FlushScheduler | undefined
   /**
    * Whether this session may write to local storage. False until the stored
@@ -1778,6 +1818,76 @@ export function createEngine(
         flushScheduler?.flushNow()
         await cloudSync.settle()
       }
+    },
+    async restorePoints() {
+      const remote = options.cloud?.remote
+      return (await remote?.listVersions()) ?? []
+    },
+    async restoreVersion(versionId) {
+      const remote = options.cloud?.remote
+      const past = history
+      const store = documents
+      // The same gate `save` uses: a session that may not write over the
+      // stored document may not rewrite it from its own past either.
+      if (!restored || !remote || !past || !store) return false
+      const document = requireDocument()
+
+      const version = await remote.versionSnapshot(versionId)
+      const texels = await loadVersionTiles({
+        remote,
+        local: store,
+        hashes: version.tiles.map((tile) => tile.hash),
+      })
+      if (disposed) return false
+
+      const bySurface = new Map<
+        string,
+        (TileCoord & { texels: Uint16Array })[]
+      >()
+      for (const tile of version.tiles) {
+        // A tile neither held nor downloadable is a hole in the restored
+        // state, not a failed restore (see `loadVersionTiles`).
+        const pixels = texels.get(tile.hash)
+        if (!pixels) continue
+        const list = bySurface.get(tile.surfaceId) ?? []
+        list.push({ x: tile.x, y: tile.y, texels: pixels })
+        bySurface.set(tile.surfaceId, list)
+      }
+
+      const before = captureStructure(document)
+      const previous = structureSurfaceIds(before)
+      // Layers the version had that this session does not must exist before
+      // their pixels are written, and their ids must not be handed out again.
+      reserveIds(structureSurfaceIds(version.structure))
+      restoreStructure(document, version.structure)
+      // Uploaded before the replacement's tiles land, for the same reason undo
+      // does it: a layer that came back must not have its restored pixels
+      // overwritten by the sparse surface it was seeded from.
+      uploadLayers()
+
+      past.recordReplacement(
+        "restore",
+        { before, after: version.structure },
+        [...bySurface].map(([surfaceId, tiles]) => ({ surfaceId, tiles })),
+        { width: snapshot.width, height: snapshot.height }
+      )
+      await past.settle()
+      if (disposed) return false
+
+      const remaining = structureSurfaceIds(captureStructure(document))
+      for (const id of previous)
+        if (!remaining.has(id)) renderer?.releaseLayer(id)
+      applyLayerChange()
+      restoreDepth = past.stepsBack()
+      return true
+    },
+    canRevertRestore: () =>
+      restoreDepth !== undefined && history?.stepsBack() === restoreDepth,
+    async revertRestore() {
+      if (!this.canRevertRestore()) return false
+      await this.dispatch({ type: "undo" })
+      restoreDepth = undefined
+      return true
     },
     cloudMetrics: () => cloudSync?.metrics() ?? null,
     historyUsage: () => ({

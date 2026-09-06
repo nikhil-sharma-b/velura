@@ -78,6 +78,22 @@ export interface DocumentHistory {
       coalesceAs?: string
     }
   ): void
+  /**
+   * Puts a whole stored state back as one step: every surface named becomes
+   * exactly the tiles given, every surface not named is emptied, and the tree
+   * moves with them. This is what a version restore point is applied through
+   * (§9.4) — one entry, so the artist can take the restore back the way they
+   * take back a stroke.
+   */
+  recordReplacement(
+    label: string,
+    structure: { before: DocumentStructure; after: DocumentStructure },
+    surfaces: readonly {
+      surfaceId: string
+      tiles: readonly (TileCoord & { texels: Uint16Array })[]
+    }[],
+    canvas: { width: number; height: number }
+  ): void
   undo(applyStructure: (structure: DocumentStructure) => void): Promise<boolean>
   redo(applyStructure: (structure: DocumentStructure) => void): Promise<boolean>
   canUndo(): boolean
@@ -257,12 +273,15 @@ export function createDocumentHistory(options: {
     return { surfaceId: to, tiles: changes }
   }
 
-  async function applyPixels(entry: UndoEntry, side: "before" | "after") {
+  /**
+   * Puts an entry's pixels on the GPU, leaving the index alone. A surface's
+   * tiles are asked for together rather than one after another: at the
+   * deepest tier each is a file read and an inflate, and a wash across the
+   * canvas is hundreds of them. Serially, that is what would make a deep undo
+   * feel slow.
+   */
+  async function writePixels(entry: UndoEntry, side: "before" | "after") {
     for (const surface of entry.surfaces) {
-      // Asked for together rather than one after another: at the deepest tier
-      // each tile is a file read and an inflate, and a wash across the canvas
-      // is hundreds of them. Serially, that is what would make a deep undo
-      // feel slow.
       const writes: TileWrite[] = await Promise.all(
         surface.tiles.map(async (tile) => ({
           x: tile.x,
@@ -270,13 +289,19 @@ export function createDocumentHistory(options: {
           texels: tile[side] ? await store.get(tile[side]!) : null,
         }))
       )
+      if (writes.length > 0) bridge.writeTiles(surface.surfaceId, writes)
+    }
+  }
+
+  /** Moves the index onto an entry's pixels, and puts them on the GPU. */
+  async function applyPixels(entry: UndoEntry, side: "before" | "after") {
+    for (const surface of entry.surfaces)
       for (const tile of surface.tiles) {
         const hash = tile[side]
         if (hash) store.retain(hash)
         setTile(surface.surfaceId, tileKey(tile.x, tile.y), hash)
       }
-      if (writes.length > 0) bridge.writeTiles(surface.surfaceId, writes)
-    }
+    await writePixels(entry, side)
   }
 
   return {
@@ -314,6 +339,58 @@ export function createDocumentHistory(options: {
           return [{ x: coord.x, y: coord.y, before, after }]
         })
         pushEntry({ label: "stroke", surfaces: [{ surfaceId, tiles }] })
+      })
+    },
+    recordReplacement(label, structure, surfaces, canvas) {
+      enqueue(async () => {
+        const named = new Set(surfaces.map((surface) => surface.surfaceId))
+        // A surface the stored state does not have is not left as it was:
+        // "how the document looked then" has to mean the layers too, or a
+        // restore would leave later work stranded on a layer of its own.
+        const changes: SurfaceChange[] = [...index.keys()]
+          .filter((surfaceId) => !named.has(surfaceId))
+          .map(captureRemoval)
+
+        for (const surface of surfaces) {
+          const current = index.get(surface.surfaceId)
+          const tiles: SurfaceChange["tiles"] = []
+          const wanted = new Set<string>()
+
+          for (const tile of surface.tiles) {
+            const key = tileKey(tile.x, tile.y)
+            wanted.add(key)
+            const clipped = clipTile(tile.texels, tile, canvas)
+            const before = current?.get(key)
+            const after = isBlank(clipped) ? undefined : store.put(clipped)
+            // Content addressing does the diffing: a tile the stored state
+            // shares with the document as it stands is not part of the step,
+            // so restoring after one stroke costs one tile, not a canvas.
+            if (before === after) {
+              if (after) store.release(after)
+              continue
+            }
+            if (before) store.retain(before)
+            setTile(surface.surfaceId, key, after)
+            tiles.push({ x: tile.x, y: tile.y, before, after })
+          }
+
+          // Tiles the surface holds now that the stored state never named:
+          // painted after the restore point, so the restore takes them away.
+          for (const [key, hash] of [...(current ?? [])]) {
+            if (wanted.has(key)) continue
+            store.retain(hash)
+            tiles.push({ ...tileCoordFromKey(key), before: hash })
+            setTile(surface.surfaceId, key, undefined)
+          }
+
+          changes.push({ surfaceId: surface.surfaceId, tiles })
+        }
+
+        const entry: UndoEntry = { label, surfaces: changes, structure }
+        // The index is already where the entry says it should be, so only the
+        // GPU needs telling; `pushEntry` then drops the claims recording took.
+        await writePixels(entry, "after")
+        pushEntry(entry)
       })
     },
     recordOperation(label, structure, operation) {
