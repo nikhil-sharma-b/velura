@@ -1,4 +1,5 @@
 #include "composite"
+#include "stroke"
 
 struct Present {
   // Working (linear Display P3) -> output primaries. Identity when the swap
@@ -15,6 +16,8 @@ struct Present {
   // active layer allocates no cache for it, so the read has to be skipped.
   hasBelow: f32,
   hasAbove: f32,
+  // One for destination-out erasing, zero for ordinary painting.
+  strokeMode: f32,
 }
 
 @group(0) @binding(0) var<uniform> present: Present;
@@ -59,11 +62,15 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   // The stroke buffer sits above the active layer's own pixels and is shown at
   // the stroke's opacity, so the mark on screen matches the one that will be
   // composited into the layer when the pen lifts.
-  let inFlight = textureLoad(stroke, texel, 0) * present.strokeOpacity;
   let painted = textureLoad(activeLayer, texel, 0);
   // The layer's opacity applies to the mark in flight as well as to what is
   // already there: a stroke on a half-opaque layer is drawn on that layer.
-  let composited = (inFlight + painted * (1.0 - inFlight.a)) * present.activeOpacity;
+  let composited = applyStroke(
+    painted,
+    textureLoad(stroke, texel, 0),
+    present.strokeOpacity,
+    present.strokeMode
+  ) * present.activeOpacity;
   color = blendOver(composited, color);
   if (present.hasAbove > 0.5) {
     let upper = textureLoad(above, texel, 0);

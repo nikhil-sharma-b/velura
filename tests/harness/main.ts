@@ -11,7 +11,8 @@ import type { WorkloadOptions } from "../../bench/workload"
 import { BRUSH_COLOR, BRUSH_FEATHER } from "../../engine/brush/round-brush"
 import { createTextureLibrary } from "../../engine/brush/texture"
 import { BACKGROUND } from "../../engine/doc/scene"
-import { createRenderer } from "../../engine/gpu/renderer"
+import { decodeFloat16 } from "../../engine/doc/float16"
+import { createRenderer, type StrokeMode } from "../../engine/gpu/renderer"
 import { STAMP_STRIDE } from "../../engine/gpu/stamp-instance"
 import { createEngine, type Engine } from "../../engine"
 
@@ -34,7 +35,11 @@ type Dab = {
  * tests reach the seam through this rather than through a pen.
  */
 type StrokeBufferProbe = {
-  beginStroke(accumulation: "coverage" | "buildup", opacity: number): void
+  beginStroke(
+    accumulation: "coverage" | "buildup",
+    opacity: number,
+    mode?: StrokeMode
+  ): void
   /** The tip texture, by id, or null for the procedural disc. */
   setTip(id: string | null): void
   /** The paper, by id, with the tile scale and how hard it bites. */
@@ -43,6 +48,8 @@ type StrokeBufferProbe = {
   discardStamps(count: number): boolean
   endStroke(): void
   present(): void
+  /** Premultiplied linear pixels from the probe layer, before presentation. */
+  readLayerPixel(x: number, y: number): Promise<number[]>
 }
 
 declare global {
@@ -124,8 +131,8 @@ window.openStrokeBufferProbe = async (width, height) => {
     return found
   }
   window.probe = {
-    beginStroke: (accumulation, opacity) =>
-      renderer.beginStroke({ accumulation, opacity }),
+    beginStroke: (accumulation, opacity, mode = "paint") =>
+      renderer.beginStroke({ accumulation, opacity, mode }),
     setTip: (id) => renderer.setTip(id ? texture(id) : null),
     setGrain: (id, scale, depth) =>
       renderer.setGrain(id ? texture(id) : null, scale, depth),
@@ -149,5 +156,10 @@ window.openStrokeBufferProbe = async (width, height) => {
     discardStamps: (count) => renderer.discardStamps(count),
     endStroke: () => renderer.endStroke(),
     present: () => renderer.render(context.getCurrentTexture().createView()),
+    async readLayerPixel(x, y) {
+      const tile = (await renderer.readTiles("probe", [{ x: 0, y: 0 }]))[0]
+      const offset = (y * 256 + x) * 4
+      return Array.from(tile.subarray(offset, offset + 4), decodeFloat16)
+    },
   }
 }

@@ -94,7 +94,11 @@ export async function openBlendProbe(): Promise<BlendProbe> {
     stroke(commit) {
       if (commit) renderer.endStroke()
       else {
-        renderer.beginStroke({ accumulation: "coverage", opacity: 0.5 })
+        renderer.beginStroke({
+          accumulation: "coverage",
+          opacity: 0.5,
+          mode: "paint",
+        })
         renderer.stamp(new Float32Array([40, 40, 12, 1, 0, 1, 1]), 1)
       }
     },

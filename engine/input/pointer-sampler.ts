@@ -31,6 +31,8 @@ export interface StrokeHandlers {
   ): void
   /** The pen lifted or the stroke was cancelled. */
   end(): void
+  /** Samples the canvas instead of opening a stroke while Alt/Option is held. */
+  sample?(x: number, y: number): void
 }
 
 /** Whether the browser reports raw pointer updates ahead of `pointermove`. */
@@ -89,6 +91,12 @@ export function attachPointerSampler(
 
   function onPointerDown(event: PointerEvent) {
     if (activePointer !== null || !event.isPrimary) return
+    measure()
+    if (event.altKey && handlers.sample) {
+      event.preventDefault()
+      handlers.sample(canvasX(event), canvasY(event))
+      return
+    }
     activePointer = event.pointerId
     // Capture keeps the stroke alive when the pen leaves the canvas, so a
     // gesture that overshoots the edge still ends where the pen lifted.
@@ -100,7 +108,6 @@ export function attachPointerSampler(
     } catch {
       // Left uncaptured on purpose.
     }
-    measure()
     event.preventDefault()
     buffer.clear()
     strokeStart = event.timeStamp
