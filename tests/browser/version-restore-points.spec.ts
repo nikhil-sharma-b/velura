@@ -203,3 +203,104 @@ test("restore points decay: frequent for the last day, sparse for the week", asy
   ).toBeGreaterThan(5)
   expect(points.some((p) => newest - p.createdAt >= DAY)).toBe(true)
 })
+
+/**
+ * Reverting a preview. The panel offers "Cancel" on a previewed restore, and
+ * what stands behind that button is `revertRestore` — which must refuse
+ * rather than undo the wrong step once the artist has painted over the
+ * preview (see `engine.canRevertRestore`).
+ */
+
+const canRevert = (page: Page) =>
+  page.evaluate(() => window.engine.canRevertRestore())
+
+const revert = (page: Page) =>
+  page.evaluate(() => window.engine.revertRestore())
+
+/** Paints a stroke, flushes it, and hands back that flush's restore point. */
+async function flushedPoint(page: Page, origin: { x: number; y: number }) {
+  await paint(page, origin, 30)
+  await page.evaluate(() => window.engine.save())
+  const [point] = await restorePoints(page)
+  return point!
+}
+
+test("reverting a preview puts the artist back where they started", async ({
+  page,
+}) => {
+  const origin = await openWithCloud(page, newId())
+  const earlier = await flushedPoint(page, origin)
+  await paint(page, origin, 90)
+
+  expect(await canRevert(page)).toBe(false)
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    earlier.id
+  )
+  expect(await canRevert(page)).toBe(true)
+  expect(await painted(page, 30, 90)).toBe(false)
+
+  expect(await revert(page)).toBe(true)
+
+  // The work the preview covered is back, and the preview is not.
+  expect(await painted(page, 30, 90)).toBe(true)
+  expect(await painted(page, 30, 30)).toBe(true)
+  // Nothing left to revert: a second Cancel must not eat the stroke beneath.
+  expect(await canRevert(page)).toBe(false)
+  expect(await revert(page)).toBe(false)
+})
+
+test("a stroke painted over a preview ends the revert, rather than being eaten by it", async ({
+  page,
+}) => {
+  const origin = await openWithCloud(page, newId())
+  const earlier = await flushedPoint(page, origin)
+  await paint(page, origin, 90)
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    earlier.id
+  )
+
+  // The canvas stays live during a preview: the artist paints on top of it.
+  await paint(page, origin, 60)
+  expect(await painted(page, 30, 60)).toBe(true)
+
+  expect(await canRevert(page)).toBe(false)
+  expect(await revert(page)).toBe(false)
+
+  // Their stroke is untouched — this is the hazard the guard exists for —
+  // and the restored state is still restored rather than half taken back.
+  expect(await painted(page, 30, 60)).toBe(true)
+  expect(await painted(page, 30, 90)).toBe(false)
+})
+
+test("previewing a second point leaves one step over the artist's work, not two", async ({
+  page,
+}) => {
+  const origin = await openWithCloud(page, newId())
+  const first = await flushedPoint(page, origin)
+  await paint(page, origin, 60)
+  await page.evaluate(() => window.engine.save())
+  const points = await restorePoints(page)
+  const second = points.find((point) => point.id !== first.id)!
+  await paint(page, origin, 90)
+  const own = await page.evaluate(() => window.engine.historyUsage().steps)
+
+  // What the panel does when a second point is picked while one is previewed.
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    first.id
+  )
+  await page.evaluate(() => window.engine.revertRestore())
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    second.id
+  )
+
+  expect(await page.evaluate(() => window.engine.historyUsage().steps)).toBe(
+    own + 1
+  )
+  // One revert is enough to get the whole session's work back.
+  expect(await revert(page)).toBe(true)
+  expect(await painted(page, 30, 90)).toBe(true)
+})
