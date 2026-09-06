@@ -117,3 +117,42 @@ GitHub Actions installs the pinned Bun version and Chromium, then runs lint,
 formatting, typechecking, both test suites, and a production build. Failed browser
 runs retain Playwright traces in the `browser-test-results` artifact. Software GPU
 tests check correctness; hardware performance still needs a separate benchmark.
+
+## Backend, accounts and the document library
+
+`convex/` holds the backend: the schema, email one-time-code auth, and the
+document functions. The studio at `/` still needs no account and no backend —
+the Convex client is mounted only under the `app/(cloud)/` route group, which
+serves `/signin`, `/library`, and `/d/<documentId>`.
+
+```sh
+bunx convex dev          # writes .env.local, generates convex/_generated, deploys
+bunx @convex-dev/auth    # one-off: sets the deployment's JWT signing keys
+```
+
+Sending codes needs a Resend key on the deployment, and the address codes are
+sent from:
+
+```sh
+bunx convex env set AUTH_RESEND_KEY re_...
+bunx convex env set AUTH_EMAIL_FROM "Velura <hello@your-domain>"
+```
+
+Signing in mails an eight-digit code that expires in fifteen minutes; there is
+no password anywhere in the flow, and signing out invalidates the server session
+along with the locally held tokens, so a shared machine keeps nothing.
+
+Documents carry an owner, a name and a pixel size up to the engine's 8192-pixel
+texture limit (`convex/lib/documents.ts`, shared by the create form and the
+mutation that enforces it). The `users` row carries `plan`, `storageBytes` and
+`docCount` from this first migration; nothing reads or writes them yet (D40). Opening a
+document mounts an empty canvas — pixels are not persisted until the tile store
+lands.
+
+Access control lives in `convex/documents.ts`: every read and write resolves the
+row through one ownership check, and a document belonging to someone else is
+reported as missing rather than as forbidden. `tests/unit/convex-documents.test.ts`
+runs those functions against `convex-test` (the Convex harness) under the Bun
+runner, covering schema validity, the library operations, and the access-control
+boundary from a second account and from a signed-out caller. Because Bun has no `import.meta.glob`, that file lists the backend
+modules explicitly.

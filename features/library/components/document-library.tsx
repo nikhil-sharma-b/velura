@@ -1,0 +1,230 @@
+"use client"
+
+import { useAuthActions } from "@convex-dev/auth/react"
+import {
+  CopyIcon,
+  PencilSimpleIcon,
+  SignOutIcon,
+  TrashIcon,
+} from "@phosphor-icons/react"
+import {
+  Authenticated,
+  AuthLoading,
+  Unauthenticated,
+  useMutation,
+  useQuery,
+} from "convex/react"
+import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { useState } from "react"
+import { toast } from "sonner"
+
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Spinner } from "@/components/ui/spinner"
+import { api } from "@/convex/_generated/api"
+import type { Doc } from "@/convex/_generated/dataModel"
+import { NewDocumentDialog } from "@/features/library/components/new-document-dialog"
+import { APP_NAME } from "@/lib/constants"
+
+export function DocumentLibrary() {
+  return (
+    <main className="mx-auto flex min-h-svh w-full max-w-4xl flex-col gap-8 p-6 md:p-10">
+      <AuthLoading>
+        <Spinner className="mx-auto mt-20" />
+      </AuthLoading>
+      <Unauthenticated>
+        <SignedOutNotice />
+      </Unauthenticated>
+      <Authenticated>
+        <LibraryHeader />
+        <DocumentList />
+      </Authenticated>
+    </main>
+  )
+}
+
+function SignedOutNotice() {
+  return (
+    <div className="m-auto flex flex-col items-center gap-4 text-center">
+      <h1 className="font-heading text-4xl">Your {APP_NAME} library</h1>
+      <p className="text-muted-foreground">
+        Sign in to see the documents you have saved.
+      </p>
+      <Button asChild>
+        <Link href="/signin">Sign in</Link>
+      </Button>
+    </div>
+  )
+}
+
+function LibraryHeader() {
+  const { signOut } = useAuthActions()
+  const router = useRouter()
+
+  return (
+    <header className="flex items-center justify-between gap-4">
+      <h1 className="font-heading text-4xl">Documents</h1>
+      <div className="flex items-center gap-2">
+        <NewDocumentDialog />
+        <Button
+          variant="ghost"
+          onClick={async () => {
+            // Everything the browser holds for this account — the JWT and the
+            // refresh token — goes with the server session, so a shared machine
+            // is left with nothing to reopen.
+            await signOut()
+            router.replace("/signin")
+          }}
+        >
+          <SignOutIcon />
+          Sign out
+        </Button>
+      </div>
+    </header>
+  )
+}
+
+function DocumentList() {
+  const documents = useQuery(api.documents.list)
+
+  if (documents === undefined) return <Spinner className="mx-auto mt-20" />
+  if (documents.length === 0) {
+    return (
+      <p className="m-auto text-center text-muted-foreground">
+        No documents yet. Create one and it appears here.
+      </p>
+    )
+  }
+
+  return (
+    <ul className="flex flex-col divide-y">
+      {documents.map((document) => (
+        <DocumentRow key={document._id} document={document} />
+      ))}
+    </ul>
+  )
+}
+
+function DocumentRow({ document }: { document: Doc<"documents"> }) {
+  const rename = useMutation(api.documents.rename)
+  const duplicate = useMutation(api.documents.duplicate)
+  const remove = useMutation(api.documents.remove)
+  const [editing, setEditing] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+
+  const commitRename = async (name: string) => {
+    setEditing(false)
+    if (name.trim() === document.name) return
+    await rename({ documentId: document._id, name })
+  }
+
+  return (
+    <li className="flex items-center gap-4 py-3">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        {editing ? (
+          <Input
+            autoFocus
+            defaultValue={document.name}
+            aria-label={`Rename ${document.name}`}
+            onBlur={(event) => void commitRename(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter")
+                void commitRename(event.currentTarget.value)
+              if (event.key === "Escape") setEditing(false)
+            }}
+          />
+        ) : (
+          <Link
+            href={`/d/${document._id}`}
+            className="truncate hover:underline"
+          >
+            {document.name}
+          </Link>
+        )}
+        <span className="font-mono text-xs text-muted-foreground">
+          {document.width}×{document.height}
+        </span>
+      </div>
+      <Button
+        variant="ghost"
+        size="sm"
+        aria-label={`Rename ${document.name}`}
+        onClick={() => setEditing(true)}
+      >
+        <PencilSimpleIcon />
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        aria-label={`Duplicate ${document.name}`}
+        onClick={async () => {
+          await duplicate({ documentId: document._id })
+          toast.success(`Duplicated ${document.name}`)
+        }}
+      >
+        <CopyIcon />
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        aria-label={`Delete ${document.name}`}
+        onClick={() => setConfirmingDelete(true)}
+      >
+        <TrashIcon />
+      </Button>
+      <DeleteDialog
+        open={confirmingDelete}
+        onOpenChange={setConfirmingDelete}
+        name={document.name}
+        onConfirm={() => remove({ documentId: document._id })}
+      />
+    </li>
+  )
+}
+
+function DeleteDialog({
+  open,
+  onOpenChange,
+  name,
+  onConfirm,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  name: string
+  onConfirm: () => Promise<unknown>
+}) {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete {name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            The document and everything in it goes. This cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Keep it</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={async () => {
+              await onConfirm()
+              toast.success(`Deleted ${name}`)
+            }}
+          >
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}

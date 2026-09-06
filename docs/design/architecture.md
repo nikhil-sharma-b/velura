@@ -334,6 +334,10 @@ features/studio/   # the editor UI
   components/      # canvas host, tool rail, layer panel, brush editor, color
   lib/             # schemas, constants, engine bindings
 
+features/library/  # sign-in and the document library: the account-facing UI,
+  components/      # and the only place the Convex client is mounted, so the
+  lib/             # studio keeps working with no backend and no account
+
 convex/            # schema, auth, queries, mutations, actions, crons
 bench/             # the D30 benchmark: workload, driver, report, runner
 docs/design/       # this document, the PRD, the benchmark findings
