@@ -1,4 +1,5 @@
 import type { Metadata } from "next"
+import { headers } from "next/headers"
 import { notFound } from "next/navigation"
 
 import { APP_NAME } from "@/lib/constants"
@@ -13,7 +14,15 @@ export async function generateMetadata({
   const share = await getPublicShare(token)
   if (share === null) return { title: `Unavailable | ${APP_NAME}` }
 
-  const image = `/s/${encodeURIComponent(token)}/image?v=${share.previewVersion ?? 0}`
+  const requestHeaders = await headers()
+  const host =
+    requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host")
+  if (host === null) return { title: `Shared work | ${APP_NAME}` }
+  const protocol = requestHeaders.get("x-forwarded-proto") ?? "https"
+  const image = new URL(
+    `/s/${encodeURIComponent(token)}/image?v=${share.previewVersion}`,
+    `${protocol}://${host}`
+  )
   return {
     title: `Shared work | ${APP_NAME}`,
     description: `A work in progress shared from ${APP_NAME}.`,
@@ -39,20 +48,14 @@ export default async function SharePage({ params }: SharePageProps) {
         <h1 className="font-heading text-2xl">Shared from {APP_NAME}</h1>
       </header>
       <div className="flex flex-1 items-center justify-center p-4 sm:p-8">
-        {share.previewVersion === null ? (
-          <div className="flex aspect-[4/3] w-full max-w-4xl items-center justify-center rounded-lg bg-neutral-900 text-neutral-400">
-            Preview available after the next sync
-          </div>
-        ) : (
-          // This endpoint proxies only the flattened PNG. It deliberately does
-          // not mount the studio, Convex auth, WebGPU, or document loaders.
-          // oxlint-disable-next-line next/no-img-element
-          <img
-            src={`/s/${encodeURIComponent(token)}/image?v=${share.previewVersion}`}
-            alt="Shared artwork"
-            className="max-h-[calc(100svh-7rem)] max-w-full rounded-lg object-contain shadow-2xl"
-          />
-        )}
+        {/* This endpoint proxies only the flattened PNG. It deliberately does
+            not mount the studio, Convex auth, WebGPU, or document loaders. */}
+        {/* oxlint-disable-next-line next/no-img-element */}
+        <img
+          src={`/s/${encodeURIComponent(token)}/image?v=${share.previewVersion}`}
+          alt="Shared artwork"
+          className="max-h-[calc(100svh-7rem)] max-w-full rounded-lg object-contain shadow-2xl"
+        />
       </div>
     </main>
   )

@@ -30,11 +30,15 @@ async function createDocument(
   t: ReturnType<typeof setup>,
   artist: ReturnType<typeof asUser>
 ) {
-  return await artist.mutation(api.documents.create, {
+  const documentId = await artist.mutation(api.documents.create, {
     name: "Sea study",
     width: 1200,
     height: 800,
   })
+  await artist.run(async (ctx) =>
+    ctx.db.patch(documentId, { previewVersion: 1 })
+  )
+  return documentId
 }
 
 describe("share links", () => {
@@ -59,7 +63,7 @@ describe("share links", () => {
     })
 
     expect(await t.query(api.shareLinks.publicView, { token })).toEqual({
-      previewVersion: null,
+      previewVersion: 1,
     })
 
     await artist.run(async (ctx) =>
@@ -68,6 +72,20 @@ describe("share links", () => {
     expect(await t.query(api.shareLinks.publicView, { token })).toEqual({
       previewVersion: 2,
     })
+  })
+
+  test("an unsynced document cannot produce an empty share", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await artist.mutation(api.documents.create, {
+      name: "Not synced",
+      width: 512,
+      height: 512,
+    })
+
+    await expect(
+      artist.mutation(api.shareLinks.create, { documentId })
+    ).rejects.toThrow(/Sync this document/)
   })
 
   test("a stranger cannot create or revoke the link", async () => {

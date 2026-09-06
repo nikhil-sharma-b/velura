@@ -201,9 +201,13 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
           size="sm"
           aria-label={`Share ${document.name}`}
           onClick={async () => {
-            setSharing(true)
+            if (document.previewVersion === undefined) {
+              toast.error("Sync this document before sharing it")
+              return
+            }
             const result = await createShare({ documentId: document._id })
             setShareToken(result.token)
+            setSharing(true)
           }}
         >
           <ShareNetworkIcon />

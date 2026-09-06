@@ -1,4 +1,4 @@
-import { v } from "convex/values"
+import { ConvexError, v } from "convex/values"
 
 import { requireOwnDocument } from "./documents"
 import { internalQuery, mutation, query } from "./_generated/server"
@@ -6,7 +6,10 @@ import { internalQuery, mutation, query } from "./_generated/server"
 export const create = mutation({
   args: { documentId: v.id("documents") },
   handler: async (ctx, { documentId }) => {
-    await requireOwnDocument(ctx, documentId)
+    const document = await requireOwnDocument(ctx, documentId)
+    if (document.previewVersion === undefined) {
+      throw new ConvexError("Sync this document before sharing it.")
+    }
     const existing = await ctx.db
       .query("shareLinks")
       .withIndex("by_document", (q) => q.eq("documentId", documentId))
@@ -46,7 +49,8 @@ export const publicView = query({
     const document = await ctx.db.get(link.documentId)
     if (document === null) return null
 
-    return { previewVersion: document.previewVersion ?? null }
+    if (document.previewVersion === undefined) return null
+    return { previewVersion: document.previewVersion }
   },
 })
 
