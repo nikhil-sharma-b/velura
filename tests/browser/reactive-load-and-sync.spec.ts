@@ -204,9 +204,7 @@ test("the canvas is usable, and the centre resolves, before every tile has loade
   // tiles only exist where paint actually landed, so this is what gives the
   // document more tiles than one layer's immediate batch covers.
   for (const fraction of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) {
-    const before = await page.evaluate(
-      () => window.engine.historyUsage().steps
-    )
+    const before = await page.evaluate(() => window.engine.historyUsage().steps)
     const y = box.y + size.height * fraction
     await page.mouse.move(box.x + 10, y)
     await page.mouse.down()

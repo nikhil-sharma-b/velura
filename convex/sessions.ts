@@ -34,7 +34,8 @@ export const heartbeat = mutation({
       .withIndex("by_document", (q) => q.eq("documentId", documentId))
       .collect()
     for (const row of stale)
-      if (row.lastSeen < now - ACTIVE_WINDOW_MS * 4) await ctx.db.delete(row._id)
+      if (row.lastSeen < now - ACTIVE_WINDOW_MS * 4)
+        await ctx.db.delete(row._id)
   },
 })
 
