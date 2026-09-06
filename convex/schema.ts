@@ -100,6 +100,22 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_document", ["documentId"]),
 
+  // One row per orphan-collection run (D17). Deleting user pixels
+  // is the one operation with no undo, so each sweep leaves a record of what
+  // it scanned, what it reclaimed, and what the grace window held back — both
+  // so storage growth can be observed and so a run that deleted more than it
+  // should have can be recognised as such afterwards. `finishedAt` is absent
+  // on a run that was interrupted part-way; its counters still hold, because
+  // the sweep records each batch as it completes rather than at the end.
+  collectionRuns: defineTable({
+    startedAt: v.number(),
+    finishedAt: v.optional(v.number()),
+    scannedCount: v.number(),
+    collectedCount: v.number(),
+    reclaimedBytes: v.number(),
+    retainedInGraceCount: v.number(),
+  }).index("by_started", ["startedAt"]),
+
   // One row per tab/device with a document open, heartbeat-refreshed while it
   // stays open (18). This is what lets a session opening a document already
   // open elsewhere warn instead of letting two tabs silently race each

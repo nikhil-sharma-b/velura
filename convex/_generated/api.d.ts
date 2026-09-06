@@ -9,9 +9,13 @@
  */
 
 import type * as auth from "../auth.js"
+import type * as collection from "../collection.js"
+import type * as collectionActions from "../collectionActions.js"
+import type * as crons from "../crons.js"
 import type * as documents from "../documents.js"
 import type * as http from "../http.js"
 import type * as lib_branding from "../lib/branding.js"
+import type * as lib_collection from "../lib/collection.js"
 import type * as lib_documents from "../lib/documents.js"
 import type * as lib_r2 from "../lib/r2.js"
 import type * as lib_retention from "../lib/retention.js"
@@ -28,9 +32,13 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth
+  collection: typeof collection
+  collectionActions: typeof collectionActions
+  crons: typeof crons
   documents: typeof documents
   http: typeof http
   "lib/branding": typeof lib_branding
+  "lib/collection": typeof lib_collection
   "lib/documents": typeof lib_documents
   "lib/r2": typeof lib_r2
   "lib/retention": typeof lib_retention
