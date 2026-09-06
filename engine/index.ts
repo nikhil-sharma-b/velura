@@ -64,6 +64,8 @@ import {
   structureSurfaceIds,
 } from "./doc/structure"
 import { createOpfsSpill, createTileStore } from "./doc/tile-store"
+import { tileIndexForPixel } from "./doc/tile-grid"
+import type { SurfaceTiles, TileRef } from "./store/document-store"
 import { type BlobStore, createLocalBlobStore } from "./store/blob-store"
 import { createDocumentStore, type DocumentStore } from "./store/document-store"
 import {
@@ -76,6 +78,7 @@ import {
   type CloudSync,
   type RemoteIndex,
   type SyncMetrics,
+  type SyncStatus,
 } from "./store/cloud-sync"
 import {
   createFlushScheduler,
@@ -107,7 +110,7 @@ import {
 } from "./view/view-transform"
 
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
-export type { RemoteIndex, SyncMetrics } from "./store/cloud-sync"
+export type { RemoteIndex, SyncMetrics, SyncStatus } from "./store/cloud-sync"
 
 /** §9.2's flush trigger: how long a document sits idle before an unforced upload. */
 const DEFAULT_CLOUD_IDLE_MS = 30_000
@@ -244,6 +247,19 @@ export type EngineSnapshot = Readonly<{
   canUndo: boolean
   canRedo: boolean
   error: string | null
+  /**
+   * Genuine upload state — null with no cloud configured, otherwise never an
+   * optimistic guess (§9.2/18): "syncing" only while a flush is actually in
+   * flight, "fully-synced" only once one has committed exactly what is on
+   * screen now.
+   */
+  syncStatus: SyncStatus | null
+  /**
+   * True from the moment tiles start restoring until the ones nearest the
+   * viewport are in, at which point the canvas is usable even though tiles
+   * farther away may still be arriving in the background.
+   */
+  loading: boolean
 }>
 
 export type MaskSummary = Readonly<Omit<LayerMask, "surface">>
@@ -286,6 +302,8 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   canUndo: false,
   canRedo: false,
   error: null,
+  syncStatus: null,
+  loading: false,
 })
 
 export type RenderedPixels = {
@@ -510,6 +528,11 @@ export function createEngine(
       return
     snapshot = Object.freeze(next)
     listeners.forEach((listener) => listener())
+  }
+
+  /** Re-reads `cloudSync`'s genuine status into the snapshot (18). */
+  function publishSyncStatus() {
+    publish({ syncStatus: cloudSync?.status() ?? null })
   }
 
   function release() {
@@ -885,15 +908,43 @@ export function createEngine(
     const document = doc
     const store = documents
     if (!target || !past || !document || !store) return true
+    // Bound once, here, so the batch loader below reads a hash and writes a
+    // tile without repeating a non-null assertion at every call: TypeScript's
+    // narrowing above does not reach into a closure defined further down.
+    const readTile = store.readTile.bind(store)
+    const writeTiles = target.writeTiles.bind(target)
+    const recordUpload = past.recordUpload.bind(past)
     let stored = await persistence?.load()
-    // Nothing on this device: a different machine may hold the document, in
-    // which case the cloud is the only copy left to read it back from (§9.3).
-    if (!stored && options.cloud && options.persistence) {
-      await hydrateFromRemote({
-        documentId: options.persistence.documentId,
-        remote: options.cloud.remote,
-        local: store,
-      }).catch((error) => (options.cloud?.onError ?? fail)(error))
+    // Nothing on this device — a different machine may hold the document — or
+    // this device's own copy is older than what a flush from elsewhere has
+    // since put in the cloud (18: reopening picks up remote changes without a
+    // manual refresh). Either way the cloud is read back from, merging only
+    // the hashes this device does not already hold.
+    if (options.cloud && options.persistence) {
+      const remote = options.cloud.remote
+      // A network problem here is the cloud being unreachable, not the
+      // document being unreadable: this device's own local copy (if any) is
+      // still shown and still safe to paint on and save (§9.2/18 — an outage
+      // must not stop work, only the replication of it).
+      const onCloudError = options.cloud.onError ?? (() => {})
+      const newerElsewhere = await remote
+        .documentMeta()
+        .then(
+          (meta) =>
+            meta.structure !== null &&
+            meta.updatedAt > (stored?.updatedAt ?? -Infinity)
+        )
+        .catch((error) => {
+          onCloudError(error)
+          return false
+        })
+      if (disposed) return true
+      if (!stored || newerElsewhere)
+        await hydrateFromRemote({
+          documentId: options.persistence.documentId,
+          remote,
+          local: store,
+        }).catch(onCloudError)
       if (disposed) return true
       stored = await persistence?.load()
     }
@@ -908,25 +959,59 @@ export function createEngine(
     const canvas = { width: snapshot.width, height: snapshot.height }
     const fits =
       stored.width === canvas.width && stored.height === canvas.height
-    for (const surface of stored.surfaces) {
-      // A tile is a file read and an inflate, so a surface's tiles are asked
-      // for together rather than one after another.
-      const texels = await Promise.all(
-        surface.tiles.map((tile) => store.readTile(tile.hash))
-      )
-      if (disposed) return true
+
+    // A tile is a file read and an inflate, so a batch is asked for together
+    // rather than one at a time, and reads a surface's own texels into the
+    // GPU surface they were read out of.
+    async function loadTiles(
+      surface: SurfaceTiles,
+      refs: readonly TileRef[]
+    ): Promise<void> {
+      if (refs.length === 0) return
+      const texels = await Promise.all(refs.map((tile) => readTile(tile.hash)))
+      if (disposed) return
       // A tile the manifest names but the device has lost is a hole in the
       // document rather than the end of the restore.
-      const tiles = surface.tiles.flatMap((tile, position) =>
+      const tiles = refs.flatMap((tile, position) =>
         texels[position]
           ? [{ x: tile.x, y: tile.y, texels: texels[position]! }]
           : []
       )
-      if (tiles.length === 0) continue
-      target.writeTiles(surface.surfaceId, tiles)
+      if (tiles.length === 0) return
+      writeTiles(surface.surfaceId, tiles)
       // These texels are exactly what the GPU now holds, so the index history
       // keeps — and the next manifest written from it — starts out true.
-      if (fits) past.recordUpload(surface.surfaceId, tiles, canvas)
+      if (fits) recordUpload(surface.surfaceId, tiles, canvas)
+    }
+
+    // The visible region resolves first (18): every surface's own tiles are
+    // ordered by distance from the viewport's centre, and only the near ones
+    // are awaited before the canvas is shown. The rest load in the
+    // background, in the same near-to-far order, so a document with many
+    // tiles is paintable long before the last of them is in.
+    const center = {
+      x: tileIndexForPixel(canvas.width / 2),
+      y: tileIndexForPixel(canvas.height / 2),
+    }
+    const proximityOrder = (tiles: readonly TileRef[]): TileRef[] =>
+      [...tiles].sort((a, b) => {
+        const distanceA = (a.x - center.x) ** 2 + (a.y - center.y) ** 2
+        const distanceB = (b.x - center.x) ** 2 + (b.y - center.y) ** 2
+        return distanceA - distanceB
+      })
+    // Roughly a 5x5 block of tiles around the centre: enough to fill the
+    // middle of the view immediately without holding up the first frame on a
+    // document that may have thousands of tiles behind it.
+    const IMMEDIATE_TILES = 25
+    const BACKGROUND_BATCH = 8
+
+    const background: { surface: SurfaceTiles; tiles: TileRef[] }[] = []
+    for (const surface of stored.surfaces) {
+      const ordered = proximityOrder(surface.tiles)
+      await loadTiles(surface, ordered.slice(0, IMMEDIATE_TILES))
+      if (disposed) return true
+      const rest = ordered.slice(IMMEDIATE_TILES)
+      if (rest.length > 0) background.push({ surface, tiles: rest })
     }
     await past.settle()
     syncComposition()
@@ -939,6 +1024,28 @@ export function createEngine(
             `nothing will be saved until the window is the size it was.`
         )
       )
+
+    if (background.length > 0) {
+      publish({ loading: true })
+      void (async () => {
+        for (const { surface, tiles } of background) {
+          for (let index = 0; index < tiles.length; index += BACKGROUND_BATCH) {
+            if (disposed) return
+            await loadTiles(
+              surface,
+              tiles.slice(index, index + BACKGROUND_BATCH)
+            )
+            if (disposed) return
+            await past.settle()
+            syncComposition()
+            publish(describeLayers(document))
+            if (snapshot.status === "ready") render()
+          }
+        }
+        if (!disposed) publish({ loading: false })
+      })()
+    }
+
     return fits
   }
 
@@ -1200,6 +1307,9 @@ export function createEngine(
           // Scheduling is a timer reset, not a network call, so this never
           // costs a stroke a frame (§9.2's "off the interactive path").
           flushScheduler?.touch()
+          // A fresh commit changes what a flush would upload, so whatever
+          // "fully-synced" meant a moment ago no longer applies.
+          publishSyncStatus()
         },
       })
       if (local && store) {
@@ -1230,7 +1340,14 @@ export function createEngine(
               structure: captureStructure(requireDocument()),
               surfaces: past.tileIndex(),
             }),
-            onError: cloud.onError ?? fail,
+            // A flush that fails — an outage, a dropped response — is not the
+            // document failing: the stroke is already safe on disk, and
+            // `status()` staying "saved-locally" already says truthfully that
+            // it has not left this device yet (18). The next idle tick, tab
+            // hide or explicit save tries again.
+            onError: cloud.onError ?? (() => {}),
+            onStatusChange: () =>
+              publishSyncStatus(),
           })
           flushScheduler = createFlushScheduler({
             flush: () => void cloudSync?.flush(),
@@ -1251,6 +1368,7 @@ export function createEngine(
       // A restore that fails outright leaves saving switched off: writing
       // over work this session could not read would be worse than not saving.
       restored = await restoreDocument()
+      publishSyncStatus()
       render()
       const error = await acquired.popErrorScope()
       if (disposed || device !== acquired) return

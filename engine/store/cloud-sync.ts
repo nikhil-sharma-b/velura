@@ -47,6 +47,8 @@ export interface RemoteIndex {
     height: number
     name?: string
     structure: DocumentStructure | null
+    /** Bumped by every flush from any device — what "newer elsewhere" means. */
+    updatedAt: number
   }>
   /** Every tile this document currently names, across every surface. */
   tileIndex(): Promise<
@@ -60,12 +62,21 @@ export interface RemoteIndex {
 /** Cumulative R2/Convex operation counts for one painting session (§9.6). */
 export type SyncMetrics = Readonly<{ putCount: number; mutationCount: number }>
 
+/**
+ * Genuine upload state, never an optimistic guess: "fully-synced" only holds
+ * once a flush has actually committed exactly what the document now looks
+ * like, and a single new stroke — or a flush that fails partway — drops it
+ * back to "saved-locally" until the next flush closes the gap.
+ */
+export type SyncStatus = "saved-locally" | "syncing" | "fully-synced"
+
 export interface CloudSync {
   /** Uploads whatever has changed since the last flush. Overlapping calls coalesce. */
   flush(): Promise<void>
   /** Waits for a flush in flight, including one a commit just queued. */
   settle(): Promise<void>
   metrics(): SyncMetrics
+  status(): SyncStatus
 }
 
 export function createCloudSync(options: {
@@ -75,15 +86,34 @@ export function createCloudSync(options: {
   /** Uploads bytes to a presigned URL. Overridable for tests; defaults to fetch PUT. */
   put?: (url: string, bytes: Uint8Array) => Promise<void>
   onError?: (error: unknown) => void
+  /** Told whenever `status()` may have changed, so a host can re-read it. */
+  onStatusChange?: () => void
 }): CloudSync {
   const put = options.put ?? fetchPut
   let running: Promise<void> | undefined
   let queued = false
   let putCount = 0
   let mutationCount = 0
+  // The key of the last snapshot a flush actually committed in full. Compared
+  // against the current snapshot's key, this is what makes "fully-synced"
+  // an observation rather than a guess: it only holds while nothing painted
+  // since has changed what a flush would upload.
+  let syncedKey: string | undefined
 
   function allTiles(surfaces: readonly SurfaceTiles[]): readonly TileRef[] {
     return surfaces.flatMap((surface) => surface.tiles)
+  }
+
+  function keyOf(document: DocumentSnapshot): string {
+    return JSON.stringify({
+      structure: document.structure,
+      surfaces: document.surfaces.map((surface) => ({
+        surfaceId: surface.surfaceId,
+        tiles: [...surface.tiles]
+          .sort((a, b) => a.x - b.x || a.y - b.y)
+          .map((tile) => `${tile.x},${tile.y}:${tile.hash}`),
+      })),
+    })
   }
 
   async function write() {
@@ -121,6 +151,10 @@ export function createCloudSync(options: {
         metrics: { putCount, mutationCount: mutationCount + 1 },
       })
       mutationCount++
+      // This exact snapshot is now on the server, whether or not a later
+      // round of the loop moves past it.
+      syncedKey = keyOf(document)
+      options.onStatusChange?.()
       // A commit that landed mid-flush is not covered by the snapshot just
       // uploaded, so the loop goes round rather than leaving it unsynced.
     } while (queued)
@@ -131,10 +165,12 @@ export function createCloudSync(options: {
       queued = true
       return running
     }
+    options.onStatusChange?.()
     running = write()
       .catch((error) => options.onError?.(error))
       .finally(() => {
         running = undefined
+        options.onStatusChange?.()
       })
     return running
   }
@@ -145,6 +181,12 @@ export function createCloudSync(options: {
       while (running) await running
     },
     metrics: () => ({ putCount, mutationCount }),
+    status() {
+      if (running) return "syncing"
+      return keyOf(options.snapshot()) === syncedKey
+        ? "fully-synced"
+        : "saved-locally"
+    },
   }
 }
 

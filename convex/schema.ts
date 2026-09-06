@@ -76,4 +76,16 @@ export default defineSchema({
     mutationCount: v.number(),
     createdAt: v.number(),
   }).index("by_document", ["documentId"]),
+
+  // One row per tab/device with a document open, heartbeat-refreshed while it
+  // stays open (18). This is what lets a session opening a document already
+  // open elsewhere warn instead of letting two tabs silently race each
+  // other's flushes.
+  sessions: defineTable({
+    documentId: v.id("documents"),
+    sessionId: v.string(),
+    lastSeen: v.number(),
+  })
+    .index("by_document", ["documentId"])
+    .index("by_document_session", ["documentId", "sessionId"]),
 })

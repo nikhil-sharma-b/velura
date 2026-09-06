@@ -41,6 +41,25 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
   )
 }
 
+/** One id per tab, for the life of the tab: what a heartbeat is filed under. */
+function useSessionId(): string {
+  return useMemo(() => crypto.randomUUID(), [])
+}
+
+/** Keeps this tab's presence row alive while the document stays open (18). */
+function useHeartbeat(documentId: Id<"documents">, sessionId: string) {
+  const convex = useConvex()
+  useEffect(() => {
+    const beat = () =>
+      void convex.mutation(api.sessions.heartbeat, { documentId, sessionId })
+    beat()
+    // Comfortably inside the backend's active window, so a beat missed to a
+    // slow tick or a backgrounded tab does not read as "closed".
+    const interval = setInterval(beat, 5_000)
+    return () => clearInterval(interval)
+  }, [convex, documentId, sessionId])
+}
+
 function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
   // A document belonging to someone else, or a deleted one, throws in the query
   // rather than resolving to null, so the not-found branch is the error branch.
@@ -50,9 +69,21 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
     () => createConvexRemoteIndex(convex, documentId),
     [convex, documentId]
   )
+  const sessionId = useSessionId()
+  useHeartbeat(documentId, sessionId)
+  const openElsewhere = useQuery(api.sessions.openElsewhere, {
+    documentId,
+    sessionId,
+  })
 
   if (document === undefined) return <CentredSpinner />
-  return <CanvasHost documentId={documentId} remote={remote} />
+  return (
+    <CanvasHost
+      documentId={documentId}
+      remote={remote}
+      openElsewhere={openElsewhere ?? false}
+    />
+  )
 }
 
 function RedirectToSignIn() {

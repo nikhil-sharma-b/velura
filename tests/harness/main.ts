@@ -14,7 +14,11 @@ import { BACKGROUND } from "../../engine/doc/scene"
 import { decodeFloat16 } from "../../engine/doc/float16"
 import { createRenderer, type StrokeMode } from "../../engine/gpu/renderer"
 import { STAMP_STRIDE } from "../../engine/gpu/stamp-instance"
-import { createEngine, type Engine } from "../../engine"
+import { createEngine, type Engine, type RemoteIndex } from "../../engine"
+import type { DocumentStructure } from "../../engine/doc/structure"
+import { createLocalBlobStore } from "../../engine/store/blob-store"
+import { createDocumentStore } from "../../engine/store/document-store"
+import { encodeTile } from "../../engine/store/tile-codec"
 
 type EngineOptions = Parameters<typeof createEngine>[1]
 
@@ -70,6 +74,124 @@ declare global {
     buildLayerStack(count: number): Promise<void>
     /** One short mark on whichever layer is active. */
     markActiveLayer(): Promise<void>
+    /** A `RemoteIndex` backed by memory instead of Convex/R2, for 17/18 tests. */
+    createFakeCloud(size: { width: number; height: number }): FakeCloud
+    /** How many tiles a document's local manifest names, total, for 18's tests. */
+    tileCountFor(documentId: string): Promise<number>
+  }
+}
+
+window.tileCountFor = async (documentId) => {
+  const store = createDocumentStore(createLocalBlobStore())
+  const manifest = await store.load(documentId)
+  return (
+    manifest?.surfaces.reduce((sum, surface) => sum + surface.tiles.length, 0) ??
+    0
+  )
+}
+
+type FakeTileRow = { surfaceId: string; x: number; y: number; hash: string }
+
+/** What a test drives beyond the plain `RemoteIndex` seam the engine sees. */
+type FakeCloud = {
+  remote: RemoteIndex
+  /** A flush after this throws, as a brief network outage would. */
+  setFailing(failing: boolean): void
+  /**
+   * Lands a tile straight in the cloud, bypassing this engine entirely — the
+   * shape of a flush a different device made while this one was closed.
+   */
+  injectRemoteTile(
+    surfaceId: string,
+    x: number,
+    y: number,
+    texels: number[]
+  ): Promise<void>
+}
+
+// Presigned uploads and downloads are real `fetch` PUTs and GETs in
+// production (`engine/store/cloud-sync.ts`'s `fetchPut`/`fetchGet`), and the
+// engine mints no override for tests to slot another transport in. Rather
+// than fork that path, one URL scheme is taught to this page's own `fetch` —
+// everything else still goes to the network exactly as before.
+const fakeCloudBlobs = new Map<string, Uint8Array>()
+const FAKE_SCHEME = "fake-cloud:"
+const nativeFetch = window.fetch.bind(window)
+window.fetch = (async (
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<Response> => {
+  const url = typeof input === "string" ? input : (input as Request).url
+  if (!url.startsWith(FAKE_SCHEME)) return nativeFetch(input, init)
+  const hash = url.slice(FAKE_SCHEME.length)
+  if ((init?.method ?? "GET") === "PUT") {
+    const bytes = new Uint8Array(
+      await new Response(init!.body as BodyInit).arrayBuffer()
+    )
+    fakeCloudBlobs.set(hash, bytes)
+    return new Response(null, { status: 200 })
+  }
+  const bytes = fakeCloudBlobs.get(hash)
+  return bytes
+    ? new Response(bytes as BodyInit, { status: 200 })
+    : new Response(null, { status: 404 })
+}) as typeof fetch
+
+window.createFakeCloud = (size) => {
+  let failing = false
+  let structure: DocumentStructure | null = null
+  let updatedAt = 0
+  const tiles: FakeTileRow[] = []
+  const knownHashes = new Set<string>()
+
+  const findRow = (surfaceId: string, x: number, y: number) =>
+    tiles.find((t) => t.surfaceId === surfaceId && t.x === x && t.y === y)
+
+  const remote: RemoteIndex = {
+    async missingHashes(hashes) {
+      return hashes.filter((hash) => !knownHashes.has(hash))
+    },
+    async presignUploads(hashes) {
+      return hashes.map((hash) => ({ hash, url: `${FAKE_SCHEME}${hash}` }))
+    },
+    async presignDownloads(hashes) {
+      return hashes.map((hash) => ({ hash, url: `${FAKE_SCHEME}${hash}` }))
+    },
+    async commitFlush(payload) {
+      if (failing) throw new Error("Simulated network outage.")
+      for (const tile of payload.tiles) {
+        const existing = findRow(tile.surfaceId, tile.x, tile.y)
+        if (existing) existing.hash = tile.hash
+        else tiles.push({ ...tile })
+      }
+      for (const blob of payload.uploaded) knownHashes.add(blob.hash)
+      structure = payload.structure
+      updatedAt = Date.now()
+    },
+    async documentMeta() {
+      return { ...size, structure, updatedAt }
+    },
+    async tileIndex() {
+      return tiles.map((tile) => ({ ...tile }))
+    },
+  }
+
+  return {
+    remote,
+    setFailing: (value) => {
+      failing = value
+    },
+    async injectRemoteTile(surfaceId, x, y, texels) {
+      const hash = `external-${surfaceId}-${x}-${y}-${crypto.randomUUID()}`
+      fakeCloudBlobs.set(hash, await encodeTile(new Uint16Array(texels)))
+      knownHashes.add(hash)
+      const existing = findRow(surfaceId, x, y)
+      if (existing) existing.hash = hash
+      else tiles.push({ surfaceId, x, y, hash })
+      // Strictly after the real flush that set `structure`, and after any
+      // clock this same tick's `Date.now()` calls could return.
+      updatedAt = Date.now() + 1
+    },
   }
 }
 

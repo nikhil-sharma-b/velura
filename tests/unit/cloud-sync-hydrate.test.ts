@@ -56,7 +56,7 @@ function createFakeCloud() {
       structure = payload.structure
     },
     async documentMeta() {
-      return { ...size, structure }
+      return { ...size, structure, updatedAt: 0 }
     },
     async tileIndex() {
       return tiles

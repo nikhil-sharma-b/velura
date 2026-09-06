@@ -28,6 +28,7 @@ import {
   INITIAL_SNAPSHOT,
   type LayerSummary,
   type RemoteIndex,
+  type SyncStatus,
 } from "@/engine"
 
 import { LayerPanel } from "./layer-panel"
@@ -79,6 +80,20 @@ function navigationForKey(
 const getInitialSnapshot = () => INITIAL_SNAPSHOT
 const subscribeToNothing = () => () => {}
 
+/** What the sync-status pill says, from genuine upload state — never a guess. */
+function syncStatusLabel(status: SyncStatus | null): string {
+  switch (status) {
+    case "syncing":
+      return "Syncing…"
+    case "fully-synced":
+      return "Synced"
+    case "saved-locally":
+      return "Saved on this device"
+    default:
+      return ""
+  }
+}
+
 function findLayer(
   nodes: readonly LayerSummary[],
   id: string
@@ -100,10 +115,13 @@ function findLayer(
 export function CanvasHost({
   documentId,
   remote,
+  openElsewhere = false,
 }: {
   documentId?: string
   /** The cloud-sync backend, when this document has an owned Convex row to sync to. */
   remote?: RemoteIndex
+  /** Whether another tab or device currently has this same document open. */
+  openElsewhere?: boolean
 }) {
   const [engine, setEngine] = useState<Engine | null>(null)
   const [panelsOpen, setPanelsOpen] = useState(true)
@@ -239,9 +257,35 @@ export function CanvasHost({
       />
       {snapshot.status === "ready" && (
         <>
-          <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-full border bg-background/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
-            Untitled artwork
+          <div className="pointer-events-none absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border bg-background/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
+            <span>Untitled artwork</span>
+            {snapshot.loading && (
+              <span
+                className="text-muted-foreground"
+                data-testid="load-status"
+              >
+                Loading…
+              </span>
+            )}
+            {remote && (
+              <span
+                className="text-muted-foreground"
+                data-testid="sync-status"
+                data-sync-status={snapshot.syncStatus ?? undefined}
+              >
+                {syncStatusLabel(snapshot.syncStatus)}
+              </span>
+            )}
           </div>
+          {openElsewhere && (
+            <div
+              role="alert"
+              data-testid="open-elsewhere-warning"
+              className="pointer-events-none absolute top-14 left-1/2 -translate-x-1/2 rounded-full border border-amber-500/50 bg-amber-950/90 px-4 py-1.5 text-xs text-amber-200 shadow-sm backdrop-blur"
+            >
+              Also open on another device — work here may conflict with it.
+            </div>
+          )}
           <div className="absolute top-1/2 left-3 flex -translate-y-1/2 flex-col gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl">
             <Button
               variant={snapshot.tool === "brush" ? "default" : "ghost"}

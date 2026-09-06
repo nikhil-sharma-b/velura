@@ -8,31 +8,33 @@
  * @module
  */
 
-import type * as auth from "../auth.js"
-import type * as documents from "../documents.js"
-import type * as http from "../http.js"
-import type * as lib_branding from "../lib/branding.js"
-import type * as lib_documents from "../lib/documents.js"
-import type * as lib_r2 from "../lib/r2.js"
-import type * as tiles from "../tiles.js"
-import type * as tilesActions from "../tilesActions.js"
+import type * as auth from "../auth.js";
+import type * as documents from "../documents.js";
+import type * as http from "../http.js";
+import type * as lib_branding from "../lib/branding.js";
+import type * as lib_documents from "../lib/documents.js";
+import type * as lib_r2 from "../lib/r2.js";
+import type * as sessions from "../sessions.js";
+import type * as tiles from "../tiles.js";
+import type * as tilesActions from "../tilesActions.js";
 
 import type {
   ApiFromModules,
   FilterApi,
   FunctionReference,
-} from "convex/server"
+} from "convex/server";
 
 declare const fullApi: ApiFromModules<{
-  auth: typeof auth
-  documents: typeof documents
-  http: typeof http
-  "lib/branding": typeof lib_branding
-  "lib/documents": typeof lib_documents
-  "lib/r2": typeof lib_r2
-  tiles: typeof tiles
-  tilesActions: typeof tilesActions
-}>
+  auth: typeof auth;
+  documents: typeof documents;
+  http: typeof http;
+  "lib/branding": typeof lib_branding;
+  "lib/documents": typeof lib_documents;
+  "lib/r2": typeof lib_r2;
+  sessions: typeof sessions;
+  tiles: typeof tiles;
+  tilesActions: typeof tilesActions;
+}>;
 
 /**
  * A utility for referencing Convex functions in your app's public API.
@@ -45,7 +47,7 @@ declare const fullApi: ApiFromModules<{
 export declare const api: FilterApi<
   typeof fullApi,
   FunctionReference<any, "public">
->
+>;
 
 /**
  * A utility for referencing Convex functions in your app's internal API.
@@ -58,6 +60,6 @@ export declare const api: FilterApi<
 export declare const internal: FilterApi<
   typeof fullApi,
   FunctionReference<any, "internal">
->
+>;
 
-export declare const components: {}
+export declare const components: {};

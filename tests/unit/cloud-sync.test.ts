@@ -32,7 +32,7 @@ function createFakeRemote() {
       for (const blob of payload.uploaded) knownHashes.add(blob.hash)
     },
     async documentMeta() {
-      return { width: 512, height: 512, structure: STRUCTURE }
+      return { width: 512, height: 512, structure: STRUCTURE, updatedAt: 0 }
     },
     async tileIndex() {
       return []
@@ -166,5 +166,69 @@ describe("flush", () => {
     await sync.flush()
     expect(puts).toEqual([])
     expect(commits).toEqual([])
+  })
+})
+
+describe("status", () => {
+  test("is saved-locally until a flush actually commits, syncing while one is in flight, then fully-synced", async () => {
+    const { remote } = createFakeRemote()
+    let doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])
+    const originalCommit = remote.commitFlush.bind(remote)
+    let releaseCommit = () => {}
+    const gate = new Promise<void>((resolve) => {
+      releaseCommit = resolve
+    })
+    remote.commitFlush = async (payload) => {
+      await gate
+      await originalCommit(payload)
+    }
+
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: doc }),
+      tiles: async (hash) => texelsFor(hash),
+      put: fakePut([], new Map()),
+    })
+
+    expect(sync.status()).toBe("saved-locally")
+    const flushed = sync.flush()
+    // Let the queued microtasks (missingHashes, presignUploads, the PUT) run
+    // up to the point where commitFlush is blocked on the gate.
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(sync.status()).toBe("syncing")
+    releaseCommit()
+    await flushed
+    expect(sync.status()).toBe("fully-synced")
+
+    // A fresh stroke changes what the last flush uploaded, so the indicator
+    // must not keep claiming everything is synced.
+    doc = surfaces([
+      { surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" },
+      { surfaceId: "layer-1", x: 1, y: 0, hash: "hash-b" },
+    ])
+    expect(sync.status()).toBe("saved-locally")
+  })
+
+  test("a flush that fails leaves the indicator at saved-locally, never an optimistic fully-synced", async () => {
+    const { remote } = createFakeRemote()
+    const doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])
+    remote.commitFlush = async () => {
+      throw new Error("network outage")
+    }
+
+    const errors: unknown[] = []
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: doc }),
+      tiles: async (hash) => texelsFor(hash),
+      put: fakePut([], new Map()),
+      onError: (error) => errors.push(error),
+    })
+
+    await sync.flush()
+    expect(errors).toHaveLength(1)
+    expect(sync.status()).toBe("saved-locally")
   })
 })
