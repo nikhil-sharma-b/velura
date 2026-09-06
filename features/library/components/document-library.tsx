@@ -36,6 +36,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { api } from "@/convex/_generated/api"
 import type { Doc } from "@/convex/_generated/dataModel"
 import { NewDocumentDialog } from "@/features/library/components/new-document-dialog"
+import { AnonymousMigration } from "@/features/library/components/anonymous-migration"
 import { APP_NAME } from "@/lib/constants"
 
 export function DocumentLibrary() {
@@ -48,6 +49,7 @@ export function DocumentLibrary() {
         <SignedOutNotice />
       </Unauthenticated>
       <Authenticated>
+        <AnonymousMigration />
         <LibraryHeader />
         <DocumentList />
       </Authenticated>

@@ -276,6 +276,20 @@ export function CanvasHost({
                 {syncStatusLabel(snapshot.syncStatus)}
               </span>
             )}
+            {!remote && documentId && (
+              <>
+                <span className="text-muted-foreground">
+                  Saved on this device
+                </span>
+                <Button asChild size="sm" className="pointer-events-auto">
+                  {/* A full navigation is deliberate: where OPFS is absent,
+                      AnonymousStudio's beforeunload guard must get a chance to
+                      stop in-memory work from being discarded. */}
+                  {/* oxlint-disable-next-line next/no-html-link-for-pages */}
+                  <a href="/signin">Sign in to keep it</a>
+                </Button>
+              </>
+            )}
           </div>
           {openElsewhere && (
             <div

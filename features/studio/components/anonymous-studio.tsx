@@ -1,7 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 
+import { opfsAvailable } from "@/engine/store/blob-store"
 import { CanvasHost } from "./canvas-host"
 import { anonymousDocumentId } from "../lib/anonymous-document"
 
@@ -15,5 +16,14 @@ export function AnonymousStudio() {
   const [documentId] = useState<string | undefined>(() =>
     typeof window === "undefined" ? undefined : anonymousDocumentId()
   )
+  useEffect(() => {
+    // With OPFS, navigation cannot discard the drawing: it is already on
+    // disk. In a denied/unsupported storage environment the fallback is
+    // memory, so leaving really would lose it and needs the browser's prompt.
+    if (opfsAvailable()) return
+    const guard = (event: BeforeUnloadEvent) => event.preventDefault()
+    window.addEventListener("beforeunload", guard)
+    return () => window.removeEventListener("beforeunload", guard)
+  }, [])
   return <CanvasHost documentId={documentId} />
 }

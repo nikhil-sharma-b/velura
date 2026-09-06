@@ -31,6 +31,38 @@ function asUser(t: ReturnType<typeof setup>, userId: Id<"users">) {
 }
 
 describe("creating documents", () => {
+  test("claiming the same anonymous document is idempotent and merges into the library", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const existing = await artist.mutation(api.documents.create, {
+      name: "Already here",
+      width: 512,
+      height: 512,
+    })
+    const source = {
+      sourceId: "local-browser-drawing",
+      name: "Anonymous sketch",
+      width: 1024,
+      height: 768,
+    }
+
+    const first = await artist.mutation(api.documents.claimAnonymous, source)
+    const retry = await artist.mutation(api.documents.claimAnonymous, source)
+
+    expect(retry).toBe(first)
+    expect(
+      (await artist.query(api.documents.list, {})).map((doc) => doc._id)
+    ).toContain(existing)
+    expect(
+      await artist.query(api.documents.get, { documentId: first })
+    ).toMatchObject({
+      name: "Anonymous sketch",
+      width: 1024,
+      height: 768,
+      anonymousSourceId: source.sourceId,
+    })
+  })
+
   test("stores the requested size and lists it back to its owner", async () => {
     const t = setup()
     const artist = asUser(t, await createUser(t, "artist@example.com"))

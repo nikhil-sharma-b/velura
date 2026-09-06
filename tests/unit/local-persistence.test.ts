@@ -160,6 +160,19 @@ describe("the blob store", () => {
     await blobs.remove("k")
     expect(await blobs.has("k")).toBe(false)
   })
+
+  test("compare-and-remove never deletes bytes that changed", async () => {
+    const blobs = createMemoryBlobStore()
+    await blobs.put("manifest", new Uint8Array([1]))
+    expect(await blobs.compareAndRemove("manifest", new Uint8Array([2]))).toBe(
+      false
+    )
+    expect(await blobs.get("manifest")).toEqual(new Uint8Array([1]))
+    expect(await blobs.compareAndRemove("manifest", new Uint8Array([1]))).toBe(
+      true
+    )
+    expect(await blobs.get("manifest")).toBeNull()
+  })
 })
 
 describe("saving", () => {

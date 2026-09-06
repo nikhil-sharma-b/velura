@@ -1,5 +1,33 @@
 import { expect, test } from "@playwright/test"
 
+test("anonymous work offers preservation before account navigation", async ({
+  page,
+}) => {
+  await page.goto("/")
+  await expect(page.getByText("Saved on this device")).toBeVisible()
+  await expect(
+    page.getByRole("link", { name: "Sign in to keep it" })
+  ).toHaveAttribute("href", "/signin")
+})
+
+test("leaving prompts when durable browser storage is unavailable", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "storage", { value: undefined })
+  })
+  await page.goto("/")
+  const prompt = page.waitForEvent("dialog")
+  const navigation = page
+    .getByRole("link", { name: "Sign in to keep it" })
+    .click()
+  const dialog = await prompt
+  expect(dialog.type()).toBe("beforeunload")
+  await dialog.dismiss()
+  await navigation
+  await expect(page).toHaveURL("/")
+})
+
 test("canvas fills the viewport and follows window and density changes", async ({
   page,
 }) => {

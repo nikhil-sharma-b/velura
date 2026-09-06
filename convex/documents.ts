@@ -14,6 +14,7 @@ import {
   duplicateName,
   normaliseDocumentName,
 } from "./lib/documents"
+import { isAnonymousDocumentId } from "../lib/anonymous-document-id"
 
 async function requireUserId(
   ctx: QueryCtx | MutationCtx
@@ -83,6 +84,47 @@ export const create = mutation({
       updatedAt: now,
     })
     return documentId
+  },
+})
+
+/**
+ * Gives a browser-local document an owned cloud identity. `sourceId` is a
+ * durable idempotency key: if the client loses the response after insertion,
+ * the same request returns the row already made instead of duplicating it.
+ */
+export const claimAnonymous = mutation({
+  args: {
+    sourceId: v.string(),
+    name: v.optional(v.string()),
+    width: v.number(),
+    height: v.number(),
+  },
+  handler: async (ctx, { sourceId, name, width, height }) => {
+    const userId = await requireUserId(ctx)
+    const problem = canvasSizeProblem(width, height)
+    if (problem !== null) throw new ConvexError(problem)
+    if (!isAnonymousDocumentId(sourceId)) {
+      throw new ConvexError("That is not an anonymous document id.")
+    }
+
+    const existing = await ctx.db
+      .query("documents")
+      .withIndex("by_owner_anonymous_source", (q) =>
+        q.eq("ownerId", userId).eq("anonymousSourceId", sourceId)
+      )
+      .unique()
+    if (existing !== null) return existing._id
+
+    const now = Date.now()
+    return await ctx.db.insert("documents", {
+      ownerId: userId,
+      anonymousSourceId: sourceId,
+      name: normaliseDocumentName(name ?? DEFAULT_DOCUMENT_NAME),
+      width,
+      height,
+      createdAt: now,
+      updatedAt: now,
+    })
   },
 })
 

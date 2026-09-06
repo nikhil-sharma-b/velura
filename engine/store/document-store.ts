@@ -59,6 +59,10 @@ export interface DocumentStore {
   /** The texels behind one hash, or null where the device does not hold it. */
   readTile(hash: string): Promise<Uint16Array | null>
   has(hash: string): Promise<boolean>
+  /** Every stored manifest id. Content blobs are deliberately excluded. */
+  list(): Promise<DocumentManifest[]>
+  /** Removes only if no save advanced the manifest since the caller read it. */
+  removeIfUnchanged(manifest: DocumentManifest): Promise<boolean>
 }
 
 export function createDocumentStore(blobs: BlobStore): DocumentStore {
@@ -111,5 +115,22 @@ export function createDocumentStore(blobs: BlobStore): DocumentStore {
       return bytes ? decodeTile(bytes) : null
     },
     has: (hash) => blobs.has(tileKeyFor(hash)),
+    async list() {
+      const manifests = await Promise.all(
+        (await blobs.keys())
+          .filter((key) => key.startsWith("documents/"))
+          .sort()
+          .map((key) => this.load(key.slice("documents/".length)))
+      )
+      return manifests.filter(
+        (manifest): manifest is DocumentManifest => manifest !== null
+      )
+    },
+    async removeIfUnchanged(manifest) {
+      return await blobs.compareAndRemove(
+        manifestKey(manifest.id),
+        new TextEncoder().encode(JSON.stringify(manifest))
+      )
+    },
   }
 }

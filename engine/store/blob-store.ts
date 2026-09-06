@@ -17,6 +17,8 @@ export interface BlobStore {
   get(key: string): Promise<Uint8Array | null>
   has(key: string): Promise<boolean>
   remove(key: string): Promise<void>
+  /** Removes only when the current bytes exactly match `expected`. */
+  compareAndRemove(key: string, expected: Uint8Array): Promise<boolean>
   /** Every key held, in no particular order. For GC and for tests. */
   keys(): Promise<string[]>
 }
@@ -39,6 +41,12 @@ export function createMemoryBlobStore(): BlobStore {
     },
     async remove(key) {
       blobs.delete(key)
+    },
+    async compareAndRemove(key, expected) {
+      const current = blobs.get(key)
+      if (!current || !sameBytes(current, expected)) return false
+      blobs.delete(key)
+      return true
     },
     async keys() {
       return [...blobs.keys()]
@@ -66,14 +74,16 @@ export function createOpfsBlobStore(name = "velura"): BlobStore {
   })()
   return {
     async put(key, bytes) {
-      const handle = await (
-        await directory
-      ).getFileHandle(fileName(key), {
-        create: true,
+      await withFileLock(name, key, async () => {
+        const handle = await (
+          await directory
+        ).getFileHandle(fileName(key), {
+          create: true,
+        })
+        const writable = await handle.createWritable()
+        await writable.write(bytes as BufferSource)
+        await writable.close()
       })
-      const writable = await handle.createWritable()
-      await writable.write(bytes as BufferSource)
-      await writable.close()
     },
     async get(key) {
       try {
@@ -97,7 +107,23 @@ export function createOpfsBlobStore(name = "velura"): BlobStore {
       }
     },
     async remove(key) {
-      await (await directory).removeEntry(fileName(key)).catch(() => {})
+      await withFileLock(name, key, async () => {
+        await (await directory).removeEntry(fileName(key)).catch(() => {})
+      })
+    },
+    async compareAndRemove(key, expected) {
+      return await withFileLock(name, key, async () => {
+        let current: Uint8Array
+        try {
+          const handle = await (await directory).getFileHandle(fileName(key))
+          current = new Uint8Array(await (await handle.getFile()).arrayBuffer())
+        } catch {
+          return false
+        }
+        if (!sameBytes(current, expected)) return false
+        await (await directory).removeEntry(fileName(key))
+        return true
+      })
     },
     async keys() {
       const handle = (await directory) as FileSystemDirectoryHandle & {
@@ -109,6 +135,28 @@ export function createOpfsBlobStore(name = "velura"): BlobStore {
       return found
     },
   }
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return (
+    left.byteLength === right.byteLength &&
+    left.every((byte, index) => byte === right[index])
+  )
+}
+
+async function withFileLock<T>(
+  store: string,
+  key: string,
+  action: () => Promise<T>
+): Promise<T> {
+  if (navigator.locks) {
+    return await navigator.locks.request(
+      `velura:${store}:${key}`,
+      { mode: "exclusive" },
+      action
+    )
+  }
+  return await action()
 }
 
 /** Whether this environment can keep work across sessions on its own. */

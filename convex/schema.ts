@@ -29,6 +29,10 @@ export default defineSchema({
     height: v.number(),
     createdAt: v.number(),
     updatedAt: v.number(),
+    // Stable browser-local identity used only while claiming anonymous work.
+    // Keeping it makes a lost mutation response safe to retry without making
+    // a duplicate document in the account.
+    anonymousSourceId: v.optional(v.string()),
     // The layer tree without pixels — engine/doc/structure.ts's
     // `DocumentStructure`, opaque here. Absent until the first flush; a
     // session reopening on a cleared cache reads this plus the `tiles` rows
@@ -40,7 +44,8 @@ export default defineSchema({
   })
     // The library lists one owner's documents newest-first; the index carries
     // `updatedAt` so that ordering is the index order, not a post-sort.
-    .index("by_owner_updated", ["ownerId", "updatedAt"]),
+    .index("by_owner_updated", ["ownerId", "updatedAt"])
+    .index("by_owner_anonymous_source", ["ownerId", "anonymousSourceId"]),
 
   // One row per (document, surface, tile coordinate). D13: independently
   // mutable rows so concurrent flushes never contend on a single document
