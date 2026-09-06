@@ -27,6 +27,10 @@ function createFakeRemote() {
     async presignUploads(hashes) {
       return hashes.map((hash) => ({ hash, url: `https://r2.test/${hash}` }))
     },
+    async presignPreviewUpload() {
+      return "https://r2.test/preview.png"
+    },
+    async commitPreview() {},
     async commitFlush(payload) {
       commits.push(payload)
       for (const blob of payload.uploaded) knownHashes.add(blob.hash)
@@ -57,6 +61,28 @@ function texelsFor(hash: string) {
 }
 
 describe("flush", () => {
+  test("every flush uploads a fresh flattened preview, including an empty document", async () => {
+    const { remote, puts, commits } = createFakeRemote()
+    let preview = 0
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: [] }),
+      tiles: async (hash) => texelsFor(hash),
+      preview: async () => new Uint8Array([137, 80, 78, 71, ++preview]),
+      put: fakePut(puts, new Map()),
+    })
+
+    await sync.flush()
+    await sync.flush()
+
+    expect(puts).toEqual([
+      "https://r2.test/preview.png",
+      "https://r2.test/preview.png",
+    ])
+    expect(commits).toHaveLength(2)
+    expect(sync.metrics()).toEqual({ putCount: 2, mutationCount: 4 })
+  })
+
   test("uploads a new hash once, then never again once the server knows it", async () => {
     const { remote, puts, commits } = createFakeRemote()
     const uploaded = new Map<string, Uint8Array>()
@@ -154,7 +180,7 @@ describe("flush", () => {
     expect(commits[1].uploaded).toEqual([])
   })
 
-  test("an empty document flushes nothing", async () => {
+  test("an empty document still commits its structure", async () => {
     const { remote, puts, commits } = createFakeRemote()
     const sync = createCloudSync({
       remote,
@@ -165,7 +191,7 @@ describe("flush", () => {
 
     await sync.flush()
     expect(puts).toEqual([])
-    expect(commits).toEqual([])
+    expect(commits).toHaveLength(1)
   })
 })
 

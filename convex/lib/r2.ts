@@ -35,6 +35,10 @@ export function tileKey(hash: string): string {
   return `tiles/${hash}`
 }
 
+export function previewKey(documentId: string): string {
+  return `previews/${documentId}.png`
+}
+
 const PRESIGN_TTL_SECONDS = 15 * 60
 
 export async function presignTilePut(hash: string): Promise<string> {
@@ -49,6 +53,26 @@ export async function presignTileGet(hash: string): Promise<string> {
   return await getSignedUrl(
     client(),
     new GetObjectCommand({ Bucket: bucket(), Key: tileKey(hash) }),
+    { expiresIn: PRESIGN_TTL_SECONDS }
+  )
+}
+
+export async function presignPreviewPut(documentId: string): Promise<string> {
+  return await getSignedUrl(
+    client(),
+    new PutObjectCommand({
+      Bucket: bucket(),
+      Key: previewKey(documentId),
+      ContentType: "image/png",
+    }),
+    { expiresIn: PRESIGN_TTL_SECONDS }
+  )
+}
+
+export async function presignPreviewGet(documentId: string): Promise<string> {
+  return await getSignedUrl(
+    client(),
+    new GetObjectCommand({ Bucket: bucket(), Key: previewKey(documentId) }),
     { expiresIn: PRESIGN_TTL_SECONDS }
   )
 }

@@ -18,6 +18,7 @@ import { createEngine, type Engine, type RemoteIndex } from "../../engine"
 import type { DocumentStructure } from "../../engine/doc/structure"
 import { createLocalBlobStore } from "../../engine/store/blob-store"
 import { createDocumentStore } from "../../engine/store/document-store"
+import { encodePreview } from "../../engine/store/preview"
 import { encodeTile } from "../../engine/store/tile-codec"
 
 type EngineOptions = Parameters<typeof createEngine>[1]
@@ -78,6 +79,7 @@ declare global {
     createFakeCloud(size: { width: number; height: number }): FakeCloud
     /** How many tiles a document's local manifest names, total, for 18's tests. */
     tileCountFor(documentId: string): Promise<number>
+    encodePreview: typeof encodePreview
   }
 }
 
@@ -85,8 +87,10 @@ window.tileCountFor = async (documentId) => {
   const store = createDocumentStore(createLocalBlobStore())
   const manifest = await store.load(documentId)
   return (
-    manifest?.surfaces.reduce((sum, surface) => sum + surface.tiles.length, 0) ??
-    0
+    manifest?.surfaces.reduce(
+      (sum, surface) => sum + surface.tiles.length,
+      0
+    ) ?? 0
   )
 }
 
@@ -196,6 +200,7 @@ window.createFakeCloud = (size) => {
 }
 
 window.openBlendProbe = openBlendProbe
+window.encodePreview = encodePreview
 
 const canvas = document.querySelector("canvas")!
 window.engine = createEngine(canvas)

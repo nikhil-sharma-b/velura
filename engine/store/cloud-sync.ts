@@ -35,6 +35,10 @@ export interface RemoteIndex {
   presignUploads(
     hashes: readonly string[]
   ): Promise<readonly { hash: string; url: string }[]>
+  /** One mutable object per document; the document row versions its URL. */
+  presignPreviewUpload?(): Promise<string>
+  /** Publishes a preview only after its object upload has succeeded. */
+  commitPreview?(): Promise<void>
   commitFlush(payload: {
     tiles: readonly { surfaceId: string; x: number; y: number; hash: string }[]
     uploaded: readonly { hash: string; size: number }[]
@@ -83,8 +87,10 @@ export function createCloudSync(options: {
   remote: RemoteIndex
   snapshot: () => DocumentSnapshot
   tiles: TileSource
+  /** A flattened, display-transformed PNG. Generated only when a flush runs. */
+  preview?: () => Promise<Uint8Array>
   /** Uploads bytes to a presigned URL. Overridable for tests; defaults to fetch PUT. */
-  put?: (url: string, bytes: Uint8Array) => Promise<void>
+  put?: (url: string, bytes: Uint8Array, contentType?: string) => Promise<void>
   onError?: (error: unknown) => void
   /** Told whenever `status()` may have changed, so a host can re-read it. */
   onStatusChange?: () => void
@@ -121,7 +127,6 @@ export function createCloudSync(options: {
       queued = false
       const document = options.snapshot()
       const refs = allTiles(document.surfaces)
-      if (refs.length === 0) continue
 
       const hashes = [...new Set(refs.map((tile) => tile.hash))]
       const missing = await options.remote.missingHashes(hashes)
@@ -139,6 +144,16 @@ export function createCloudSync(options: {
         )
       }
 
+      const preview =
+        options.preview &&
+        options.remote.presignPreviewUpload &&
+        options.remote.commitPreview
+          ? Promise.all([
+              options.preview(),
+              options.remote.presignPreviewUpload(),
+            ] as const)
+          : undefined
+
       await options.remote.commitFlush({
         tiles: document.surfaces.flatMap((surface) =>
           surface.tiles.map((tile) => ({
@@ -148,11 +163,23 @@ export function createCloudSync(options: {
         ),
         uploaded,
         structure: document.structure,
-        metrics: { putCount, mutationCount: mutationCount + 1 },
+        metrics: {
+          putCount: putCount + (preview ? 1 : 0),
+          mutationCount: mutationCount + (preview ? 2 : 1),
+        },
       })
       mutationCount++
-      // This exact snapshot is now on the server, whether or not a later
-      // round of the loop moves past it.
+      // The index mutation lands before the preview upload (§9.2). Generation
+      // starts alongside tile work, but none of it runs in a drawing frame.
+      if (preview) {
+        const [bytes, url] = await preview
+        await put(url, bytes, "image/png")
+        putCount++
+        await options.remote.commitPreview!()
+        mutationCount++
+      }
+      // This exact snapshot, including its preview where configured, is now
+      // on the server whether or not a later loop round moves past it.
       syncedKey = keyOf(document)
       options.onStatusChange?.()
       // A commit that landed mid-flush is not covered by the snapshot just
@@ -190,11 +217,19 @@ export function createCloudSync(options: {
   }
 }
 
-async function fetchPut(url: string, bytes: Uint8Array): Promise<void> {
-  const response = await fetch(url, { method: "PUT", body: bytes as BodyInit })
+async function fetchPut(
+  url: string,
+  bytes: Uint8Array,
+  contentType?: string
+): Promise<void> {
+  const response = await fetch(url, {
+    method: "PUT",
+    body: bytes as BodyInit,
+    ...(contentType ? { headers: { "Content-Type": contentType } } : {}),
+  })
   if (!response.ok) {
     throw new Error(
-      `Tile upload failed: ${response.status} ${response.statusText}`
+      `Object upload failed: ${response.status} ${response.statusText}`
     )
   }
 }

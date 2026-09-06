@@ -34,6 +34,9 @@ export default defineSchema({
     // session reopening on a cleared cache reads this plus the `tiles` rows
     // to rebuild the document (§9.3).
     structure: v.optional(v.any()),
+    // Incremented after a flush replaces previews/<document>.png.
+    // The value refreshes signed library URLs without storing expiring URLs.
+    previewVersion: v.optional(v.number()),
   })
     // The library lists one owner's documents newest-first; the index carries
     // `updatedAt` so that ordering is the index order, not a post-sort.

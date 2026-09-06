@@ -125,6 +125,7 @@ describe("managing the library", () => {
       width: 1024,
       height: 768,
     })
+    expect(copy.previewVersion).toBeUndefined()
 
     await artist.mutation(api.documents.remove, { documentId })
     const remaining = await artist.query(api.documents.list, {})

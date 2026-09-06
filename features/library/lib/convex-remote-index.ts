@@ -17,6 +17,11 @@ export function createConvexRemoteIndex(
         documentId,
         hashes: [...hashes],
       }),
+    presignPreviewUpload: () =>
+      client.action(api.tilesActions.presignPreviewUpload, { documentId }),
+    commitPreview: async () => {
+      await client.mutation(api.tiles.commitPreview, { documentId })
+    },
     commitFlush: async (payload) => {
       await client.mutation(api.tiles.commitFlush, {
         documentId,
