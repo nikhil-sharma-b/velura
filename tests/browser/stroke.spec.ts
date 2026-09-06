@@ -178,3 +178,37 @@ test("stabilization is reported back and clamped to the usable range", async ({
   })
   expect(reported).toEqual({ set: 0.4, clamped: 1 })
 })
+
+test("hardness sets how sharply the mark ends at its rim", async ({ page }) => {
+  // The brush's own feather, reaching the shader through `setBrush` — the path
+  // the editor's hardness control uses. A hard brush is ink then backdrop in a
+  // pixel or two; a soft one falls off over the width of the falloff.
+  const edgeOf = async (feather: number) => {
+    const origin = await openCanvas(page)
+    await page.evaluate(
+      (width) =>
+        window.engine.dispatch({
+          type: "setBrush",
+          radius: 16,
+          feather: width,
+        }),
+      feather
+    )
+    await page.mouse.move(origin.x + 40, origin.y + 60)
+    await page.mouse.down()
+    await page.mouse.move(origin.x + 160, origin.y + 60, { steps: 20 })
+    await page.mouse.up()
+    const image = await painted(page)
+    // How many rows on the way out of the mark are neither ink nor backdrop.
+    let falling = 0
+    for (let y = 60; y < 60 + 24; y++) {
+      const level = image.data[(y * image.width + 100) * 4]
+      if (level > 16 && level < 240) falling++
+    }
+    return falling
+  }
+
+  const hard = await edgeOf(0)
+  const soft = await edgeOf(8)
+  expect(soft).toBeGreaterThan(hard + 2)
+})

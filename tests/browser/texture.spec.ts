@@ -42,6 +42,8 @@ async function paint(
     grain: string | null
     scale: number
     depth: number
+    /** How much the paper travels with the dab; canvas-fixed when omitted. */
+    movement?: number
   }
 ) {
   await page.evaluate(
@@ -51,9 +53,15 @@ async function paint(
         grain: string | null
         scale: number
         depth: number
+        movement?: number
       }
       window.probe.setTip(settings.tip)
-      window.probe.setGrain(settings.grain, settings.scale, settings.depth)
+      window.probe.setGrain(
+        settings.grain,
+        settings.scale,
+        settings.depth,
+        settings.movement ?? 0
+      )
       window.probe.beginStroke("coverage", 1)
       window.probe.stamp(marks as Dab[])
       window.probe.endStroke()
@@ -110,8 +118,10 @@ function correlation(a: number[], b: number[]): number {
   return covariance / Math.sqrt(varianceA * varianceB)
 }
 
-const PAPER = { tip: null, grain: "paper", scale: 1, depth: 1 }
-const SMOOTH = { tip: null, grain: null, scale: 1, depth: 0 }
+const PAPER = { tip: null, grain: "paper", scale: 1, depth: 1, movement: 0 }
+/** The same paper, carried along by the brush rather than left on the canvas. */
+const CARRIED = { ...PAPER, movement: 1 }
+const SMOOTH = { tip: null, grain: null, scale: 1, depth: 0, movement: 0 }
 
 test("grain stays fixed to the canvas as the brush moves over it", async ({
   page,
@@ -135,6 +145,31 @@ test("grain stays fixed to the canvas as the brush moves over it", async ({
   // And identical under the shift, pixel for pixel.
   for (const [i, value] of first.entries())
     expect(Math.abs(value - second[i])).toBeLessThanOrEqual(2)
+})
+
+test("grain movement carries the tooth along with the brush", async ({
+  page,
+}) => {
+  // The mirror of the test above. At full movement the grain is measured from
+  // the dab rather than from the canvas, so the same two passes — identical
+  // but for where the dabs sit — no longer land the tooth in the same pixels.
+  const probe = await openProbe(page)
+  await paint(page, band(0), CARRIED)
+  const aligned = read(await probe.screenshot())
+
+  await openProbe(page)
+  await paint(page, band(1.5), CARRIED)
+  const offset = read(await probe.screenshot())
+
+  const y = SIZE / 2
+  const first = row(aligned, y, 20, 76)
+  const second = row(offset, y, 20, 76)
+  expect(spread(first)).toBeGreaterThan(20)
+  // Somewhere along the row the two passes disagree by more than the couple of
+  // levels the canvas-fixed paper stayed within.
+  expect(
+    Math.max(...first.map((value, i) => Math.abs(value - second[i])))
+  ).toBeGreaterThan(10)
 })
 
 test("a second pass over the same area finds the grain where it left it", async ({
@@ -195,7 +230,7 @@ test("a tip texture rotates and scales with the stamp", async ({ page }) => {
           angle,
         },
       ],
-      { tip: "graphite", grain: null, scale: 1, depth: 0 }
+      { tip: "graphite", grain: null, scale: 1, depth: 0, movement: 0 }
     )
     const image = read(await probe.screenshot())
     const inked = (x: number, y: number) => image.at(x, y) > 60
@@ -235,7 +270,7 @@ test("the dynamics graph drives how hard the paper bites", async ({ page }) => {
         await window.engine.dispatch({
           type: "setBrush",
           radius: 10,
-          grain: { textureId: "paper", scale: 1, depth: 1 },
+          grain: { textureId: "paper", scale: 1, depth: 1, movement: 0 },
           dynamics: [
             // Heavier pressure flattens the tooth of the paper, so depth
             // falls as force rises: the mapping runs from full grain to none.
@@ -297,7 +332,13 @@ test("golden: a textured stroke, and a second pass over the same area", async ({
   page,
 }) => {
   const probe = await openProbe(page)
-  const graphite = { tip: "graphite", grain: "paper", scale: 1, depth: 0.8 }
+  const graphite = {
+    tip: "graphite",
+    grain: "paper",
+    scale: 1,
+    depth: 0.8,
+    movement: 0,
+  }
   const diagonal = (offset: number): Dab[] =>
     Array.from({ length: 40 }, (_, i) => ({
       x: 14 + i * 1.7 + offset,

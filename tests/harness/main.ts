@@ -48,8 +48,16 @@ type StrokeBufferProbe = {
   ): void
   /** The tip texture, by id, or null for the procedural disc. */
   setTip(id: string | null): void
-  /** The paper, by id, with the tile scale and how hard it bites. */
-  setGrain(id: string | null, scale: number, depth: number): void
+  /**
+   * The paper, by id, with the tile scale, how hard it bites, and how much of
+   * it travels with the brush instead of staying on the canvas.
+   */
+  setGrain(
+    id: string | null,
+    scale: number,
+    depth: number,
+    movement?: number
+  ): void
   stamp(dabs: Dab[]): void
   discardStamps(count: number): boolean
   endStroke(): void
@@ -294,8 +302,8 @@ window.openStrokeBufferProbe = async (width, height) => {
     beginStroke: (accumulation, opacity, mode = "paint") =>
       renderer.beginStroke({ accumulation, opacity, mode }),
     setTip: (id) => renderer.setTip(id ? texture(id) : null),
-    setGrain: (id, scale, depth) =>
-      renderer.setGrain(id ? texture(id) : null, scale, depth),
+    setGrain: (id, scale, depth, movement = 0) =>
+      renderer.setGrain(id ? texture(id) : null, { scale, depth, movement }),
     stamp(dabs) {
       dabs.forEach((dab, i) => {
         instances.set(

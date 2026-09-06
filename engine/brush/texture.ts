@@ -34,6 +34,18 @@ export const CHARCOAL_TIP = "charcoal"
 /** The paper the canvas is made of, as grain. */
 export const PAPER_GRAIN = "paper"
 
+/**
+ * The ids every install has, without building the pixels behind them. The
+ * editor (D32) offers these before any texture has been uploaded, and a
+ * snapshot that had to generate a quarter-megapixel of paper to say what a
+ * brush may name would be a strange thing to pay for at module load.
+ */
+export const BUILTIN_TEXTURE_IDS: readonly string[] = Object.freeze([
+  GRAPHITE_TIP,
+  CHARCOAL_TIP,
+  PAPER_GRAIN,
+])
+
 /** Big enough to read as a surface, small enough to stay a cheap upload. */
 const TIP_SIZE = 128
 const GRAIN_SIZE = 256

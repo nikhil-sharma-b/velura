@@ -171,6 +171,18 @@ const LIMITS: Readonly<
   scatter: [0, 16],
 })
 
+/**
+ * What a mapping's range may ask for, per target.
+ *
+ * The same numbers the evaluator clamps to, exported because an editor has to
+ * offer exactly them: a range control built on its own guesses would either
+ * withhold values the graph accepts or offer ones it silently takes back. A
+ * turn is cyclic rather than clamped, so its range is the whole of it.
+ */
+export function targetLimit(target: DynamicsTarget): readonly [number, number] {
+  return isCyclic(target) ? [0, 1] : LIMITS[target]
+}
+
 function applyLimit(target: DynamicsTarget, value: number): number {
   if (!Number.isFinite(value)) return NEUTRAL_STAMP_PARAMS[target]
   if (isCyclic(target)) return value - Math.floor(value)
@@ -226,6 +238,18 @@ const SOURCES: ReadonlySet<string> = new Set<DynamicsSource>([
 const OFFSET_TARGETS: ReadonlySet<DynamicsTarget> = new Set(
   TARGETS.filter((target) => NEUTRAL_STAMP_PARAMS[target] === 0)
 )
+
+/**
+ * Whether a target is an offset rather than a scale.
+ *
+ * Exported because it is not only the validator's business: an editor has to
+ * know it too, to offer `add` where a multiply would be refused, and the two
+ * answering differently is exactly the drift that would let an artist build a
+ * mapping the engine then throws out.
+ */
+export function isOffsetTarget(target: DynamicsTarget): boolean {
+  return OFFSET_TARGETS.has(target)
+}
 
 const MIXES: ReadonlySet<string> = new Set<DynamicsMix>([
   "multiply",

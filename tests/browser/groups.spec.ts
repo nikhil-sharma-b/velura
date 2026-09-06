@@ -128,7 +128,7 @@ test("a painted mask hides only part of a layer", async ({ page }) => {
       type: "setBrush",
       radius: 3,
       tipTextureId: "graphite",
-      grain: { textureId: "paper", scale: 1, depth: 0.8 },
+      grain: { textureId: "paper", scale: 1, depth: 0.8, movement: 0 },
     })
     await window.engine.dispatch({ type: "addMask", id })
     await window.engine.dispatch({ type: "selectMask", id })

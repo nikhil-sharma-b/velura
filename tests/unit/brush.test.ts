@@ -19,7 +19,7 @@ const PENCIL: Brush = {
     spacing: 0.1,
     tipTextureId: "graphite",
   },
-  grain: { textureId: "paper", scale: 1.5, depth: 0.7 },
+  grain: { textureId: "paper", scale: 1.5, depth: 0.7, movement: 0 },
   rendering: { accumulation: "buildup", opacity: 0.9, flow: 0.3 },
   dynamics: [
     {

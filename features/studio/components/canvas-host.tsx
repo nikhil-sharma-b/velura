@@ -16,6 +16,7 @@ import {
   MagnifyingGlassPlusIcon,
   PaintBrushIcon,
   PaletteIcon,
+  SlidersIcon,
   SidebarSimpleIcon,
 } from "@phosphor-icons/react"
 import {
@@ -27,8 +28,7 @@ import {
 } from "react"
 
 import { Button } from "@/components/ui/button"
-import { Label } from "@/components/ui/label"
-import { Slider } from "@/components/ui/slider"
+import type { Brush } from "@/engine/brush/brush"
 import {
   createEngine,
   type Engine,
@@ -43,6 +43,9 @@ import { ColorPanel } from "@/features/color/components/color-panel"
 import { createLocalPaletteStore } from "@/features/color/lib/local-palette-store"
 import type { PaletteStore } from "@/features/color/lib/palette-store"
 
+import { brushCommand, isBrushEdited } from "../lib/brush-draft"
+import { BrushEditor } from "./brush-editor"
+import { SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
 import { VersionPanel } from "./version-panel"
 
@@ -148,6 +151,15 @@ export function CanvasHost({
   const [panelsOpen, setPanelsOpen] = useState(true)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [colorOpen, setColorOpen] = useState(false)
+  const [brushOpen, setBrushOpen] = useState(false)
+  /**
+   * The brush as it was last saved. The engine holds the *working* brush — so
+   * an edit paints immediately, which is the whole point of a live editor —
+   * and this is what it is measured against, so nothing the artist tries is
+   * kept until they say so. The brush library (D25) is what will make this
+   * outlive the session.
+   */
+  const [savedBrush, setSavedBrush] = useState<Brush | null>(null)
   const [paintNotice, setPaintNotice] = useState<string | null>(null)
   // Created once per host: the store owns the subscription the picker reads
   // through, so a new one each render would resubscribe on every keystroke.
@@ -262,6 +274,12 @@ export function CanvasHost({
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [engine])
+
+  // The engine starts from the same brush the initial snapshot describes, so
+  // the baseline needs no effect to establish: an unsaved session is measured
+  // against the default brush, exactly as the engine's own is.
+  const saved = savedBrush ?? INITIAL_SNAPSHOT.brush
+  const brushEdited = isBrushEdited(saved, snapshot.brush)
 
   const unavailable = snapshot.status === "unavailable"
   const failed = snapshot.status === "failed"
@@ -380,6 +398,16 @@ export function CanvasHost({
                   is visible without opening anything. */}
               <PaletteIcon style={{ color: snapshot.color.hex }} />
             </Button>
+            <Button
+              variant={brushOpen ? "default" : "ghost"}
+              size="icon"
+              aria-label="Brush editor"
+              aria-pressed={brushOpen}
+              onClick={() => setBrushOpen((open) => !open)}
+              className="rounded-lg"
+            >
+              <SlidersIcon />
+            </Button>
             {/* Restore points only exist for a document with a cloud copy
                 behind it (§9.4), so an anonymous local document has no ladder
                 to offer and is not shown a door to one. */}
@@ -396,6 +424,19 @@ export function CanvasHost({
               </Button>
             )}
           </div>
+
+          {engine && (
+            <BrushEditor
+              open={brushOpen}
+              brush={snapshot.brush}
+              textures={snapshot.textures}
+              edited={brushEdited}
+              onOpenChange={setBrushOpen}
+              onEdit={(next) => void engine.dispatch(brushCommand(next))}
+              onSave={() => setSavedBrush(snapshot.brush)}
+              onRevert={() => void engine.dispatch(brushCommand(saved))}
+            />
+          )}
 
           {engine && remote && historyOpen && (
             <VersionPanel
@@ -428,23 +469,40 @@ export function CanvasHost({
           </div>
 
           <div className="absolute bottom-3 left-3 w-56 space-y-2 rounded-xl border bg-background/88 p-3 shadow-lg backdrop-blur-xl">
-            <div className="flex items-baseline justify-between">
-              <Label id="smoothing-label">Smoothing</Label>
-              <span className="text-xs text-muted-foreground tabular-nums">
-                {Math.round(snapshot.stabilization * 100)}%
-              </span>
-            </div>
-            <Slider
-              aria-labelledby="smoothing-label"
+            {/* Size and opacity are the two a hand reaches for mid-piece, so
+                they stay on the canvas: the editor is for shaping a brush,
+                not for the adjustment made between one stroke and the next. */}
+            <SliderSetting
+              label="Size"
+              value={snapshot.brush.shape.radius}
+              min={0.5}
+              max={200}
+              step={0.5}
+              format={`${(snapshot.brush.shape.radius * 2).toFixed(1)} px`}
+              onChange={(radius) =>
+                void engine?.dispatch({ type: "setBrush", radius })
+              }
+            />
+            <SliderSetting
+              label="Opacity"
+              value={snapshot.brush.rendering.opacity}
               min={0}
-              max={100}
-              step={1}
-              value={[Math.round(snapshot.stabilization * 100)]}
-              onValueChange={([percent]) =>
-                void engine?.dispatch({
-                  type: "setStabilization",
-                  strength: percent / 100,
-                })
+              max={1}
+              step={0.01}
+              format={`${Math.round(snapshot.brush.rendering.opacity * 100)}%`}
+              onChange={(opacity) =>
+                void engine?.dispatch({ type: "setBrush", opacity })
+              }
+            />
+            <SliderSetting
+              label="Smoothing"
+              value={snapshot.stabilization}
+              min={0}
+              max={1}
+              step={0.01}
+              format={`${Math.round(snapshot.stabilization * 100)}%`}
+              onChange={(strength) =>
+                void engine?.dispatch({ type: "setStabilization", strength })
               }
             />
           </div>

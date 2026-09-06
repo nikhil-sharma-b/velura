@@ -1,3 +1,4 @@
+import type { BrushGrain } from "../brush/brush"
 import type { Accumulation } from "../brush/round-brush"
 import type { GrayscaleTexture } from "../brush/texture"
 import {
@@ -56,13 +57,16 @@ const DOC_SIZE_OFFSET = 128
 const STROKE_MODE_OFFSET = 136
 /**
  * vec2 viewport, feather and the tip flag, one vec4 of ink, then the grain's
- * scale and depth padded out to the 16-byte alignment a uniform requires.
+ * scale, depth and movement padded out to the 16-byte alignment a uniform
+ * requires.
  */
 const STAMP_UNIFORM_BYTES = 48
 /** Where the tip flag sits in that buffer: after the viewport and feather. */
 const USE_TIP_OFFSET = 12
-/** Where the grain's scale and depth sit: after the ink. */
+/** Where the grain's scale, depth and movement sit: after the ink. */
 const GRAIN_OFFSET = 32
+/** Where the rim falloff sits: after the viewport. */
+const FEATHER_OFFSET = 8
 /** Greyscale, because a tip is coverage and grain is how much gets through. */
 const TEXTURE_FORMAT: GPUTextureFormat = "r8unorm"
 /** Five f32 composite controls, padded to uniform-struct alignment. */
@@ -132,11 +136,16 @@ export interface Renderer {
    */
   setTip(texture: GrayscaleTexture | null): void
   /**
-   * Sets the paper. `scale` sizes one tile of the texture against its own
-   * pixels and `depth` is how hard it bites, both fixed for a stroke; the
-   * dynamics graph varies the bite per dab on top of this.
+   * Sets how soft the procedural dab's rim is, in pixels of falloff inside it.
+   * A brush's own hardness (D23), so it outlives a resize as the ink does.
    */
-  setGrain(texture: GrayscaleTexture | null, scale: number, depth: number): void
+  setFeather(feather: number): void
+  /**
+   * Sets the paper: the texture, and the settings a brush carries for it
+   * (`BrushGrain` without the id the pixels were resolved from). All of them
+   * are fixed for a stroke; the dynamics graph varies the bite per dab on top.
+   */
+  setGrain(texture: GrayscaleTexture | null, grain: GrainSettings): void
   /** Sets the premultiplied linear-light ink used by subsequent dabs. */
   setInk(color: LinearColor): void
   /**
@@ -172,6 +181,14 @@ export interface Renderer {
   render(view: GPUTextureView): void
   destroy(): void
 }
+
+/**
+ * How the paper is laid down, once the brush's texture id has been resolved to
+ * pixels. The three travel together everywhere — brush, engine, renderer and
+ * shader — so they travel as one value rather than as a widening list of
+ * positional numbers.
+ */
+export type GrainSettings = Omit<BrushGrain, "textureId">
 
 /**
  * Owns the layers' linear-light textures, the two flattened caches around the
@@ -473,6 +490,10 @@ export function createRenderer(
   })
   let tipTexture = createWhiteTexture()
   let grainTexture = createWhiteTexture()
+  // The brush's own, not the renderer's: it is set once from the options and
+  // then owned by whatever brush is in the hand, so a resize must rewrite the
+  // current value rather than the one this renderer was created with.
+  let feather = options.feather
 
   const stampUniform = device.createBuffer({
     size: STAMP_UNIFORM_BYTES,
@@ -484,7 +505,7 @@ export function createRenderer(
   device.queue.writeBuffer(
     stampUniform,
     0,
-    new Float32Array([1, 1, options.feather, 0, ...options.ink, 1, 0, 0, 0])
+    new Float32Array([1, 1, feather, 0, ...options.ink, 1, 0, 0, 0])
   )
   const stampInstances = device.createBuffer({
     size: MAX_STAMPS_PER_DRAW * STAMP_STRIDE * 4,
@@ -1042,7 +1063,7 @@ export function createRenderer(
       device.queue.writeBuffer(
         stampUniform,
         0,
-        new Float32Array([width, height, options.feather])
+        new Float32Array([width, height, feather])
       )
       refreshStampBindGroup()
       // A fresh texture is already transparent, but the previous stroke's
@@ -1284,11 +1305,23 @@ export function createRenderer(
       )
       refreshStampBindGroup()
     },
-    setGrain(texture, scale, depth) {
+    setFeather(next) {
+      if (!Number.isFinite(next) || next < 0)
+        throw new Error("Brush feather must be a finite width of zero or more.")
+      feather = next
+      device.queue.writeBuffer(
+        stampUniform,
+        FEATHER_OFFSET,
+        new Float32Array([feather])
+      )
+    },
+    setGrain(texture, { scale, depth, movement }) {
       if (!Number.isFinite(scale) || scale <= 0)
         throw new Error("Grain scale must be positive.")
       if (!Number.isFinite(depth) || depth < 0 || depth > 1)
         throw new Error("Grain depth must be a finite value in [0, 1].")
+      if (!Number.isFinite(movement) || movement < 0 || movement > 1)
+        throw new Error("Grain movement must be a finite value in [0, 1].")
       grainTexture.destroy()
       grainTexture = texture ? uploadTexture(texture) : createWhiteTexture()
       device.queue.writeBuffer(
@@ -1296,7 +1329,7 @@ export function createRenderer(
         GRAIN_OFFSET,
         // A brush with no grain texture keeps a depth of zero whatever it
         // asked for: white paper bites nothing, and saying so is cheaper.
-        new Float32Array([scale, texture ? depth : 0])
+        new Float32Array([scale, texture ? depth : 0, movement])
       )
       refreshStampBindGroup()
     },

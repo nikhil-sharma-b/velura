@@ -186,7 +186,7 @@ test("the eraser uses brush shape, texture, grain, and pressure dynamics", async
     ...shaped,
     dynamics,
     tipTextureId: "graphite",
-    grain: { textureId: "paper", scale: 1, depth: 0.8 },
+    grain: { textureId: "paper", scale: 1, depth: 0.8, movement: 0 },
   })
   expect(narrow.changed).not.toBe(round.changed)
   expect(pressureSized.changed).not.toBe(narrow.changed)

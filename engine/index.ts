@@ -18,7 +18,7 @@ import {
   BRUSH_FEATHER,
 } from "./brush/round-brush"
 import { createStampContextTracker } from "./brush/stamp-context"
-import { createTextureLibrary } from "./brush/texture"
+import { BUILTIN_TEXTURE_IDS, createTextureLibrary } from "./brush/texture"
 import {
   chooseOutputColorSpace,
   decodeTransfer,
@@ -177,6 +177,8 @@ export type EngineCommand =
       opacity?: number
       flow?: number
       radius?: number
+      /** Softness of the dab edge, in pixels of falloff inside the rim. */
+      feather?: number
       /** Stamp spacing as a fraction of the dab diameter. */
       spacing?: number
       /** Width of the tip against its length, in (0, 1]. */
@@ -259,6 +261,12 @@ export type EngineSnapshot = Readonly<{
   color: EngineColor
   /** The brush in the hand: serialisable data, never code (D23). */
   brush: Brush
+  /**
+   * Every texture id a brush may name (D24): the built-ins, plus whatever has
+   * been imported. The editor offers these, so a brush cannot be pointed at a
+   * texture the engine would then refuse to resolve.
+   */
+  textures: readonly string[]
   /** The stack, bottom to top. Pixels are not in here; the panel reads this. */
   layers: readonly LayerSummary[]
   activeLayerId: string
@@ -320,6 +328,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
     hex: "#f4f4f5",
   }),
   brush: Object.freeze(cloneBrush(DEFAULT_BRUSH)),
+  textures: BUILTIN_TEXTURE_IDS,
   // A host that has not started an engine has no document to describe.
   layers: Object.freeze([]),
   activeLayerId: "",
@@ -432,6 +441,12 @@ function validateGrain(grain: BrushGrain): void {
     throw new Error("Grain scale must be positive.")
   if (!Number.isFinite(grain.depth) || grain.depth < 0 || grain.depth > 1)
     throw new Error("Grain depth must be a finite value in [0, 1].")
+  if (
+    !Number.isFinite(grain.movement) ||
+    grain.movement < 0 ||
+    grain.movement > 1
+  )
+    throw new Error("Grain movement must be a finite value in [0, 1].")
 }
 
 /**
@@ -532,6 +547,9 @@ export function createEngine(
   // Ids in a brush are resolved here, so the brush stays data and the pixels
   // stay an asset (D24). Imported textures register into this same library.
   const textures = createTextureLibrary()
+  // Published rather than assumed: the snapshot's default is the built-in set,
+  // and this is what keeps it true of the library this engine actually holds.
+  snapshot = { ...snapshot, textures: Object.freeze(textures.ids()) }
   const params: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   // Evaluated once per stroke rather than per dab, so it is kept apart from
   // `params` instead of borrowing it and being overwritten by the first dab.
@@ -877,17 +895,23 @@ export function createEngine(
   }
 
   /**
-   * Hands the renderer the pixels behind the brush's texture ids. Called when
-   * the brush changes and when a renderer is created, since a renderer starts
-   * with no textures and the brush may already name some.
+   * Hands the renderer the brush's surface settings: the pixels behind its
+   * texture ids, and the rim falloff the procedural dab is drawn with. Called
+   * when the brush changes and when a renderer is created, since a renderer
+   * starts with no textures and the brush may already name some.
    */
   function applyBrushTextures() {
     if (!renderer) return
     const grain = brush.grain
+    // Feather is a uniform write and nothing more, so it is applied outside
+    // the texture guard below: an editor's hardness slider must not be made
+    // to re-upload the paper, and it must not be cached behind a key whose
+    // other terms have not moved either.
+    renderer.setFeather(brush.shape.feather)
     // Uploading a texture and rebuilding a bind group is real work, and
     // `setBrush` is what a dragged slider calls: a radius that changed must
     // not re-upload the paper the brush was already drawing on.
-    const key = `${brush.shape.tipTextureId ?? ""}|${grain?.textureId ?? ""}|${grain?.scale ?? 1}|${grain?.depth ?? 0}`
+    const key = `${brush.shape.tipTextureId ?? ""}|${grain?.textureId ?? ""}|${grain?.scale ?? 1}|${grain?.depth ?? 0}|${grain?.movement ?? 0}`
     if (key === appliedTextures) return
     appliedTextures = key
     renderer.setTip(
@@ -895,11 +919,11 @@ export function createEngine(
         ? (textures.get(brush.shape.tipTextureId) ?? null)
         : null
     )
-    renderer.setGrain(
-      grain ? (textures.get(grain.textureId) ?? null) : null,
-      grain?.scale ?? 1,
-      grain?.depth ?? 0
-    )
+    renderer.setGrain(grain ? (textures.get(grain.textureId) ?? null) : null, {
+      scale: grain?.scale ?? 1,
+      depth: grain?.depth ?? 0,
+      movement: grain?.movement ?? 0,
+    })
   }
 
   function flushStamps() {
@@ -1608,6 +1632,13 @@ export function createEngine(
           for (const value of [command.radius, command.spacing])
             if (value !== undefined && (!Number.isFinite(value) || value <= 0))
               throw new Error("Brush radius and spacing must be positive.")
+          // Zero is a hard edge, which is a brush an artist may well want, so
+          // feather is the one width here that is allowed to be nothing.
+          if (
+            command.feather !== undefined &&
+            (!Number.isFinite(command.feather) || command.feather < 0)
+          )
+            throw new Error("Brush feather must be zero or more.")
           if (
             command.roundness !== undefined &&
             (!Number.isFinite(command.roundness) ||
@@ -1640,13 +1671,10 @@ export function createEngine(
             shape: {
               ...brush.shape,
               radius: command.radius ?? brush.shape.radius,
+              feather: command.feather ?? brush.shape.feather,
               spacing: command.spacing ?? brush.shape.spacing,
               roundness: command.roundness ?? brush.shape.roundness,
               angle: command.angle ?? brush.shape.angle,
-              tipTextureId:
-                command.tipTextureId === undefined
-                  ? brush.shape.tipTextureId
-                  : (command.tipTextureId ?? undefined),
             },
             rendering: {
               accumulation:
@@ -1660,8 +1688,17 @@ export function createEngine(
               ? structuredClone(command.dynamics)
               : brush.dynamics,
           }
-          // Absent rather than present-and-null, so a brush stays exactly the
-          // JSON it round-trips as (D23).
+          // Absent rather than present-and-null — and absent rather than
+          // present-and-undefined, which is a key that survives a
+          // `structuredClone` into every copy of the brush the snapshot
+          // publishes. Both would stop a brush being exactly the JSON it
+          // round-trips as (D23).
+          const tip =
+            command.tipTextureId === undefined
+              ? brush.shape.tipTextureId
+              : (command.tipTextureId ?? undefined)
+          if (tip) next.shape.tipTextureId = tip
+          else delete next.shape.tipTextureId
           if (grain) next.grain = { ...grain }
           else delete next.grain
           // Spacing is fixed for the life of a resampler, so a brush that

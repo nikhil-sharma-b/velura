@@ -60,6 +60,14 @@ export type BrushGrain = {
   scale: number
   /** How strongly the paper bites, in [0, 1]. Zero is a smooth surface. */
   depth: number
+  /**
+   * How much the paper travels with the brush, in [0, 1] (§7.1). Zero is
+   * paper: the grain is fixed in canvas space, so the same pixel is bitten
+   * the same way however the brush passed over it. One rolls the texture
+   * along with the dab, as a crayon carries its own tooth. Between them the
+   * grain drifts, which is what dry media that shed do.
+   */
+  movement: number
 }
 
 export type BrushRendering = {
