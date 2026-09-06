@@ -13,6 +13,7 @@ import screen from "./blend/screen.wgsl"
 import normal from "./blend/normal.wgsl"
 import multiply from "./blend/multiply.wgsl"
 import composite from "./blend/composite.wgsl"
+import stroke from "./blend/stroke.wgsl"
 import surface from "./blend/surface.wgsl"
 import { preprocess } from "./preprocess"
 
@@ -36,5 +37,9 @@ export const blendModes = {
 export type BlendMode = keyof typeof blendModes
 
 export function blendShader(mode: BlendMode, template = surface): string {
-  return preprocess(template, { mode: blendModes[mode].source, composite })
+  return preprocess(template, {
+    mode: blendModes[mode].source,
+    composite,
+    stroke,
+  })
 }

@@ -21,7 +21,9 @@ import { createStampContextTracker } from "./brush/stamp-context"
 import { createTextureLibrary } from "./brush/texture"
 import {
   chooseOutputColorSpace,
+  decodeTransfer,
   type OutputColorSpace,
+  srgbToWorking,
 } from "./color/display-transform"
 import {
   activeLayer,
@@ -88,6 +90,17 @@ import {
 
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
 
+export type PaintTool = "brush" | "eraser"
+
+/** Display-encoded colour sampled from the composited canvas. */
+export type EngineColor = Readonly<{
+  red: number
+  green: number
+  blue: number
+  alpha: number
+  colorSpace: OutputColorSpace
+}>
+
 /**
  * Two frames of the fastest plausible pen (240 Hz) plus slack. Overrunning
  * drops the oldest samples, which is the right loss: the stroke's head matters
@@ -103,6 +116,7 @@ export type EngineCommand =
   | { type: "resize"; width: number; height: number; devicePixelRatio: number }
   /** Stabilizer strength in [0, 1]; zero restores the raw unfiltered path. */
   | { type: "setStabilization"; strength: number }
+  | { type: "setTool"; tool: PaintTool }
   /**
    * The brush. Every field is optional and unnamed ones are left alone, so a
    * control that owns one property need not know the rest of the brush.
@@ -189,6 +203,10 @@ export type EngineSnapshot = Readonly<{
   outputColorSpace: OutputColorSpace
   /** Stabilizer strength in [0, 1]. Structural state, so React may see it. */
   stabilization: number
+  /** The persistent mark-making tool; Alt/Option sampling never changes it. */
+  tool: PaintTool
+  /** Current display-encoded ink, updated by the eyedropper. */
+  color: EngineColor
   /** The brush in the hand: serialisable data, never code (D23). */
   brush: Brush
   /** The stack, bottom to top. Pixels are not in here; the panel reads this. */
@@ -229,6 +247,14 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   height: 1,
   outputColorSpace: "srgb",
   stabilization: DEFAULT_STABILIZATION,
+  tool: "brush",
+  color: Object.freeze({
+    red: 244 / 255,
+    green: 244 / 255,
+    blue: 245 / 255,
+    alpha: 1,
+    colorSpace: "srgb",
+  }),
   brush: Object.freeze(cloneBrush(DEFAULT_BRUSH)),
   // A host that has not started an engine has no document to describe.
   layers: Object.freeze([]),
@@ -276,6 +302,8 @@ export interface Engine {
   subscribe(listener: () => void): () => void
   /** Explicit asynchronous readback for tests and future export; never per frame. */
   readPixels(): Promise<RenderedPixels>
+  /** Samples one composited canvas pixel and makes it the current ink. */
+  sampleColor(x: number, y: number): Promise<EngineColor>
   /**
    * Watches the cost of every frame of drawing, for the benchmark (D30). Null
    * detaches. Attaching one adds a promise per frame, so it is off by default
@@ -377,6 +405,8 @@ export function createEngine(
   // Mirrors the snapshot so the per-dab path reads plain fields off one object
   // rather than a frozen snapshot that is replaced on every publish.
   let brush = cloneBrush(DEFAULT_BRUSH)
+  let tool: PaintTool = "brush"
+  let ink = [...BRUSH_COLOR] as [number, number, number, number]
   // Jitter is seeded per stroke, so a `random` mapping differs between marks
   // while any one mark stays reproducible — which is what lets a stroke be
   // replayed from the log identically (D26).
@@ -859,6 +889,7 @@ export function createEngine(
     renderer?.beginStroke({
       accumulation: brush.rendering.accumulation,
       opacity: brush.rendering.opacity * strokeParams.opacity,
+      mode: tool === "eraser" ? "erase" : "paint",
     })
     stroking = true
     opening = true
@@ -1006,6 +1037,7 @@ export function createEngine(
       // A new renderer holds no textures, whatever the brush was told before.
       appliedTextures = undefined
       applyBrushTextures()
+      target.setInk(ink)
       publish({ outputColorSpace: colorSpace })
       resize()
       render()
@@ -1020,6 +1052,9 @@ export function createEngine(
         detachSampler = attachPointerSampler(canvas, samples, {
           begin: beginStroke,
           end: endStroke,
+          sample: (x, y) => {
+            void sampleColor(x, y).catch(fail)
+          },
         })
         // Navigation is input too, and it belongs to the same canvas. Holding
         // it here rather than in the host is what keeps the pen, the present
@@ -1042,6 +1077,59 @@ export function createEngine(
       }
     } catch (error) {
       fail(error)
+    }
+  }
+
+  /**
+   * Reads one presented pixel. Eyedropping is an explicit interaction, so its
+   * one-pixel asynchronous readback is outside the frame-critical paint path.
+   */
+  async function sampleColor(x: number, y: number): Promise<EngineColor> {
+    if (snapshot.status !== "ready" || !device)
+      throw new Error("The graphics device is not ready.")
+    const pixelX = Math.min(snapshot.width - 1, Math.max(0, Math.floor(x)))
+    const pixelY = Math.min(snapshot.height - 1, Math.max(0, Math.floor(y)))
+    const acquired = device
+    // WebGPU requires 256-byte row alignment even for a single RGBA8 texel.
+    const buffer = acquired.createBuffer({
+      size: 256,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    })
+    try {
+      const texture = render()
+      const encoder = acquired.createCommandEncoder()
+      encoder.copyTextureToBuffer(
+        { texture, origin: { x: pixelX, y: pixelY } },
+        { buffer, bytesPerRow: 256 },
+        { width: 1, height: 1 }
+      )
+      acquired.queue.submit([encoder.finish()])
+      await buffer.mapAsync(GPUMapMode.READ)
+      const mapped = new Uint8Array(buffer.getMappedRange(), 0, 4)
+      const red = (format === "bgra8unorm" ? mapped[2] : mapped[0]) / 255
+      const green = mapped[1] / 255
+      const blue = (format === "bgra8unorm" ? mapped[0] : mapped[2]) / 255
+      const alpha = mapped[3] / 255
+      const color = Object.freeze({
+        red,
+        green,
+        blue,
+        alpha,
+        colorSpace: snapshot.outputColorSpace,
+      })
+      const decoded = [red, green, blue].map(decodeTransfer) as [
+        number,
+        number,
+        number,
+      ]
+      const working =
+        snapshot.outputColorSpace === "srgb" ? srgbToWorking(decoded) : decoded
+      ink = [working[0] * alpha, working[1] * alpha, working[2] * alpha, alpha]
+      renderer?.setInk(ink)
+      publish({ color })
+      return color
+    } finally {
+      buffer.destroy()
     }
   }
 
@@ -1338,6 +1426,10 @@ export function createEngine(
           publish({ stabilization: stabilizer.strength() })
           break
         }
+        case "setTool":
+          tool = command.tool
+          publish({ tool })
+          break
       }
     },
     observeFrames(observer) {
@@ -1393,6 +1485,7 @@ export function createEngine(
         if (snapshot.status === "ready") render()
       }
     },
+    sampleColor,
     dispose() {
       if (disposed) return
       disposed = true

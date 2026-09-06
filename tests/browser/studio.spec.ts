@@ -96,6 +96,22 @@ test("the layer panel manages the stack and explains locked painting", async ({
   await expect(layers).toBeVisible()
 })
 
+test("the tool rail switches between brush and eraser", async ({ page }) => {
+  await page.goto("/")
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  const brush = page.getByRole("button", { name: "Brush tool" })
+  const eraser = page.getByRole("button", { name: "Eraser tool" })
+  await expect(brush).toHaveAttribute("aria-pressed", "true")
+  await eraser.click()
+  await expect(eraser).toHaveAttribute("aria-pressed", "true")
+  await expect(brush).toHaveAttribute("aria-pressed", "false")
+  await brush.click()
+  await expect(brush).toHaveAttribute("aria-pressed", "true")
+})
+
 test("the layer panel groups layers and manages a reversible mask", async ({
   page,
 }) => {

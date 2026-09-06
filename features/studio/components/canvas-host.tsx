@@ -197,17 +197,25 @@ export function CanvasHost() {
           </div>
           <div className="absolute top-1/2 left-3 flex -translate-y-1/2 flex-col gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl">
             <Button
+              variant={snapshot.tool === "brush" ? "default" : "ghost"}
               size="icon"
               aria-label="Brush tool"
-              aria-pressed="true"
+              aria-pressed={snapshot.tool === "brush"}
+              onClick={() =>
+                void engine?.dispatch({ type: "setTool", tool: "brush" })
+              }
               className="rounded-lg"
             >
               <PaintBrushIcon />
             </Button>
             <Button
-              variant="ghost"
+              variant={snapshot.tool === "eraser" ? "default" : "ghost"}
               size="icon"
               aria-label="Eraser tool"
+              aria-pressed={snapshot.tool === "eraser"}
+              onClick={() =>
+                void engine?.dispatch({ type: "setTool", tool: "eraser" })
+              }
               className="rounded-lg"
             >
               <EraserIcon />

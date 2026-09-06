@@ -19,7 +19,7 @@ import {
   type CompositePlan,
   type CompositeItem,
 } from "../doc/document"
-import type { TiledLayer } from "../doc/tiled-layer"
+import type { LinearColor, TiledLayer } from "../doc/tiled-layer"
 import type { TiledMask } from "../doc/tiled-mask"
 import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
@@ -38,7 +38,7 @@ const BYTES_PER_TEXEL = TILE_CHANNELS * 2
 /**
  * mat3x3 occupies three 16-byte columns, then one vec4 of background, then the
  * four floats the present pass needs to know about the stack it is showing,
- * then the view (D28) as a second mat3x3 and the document's size.
+ * then the view (D28) as a second mat3x3, the document's size, and stroke mode.
  */
 const UNIFORM_BYTES = 144
 /** Where the stroke opacity sits in that buffer: after matrix and background. */
@@ -52,6 +52,8 @@ const ACTIVE_OPACITY_OFFSET = 68
 const VIEW_OFFSET = 80
 /** The document's size in pixels, which the view is inverted against. */
 const DOC_SIZE_OFFSET = 128
+/** Whether the in-flight stroke removes coverage instead of adding it. */
+const STROKE_MODE_OFFSET = 136
 /**
  * vec2 viewport, feather and the tip flag, one vec4 of ink, then the grain's
  * scale and depth padded out to the 16-byte alignment a uniform requires.
@@ -63,8 +65,8 @@ const USE_TIP_OFFSET = 12
 const GRAIN_OFFSET = 32
 /** Greyscale, because a tip is coverage and grain is how much gets through. */
 const TEXTURE_FORMAT: GPUTextureFormat = "r8unorm"
-/** One f32 of stroke opacity, padded to the minimum uniform binding size. */
-const COMPOSITE_UNIFORM_BYTES = 16
+/** Five f32 composite controls, padded to uniform-struct alignment. */
+const COMPOSITE_UNIFORM_BYTES = 32
 /**
  * Dabs of one stroke the buffer can replay. A long stroke at a quarter-tip
  * spacing is a few thousand; past this the stroke still draws, but discarding
@@ -77,6 +79,8 @@ export const MAX_STAMPS_PER_STROKE = 1 << 16
  * once, and the caller draws early rather than overrunning it.
  */
 export const MAX_STAMPS_PER_DRAW = 2048
+
+export type StrokeMode = "paint" | "erase"
 
 export interface Renderer {
   /** (Re)allocates every render target; layers must be uploaded again after. */
@@ -105,7 +109,11 @@ export interface Renderer {
    * Opens a stroke: empties the stroke buffer and fixes how this stroke's dabs
    * combine and what the finished mark's opacity will be.
    */
-  beginStroke(stroke: { accumulation: Accumulation; opacity: number }): void
+  beginStroke(stroke: {
+    accumulation: Accumulation
+    opacity: number
+    mode: StrokeMode
+  }): void
   /**
    * Draws `count` dabs from `instances` into the stroke buffer, packed as
    * centre x, centre y, radius and opacity. The caller owns the array, reuses
@@ -129,6 +137,8 @@ export interface Renderer {
    * dynamics graph varies the bite per dab on top of this.
    */
   setGrain(texture: GrayscaleTexture | null, scale: number, depth: number): void
+  /** Sets the premultiplied linear-light ink used by subsequent dabs. */
+  setInk(color: LinearColor): void
   /**
    * Composites the stroke buffer into the active layer, once, at stroke
    * opacity. Returns the region the mark landed in, which is the region undo
@@ -357,8 +367,25 @@ export function createRenderer(
   const compositeModule = device.createShaderModule({
     code: surfaceCompositeShader,
   })
+  const compositeBindGroupLayout = device.createBindGroupLayout({
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      },
+    ],
+  })
+  const compositePipelineLayout = device.createPipelineLayout({
+    bindGroupLayouts: [compositeBindGroupLayout],
+  })
   const compositePipeline = device.createRenderPipeline({
-    layout: "auto",
+    layout: compositePipelineLayout,
     vertex: { module: compositeModule, entryPoint: "vertexMain" },
     fragment: {
       module: compositeModule,
@@ -370,6 +397,26 @@ export function createRenderer(
           blend: {
             color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
             alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+          },
+        },
+      ],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  const erasePipeline = device.createRenderPipeline({
+    layout: compositePipelineLayout,
+    vertex: { module: compositeModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: compositeModule,
+      entryPoint: "fragmentMain",
+      targets: [
+        {
+          format: LAYER_FORMAT,
+          // Premultiplied destination-out: colour and alpha lose the same
+          // coverage, so a later composite cannot reveal a fringe.
+          blend: {
+            color: { srcFactor: "zero", dstFactor: "one-minus-src-alpha" },
+            alpha: { srcFactor: "zero", dstFactor: "one-minus-src-alpha" },
           },
         },
       ],
@@ -543,6 +590,7 @@ export function createRenderer(
   }
   /** Applied when the stroke is composited, and shown in flight at the same value. */
   let strokeOpacity = 1
+  let strokeMode: StrokeMode = "paint"
 
   const SURFACE_USAGE =
     GPUTextureUsage.TEXTURE_BINDING |
@@ -612,7 +660,8 @@ export function createRenderer(
     source: Surface,
     destination: Surface,
     opacity: number,
-    region?: PixelRect
+    region?: PixelRect,
+    selectedPipeline = compositePipeline
   ) {
     // The uniform is written per composite rather than per surface: these
     // passes are rare, and one buffer is cheaper than a bind group each.
@@ -627,7 +676,7 @@ export function createRenderer(
         { view: destination.view, loadOp: "load", storeOp: "store" },
       ],
     })
-    pass.setPipeline(compositePipeline)
+    pass.setPipeline(selectedPipeline)
     pass.setBindGroup(0, source.readBindGroup)
     if (region)
       pass.setScissorRect(region.x, region.y, region.width, region.height)
@@ -700,6 +749,7 @@ export function createRenderer(
         : 0
     compositeValues[2] = maskId && surfaces.has(maskId) ? 1 : 0
     compositeValues[3] = clipBase ? 1 : 0
+    compositeValues[4] = strokeMode === "erase" ? 1 : 0
     device.queue.writeBuffer(compositeUniform, 0, compositeValues)
     const pass = encoder.beginRenderPass({
       colorAttachments: [
@@ -887,6 +937,15 @@ export function createRenderer(
       uniform,
       STROKE_OPACITY_OFFSET,
       new Float32Array([opacity])
+    )
+  }
+
+  function writeStrokeMode(mode: StrokeMode) {
+    strokeMode = mode
+    device.queue.writeBuffer(
+      uniform,
+      STROKE_MODE_OFFSET,
+      new Float32Array([mode === "erase" ? 1 : 0])
     )
   }
 
@@ -1205,6 +1264,7 @@ export function createRenderer(
       log.reset()
       accumulation = options.accumulation
       writeStrokeOpacity(options.opacity)
+      writeStrokeMode(options.mode)
     },
     stamp(instances, count) {
       if (count <= 0) return
@@ -1240,6 +1300,16 @@ export function createRenderer(
       )
       refreshStampBindGroup()
     },
+    setInk(color) {
+      if (
+        color.length !== 4 ||
+        color.some(
+          (channel) => !Number.isFinite(channel) || channel < 0 || channel > 1
+        )
+      )
+        throw new Error("Ink must be a finite linear colour in [0, 1].")
+      device.queue.writeBuffer(stampUniform, 16, new Float32Array(color))
+    },
     discardStamps(count) {
       // Coverage blending forgets what a dab covered, so the tail comes off by
       // replaying the stroke without it — which needs the whole stroke logged.
@@ -1267,12 +1337,19 @@ export function createRenderer(
       resetPainted()
       if (!region) return null
       // The mark goes into the layer at the stroke's opacity, once (D27).
-      compositeSurface(stroke, paintTarget, strokeOpacity, region)
+      compositeSurface(
+        stroke,
+        paintTarget,
+        strokeOpacity,
+        region,
+        strokeMode === "erase" ? erasePipeline : compositePipeline
+      )
       // The mark now lives in the layer's texture; the buffer must not show it
       // a second time through the present pass.
       clearStroke()
       // Nothing between strokes should depend on the last stroke's opacity.
       writeStrokeOpacity(1)
+      writeStrokeMode("paint")
       return region
     },
     async readTiles(id, coords) {
