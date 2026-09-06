@@ -20,6 +20,7 @@ import { prunableVersions } from "../../convex/lib/retention"
 import { createLocalBlobStore } from "../../engine/store/blob-store"
 import { createDocumentStore } from "../../engine/store/document-store"
 import { encodePreview } from "../../engine/store/preview"
+import { encodeExportImage } from "../../engine/store/export-image"
 import { encodeTile } from "../../engine/store/tile-codec"
 
 type EngineOptions = Parameters<typeof createEngine>[1]
@@ -89,6 +90,7 @@ declare global {
     /** How many tiles a document's local manifest names, total, for 18's tests. */
     tileCountFor(documentId: string): Promise<number>
     encodePreview: typeof encodePreview
+    encodeExportImage: typeof encodeExportImage
   }
 }
 
@@ -102,6 +104,8 @@ window.tileCountFor = async (documentId) => {
     ) ?? 0
   )
 }
+
+window.encodeExportImage = encodeExportImage
 
 type FakeTileRow = { surfaceId: string; x: number; y: number; hash: string }
 

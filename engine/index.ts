@@ -93,6 +93,7 @@ import {
   type FlushScheduler,
 } from "./store/flush-scheduler"
 import { encodePreview } from "./store/preview"
+import { decodeVeluraFile, encodeVeluraFile } from "./store/velura-file"
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
 import {
@@ -119,6 +120,10 @@ import {
 } from "./view/view-transform"
 
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
+export {
+  encodeExportImage,
+  type ImageExportOptions,
+} from "./store/export-image"
 export type {
   Brush,
   BrushGrain,
@@ -408,6 +413,10 @@ export interface Engine {
   subscribe(listener: () => void): () => void
   /** Explicit asynchronous readback for tests and future export; never per frame. */
   readPixels(): Promise<RenderedPixels>
+  /** A real ZIP backup containing the complete layer tree and every exact tile. */
+  exportDocument(): Promise<Uint8Array>
+  /** Validates a backup in full before replacing the open document. */
+  importDocument(bytes: Uint8Array): Promise<void>
   /** Samples one composited canvas pixel and makes it the current ink. */
   sampleColor(x: number, y: number): Promise<EngineColor>
   /**
@@ -2072,14 +2081,22 @@ export function createEngine(
         await buffer.mapAsync(GPUMapMode.READ)
         const mapped = new Uint8Array(buffer.getMappedRange())
         const data = new Uint8Array(width * height * 4)
-        for (let y = 0; y < height; y++)
+        for (let y = 0; y < height; y++) {
           data.set(
             mapped.subarray(y * bytesPerRow, y * bytesPerRow + width * 4),
             y * width * 4
           )
+          if (y % 32 === 31)
+            await new Promise<void>((resolve) => setTimeout(resolve, 0))
+        }
         if (format === "bgra8unorm") {
-          for (let i = 0; i < data.length; i += 4)
-            [data[i], data[i + 2]] = [data[i + 2], data[i]]
+          for (let y = 0; y < height; y++) {
+            const end = (y + 1) * width * 4
+            for (let i = y * width * 4; i < end; i += 4)
+              [data[i], data[i + 2]] = [data[i + 2], data[i]]
+            if (y % 32 === 31)
+              await new Promise<void>((resolve) => setTimeout(resolve, 0))
+          }
         }
         return { width, height, data, colorSpace: snapshot.outputColorSpace }
       } finally {
@@ -2087,6 +2104,75 @@ export function createEngine(
         output.destroy()
         // Also restore after an early failure before the normal restoration.
         applyView()
+      }
+    },
+    async exportDocument() {
+      if (snapshot.status !== "ready" || !history)
+        throw new Error("The graphics device is not ready.")
+      await history.settle()
+      const manifest = {
+        version: 1 as const,
+        id: options.persistence?.documentId ?? "exported-document",
+        name: "Untitled artwork",
+        width: snapshot.width,
+        height: snapshot.height,
+        structure: captureStructure(requireDocument()),
+        surfaces: history.tileIndex(),
+        updatedAt: Date.now(),
+      }
+      return encodeVeluraFile(manifest, (hash) => history!.store.get(hash))
+    },
+    async importDocument(bytes) {
+      if (snapshot.status !== "ready" || !renderer || !history)
+        throw new Error("The graphics device is not ready.")
+      const imported = await decodeVeluraFile(bytes)
+      if (disposed) return
+      const previous = doc
+      if (!previous) throw new Error("The graphics device is not ready.")
+      for (const id of structureSurfaceIds(captureStructure(previous)))
+        renderer.releaseLayer(id)
+      history.clear()
+      doc = createDocument({
+        width: imported.manifest.width,
+        height: imported.manifest.height,
+      })
+      for (const id of structureSurfaceIds(captureStructure(doc)))
+        renderer.releaseLayer(id)
+      reserveIds(structureSurfaceIds(imported.manifest.structure))
+      restoreStructure(doc, imported.manifest.structure)
+      canvas.width = imported.manifest.width
+      canvas.height = imported.manifest.height
+      renderer.resize(imported.manifest.width, imported.manifest.height)
+      const size = {
+        width: imported.manifest.width,
+        height: imported.manifest.height,
+      }
+      for (const surface of imported.manifest.surfaces) {
+        const tiles = surface.tiles.map((ref) => ({
+          x: ref.x,
+          y: ref.y,
+          texels: imported.tiles.get(ref.hash)!,
+        }))
+        renderer.writeTiles(surface.surfaceId, tiles)
+        history.recordUpload(surface.surfaceId, tiles, size)
+      }
+      await history.settle()
+      uploadLayers()
+      syncComposition()
+      view = DEFAULT_VIEW
+      publish({
+        width: imported.manifest.width,
+        height: imported.manifest.height,
+        view,
+        ...describeLayers(doc),
+      })
+      applyView()
+      render()
+      restored = true
+      await persistence?.save()
+      if (cloudSync) {
+        flushScheduler?.flushNow()
+        await cloudSync.settle()
       }
     },
     sampleColor,

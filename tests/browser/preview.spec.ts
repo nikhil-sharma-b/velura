@@ -54,3 +54,41 @@ test("the preview PNG preserves the canvas display colour", async ({
   expect(comparison.ink.preview).toEqual(comparison.ink.captured)
   expect(comparison.backdrop.preview).toEqual(comparison.backdrop.captured)
 })
+
+test("a full-size PNG matches the canvas capture and a JPEG can be reduced", async ({
+  page,
+}) => {
+  await openCanvas(page)
+  const result = await page.evaluate(async () => {
+    const captured = await window.engine.readPixels()
+    const png = await window.encodeExportImage(captured, { format: "png" })
+    const pngBitmap = await createImageBitmap(png)
+    const canvas = new OffscreenCanvas(pngBitmap.width, pngBitmap.height)
+    const context = canvas.getContext("2d")!
+    context.drawImage(pngBitmap, 0, 0)
+    const decoded = context.getImageData(
+      0,
+      0,
+      pngBitmap.width,
+      pngBitmap.height
+    ).data
+    const jpeg = await window.encodeExportImage(captured, {
+      format: "jpeg",
+      quality: 0.6,
+      maxEdge: 80,
+    })
+    const jpegBitmap = await createImageBitmap(jpeg)
+    return {
+      captured: Array.from(captured.data),
+      decoded: Array.from(decoded),
+      pngSize: [pngBitmap.width, pngBitmap.height],
+      jpegSize: [jpegBitmap.width, jpegBitmap.height],
+      jpegType: jpeg.type,
+    }
+  })
+
+  expect(result.pngSize).toEqual([200, 120])
+  expect(result.decoded).toEqual(result.captured)
+  expect(result.jpegSize).toEqual([80, 48])
+  expect(result.jpegType).toBe("image/jpeg")
+})

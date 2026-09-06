@@ -56,6 +56,7 @@ import { BrushLibrary } from "./brush-library"
 import { SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
 import { VersionPanel } from "./version-panel"
+import { ExportDialog } from "./export-dialog"
 
 /** One press of a zoom key or button, which is a comfortable step by eye. */
 const ZOOM_STEP = 1.25
@@ -606,6 +607,7 @@ export function CanvasHost({
           )}
 
           <div className="absolute top-3 left-3 flex gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl">
+            {engine && <ExportDialog engine={engine} />}
             <Button
               variant="ghost"
               size="icon"
