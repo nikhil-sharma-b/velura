@@ -4,23 +4,24 @@ import {
   Authenticated,
   AuthLoading,
   Unauthenticated,
+  useConvex,
   useQuery,
 } from "convex/react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useEffect } from "react"
+import { useEffect, useMemo } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
+import { createConvexRemoteIndex } from "@/features/library/lib/convex-remote-index"
 import { CanvasHost } from "@/features/studio/components/canvas-host"
 
 /**
  * Opens a document. The row supplies identity and access — it must exist and
  * belong to the signed-in artist before the engine is mounted — and the id it
- * supplies is what the pixels are stored locally under (§9.2). Uploading those
- * tiles to the cloud is ticket 17; until then the local copy is the document.
+ * supplies is what the pixels are stored locally under, and synced to, (§9.2).
  */
 export function DocumentWorkspace({ documentId }: { documentId: string }) {
   return (
@@ -44,9 +45,14 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
   // A document belonging to someone else, or a deleted one, throws in the query
   // rather than resolving to null, so the not-found branch is the error branch.
   const document = useQuery(api.documents.get, { documentId })
+  const convex = useConvex()
+  const remote = useMemo(
+    () => createConvexRemoteIndex(convex, documentId),
+    [convex, documentId]
+  )
 
   if (document === undefined) return <CentredSpinner />
-  return <CanvasHost documentId={documentId} />
+  return <CanvasHost documentId={documentId} remote={remote} />
 }
 
 function RedirectToSignIn() {

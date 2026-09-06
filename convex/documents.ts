@@ -29,7 +29,7 @@ async function requireUserId(
  * each mutation, so "not yours" and "not there" answer identically — a stranger
  * cannot use the error to learn that a document id exists.
  */
-async function requireOwnDocument(
+export async function requireOwnDocument(
   ctx: QueryCtx | MutationCtx,
   documentId: Id<"documents">
 ): Promise<Doc<"documents">> {

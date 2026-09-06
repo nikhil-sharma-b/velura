@@ -70,6 +70,17 @@ import {
   createDocumentPersistence,
   type DocumentPersistence,
 } from "./store/local-persistence"
+import {
+  createCloudSync,
+  hydrateFromRemote,
+  type CloudSync,
+  type RemoteIndex,
+  type SyncMetrics,
+} from "./store/cloud-sync"
+import {
+  createFlushScheduler,
+  type FlushScheduler,
+} from "./store/flush-scheduler"
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
 import {
@@ -96,6 +107,10 @@ import {
 } from "./view/view-transform"
 
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
+export type { RemoteIndex, SyncMetrics } from "./store/cloud-sync"
+
+/** §9.2's flush trigger: how long a document sits idle before an unforced upload. */
+const DEFAULT_CLOUD_IDLE_MS = 30_000
 
 export type PaintTool = "brush" | "eraser"
 
@@ -329,11 +344,14 @@ export interface Engine {
     spilledBytes: number
   }
   /**
-   * Writes the document to local storage now and waits for it. Strokes already
+   * Writes the document to local storage now, and — where `cloud` is
+   * configured — flushes it to R2 too, and waits for both. Strokes already
    * save themselves; this is for a host that wants the tab-hide or explicit
    * save to be a promise it can await. A no-op with no persistence configured.
    */
   save(): Promise<void>
+  /** Cumulative R2/Convex operation counts for this session, or null with no cloud sync. */
+  cloudMetrics(): SyncMetrics | null
   dispose(): void
 }
 
@@ -372,10 +390,27 @@ export type PersistenceOptions = {
   onError?: (error: unknown) => void
 }
 
+/**
+ * Where a document's tiles go beyond this device (§9.2). Only meaningful
+ * alongside `persistence` — cloud sync uploads what local storage already
+ * wrote, it never becomes the source of truth on its own. Painting with no
+ * `cloud` configured is unaffected: the local copy is still the document.
+ */
+export type CloudOptions = {
+  remote: RemoteIndex
+  /** Idle time after a commit before an unforced flush fires. Default 30s. */
+  idleMs?: number
+  onError?: (error: unknown) => void
+}
+
 /** Canvas attachment is a lifecycle operation; commands contain only values. */
 export function createEngine(
   canvas: HTMLCanvasElement | OffscreenCanvas,
-  options: { history?: HistoryBudget; persistence?: PersistenceOptions } = {}
+  options: {
+    history?: HistoryBudget
+    persistence?: PersistenceOptions
+    cloud?: CloudOptions
+  } = {}
 ): Engine {
   let snapshot: EngineSnapshot = INITIAL_SNAPSHOT
   const listeners = new Set<() => void>()
@@ -399,6 +434,8 @@ export function createEngine(
   let history: DocumentHistory | undefined
   let persistence: DocumentPersistence | undefined
   let documents: DocumentStore | undefined
+  let cloudSync: CloudSync | undefined
+  let flushScheduler: FlushScheduler | undefined
   /**
    * Whether this session may write to local storage. False until the stored
    * document has been looked for — the empty canvas a session opens on must
@@ -487,6 +524,9 @@ export function createEngine(
     history?.clear()
     history = undefined
     persistence = undefined
+    flushScheduler?.dispose()
+    flushScheduler = undefined
+    cloudSync = undefined
     documents = undefined
     doc = undefined
     context?.unconfigure()
@@ -845,7 +885,18 @@ export function createEngine(
     const document = doc
     const store = documents
     if (!target || !past || !document || !store) return true
-    const stored = await persistence?.load()
+    let stored = await persistence?.load()
+    // Nothing on this device: a different machine may hold the document, in
+    // which case the cloud is the only copy left to read it back from (§9.3).
+    if (!stored && options.cloud && options.persistence) {
+      await hydrateFromRemote({
+        documentId: options.persistence.documentId,
+        remote: options.cloud.remote,
+        local: store,
+      }).catch((error) => (options.cloud?.onError ?? fail)(error))
+      if (disposed) return true
+      stored = await persistence?.load()
+    }
     if (!stored || disposed) return true
     // The seeded canvas this session opened on is not part of the document
     // that was stored, and neither is the upload that recorded it.
@@ -1144,7 +1195,11 @@ export function createEngine(
         // operation, an undo — ends here, which is why the write to disk hangs
         // off the commit rather than off the pen (§9.2).
         onCommit: () => {
-          if (restored) void persistence?.save()
+          if (!restored) return
+          void persistence?.save()
+          // Scheduling is a timer reset, not a network call, so this never
+          // costs a stroke a frame (§9.2's "off the interactive path").
+          flushScheduler?.touch()
         },
       })
       if (local && store) {
@@ -1163,6 +1218,25 @@ export function createEngine(
           }),
           onError: local.onError ?? fail,
         })
+
+        if (options.cloud) {
+          const cloud = options.cloud
+          cloudSync = createCloudSync({
+            remote: cloud.remote,
+            // Same tile source and tile index as local persistence: the
+            // upload set is exactly what disk already holds (D14).
+            tiles: (hash) => past.store.get(hash),
+            snapshot: () => ({
+              structure: captureStructure(requireDocument()),
+              surfaces: past.tileIndex(),
+            }),
+            onError: cloud.onError ?? fail,
+          })
+          flushScheduler = createFlushScheduler({
+            flush: () => void cloudSync?.flush(),
+            idleMs: cloud.idleMs ?? DEFAULT_CLOUD_IDLE_MS,
+          })
+        }
       }
       // A new renderer holds no textures, whatever the brush was told before.
       appliedTextures = undefined
@@ -1578,7 +1652,12 @@ export function createEngine(
       if (!restored) return
       await history?.settle()
       await persistence?.save()
+      if (cloudSync) {
+        flushScheduler?.flushNow()
+        await cloudSync.settle()
+      }
     },
+    cloudMetrics: () => cloudSync?.metrics() ?? null,
     historyUsage: () => ({
       steps: history?.stepsBack() ?? 0,
       heldBytes: history?.bytes() ?? 0,

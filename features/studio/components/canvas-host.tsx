@@ -27,6 +27,7 @@ import {
   type EngineCommand,
   INITIAL_SNAPSHOT,
   type LayerSummary,
+  type RemoteIndex,
 } from "@/engine"
 
 import { LayerPanel } from "./layer-panel"
@@ -96,7 +97,14 @@ function findLayer(
  * under its id — the cloud copy is made from that, never instead of it — so a
  * host that omits one gets a session whose pixels do not outlive the tab.
  */
-export function CanvasHost({ documentId }: { documentId?: string }) {
+export function CanvasHost({
+  documentId,
+  remote,
+}: {
+  documentId?: string
+  /** The cloud-sync backend, when this document has an owned Convex row to sync to. */
+  remote?: RemoteIndex
+}) {
   const [engine, setEngine] = useState<Engine | null>(null)
   const [panelsOpen, setPanelsOpen] = useState(true)
   const [paintNotice, setPaintNotice] = useState<string | null>(null)
@@ -112,7 +120,12 @@ export function CanvasHost({ documentId }: { documentId?: string }) {
       if (!canvas) return
       const attached = createEngine(
         canvas,
-        documentId ? { persistence: { documentId } } : {}
+        documentId
+          ? {
+              persistence: { documentId },
+              ...(remote ? { cloud: { remote } } : {}),
+            }
+          : {}
       )
       setEngine(attached)
       const resize = () => {
@@ -146,12 +159,19 @@ export function CanvasHost({ documentId }: { documentId?: string }) {
         attached.dispose()
       }
     },
-    [documentId]
+    [documentId, remote]
   )
 
   // Completed strokes are already on disk; this is for the save that a commit
   // queued and the tab is about to outrun. `pagehide` covers the close and the
   // navigation, `visibilitychange` the switch away that never comes back.
+  //
+  // The cloud flush this also triggers is a multi-round-trip upload, which a
+  // browser tearing down the page can outrun before it settles — there is no
+  // `sendBeacon`-shaped way to do a presigned multi-tile PUT plus a signed
+  // mutation call. That is not data loss: local storage already has the
+  // stroke, the flush is replication, and the next session's own flush (idle,
+  // its own tab-hide, or a future open) picks up whatever this one missed.
   useEffect(() => {
     if (!engine) return
     const flush = () => {
