@@ -34,7 +34,8 @@ function slider(page: Page, name: string) {
 }
 
 /**
- * The diameter the size readout shows, in the "12.0 px" form it is written in.
+ * The diameter the size field holds, in the "12.0" form it is written in — the
+ * unit sits beside the field, so the value alone is what is compared.
  *
  * Read rather than assumed: the studio opens on a brush from the library (25),
  * so what size it starts at is a property of that brush and not of this spec.
@@ -44,7 +45,18 @@ async function diameter(page: Page, offsetPixels = 0): Promise<string> {
   const radius = Number(
     await slider(page, "Size").getAttribute("aria-valuenow")
   )
-  return `${(radius * 2 + offsetPixels).toFixed(1)} px`
+  return `${(radius * 2 + offsetPixels).toFixed(1)}`
+}
+
+/**
+ * The typed field of a setting, as against its slider.
+ *
+ * By attribute rather than by role: the editor is a modal, so while it is open
+ * the canvas's own copy of a setting sits inside an aria-hidden background that
+ * a role query will not see — and both copies are exactly what is under test.
+ */
+function field(page: Page, name: string) {
+  return page.locator(`input[aria-label="${name}"]`)
 }
 
 test("size and opacity stay adjustable without opening the editor", async ({
@@ -57,11 +69,25 @@ test("size and opacity stay adjustable without opening the editor", async ({
   const wider = await diameter(page, 1)
   await size.focus()
   await size.press("ArrowRight")
-  await expect(page.getByText(wider)).toBeVisible()
+  await expect(field(page, "Size")).toHaveValue(wider)
   const opacity = slider(page, "Opacity")
   await opacity.focus()
   await opacity.press("ArrowLeft")
-  await expect(page.getByText("99%")).toBeVisible()
+  await expect(field(page, "Opacity")).toHaveValue("99")
+
+  // And typing into the field is the other half of the same control: a size
+  // asked for exactly, rather than arrived at by dragging.
+  await field(page, "Size").fill("48")
+  await field(page, "Size").press("Enter")
+  await expect(slider(page, "Size")).toHaveAttribute("aria-valuenow", "24")
+
+  // Arrows step it by the same amount the slider moves by — a whole pixel of
+  // diameter — and shift takes ten at a time.
+  await field(page, "Size").press("ArrowUp")
+  await expect(field(page, "Size")).toHaveValue("49.0")
+  await field(page, "Size").press("Shift+ArrowDown")
+  await expect(field(page, "Size")).toHaveValue("39.0")
+  await expect(slider(page, "Size")).toHaveAttribute("aria-valuenow", "19.5")
 })
 
 test("the editor covers shape, grain, rendering and dynamics", async ({
@@ -152,7 +178,10 @@ test("an edit paints immediately and is kept only when it is saved", async ({
   const size = dialog.getByRole("slider", { name: "Size", exact: true })
   await size.focus()
   await size.press("ArrowRight")
-  await expect(page.getByText(wider)).toHaveCount(2)
+  // Two: the editor's field and the canvas's, over the one brush.
+  await expect(field(page, "Size")).toHaveCount(2)
+  for (const index of [0, 1])
+    await expect(field(page, "Size").nth(index)).toHaveValue(wider)
 
   const hardness = dialog.getByRole("slider", { name: "Hardness" })
   await hardness.focus()
@@ -163,7 +192,8 @@ test("an edit paints immediately and is kept only when it is saved", async ({
   // well as in the dialog, since they are the same brush.
   await dialog.getByRole("button", { name: "Revert" }).click()
   await expect(dialog.getByText("No changes")).toBeVisible()
-  await expect(page.getByText(started)).toHaveCount(2)
+  for (const index of [0, 1])
+    await expect(field(page, "Size").nth(index)).toHaveValue(started)
 
   await hardness.focus()
   await hardness.press("ArrowLeft")

@@ -41,6 +41,8 @@ import {
   type Engine,
   type EngineCommand,
   INITIAL_SNAPSHOT,
+  MAX_ZOOM,
+  MIN_ZOOM,
   type LayerSummary,
   type RemoteIndex,
   type SyncStatus,
@@ -61,7 +63,7 @@ import { TOOL_CURSOR } from "../lib/tool-cursor"
 import { BrushIcon, EraserToolIcon } from "./brush-icon"
 import { BrushLibrary } from "./brush-library"
 import { IconButton } from "./icon-button"
-import { SliderSetting } from "./slider-setting"
+import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
 import { VersionPanel } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
@@ -818,7 +820,9 @@ export function CanvasHost({
                 min={0.5}
                 max={200}
                 step={0.5}
-                format={`${(activeTip.shape.radius * 2).toFixed(1)} px`}
+                scale={2}
+                decimals={1}
+                unit="px"
                 onChange={(radius) =>
                   void engine?.dispatch({
                     type: snapshot.tool === "eraser" ? "setEraser" : "setBrush",
@@ -832,7 +836,8 @@ export function CanvasHost({
                 min={0}
                 max={1}
                 step={0.01}
-                format={`${Math.round(activeTip.rendering.opacity * 100)}%`}
+                scale={100}
+                unit="%"
                 onChange={(opacity) =>
                   void engine?.dispatch({
                     type: snapshot.tool === "eraser" ? "setEraser" : "setBrush",
@@ -846,7 +851,8 @@ export function CanvasHost({
                 min={0}
                 max={1}
                 step={0.01}
-                format={`${Math.round(snapshot.stabilization * 100)}%`}
+                scale={100}
+                unit="%"
                 onChange={(strength) =>
                   void engine?.dispatch({ type: "setStabilization", strength })
                 }
@@ -857,13 +863,25 @@ export function CanvasHost({
               aria-label="View controls"
               className={`absolute top-1/2 flex -translate-y-1/2 flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl ${panelsOpen ? "right-[19.5rem]" : "right-3"}`}
             >
-              <span
-                aria-label="Zoom level"
-                aria-live="polite"
-                className="w-8 text-center text-xs text-muted-foreground tabular-nums"
-              >
-                {Math.round(snapshot.view.zoom * 100)}%
-              </span>
+              {/* Typed as a percentage, dispatched as a factor: the view only
+                knows how to scale by a ratio, and the ratio that lands on the
+                asked-for zoom is that zoom over the current one. */}
+              <NumberField
+                label="Zoom level"
+                value={snapshot.view.zoom * 100}
+                min={MIN_ZOOM * 100}
+                max={MAX_ZOOM * 100}
+                step={1}
+                decimals={0}
+                unit="%"
+                className="w-10"
+                onCommit={(percent) =>
+                  void engine?.dispatch({
+                    type: "zoomView",
+                    factor: percent / 100 / snapshot.view.zoom,
+                  })
+                }
+              />
               {viewActions.map(([label, icon, action]) => (
                 <Tooltip key={label}>
                   <TooltipTrigger asChild>

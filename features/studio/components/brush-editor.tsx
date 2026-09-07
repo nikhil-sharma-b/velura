@@ -410,7 +410,9 @@ export function BrushEditor({
               min={0.5}
               max={200}
               step={0.5}
-              format={`${(brush.shape.radius * 2).toFixed(1)} px`}
+              scale={2}
+              decimals={1}
+              unit="px"
               onChange={(radius) => apply({ shape: { radius } })}
             />
             <SliderSetting
@@ -419,7 +421,8 @@ export function BrushEditor({
               min={0}
               max={1}
               step={0.01}
-              format={`${Math.round(hardnessOf(brush.shape.feather) * 100)}%`}
+              scale={100}
+              unit="%"
               onChange={(hardness) =>
                 apply({ shape: { feather: featherOf(hardness) } })
               }
@@ -430,7 +433,8 @@ export function BrushEditor({
               min={0.05}
               max={1}
               step={0.01}
-              format={`${Math.round(brush.shape.roundness * 100)}%`}
+              scale={100}
+              unit="%"
               onChange={(roundness) => apply({ shape: { roundness } })}
             />
             <SliderSetting
@@ -439,7 +443,8 @@ export function BrushEditor({
               min={0}
               max={1}
               step={1 / 360}
-              format={`${Math.round(brush.shape.angle * 360)}°`}
+              scale={360}
+              unit="°"
               onChange={(angle) => apply({ shape: { angle } })}
             />
             <SliderSetting
@@ -448,7 +453,8 @@ export function BrushEditor({
               min={0.02}
               max={2}
               step={0.01}
-              format={`${Math.round(brush.shape.spacing * 100)}% of tip`}
+              scale={100}
+              unit="% of tip"
               onChange={(spacing) => apply({ shape: { spacing } })}
             />
           </TabsContent>
@@ -494,7 +500,8 @@ export function BrushEditor({
                   min={0.25}
                   max={8}
                   step={0.05}
-                  format={`${grain.scale.toFixed(2)}×`}
+                  decimals={2}
+                  unit="×"
                   onChange={(scale) => apply({ grain: { ...grain, scale } })}
                 />
                 <SliderSetting
@@ -503,7 +510,8 @@ export function BrushEditor({
                   min={0}
                   max={1}
                   step={0.01}
-                  format={`${Math.round(grain.depth * 100)}%`}
+                  scale={100}
+                  unit="%"
                   onChange={(depth) => apply({ grain: { ...grain, depth } })}
                 />
                 <SliderSetting
@@ -512,7 +520,8 @@ export function BrushEditor({
                   min={0}
                   max={1}
                   step={0.01}
-                  format={`${Math.round(grain.movement * 100)}%`}
+                  scale={100}
+                  unit="%"
                   onChange={(movement) =>
                     apply({ grain: { ...grain, movement } })
                   }
@@ -562,7 +571,8 @@ export function BrushEditor({
               min={0}
               max={1}
               step={0.01}
-              format={`${Math.round(brush.rendering.opacity * 100)}%`}
+              scale={100}
+              unit="%"
               onChange={(opacity) => apply({ rendering: { opacity } })}
             />
             <SliderSetting
@@ -571,7 +581,8 @@ export function BrushEditor({
               min={0}
               max={1}
               step={0.01}
-              format={`${Math.round(brush.rendering.flow * 100)}%`}
+              scale={100}
+              unit="%"
               onChange={(flow) => apply({ rendering: { flow } })}
             />
           </TabsContent>

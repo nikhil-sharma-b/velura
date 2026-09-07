@@ -121,6 +121,7 @@ import {
   zoomView,
 } from "./view/view-transform"
 
+export { MAX_ZOOM, MIN_ZOOM } from "./view/view-transform"
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
 export {
   encodeExportImage,

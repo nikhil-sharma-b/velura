@@ -323,23 +323,45 @@ test("the canvas is navigated by button and by keystroke", async ({ page }) => {
     "ready"
   )
   const zoom = page.getByLabel("Zoom level")
-  await expect(zoom).toHaveText("64%")
+  await expect(zoom).toHaveValue("64")
 
   await page.getByRole("button", { name: "Zoom in" }).click()
-  await expect(zoom).toHaveText("80%")
+  await expect(zoom).toHaveValue("80")
   await page.getByRole("button", { name: "Zoom out" }).click()
-  await expect(zoom).toHaveText("64%")
+  await expect(zoom).toHaveValue("64")
 
   // Unmodified, because the hand reaching for these is not holding the pen.
   await page.keyboard.press("=")
-  await expect(zoom).toHaveText("80%")
+  await expect(zoom).toHaveValue("80")
   // Fitting is the overview; the document is the window's own size, so it
   // comes back a little under a hundred percent with its margin.
   await page.keyboard.press("0")
-  await expect(zoom).toHaveText("96%")
+  await expect(zoom).toHaveValue("96")
   // And shift is the way back to square.
   await page.keyboard.press("Shift+0")
-  await expect(zoom).toHaveText("64%")
+  await expect(zoom).toHaveValue("64")
+
+  // A zoom can also be asked for outright. Committed exactly once: the view
+  // only scales by a ratio, so an entry applied twice would overshoot by that
+  // ratio again rather than simply repeating itself.
+  await zoom.fill("80")
+  await zoom.press("Enter")
+  await expect(zoom).toHaveValue("80")
+  // Arrows step the field: one per cent, ten with shift held.
+  await zoom.press("ArrowUp")
+  await expect(zoom).toHaveValue("81")
+  await zoom.press("Shift+ArrowDown")
+  await expect(zoom).toHaveValue("71")
+  await zoom.press("ArrowDown")
+  await expect(zoom).toHaveValue("70")
+
+  // Past what the view will do is held at the limit, not refused.
+  await zoom.fill("9000")
+  await zoom.press("Enter")
+  await expect(zoom).toHaveValue("6400")
+  await zoom.fill("64")
+  await zoom.press("Enter")
+  await expect(zoom).toHaveValue("64")
 
   const flip = page.getByRole("button", { name: "Flip canvas horizontally" })
   await expect(flip).toHaveAttribute("aria-pressed", "false")
@@ -362,7 +384,7 @@ test("the canvas is navigated by button and by keystroke", async ({ page }) => {
   // one action returns all of it.
   await page.keyboard.press("]")
   await page.getByRole("button", { name: "Fit canvas to window" }).click()
-  await expect(zoom).not.toHaveText("100%")
+  await expect(zoom).not.toHaveValue("100")
   await page.getByRole("button", { name: "Reset view" }).click()
-  await expect(zoom).toHaveText("64%")
+  await expect(zoom).toHaveValue("64")
 })
