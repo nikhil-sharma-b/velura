@@ -1,11 +1,11 @@
 /**
  * Navigation input: the trackpad, the mouse and the fingers (D28).
  *
- * The pen belongs to the stroke pipeline and is captured elsewhere. What is
- * here is everything that moves the *view* rather than the paint: the wheel,
- * a trackpad pinch (which the platform reports as a wheel with the control
- * modifier), a two-finger pan, pinch and twist on a touch screen, and a drag
- * with the middle or right mouse button, which are the mouse's own pans.
+ * The pen tip belongs to the stroke pipeline and is captured elsewhere. What
+ * is here is everything that moves the *view* rather than the paint: the
+ * wheel, a trackpad pinch (which the platform reports as a wheel with the
+ * control modifier), a two-finger pan, pinch and twist on a touch screen, and
+ * a drag with a mouse navigation button or the pen's barrel button.
  *
  * The maths is separated from the listeners so that what a gesture means can
  * be tested without a browser, which is the part that is easy to get subtly
@@ -47,6 +47,18 @@ const PAGE_HEIGHT = 400
 const WHEEL_ZOOM_RATE = 0.01
 /** The most one event may zoom by, so a flick cannot fly off the canvas. */
 const MAX_WHEEL_FACTOR = 4
+
+/** Buttons that move the view rather than make a mark. */
+export function isViewPanButton(event: {
+  pointerType: string
+  button: number
+}): boolean {
+  return (
+    (event.pointerType === "mouse" &&
+      (event.button === 1 || event.button === 2)) ||
+    (event.pointerType === "pen" && event.button === 2)
+  )
+}
 
 function wheelPixels(delta: number, mode: number | undefined): number {
   if (mode === 1) return delta * LINE_HEIGHT
@@ -168,15 +180,17 @@ export function attachViewGestures(
   }
 
   function onPointerDown(event: PointerEvent) {
-    // The middle and right buttons are nobody's brush, so they are free to be
-    // the pan that a mouse otherwise has no gesture for.
-    if (
-      event.pointerType === "mouse" &&
-      (event.button === 1 || event.button === 2)
-    ) {
+    // Mouse navigation buttons and the pen barrel are nobody's brush, so they
+    // are free to pan while the primary mouse button and pen tip still paint.
+    if (isViewPanButton(event)) {
       event.preventDefault()
       dragging = local(event)
-      canvas.setPointerCapture(event.pointerId)
+      try {
+        canvas.setPointerCapture(event.pointerId)
+      } catch {
+        // Synthetic events and a pointer already lost by the browser cannot
+        // be captured; the gesture can still continue while it stays here.
+      }
       return
     }
     if (event.pointerType !== "touch") return
@@ -190,6 +204,15 @@ export function attachViewGestures(
   }
 
   function onPointerMove(event: PointerEvent) {
+    // A pen can report its barrel switch after the tip is already touching,
+    // as a move whose secondary-button bit has just appeared. Turn that
+    // half-started stroke into navigation before consuming any movement.
+    if (!dragging && event.pointerType === "pen" && (event.buttons & 2) !== 0) {
+      event.preventDefault()
+      dragging = local(event)
+      handlers.cancelStroke()
+      return
+    }
     if (dragging) {
       const at = local(event)
       handlers.pan(at.x - dragging.x, at.y - dragging.y)

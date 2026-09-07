@@ -1,4 +1,5 @@
 import type { SampleBuffer } from "./sample-buffer"
+import { isViewPanButton } from "./view-gestures"
 
 /**
  * Pointer capture for the stroke pipeline (D26).
@@ -91,9 +92,13 @@ export function attachPointerSampler(
 
   function onPointerDown(event: PointerEvent) {
     if (activePointer !== null || !event.isPrimary) return
-    // Mouse navigation buttons belong to the view gesture listener, never to
-    // the brush. A pen's tip reports button zero and follows the same rule.
-    if (event.pointerType === "mouse" && event.button !== 0) return
+    // No secondary mouse button paints; the barrel button is the equivalent
+    // pen navigation input. Other pen buttons retain their device semantics.
+    if (
+      (event.pointerType === "mouse" && event.button !== 0) ||
+      isViewPanButton(event)
+    )
+      return
     measure()
     if (event.altKey && handlers.sample) {
       event.preventDefault()
