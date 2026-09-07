@@ -69,7 +69,9 @@ export function DocumentLibrary() {
 function SignedOutNotice() {
   return (
     <div className="m-auto flex flex-col items-center gap-4 text-center">
-      <h1 className="font-heading text-4xl">Your {APP_NAME} library</h1>
+      <h1 className="font-heading-display font-heading text-4xl">
+        Your {APP_NAME} library
+      </h1>
       <p className="text-muted-foreground">
         Sign in to see the documents you have saved.
       </p>
@@ -86,7 +88,7 @@ function LibraryHeader() {
 
   return (
     <header className="flex items-center justify-between gap-4">
-      <h1 className="font-heading text-4xl">Documents</h1>
+      <h1 className="font-heading-display font-heading text-4xl">Documents</h1>
       <div className="flex items-center gap-2">
         <NewDocumentDialog />
         <Button

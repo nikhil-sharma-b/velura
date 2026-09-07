@@ -45,7 +45,9 @@ export default async function SharePage({ params }: SharePageProps) {
   return (
     <main className="flex min-h-svh flex-col bg-neutral-950 text-neutral-100">
       <header className="border-b border-white/10 px-5 py-4">
-        <h1 className="font-heading text-2xl">Shared from {APP_NAME}</h1>
+        <h1 className="font-heading-display font-heading text-2xl">
+          Shared from {APP_NAME}
+        </h1>
       </header>
       <div className="flex flex-1 items-center justify-center p-4 sm:p-8">
         {/* This endpoint proxies only the flattened PNG. It deliberately does

@@ -930,7 +930,7 @@ export function CanvasHost({
             role="status"
             aria-live="polite"
           >
-            <h1 className="font-heading text-4xl">
+            <h1 className="font-heading-display font-heading text-4xl">
               {unavailable
                 ? "WebGPU is needed to draw"
                 : failed

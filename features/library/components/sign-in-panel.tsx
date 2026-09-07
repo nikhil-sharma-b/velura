@@ -16,7 +16,9 @@ export function SignInPanel() {
       </AuthLoading>
       <Unauthenticated>
         <div className="flex flex-col gap-2">
-          <h1 className="font-heading text-4xl">Sign in to {APP_NAME}</h1>
+          <h1 className="font-heading-display font-heading text-4xl">
+            Sign in to {APP_NAME}
+          </h1>
           <p className="text-sm text-muted-foreground">
             A code arrives by email. Nothing to remember, nothing to leak.
           </p>

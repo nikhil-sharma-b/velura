@@ -117,7 +117,9 @@ function CentredSpinner() {
 export function DocumentNotFound() {
   return (
     <main className="mx-auto flex min-h-svh max-w-sm flex-col items-center justify-center gap-4 text-center">
-      <h1 className="font-heading text-3xl">That document is not here</h1>
+      <h1 className="font-heading-display font-heading text-3xl">
+        That document is not here
+      </h1>
       <Button asChild>
         <Link href="/library">Back to the library</Link>
       </Button>

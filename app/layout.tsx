@@ -1,4 +1,4 @@
-import { Caveat, Geist_Mono, Instrument_Serif, Karla } from "next/font/google"
+import { Caveat, Geist_Mono, Karla } from "next/font/google"
 
 import { ThemeProvider } from "@/components/theme-provider"
 import { APP_NAME } from "@/lib/constants"
@@ -6,16 +6,10 @@ import { cn } from "@/lib/utils"
 import { Metadata } from "next"
 import "./globals.css"
 
+// One text family for the whole product. Karla is a variable face, so the
+// display role is the same skeleton at a heavier weight and tighter tracking
+// rather than a second typeface competing with the chrome.
 const fontSans = Karla({ subsets: ["latin"], variable: "--font-sans" })
-
-// Display face: wordmark, headings, empty states. Single weight by design —
-// the Didone contrast carries the emphasis, so there is no bold to load.
-const fontHeading = Instrument_Serif({
-  subsets: ["latin"],
-  weight: "400",
-  style: ["normal", "italic"],
-  variable: "--font-heading",
-})
 
 // Margin notes only. Never used for anything the reader must not miss.
 const fontAnnotate = Caveat({ subsets: ["latin"], variable: "--font-annotate" })
@@ -44,7 +38,6 @@ export default function RootLayout({
         "antialiased",
         "font-sans",
         fontSans.variable,
-        fontHeading.variable,
         fontAnnotate.variable,
         fontMono.variable
       )}
