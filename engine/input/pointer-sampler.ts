@@ -91,6 +91,9 @@ export function attachPointerSampler(
 
   function onPointerDown(event: PointerEvent) {
     if (activePointer !== null || !event.isPrimary) return
+    // Mouse navigation buttons belong to the view gesture listener, never to
+    // the brush. A pen's tip reports button zero and follows the same rule.
+    if (event.pointerType === "mouse" && event.button !== 0) return
     measure()
     if (event.altKey && handlers.sample) {
       event.preventDefault()

@@ -205,6 +205,32 @@ test("a middle-button drag pans, which is the mouse's own gesture", async ({
   expect(isInk(image, 115, 52)).toBe(false)
 })
 
+test("a right-button drag pans without painting or opening a menu", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const before = await painted(page)
+  await page.locator("canvas").evaluate((canvas) => {
+    canvas.addEventListener("contextmenu", (event) => {
+      canvas.dataset.contextMenuPrevented = String(event.defaultPrevented)
+    })
+  })
+  await page.mouse.move(origin.x + 80, origin.y + 50)
+  await page.mouse.down({ button: "right" })
+  await page.mouse.move(origin.x + 115, origin.y + 70, { steps: 5 })
+  await page.mouse.up({ button: "right" })
+
+  const view = await page.evaluate(() => window.engine.getSnapshot().view)
+  expect(view.panX).toBeCloseTo(DEFAULT_VIEW.panX + 35, 0)
+  expect(view.panY).toBeCloseTo(DEFAULT_VIEW.panY + 20, 0)
+  await expect(page.locator("canvas")).toHaveAttribute(
+    "data-context-menu-prevented",
+    "true"
+  )
+  const image = await painted(page)
+  expect(image.data).toEqual(before.data)
+})
+
 test("a second finger takes back the mark and navigates instead", async ({
   page,
 }) => {

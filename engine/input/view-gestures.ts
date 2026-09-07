@@ -5,7 +5,7 @@
  * here is everything that moves the *view* rather than the paint: the wheel,
  * a trackpad pinch (which the platform reports as a wheel with the control
  * modifier), a two-finger pan, pinch and twist on a touch screen, and a drag
- * with the middle mouse button, which is the mouse's own pan.
+ * with the middle or right mouse button, which are the mouse's own pans.
  *
  * The maths is separated from the listeners so that what a gesture means can
  * be tested without a browser, which is the part that is easy to get subtly
@@ -145,7 +145,7 @@ export function attachViewGestures(
 ): () => void {
   const touches = new Map<number, Point>()
   let gesture: TouchPair | null = null
-  // The middle button held down, and where it last was: the mouse's pan.
+  // A navigation button held down, and where it last was: the mouse's pan.
   let dragging: Point | null = null
   let originX = 0
   let originY = 0
@@ -168,9 +168,12 @@ export function attachViewGestures(
   }
 
   function onPointerDown(event: PointerEvent) {
-    // The middle button is nobody's brush, so it is free to be the pan that a
-    // mouse otherwise has no gesture for.
-    if (event.button === 1) {
+    // The middle and right buttons are nobody's brush, so they are free to be
+    // the pan that a mouse otherwise has no gesture for.
+    if (
+      event.pointerType === "mouse" &&
+      (event.button === 1 || event.button === 2)
+    ) {
       event.preventDefault()
       dragging = local(event)
       canvas.setPointerCapture(event.pointerId)
@@ -225,6 +228,10 @@ export function attachViewGestures(
     else handlers.pan(change.panDx, change.panDy)
   }
 
+  function onContextMenu(event: MouseEvent) {
+    event.preventDefault()
+  }
+
   // Measured on attach and whenever the page could have moved the canvas,
   // never per event: a trackpad pinch fires several wheel events a frame, and
   // reading layout in each of them forces that many reflows.
@@ -237,6 +244,7 @@ export function attachViewGestures(
   canvas.addEventListener("pointerup", onPointerFinish)
   canvas.addEventListener("pointercancel", onPointerFinish)
   canvas.addEventListener("wheel", onWheel, { passive: false })
+  canvas.addEventListener("contextmenu", onContextMenu)
 
   return () => {
     touches.clear()
@@ -248,5 +256,6 @@ export function attachViewGestures(
     canvas.removeEventListener("pointerup", onPointerFinish)
     canvas.removeEventListener("pointercancel", onPointerFinish)
     canvas.removeEventListener("wheel", onWheel)
+    canvas.removeEventListener("contextmenu", onContextMenu)
   }
 }
