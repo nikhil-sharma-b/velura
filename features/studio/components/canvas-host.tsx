@@ -28,6 +28,7 @@ import {
 
 import { Popover as PopoverPrimitive } from "radix-ui"
 import { Button } from "@/components/ui/button"
+import { PressureCurve } from "@/components/ui/pressure-curve"
 import {
   Tooltip,
   TooltipContent,
@@ -190,6 +191,7 @@ export function CanvasHost({
   const [brushOpen, setBrushOpen] = useState(false)
   const [eraserOpen, setEraserOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [pressureOpen, setPressureOpen] = useState(false)
   /**
    * The brush as it was last saved. The engine holds the *working* brush — so
    * an edit paints immediately, which is the whole point of a live editor —
@@ -857,6 +859,52 @@ export function CanvasHost({
                   void engine?.dispatch({ type: "setStabilization", strength })
                 }
               />
+              {/* Pen response is a calibration rather than an adjustment, so it
+                sits behind a popover instead of taking a fourth slider: an
+                artist sets it once for their hand and then leaves it. It is
+                here rather than only in app settings because the thing it has
+                to be judged against is the canvas. */}
+              <PopoverPrimitive.Root
+                open={pressureOpen}
+                onOpenChange={setPressureOpen}
+              >
+                <PopoverPrimitive.Trigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label="Pen pressure response"
+                    className="h-8 w-full justify-between px-1 text-xs"
+                  >
+                    <span className="text-muted-foreground">Pen pressure</span>
+                    <CaretDownIcon className="shrink-0" />
+                  </Button>
+                </PopoverPrimitive.Trigger>
+                <PopoverPrimitive.Portal>
+                  <PopoverPrimitive.Content
+                    side="top"
+                    align="start"
+                    sideOffset={10}
+                    collisionPadding={12}
+                    aria-label="Pen pressure response"
+                    className="z-50 rounded-xl border bg-background p-3 shadow-xl outline-none"
+                  >
+                    {/* Driven by what the engine holds rather than by state of
+                      its own: the curve the artist drags and the curve every
+                      sample is shaped by are then the same one. */}
+                    <PressureCurve
+                      size="md"
+                      testArea
+                      value={snapshot.pressureCurve}
+                      onChange={(curve) =>
+                        void engine?.dispatch({
+                          type: "setPressureCurve",
+                          curve,
+                        })
+                      }
+                    />
+                  </PopoverPrimitive.Content>
+                </PopoverPrimitive.Portal>
+              </PopoverPrimitive.Root>
             </div>
 
             <div

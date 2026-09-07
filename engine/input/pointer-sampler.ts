@@ -1,3 +1,5 @@
+import type { Curve } from "../brush/curve"
+import { DEFAULT_PRESSURE_CURVE, shapePressure } from "./pressure-curve"
 import type { SampleBuffer } from "./sample-buffer"
 import { isViewPanButton } from "./view-gestures"
 
@@ -36,13 +38,23 @@ export interface StrokeHandlers {
   sample?(x: number, y: number): void
 }
 
+export interface SamplerOptions {
+  /**
+   * The artist's pen response curve, read per sample rather than captured, so
+   * that changing it in settings takes effect on the next mark instead of on
+   * the next time input happens to be reattached.
+   */
+  pressureCurve?: () => Curve
+}
+
 /** Whether the browser reports raw pointer updates ahead of `pointermove`. */
 const RAW_UPDATES = "onpointerrawupdate" in globalThis
 
 export function attachPointerSampler(
   canvas: HTMLCanvasElement,
   buffer: SampleBuffer,
-  handlers: StrokeHandlers
+  handlers: StrokeHandlers,
+  options: SamplerOptions = {}
 ): () => void {
   let activePointer: number | null = null
   // Captured once per stroke: reading layout per event would force a reflow
@@ -75,9 +87,21 @@ export function attachPointerSampler(
    * there is a sensor is a fact about the device, so it is decided here and
    * once — a pen that genuinely reports zero as it lands must keep its zero,
    * or the taper a pressure mapping draws is inverted at both ends.
+   *
+   * A device that reports force has the artist's response curve applied to it
+   * here, at the one place a raw reading enters the pipeline, so that nothing
+   * downstream — the ring buffer, the stroke path, a brush's own dynamics —
+   * has to know which hand is holding the pen. A mouse is exempt: its 1 is a
+   * stand-in for a missing sensor, not a press, and shaping it would let a
+   * curve the artist drew for their pen quietly thin every mouse stroke.
    */
   const canvasPressure = (event: PointerEvent) =>
-    event.pointerType === "mouse" ? 1 : event.pressure
+    event.pointerType === "mouse"
+      ? 1
+      : shapePressure(
+          options.pressureCurve?.() ?? DEFAULT_PRESSURE_CURVE,
+          event.pressure
+        )
 
   function record(event: PointerEvent) {
     buffer.push(
