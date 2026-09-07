@@ -1867,9 +1867,9 @@ export function createEngine(
             width: previous.width,
             height: previous.height,
           })
-          view = DEFAULT_VIEW
+          // The view is how the artist is looking, not what is on the
+          // canvas: clearing the pixels leaves the zoom and pan alone.
           applyLayerChange()
-          applyView()
           restored = true
           void persistence?.save()
           flushScheduler?.touch()
