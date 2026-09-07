@@ -61,9 +61,11 @@ export const SNAP_RADIANS = Math.PI / 60
 export const FIT_MARGIN = 0.04
 
 export const DEFAULT_VIEW: CanvasView = Object.freeze({
-  panX: 0,
+  // The layers panel opens on the right, so centre the document in the
+  // remaining workspace rather than behind it.
+  panX: -160,
   panY: 0,
-  zoom: 1,
+  zoom: 0.64,
   rotation: 0,
   flipped: false,
 })

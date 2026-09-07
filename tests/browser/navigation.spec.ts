@@ -97,8 +97,12 @@ test("the view is state, and every navigation reports it", async ({ page }) => {
       flipped: boolean
     }[]
   })
-  expect(views[0]).toMatchObject({ panX: 30, panY: -12, zoom: 1 })
-  expect(views[1].zoom).toBe(4)
+  expect(views[0]).toMatchObject({
+    panX: DEFAULT_VIEW.panX + 30,
+    panY: DEFAULT_VIEW.panY - 12,
+    zoom: DEFAULT_VIEW.zoom,
+  })
+  expect(views[1].zoom).toBe(DEFAULT_VIEW.zoom * 4)
   expect(views[2].flipped).toBe(true)
   // A twist that lands within a degree of square is square.
   expect(views[3].rotation).toBeCloseTo(Math.PI / 2, 6)
@@ -151,11 +155,12 @@ test("the mark lands under the pen at any zoom, rotation and flip", async ({
   const end = [130, 80] as const
   // A view an artist might actually be working at: turned, mirrored, zoomed
   // in, and dragged off centre.
-  const view = flipView(
-    rotateView(zoomView(DEFAULT_VIEW, 2), 0.6, { snap: false })
-  )
+  const baseView = { ...DEFAULT_VIEW, panX: 0, zoom: 1 }
+  const view = flipView(rotateView(zoomView(baseView, 2), 0.6, { snap: false }))
   await page.evaluate(
-    async ([zoom, rotation]) => {
+    async ([zoom, rotation, pan]) => {
+      await window.engine.dispatch({ type: "resetView" })
+      await window.engine.dispatch({ type: "panView", dx: pan, dy: 0 })
       await window.engine.dispatch({ type: "zoomView", factor: zoom })
       await window.engine.dispatch({
         type: "rotateView",
@@ -164,7 +169,7 @@ test("the mark lands under the pen at any zoom, rotation and flip", async ({
       })
       await window.engine.dispatch({ type: "flipView" })
     },
-    [view.zoom, view.rotation]
+    [view.zoom, view.rotation, -DEFAULT_VIEW.panX]
   )
   await drag(page, origin, start, end)
   const image = await painted(page)
@@ -193,8 +198,8 @@ test("a middle-button drag pans, which is the mouse's own gesture", async ({
   await page.mouse.move(origin.x + 130, origin.y + 45, { steps: 5 })
   await page.mouse.up({ button: "middle" })
   const view = await page.evaluate(() => window.engine.getSnapshot().view)
-  expect(view.panX).toBeCloseTo(30, 0)
-  expect(view.panY).toBeCloseTo(-15, 0)
+  expect(view.panX).toBeCloseTo(DEFAULT_VIEW.panX + 30, 0)
+  expect(view.panY).toBeCloseTo(DEFAULT_VIEW.panY - 15, 0)
   // And it painted nothing: the middle button is nobody's brush.
   const image = await painted(page)
   expect(isInk(image, 115, 52)).toBe(false)
