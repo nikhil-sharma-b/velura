@@ -4,6 +4,17 @@ import { DownloadSimpleIcon, UploadSimpleIcon } from "@phosphor-icons/react"
 import { useRef, useState } from "react"
 
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -135,6 +146,33 @@ export function ExportDialog({ engine }: { engine: Engine }) {
           >
             Export editable .velura backup
           </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="destructive" disabled={busy !== null}>
+                Clear canvas
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Start a new artwork?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This removes every layer and mark from this canvas. Its size
+                  stays the same, ready for a new piece.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Keep artwork</AlertDialogCancel>
+                <AlertDialogAction
+                  variant="destructive"
+                  onClick={() =>
+                    void engine.dispatch({ type: "clearDocument" })
+                  }
+                >
+                  Clear canvas
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
           <input
             ref={input}
             className="sr-only"

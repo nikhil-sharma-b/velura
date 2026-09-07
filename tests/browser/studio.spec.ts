@@ -323,23 +323,23 @@ test("the canvas is navigated by button and by keystroke", async ({ page }) => {
     "ready"
   )
   const zoom = page.getByLabel("Zoom level")
-  await expect(zoom).toHaveText("100%")
+  await expect(zoom).toHaveText("64%")
 
   await page.getByRole("button", { name: "Zoom in" }).click()
-  await expect(zoom).toHaveText("125%")
+  await expect(zoom).toHaveText("80%")
   await page.getByRole("button", { name: "Zoom out" }).click()
-  await expect(zoom).toHaveText("100%")
+  await expect(zoom).toHaveText("64%")
 
   // Unmodified, because the hand reaching for these is not holding the pen.
   await page.keyboard.press("=")
-  await expect(zoom).toHaveText("125%")
+  await expect(zoom).toHaveText("80%")
   // Fitting is the overview; the document is the window's own size, so it
   // comes back a little under a hundred percent with its margin.
   await page.keyboard.press("0")
   await expect(zoom).toHaveText("96%")
   // And shift is the way back to square.
   await page.keyboard.press("Shift+0")
-  await expect(zoom).toHaveText("100%")
+  await expect(zoom).toHaveText("64%")
 
   const flip = page.getByRole("button", { name: "Flip canvas horizontally" })
   await expect(flip).toHaveAttribute("aria-pressed", "false")
@@ -364,5 +364,5 @@ test("the canvas is navigated by button and by keystroke", async ({ page }) => {
   await page.getByRole("button", { name: "Fit to window" }).click()
   await expect(zoom).not.toHaveText("100%")
   await page.getByRole("button", { name: "Reset view" }).click()
-  await expect(zoom).toHaveText("100%")
+  await expect(zoom).toHaveText("64%")
 })

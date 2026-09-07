@@ -37,6 +37,7 @@ import {
   addLayer,
   addMask,
   createDocument,
+  createBlankDocument,
   duplicateLayer,
   findLayer,
   type Layer,
@@ -240,6 +241,8 @@ export type EngineCommand =
   | { type: "duplicateLayer"; id: string }
   /** Removes a layer. The document always keeps at least one. */
   | { type: "removeLayer"; id: string }
+  /** Starts a blank artwork at the current document size. */
+  | { type: "clearDocument" }
   /** Chooses where the pen paints, which is what the caches are built around. */
   | { type: "selectLayer"; id: string }
   /** Moves a layer to a position in the stack, counted from the bottom. */
@@ -1845,6 +1848,23 @@ export function createEngine(
           }
           applyLayerChange()
           break
+        case "clearDocument": {
+          const previous = requireDocument()
+          for (const id of structureSurfaceIds(captureStructure(previous)))
+            renderer?.releaseLayer(id)
+          history?.clear()
+          doc = createBlankDocument({
+            width: previous.width,
+            height: previous.height,
+          })
+          view = DEFAULT_VIEW
+          applyLayerChange()
+          applyView()
+          restored = true
+          void persistence?.save()
+          flushScheduler?.touch()
+          break
+        }
         case "selectLayer":
           selectLayer(requireDocument(), command.id)
           applyLayerChange()

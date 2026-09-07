@@ -37,6 +37,38 @@ test("initializes the facade and presents opaque pixels", async ({ page }) => {
   )
 })
 
+test("clearing starts a blank artwork at the current size", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.engine)
+  const result = await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "resize",
+      width: 65,
+      height: 33,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    await window.engine.dispatch({ type: "clearDocument" })
+    const pixels = await window.engine.readPixels()
+    return {
+      layers: window.engine.getSnapshot().layers,
+      canUndo: window.engine.getSnapshot().canUndo,
+      pixel: Array.from(
+        pixels.data.slice(
+          (8 * pixels.width + 20) * 4,
+          (8 * pixels.width + 20) * 4 + 4
+        )
+      ),
+    }
+  })
+  expect(result.layers).toHaveLength(1)
+  expect(result.layers[0]).toMatchObject({ kind: "raster", name: "Layer 1" })
+  expect(result.canUndo).toBe(false)
+  expect(result.pixel).toEqual([255, 255, 255, 255])
+})
+
 test("resizing changes the viewport without changing the document", async ({
   page,
 }) => {

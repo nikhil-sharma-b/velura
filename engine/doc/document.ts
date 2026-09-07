@@ -124,6 +124,20 @@ export function createDocument(size: {
   }
 }
 
+/** A fresh artwork surface, with one editable layer and no starter marks. */
+export function createBlankDocument(size: {
+  width: number
+  height: number
+}): PaintDocument {
+  const layer = createLayer(size.width, size.height, "Layer 1")
+  return {
+    ...size,
+    layers: [layer],
+    activeLayerId: layer.id,
+    paintingMask: false,
+  }
+}
+
 type Located = { node: LayerNode; siblings: LayerNode[]; index: number }
 
 function locate(nodes: LayerNode[], id: string): Located | undefined {
