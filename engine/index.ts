@@ -3,6 +3,7 @@ import {
   type Brush,
   type BrushGrain,
   brushSpacing,
+  dabSpacing,
   cloneBrush,
   DEFAULT_BRUSH,
 } from "./brush/brush"
@@ -104,6 +105,11 @@ import {
 } from "./gpu/renderer"
 import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
 import { attachPointerSampler } from "./input/pointer-sampler"
+import {
+  DEFAULT_PRESSURE_CURVE,
+  validatePressureCurve,
+} from "./input/pressure-curve"
+import type { Curve } from "./brush/curve"
 import { createSampleBuffer } from "./input/sample-buffer"
 import { attachViewGestures } from "./input/view-gestures"
 import { explainFailure, type ExplainedFailure } from "./errors"
@@ -140,6 +146,13 @@ export {
   DEFAULT_LIBRARY_BRUSH_ID,
   isBuiltinBrush,
 } from "./brush/presets"
+export type { Curve, CurvePoint } from "./brush/curve"
+export {
+  DEFAULT_PRESSURE_CURVE,
+  DEFAULT_PRESSURE_PRESET,
+  PRESSURE_PRESET_COUNT,
+  pressureCurvePreset,
+} from "./input/pressure-curve"
 export type { GrayscaleTexture } from "./brush/texture"
 export type {
   RemoteIndex,
@@ -188,6 +201,19 @@ export type EngineCommand =
   /** Stabilizer strength in [0, 1]; zero restores the raw unfiltered path. */
   | { type: "setStabilization"; strength: number }
   | { type: "setTool"; tool: PaintTool }
+  /**
+   * The artist's pen response curve, applied to every force reading before a
+   * brush sees it. Null restores the default. See `engine/input/pressure-curve`
+   * for why this is a property of the hand rather than of the brush.
+   */
+  | { type: "setPressureCurve"; curve: Curve | null }
+  /**
+   * Whether pen tilt reaches the dynamics graph at all. Switched off, every
+   * sample reads as an upright pen, so a brush that shades with tilt draws at
+   * its own size instead — which is what a device with a noisy or absent tilt
+   * sensor needs, and what an artist who rests their hand at an angle wants.
+   */
+  | { type: "setTiltEnabled"; enabled: boolean }
   | { type: "setEraser"; kind?: EraserKind; radius?: number; opacity?: number }
   /**
    * The ink, as authored sRGB hex. Hex rather than the working space because
@@ -299,6 +325,13 @@ export type EngineSnapshot = Readonly<{
   outputColorSpace: OutputColorSpace
   /** Stabilizer strength in [0, 1]. Structural state, so React may see it. */
   stabilization: number
+  /**
+   * The pen response curve in force. Published so a settings control can be
+   * driven by what the engine actually holds rather than its own copy.
+   */
+  pressureCurve: Curve
+  /** Whether pen tilt reaches the dynamics graph. */
+  tiltEnabled: boolean
   /** The persistent mark-making tool; Alt/Option sampling never changes it. */
   tool: PaintTool
   /** Current display-encoded ink, updated by the eyedropper. */
@@ -365,6 +398,8 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   height: 1,
   outputColorSpace: "srgb",
   stabilization: DEFAULT_STABILIZATION,
+  pressureCurve: DEFAULT_PRESSURE_CURVE,
+  tiltEnabled: true,
   tool: "brush",
   color: Object.freeze({
     red: 36 / 255,
@@ -594,6 +629,12 @@ export function createEngine(
   // a frame of drawing performs no allocation at all (D30).
   const samples = createSampleBuffer(SAMPLE_CAPACITY)
   const stabilizer = createStabilizer()
+  // The pen response curve is engine state rather than a sampler argument: it
+  // outlives any one attachment, and the sampler reads it back per sample.
+  let pressureCurve: Curve = DEFAULT_PRESSURE_CURVE
+  // On unless the artist says otherwise: a pen that reports tilt should use
+  // it, and a pen that does not already reads as upright.
+  let tiltEnabled = true
   // Rebuilt only when the brush changes its spacing, which never happens
   // inside a stroke: a frame of drawing still allocates nothing (D30).
   let resampler = createStrokeResampler(brushSpacing(DEFAULT_BRUSH))
@@ -962,7 +1003,8 @@ export function createEngine(
     const offset = stampCount * STAMP_STRIDE
     stamps[offset + STAMP.CENTER_X] = x
     stamps[offset + STAMP.CENTER_Y] = y
-    stamps[offset + STAMP.RADIUS] = brush.shape.radius * params.size
+    const radius = brush.shape.radius * params.size
+    stamps[offset + STAMP.RADIUS] = radius
     // Flow: the dab's own opacity, not the stroke's, which is applied once
     // when the buffer is composited (D27).
     stamps[offset + STAMP.OPACITY] = brush.rendering.flow * params.flow
@@ -975,6 +1017,12 @@ export function createEngine(
     stamps[offset + STAMP.GRAIN_DEPTH] = params.grainDepth
     stampCount++
     frameStamps++
+    // What follows this dab, measured against the dab actually drawn rather
+    // than against the brush at rest. A brush whose size is modulated would
+    // otherwise keep laying dabs at its resting pitch: laid over, the pencil
+    // put down more than twice as many overlapping dabs per pixel, and under
+    // buildup that reads as tilt darkening the line rather than widening it.
+    resampler.setSpacing(dabSpacing(brush, radius))
   }
 
   /**
@@ -1553,13 +1601,21 @@ export function createEngine(
       publish({ status: "ready" })
       // Input is attached only once there is something to draw into.
       if (!detachSampler && canvas instanceof HTMLCanvasElement) {
-        detachSampler = attachPointerSampler(canvas, samples, {
-          begin: beginStroke,
-          end: endStroke,
-          sample: (x, y) => {
-            void sampleColor(x, y).catch(fail)
+        detachSampler = attachPointerSampler(
+          canvas,
+          samples,
+          {
+            begin: beginStroke,
+            end: endStroke,
+            sample: (x, y) => {
+              void sampleColor(x, y).catch(fail)
+            },
           },
-        })
+          {
+            pressureCurve: () => pressureCurve,
+            tiltEnabled: () => tiltEnabled,
+          }
+        )
         // Navigation is input too, and it belongs to the same canvas. Holding
         // it here rather than in the host is what keeps the pen, the present
         // pass and the snapshot agreeing about where the canvas is (D28).
@@ -1997,6 +2053,18 @@ export function createEngine(
             throw new Error("Reset pan must be finite.")
           setView({ ...DEFAULT_VIEW, panX: command.panX ?? DEFAULT_VIEW.panX })
           break
+        case "setPressureCurve": {
+          const next = command.curve ?? DEFAULT_PRESSURE_CURVE
+          validatePressureCurve(next)
+          pressureCurve = next
+          publish({ pressureCurve: Object.freeze(next.map((p) => ({ ...p }))) })
+          break
+        }
+        case "setTiltEnabled": {
+          tiltEnabled = command.enabled !== false
+          publish({ tiltEnabled })
+          break
+        }
         case "setStabilization": {
           if (!Number.isFinite(command.strength))
             throw new Error("Stabilization strength must be finite.")

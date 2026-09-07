@@ -225,6 +225,28 @@ test("tilting the pen shades wider, the way a pencil's side does", async ({
   expect(laidOver).toBeGreaterThan(upright * 1.5)
 })
 
+test("switching tilt off makes every pen read as upright", async ({ page }) => {
+  // The toggle is not a bypass: it has to land the brush on the mark an
+  // upright pen would have drawn, so a tilt-shaded brush falls back to its
+  // own size rather than to nothing.
+  const dynamics: Modulator[] = [
+    { source: "tilt", target: "size", range: [0.4, 1.6], mix: "multiply" },
+  ]
+  await openCanvas(page, dynamics)
+  await pen(page, run(20, 220, 5, { pressure: 0.8, tiltX: 0, tiltY: 0 }))
+  const upright = thickness(await painted(page), 120)
+
+  await openCanvas(page, dynamics)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTiltEnabled", enabled: false })
+  )
+  await pen(page, run(20, 220, 5, { pressure: 0.8, tiltX: 75, tiltY: 0 }))
+  const laidOverButIgnored = thickness(await painted(page), 120)
+
+  expect(upright).toBeGreaterThan(0)
+  expect(laidOverButIgnored).toBe(upright)
+})
+
 test("tilt direction reaches the graph as its own source", async ({ page }) => {
   // Two pens leaning the same distance over, in opposite directions: only a
   // mapping that reads direction rather than magnitude can tell them apart.

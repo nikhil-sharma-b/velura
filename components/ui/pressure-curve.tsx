@@ -20,28 +20,30 @@ export type PressureCurvePoint = CurvePoint
 
 const GRID_W = 150
 const GRID_H = 100
-// Slider positions from "Light" to "Heavy": the midpoint of the generated
-// curve. Values above 0.5 bow the curve up (light touch = strong output).
-const PRESET_MIDPOINTS = [0.8, 0.65, 0.5, 0.35]
-const DEFAULT_PRESET_POSITION = 1
 
-export function pressureCurvePreset(position: number): PressureCurvePoint[] {
-  const mid = PRESET_MIDPOINTS[position] ?? 0.5
-  return [
-    { x: 0, y: 0 },
-    { x: 0.5, y: mid },
-    { x: 1, y: 1 },
-  ]
-}
+// The presets and the default come from the engine, which is what samples
+// them once a stroke is under way: a copy here would be a second answer to
+// what "Light" means.
+import {
+  DEFAULT_PRESSURE_PRESET,
+  PRESSURE_PRESET_COUNT,
+  pressureCurvePreset,
+} from "@/engine/input/pressure-curve"
 
-export const DEFAULT_PRESSURE_CURVE = pressureCurvePreset(
-  DEFAULT_PRESET_POSITION
+export { DEFAULT_PRESSURE_PRESET, PRESSURE_PRESET_COUNT, pressureCurvePreset }
+
+/**
+ * The default as editable points. Same generator as the engine's frozen copy;
+ * this one is what a form holds and what the editor drags.
+ */
+export const DEFAULT_PRESSURE_CURVE: PressureCurvePoint[] = pressureCurvePreset(
+  DEFAULT_PRESSURE_PRESET
 )
 
 // Spline through every point, emitted as cubic beziers in grid coordinates.
 // The segments come from the engine, so the drawn curve and the curve a brush
 // is evaluated against cannot drift apart.
-function buildPath(points: PressureCurvePoint[]) {
+function buildPath(points: readonly PressureCurvePoint[]) {
   if (points.length < 2) return ""
   const px = (p: PressureCurvePoint) => `${p.x * GRID_W} ${(1 - p.y) * GRID_H}`
   let d = `M ${px(points[0])}`
@@ -54,7 +56,7 @@ function buildPath(points: PressureCurvePoint[]) {
 
 /** Output multiplier for a raw pressure reading, both in [0, 1]. */
 export function samplePressureCurve(
-  points: PressureCurvePoint[],
+  points: readonly PressureCurvePoint[],
   pressure: number
 ) {
   return sampleCurve(points, pressure)
@@ -83,7 +85,7 @@ const sizeStyles = {
 const TEST_BRUSH_MAX = 16
 
 type PressureTestAreaProps = {
-  curve?: PressureCurvePoint[]
+  curve?: readonly PressureCurvePoint[]
   disabled?: boolean
   className?: string
   labelClassName?: string
@@ -210,7 +212,8 @@ function PressureTestArea({
 }
 
 type PressureCurveProps = {
-  value?: PressureCurvePoint[]
+  /** Readonly, so a control can be driven straight off an engine snapshot. */
+  value?: readonly PressureCurvePoint[]
   onChange?: (value: PressureCurvePoint[]) => void
   disabled?: boolean
   className?: string
@@ -235,7 +238,7 @@ function PressureCurve({
   const dragIndex = React.useRef<number | null>(null)
   const [selected, setSelected] = React.useState<number | null>(null)
   const [presetPosition, setPresetPosition] = React.useState(
-    DEFAULT_PRESET_POSITION
+    DEFAULT_PRESSURE_PRESET
   )
 
   const isEndpoint = (index: number) =>
@@ -314,7 +317,7 @@ function PressureCurve({
   }
 
   function reset() {
-    applyPreset(DEFAULT_PRESET_POSITION)
+    applyPreset(DEFAULT_PRESSURE_PRESET)
   }
 
   return (
@@ -337,7 +340,7 @@ function PressureCurve({
           </div>
           <Slider
             min={0}
-            max={PRESET_MIDPOINTS.length - 1}
+            max={PRESSURE_PRESET_COUNT - 1}
             step={1}
             ticks
             value={[presetPosition]}

@@ -28,6 +28,7 @@ import {
 
 import { Popover as PopoverPrimitive } from "radix-ui"
 import { Button } from "@/components/ui/button"
+import { PressureCurve } from "@/components/ui/pressure-curve"
 import {
   Tooltip,
   TooltipContent,
@@ -54,6 +55,7 @@ import type { PaletteStore } from "@/features/color/lib/palette-store"
 
 import { brushCommand, isBrushEdited } from "../lib/brush-draft"
 import { createLocalBrushStore } from "../lib/local-brush-store"
+import { createLocalPenSettingsStore } from "../lib/local-pen-settings"
 import type { BrushStore } from "../lib/brush-store"
 import { resolveLibraryBrush, setForNewBrush } from "../lib/brush-shelf"
 import { DEFAULT_LIBRARY_BRUSH_ID } from "@/engine/brush/presets"
@@ -62,6 +64,7 @@ import { BrushEditor } from "./brush-editor"
 import { TOOL_CURSOR } from "../lib/tool-cursor"
 import { BrushIcon, EraserToolIcon } from "./brush-icon"
 import { BrushLibrary } from "./brush-library"
+import { TiltToggle } from "./tilt-toggle"
 import { IconButton } from "./icon-button"
 import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
@@ -190,6 +193,7 @@ export function CanvasHost({
   const [brushOpen, setBrushOpen] = useState(false)
   const [eraserOpen, setEraserOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [pressureOpen, setPressureOpen] = useState(false)
   /**
    * The brush as it was last saved. The engine holds the *working* brush — so
    * an edit paints immediately, which is the whole point of a live editor —
@@ -209,6 +213,8 @@ export function CanvasHost({
   const paletteStore = palettes ?? localPalettes
   const localBrushes = useMemo(() => createLocalBrushStore(), [])
   const brushStore = brushes ?? localBrushes
+  const penStore = useMemo(() => createLocalPenSettingsStore(), [])
+  const pen = penStore.usePenSettings()
   const library = brushStore.useBrushLibrary(documentId)
   const snapshot = useSyncExternalStore(
     engine?.subscribe ?? subscribeToNothing,
@@ -272,6 +278,23 @@ export function CanvasHost({
   // mutation call. That is not data loss: local storage already has the
   // stroke, the flush is replication, and the next session's own flush (idle,
   // its own tab-hide, or a future open) picks up whatever this one missed.
+  // The stored calibration is put back the moment there is an engine to take
+  // it, rather than being read into the panel and waiting for the artist to
+  // touch a control: a pressure curve that has to be re-set to take effect is
+  // one that was not really saved.
+  useEffect(() => {
+    if (!engine) return
+    void engine.dispatch({
+      type: "setPressureCurve",
+      curve: pen.pressureCurve,
+    })
+    void engine.dispatch({ type: "setTiltEnabled", enabled: pen.tiltEnabled })
+    // Deliberately keyed on the engine alone. This restores what was stored;
+    // the controls below write to the store and dispatch themselves, and
+    // re-running here on every change would fight the artist's own edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine])
+
   useEffect(() => {
     if (!engine) return
     const flush = () => {
@@ -857,6 +880,66 @@ export function CanvasHost({
                   void engine?.dispatch({ type: "setStabilization", strength })
                 }
               />
+              {/* Pen response is a calibration rather than an adjustment, so it
+                sits behind a popover instead of taking a fourth slider: an
+                artist sets it once for their hand and then leaves it. It is
+                here rather than only in app settings because the thing it has
+                to be judged against is the canvas. */}
+              <PopoverPrimitive.Root
+                open={pressureOpen}
+                onOpenChange={setPressureOpen}
+              >
+                <PopoverPrimitive.Trigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label="Pen settings"
+                    className="h-8 w-full justify-between px-1 text-xs"
+                  >
+                    <span className="text-muted-foreground">Pen</span>
+                    <CaretDownIcon className="shrink-0" />
+                  </Button>
+                </PopoverPrimitive.Trigger>
+                <PopoverPrimitive.Portal>
+                  <PopoverPrimitive.Content
+                    side="top"
+                    align="start"
+                    sideOffset={10}
+                    collisionPadding={12}
+                    aria-label="Pen settings"
+                    className="z-50 flex flex-col gap-3 rounded-xl border bg-background p-3 shadow-xl outline-none"
+                  >
+                    {/* Driven by what the engine holds rather than by state of
+                      its own: the curve the artist drags and the curve every
+                      sample is shaped by are then the same one. */}
+                    <PressureCurve
+                      size="md"
+                      testArea
+                      value={snapshot.pressureCurve}
+                      onChange={(curve) => {
+                        penStore.setPressureCurve(curve)
+                        void engine?.dispatch({
+                          type: "setPressureCurve",
+                          curve,
+                        })
+                      }}
+                    />
+                    {/* Switched off, a pen reads as upright, which is what a
+                      noisy or absent tilt sensor needs and what an artist who
+                      rests their hand at an angle asks for. */}
+                    <TiltToggle
+                      enabled={snapshot.tiltEnabled}
+                      onChange={(enabled) => {
+                        penStore.setTiltEnabled(enabled)
+                        void engine?.dispatch({
+                          type: "setTiltEnabled",
+                          enabled,
+                        })
+                      }}
+                    />
+                  </PopoverPrimitive.Content>
+                </PopoverPrimitive.Portal>
+              </PopoverPrimitive.Root>
             </div>
 
             <div

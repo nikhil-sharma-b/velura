@@ -21,6 +21,10 @@
  * Receives each resampled stamp: position in canvas pixels, and the pen state
  * interpolated to it — force in [0, 1], tilt in degrees per axis, and the
  * clock reading in milliseconds.
+ *
+ * A sink that draws a dab whose size the dynamics graph decided calls
+ * `setSpacing` while it runs, since spacing is a fraction of that dab's
+ * diameter. Its own return value is ignored.
  */
 export type StampSink = (
   x: number,
@@ -29,7 +33,7 @@ export type StampSink = (
   tiltX: number,
   tiltY: number,
   time: number
-) => void
+) => unknown
 
 /** How finely the spline is walked before distances are accumulated. */
 const WALK_STEP = 1.5
@@ -68,10 +72,26 @@ export interface StrokeResampler {
   ): void
   /** Ends the stroke, flushing the trailing segment up to the last sample. */
   end(emit: StampSink): void
+  /**
+   * Sets the distance to the next stamp, in canvas pixels.
+   *
+   * Called from inside a `StampSink`, by a caller that has just decided how
+   * big the dab it is drawing is. It is a method rather than the sink's
+   * return value because a sink returns whatever its last expression happened
+   * to be — `array.push` answers with a length — and a spacing set by
+   * accident is a stroke that silently changes tone.
+   */
+  setSpacing(pixels: number): void
 }
 
-export function createStrokeResampler(spacing: number): StrokeResampler {
-  if (!(spacing > 0)) throw new Error("Stamp spacing must be positive.")
+export function createStrokeResampler(baseSpacing: number): StrokeResampler {
+  if (!(baseSpacing > 0)) throw new Error("Stamp spacing must be positive.")
+  // The brush at rest opens every stroke, because the first dab's size is not
+  // known until it has been placed. Each dab then says what follows it, so a
+  // brush that grows with tilt or pressure lays down the same number of dabs
+  // per dab-width whatever size it is drawing at — which is what keeps a
+  // buildup brush from darkening simply because it got bigger.
+  let spacing = baseSpacing
   // Four control points: the segment drawn is p1 -> p2, shaped by p0 and p3.
   const control = new Float64Array(4 * STRIDE)
   // Distance walked since the last stamp, carried across segments so the
@@ -144,7 +164,11 @@ export function createStrokeResampler(spacing: number): StrokeResampler {
     )
   }
 
-  /** Walks p1 -> p2, emitting a stamp every `spacing` pixels of arc length. */
+  /**
+   * Walks p1 -> p2, emitting a stamp every `spacing` pixels of arc length.
+   * The spacing is re-read each time round, since the stamp just emitted may
+   * have changed it.
+   */
   function walk(emit: StampSink) {
     const chord = Math.hypot(
       control[2 * STRIDE] - control[STRIDE],
@@ -167,7 +191,10 @@ export function createStrokeResampler(spacing: number): StrokeResampler {
       // two steps reads the pen state at the point it actually landed.
       let walked = 0
       while (remaining > 0 && carry + remaining >= spacing) {
-        const advance = spacing - carry
+        // A dab that shrinks the spacing can leave more already walked than
+        // the new spacing asks for. That stamp lands here rather than behind
+        // the pen, and the next one picks up the spacing properly.
+        const advance = Math.max(0, spacing - carry)
         const fraction = advance / remaining
         previousX += (x - previousX) * fraction
         previousY += (y - previousY) * fraction
@@ -189,6 +216,7 @@ export function createStrokeResampler(spacing: number): StrokeResampler {
       for (let slot = 0; slot < 3; slot++)
         setControl(slot, x, y, pressure, tiltX, tiltY, time)
       carry = 0
+      spacing = baseSpacing
       started = true
       emit(x, y, pressure, tiltX, tiltY, time)
     },
@@ -197,6 +225,11 @@ export function createStrokeResampler(spacing: number): StrokeResampler {
       setControl(3, x, y, pressure, tiltX, tiltY, time)
       walk(emit)
       shift()
+    },
+    setSpacing(pixels) {
+      // An unusable answer leaves the spacing where it is: a stroke drawn at
+      // NaN or at infinity is a stroke that stops dead.
+      if (Number.isFinite(pixels) && pixels > 0) spacing = pixels
     },
     end(emit) {
       if (!started) return

@@ -214,3 +214,73 @@ describe("pen state along the path", () => {
       expect(dabs[i].time).toBeGreaterThanOrEqual(dabs[i - 1].time)
   })
 })
+
+describe("spacing that follows the dab", () => {
+  /** Walks a line, letting each stamp set the spacing to the one after it. */
+  function collectWithSpacing(
+    base: number,
+    spacingFor: (index: number) => number,
+    points: readonly Stamp[]
+  ): Stamp[] {
+    const stamps: Stamp[] = []
+    const resampler = createStrokeResampler(base)
+    const emit = (x: number, y: number) => {
+      stamps.push({ x, y })
+      resampler.setSpacing(spacingFor(stamps.length - 1))
+    }
+    resampler.begin(points[0].x, points[0].y, 1, 0, 0, 0, emit)
+    for (const point of points.slice(1))
+      resampler.extend(point.x, point.y, 1, 0, 0, 0, emit)
+    resampler.end(emit)
+    return stamps
+  }
+
+  test("a sink that never sets one keeps the spacing it was built with", () => {
+    const stamps = collect(4, line({ x: 0, y: 0 }, { x: 200, y: 0 }, 20))
+    for (const gap of gaps(stamps).slice(1, -1)) expect(gap).toBeCloseTo(4, 4)
+  })
+
+  test("a stamp can widen the gap to the one after it", () => {
+    const stamps = collectWithSpacing(
+      2,
+      () => 8,
+      line({ x: 0, y: 0 }, { x: 200, y: 0 }, 20)
+    )
+    for (const gap of gaps(stamps).slice(1, -1)) expect(gap).toBeCloseTo(8, 4)
+  })
+
+  test("a dab twice the size lays down half as many dabs", () => {
+    const path = line({ x: 0, y: 0 }, { x: 400, y: 0 }, 20)
+    const small = collectWithSpacing(1, () => 1, path).length
+    const large = collectWithSpacing(1, () => 2, path).length
+    // Which is the whole point: overlap per pixel, and so tone under buildup,
+    // stays put while the stroke gets wider.
+    expect(large / small).toBeCloseTo(0.5, 1)
+  })
+
+  test("the spacing can shrink mid-stroke without stalling the walk", () => {
+    // A pen easing off shrinks the dab, and with it the spacing, below what
+    // has already been walked since the last stamp.
+    const stamps = collectWithSpacing(
+      12,
+      (index) => (index < 2 ? 12 : 0.5),
+      line({ x: 0, y: 0 }, { x: 100, y: 0 }, 25)
+    )
+    expect(stamps.length).toBeGreaterThan(100)
+    for (const gap of gaps(stamps)) expect(Number.isFinite(gap)).toBe(true)
+  })
+
+  test("a spacing that cannot be drawn at is refused", () => {
+    // Infinity would stop the stroke dead and NaN would end it silently, so
+    // both leave the last usable spacing standing.
+    for (const bad of [0, -3, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const stamps = collectWithSpacing(
+        4,
+        () => bad,
+        line({ x: 0, y: 0 }, { x: 100, y: 0 }, 25)
+      )
+      expect(stamps.length).toBeGreaterThan(20)
+      for (const gap of gaps(stamps).slice(1, -1)) expect(gap).toBeCloseTo(4, 4)
+    }
+  })
+})

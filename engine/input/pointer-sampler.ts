@@ -1,3 +1,6 @@
+import type { Curve } from "../brush/curve"
+import { tiltFromAltitude } from "../brush/stamp-context"
+import { DEFAULT_PRESSURE_CURVE, shapePressure } from "./pressure-curve"
 import type { SampleBuffer } from "./sample-buffer"
 import { isViewPanButton } from "./view-gestures"
 
@@ -36,13 +39,29 @@ export interface StrokeHandlers {
   sample?(x: number, y: number): void
 }
 
+export interface SamplerOptions {
+  /**
+   * The artist's pen response curve, read per sample rather than captured, so
+   * that changing it in settings takes effect on the next mark instead of on
+   * the next time input happens to be reattached.
+   */
+  pressureCurve?: () => Curve
+  /**
+   * Whether the pen's tilt is read at all. Off, every sample reports an
+   * upright pen — read per sample for the same reason the curve is, so the
+   * switch takes effect on the next mark.
+   */
+  tiltEnabled?: () => boolean
+}
+
 /** Whether the browser reports raw pointer updates ahead of `pointermove`. */
 const RAW_UPDATES = "onpointerrawupdate" in globalThis
 
 export function attachPointerSampler(
   canvas: HTMLCanvasElement,
   buffer: SampleBuffer,
-  handlers: StrokeHandlers
+  handlers: StrokeHandlers,
+  options: SamplerOptions = {}
 ): () => void {
   let activePointer: number | null = null
   // Captured once per stroke: reading layout per event would force a reflow
@@ -75,17 +94,50 @@ export function attachPointerSampler(
    * there is a sensor is a fact about the device, so it is decided here and
    * once — a pen that genuinely reports zero as it lands must keep its zero,
    * or the taper a pressure mapping draws is inverted at both ends.
+   *
+   * A device that reports force has the artist's response curve applied to it
+   * here, at the one place a raw reading enters the pipeline, so that nothing
+   * downstream — the ring buffer, the stroke path, a brush's own dynamics —
+   * has to know which hand is holding the pen. A mouse is exempt: its 1 is a
+   * stand-in for a missing sensor, not a press, and shaping it would let a
+   * curve the artist drew for their pen quietly thin every mouse stroke.
    */
   const canvasPressure = (event: PointerEvent) =>
-    event.pointerType === "mouse" ? 1 : event.pressure
+    event.pointerType === "mouse"
+      ? 1
+      : shapePressure(
+          options.pressureCurve?.() ?? DEFAULT_PRESSURE_CURVE,
+          event.pressure
+        )
+
+  /**
+   * The pen's orientation as a pair of axis angles.
+   *
+   * A device need only report one of the two forms the spec defines, and
+   * WebKit prefers the spherical one for Apple Pencil. The axis angles win
+   * where a device gives them, because a browser that reports both has
+   * already done this conversion; the fallback is read only from a pen that
+   * says it is upright on both axes, where deriving it either recovers a real
+   * lean or agrees with the zeroes it replaces.
+   */
+  function canvasTilt(event: PointerEvent): readonly [number, number] {
+    // Switched off, the pen reads as upright rather than as untilted-and-
+    // unknown: zero is what an upright pen genuinely reports, so a brush that
+    // shades with tilt falls back to its own size instead of to nothing.
+    if (options.tiltEnabled?.() === false) return [0, 0]
+    if (event.tiltX || event.tiltY) return [event.tiltX, event.tiltY]
+    if (event.altitudeAngle === undefined) return [0, 0]
+    return tiltFromAltitude(event.altitudeAngle, event.azimuthAngle ?? 0)
+  }
 
   function record(event: PointerEvent) {
+    const [tiltX, tiltY] = canvasTilt(event)
     buffer.push(
       canvasX(event),
       canvasY(event),
       canvasPressure(event),
-      event.tiltX,
-      event.tiltY,
+      tiltX,
+      tiltY,
       event.timeStamp - strokeStart
     )
   }
@@ -119,12 +171,13 @@ export function attachPointerSampler(
     event.preventDefault()
     buffer.clear()
     strokeStart = event.timeStamp
+    const [tiltX, tiltY] = canvasTilt(event)
     handlers.begin(
       canvasX(event),
       canvasY(event),
       canvasPressure(event),
-      event.tiltX,
-      event.tiltY,
+      tiltX,
+      tiltY,
       0,
       event.timeStamp
     )
