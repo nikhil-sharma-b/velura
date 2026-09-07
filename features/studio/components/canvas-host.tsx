@@ -59,6 +59,11 @@ import { createLocalPenSettingsStore } from "../lib/local-pen-settings"
 import type { BrushStore } from "../lib/brush-store"
 import { resolveLibraryBrush, setForNewBrush } from "../lib/brush-shelf"
 import { DEFAULT_LIBRARY_BRUSH_ID } from "@/engine/brush/presets"
+import {
+  dragCarriesFile,
+  firstImageFile,
+  placeImageFile,
+} from "../lib/image-import"
 import { readTextureFile } from "../lib/texture-import"
 import { BrushEditor } from "./brush-editor"
 import { TOOL_CURSOR } from "../lib/tool-cursor"
@@ -205,6 +210,10 @@ export function CanvasHost({
   /** Why the last attempt to keep a brush failed, if it did. */
   const [brushProblem, setBrushProblem] = useState<string | null>(null)
   const [paintNotice, setPaintNotice] = useState<string | null>(null)
+  /** Why the last dropped or pasted image did not come in, if it did not. */
+  const [imageProblem, setImageProblem] = useState<string | null>(null)
+  /** An image is over the canvas and would land if let go of. */
+  const [imageOverCanvas, setImageOverCanvas] = useState(false)
   const documentWidth = documentSize?.width
   const documentHeight = documentSize?.height
   // Created once per host: the store owns the subscription the picker reads
@@ -311,6 +320,49 @@ export function CanvasHost({
   // Undo and navigation are keystrokes before they are buttons, and the canvas
   // has no focus of its own to hang them off: the artist's hand is on the pen,
   // not on the page.
+  /**
+   * An image from anywhere outside the app — dropped off the desktop, pasted
+   * off the clipboard — onto a layer of its own. Three routes reach this (the
+   * panel's own button is the third) and they differ only in where the file
+   * came from, so the placement itself lives in one place.
+   */
+  const placeImage = useCallback(
+    (file: File) => {
+      if (!engine) return
+      setImageProblem(null)
+      void placeImageFile(engine, file).catch((error: unknown) =>
+        setImageProblem(
+          error instanceof Error
+            ? error.message
+            : "That image could not be placed."
+        )
+      )
+    },
+    [engine]
+  )
+
+  // Pasting is bound on the window rather than on the canvas: the canvas
+  // cannot hold focus while the pen is drawing on it, and an artist who has
+  // just copied a screenshot expects Cmd-V to work wherever they last clicked.
+  useEffect(() => {
+    if (!engine) return
+    const onPaste = (event: ClipboardEvent) => {
+      // A field being typed in owns its own paste, and this is not it.
+      const target = event.target as HTMLElement | null
+      if (
+        target?.isContentEditable ||
+        ["INPUT", "TEXTAREA"].includes(target?.tagName ?? "")
+      )
+        return
+      const file = firstImageFile(event.clipboardData)
+      if (!file) return
+      event.preventDefault()
+      placeImage(file)
+    }
+    window.addEventListener("paste", onPaste)
+    return () => window.removeEventListener("paste", onPaste)
+  }, [engine, placeImage])
+
   useEffect(() => {
     if (!engine) return
     const onKeyDown = (event: KeyboardEvent) => {
@@ -487,6 +539,33 @@ export function CanvasHost({
     <main
       className="fixed inset-0 overflow-hidden bg-canvas-matting"
       data-engine-status={snapshot.status}
+      onDragOver={(event) => {
+        // A drag's contents cannot be read until it is dropped, so a file of
+        // any kind is welcomed here and the drop says whether it was an image.
+        // Text and links are left alone: the browser's own answer to those is
+        // better than a canvas swallowing them.
+        if (!dragCarriesFile(event.dataTransfer)) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = "copy"
+        setImageOverCanvas(true)
+      }}
+      onDragLeave={(event) => {
+        // Crossing between the panels and the canvas is not leaving: only a
+        // pointer that has left the window entirely puts the hint away.
+        if (event.currentTarget.contains(event.relatedTarget as Node | null))
+          return
+        setImageOverCanvas(false)
+      }}
+      onDrop={(event) => {
+        if (!dragCarriesFile(event.dataTransfer)) return
+        event.preventDefault()
+        setImageOverCanvas(false)
+        const file = firstImageFile(event.dataTransfer)
+        // Told, rather than nothing happening: a dropped file that vanished
+        // without a word is indistinguishable from a bug.
+        if (!file) setImageProblem("That file is not an image.")
+        else placeImage(file)
+      }}
     >
       <canvas
         ref={attach}
@@ -1015,6 +1094,26 @@ export function CanvasHost({
           >
             <SidebarSimpleIcon />
           </Button>
+
+          {imageOverCanvas && (
+            <div
+              role="status"
+              className="pointer-events-none absolute inset-3 grid place-items-center rounded-xl border-2 border-dashed border-brand-gold/70 bg-studio-surface/20"
+            >
+              <span className="rounded-lg bg-studio-surface/95 px-4 py-2 text-sm shadow-lg">
+                Drop to place the image on its own layer
+              </span>
+            </div>
+          )}
+
+          {imageProblem && (
+            <div
+              role="alert"
+              className="absolute bottom-5 left-1/2 -translate-x-1/2 rounded-lg border border-destructive/40 bg-studio-surface/95 px-4 py-2 text-sm shadow-lg"
+            >
+              {imageProblem}
+            </div>
+          )}
 
           {paintNotice && (
             <div

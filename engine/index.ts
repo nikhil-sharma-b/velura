@@ -71,6 +71,7 @@ import {
   restoreStructure,
   structureSurfaceIds,
 } from "./doc/structure"
+import { fitPlacement, imageTiles, type SourceImage } from "./doc/image-tiles"
 import { createOpfsSpill, createTileStore } from "./doc/tile-store"
 import { type TileCoord, tileIndexForPixel } from "./doc/tile-grid"
 import type { SurfaceTiles, TileRef } from "./store/document-store"
@@ -265,6 +266,25 @@ export type EngineCommand =
   | { type: "registerTexture"; id: string; texture: GrayscaleTexture }
   /** Adds an empty layer above the active one and selects it. */
   | { type: "addLayer" }
+  /**
+   * Brings an image in on a layer of its own, above the active one, and
+   * selects it (D3): a photographed reference, a scan to trace, a plate to
+   * paint over. A layer rather than a stamp into the current one, so the
+   * artist can move it down the stack, dim it, mask it or throw it away
+   * without touching the paint.
+   *
+   * The pixels arrive already at the size they are to be drawn at — resampling
+   * belongs to whoever decoded the file, which is where the browser's own
+   * scaler is — and are placed centred unless an origin says otherwise.
+   */
+  | {
+      type: "placeImage"
+      image: SourceImage
+      /** The layer's name; the file's, usually. */
+      name?: string
+      /** Top-left in document pixels. Centred when absent. */
+      origin?: { x: number; y: number }
+    }
   | { type: "addGroup"; ids?: string[] }
   /** Copies a layer's pixels and settings above it, then selects the copy. */
   | { type: "duplicateLayer"; id: string }
@@ -954,6 +974,11 @@ export function createEngine(
     operation?: {
       removed?: readonly string[]
       copied?: readonly { from: string; to: string }[]
+      filled?: readonly {
+        surfaceId: string
+        tiles: readonly (TileCoord & { texels: Uint16Array })[]
+      }[]
+      canvas?: { width: number; height: number }
       coalesceAs?: string
     }
   ) {
@@ -1869,6 +1894,35 @@ export function createEngine(
           const before = captureStructure(requireDocument())
           addLayer(requireDocument())
           recordOperation("add layer", before)
+          applyLayerChange()
+          break
+        }
+        case "placeImage": {
+          const document = requireDocument()
+          const image = command.image
+          if (
+            !Number.isInteger(image.width) ||
+            !Number.isInteger(image.height) ||
+            image.width < 1 ||
+            image.height < 1
+          )
+            throw new Error("An image needs a whole width and height.")
+          if (image.pixels.length < image.width * image.height * 4)
+            throw new Error("That image has fewer pixels than it claims.")
+          const canvas = { width: document.width, height: document.height }
+          const before = captureStructure(document)
+          const id = addLayer(document)
+          if (command.name) setLayer(document, id, { name: command.name })
+          const origin = command.origin ?? fitPlacement(image, canvas)
+          const tiles = imageTiles(image, origin, canvas)
+          recordOperation("place image", before, {
+            filled: [{ surfaceId: id, tiles }],
+            canvas,
+          })
+          // Recording is what puts these tiles on the GPU, and it is queued
+          // behind whatever else history is doing: the frame has to wait for
+          // them or the image would appear only on the next unrelated redraw.
+          await history?.settle()
           applyLayerChange()
           break
         }

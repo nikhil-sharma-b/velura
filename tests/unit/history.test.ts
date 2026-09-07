@@ -226,6 +226,42 @@ describe("recording layer operations", () => {
     expect(fixture.read(removable, ORIGIN)).toBeNull()
   })
 
+  test("a placed image's pixels arrive with the layer and leave with it", async () => {
+    const fixture = setup()
+    const doc = createDocument({ width: 512, height: 512 })
+    const before = captureStructure(doc)
+    const placed = addLayer(doc)
+    fixture.history.recordOperation(
+      "place image",
+      { before, after: captureStructure(doc) },
+      {
+        filled: [
+          {
+            surfaceId: placed,
+            tiles: [
+              { ...ORIGIN, texels: new Uint16Array(TILE_VALUES).fill(7) },
+            ],
+          },
+        ],
+        canvas: { width: 512, height: 512 },
+      }
+    )
+    await fixture.history.settle()
+    // Recording is what puts the image on the surface: the caller hands over
+    // texels, never writing them itself, so one step owns both halves.
+    expect(fixture.read(placed, ORIGIN)![0]).toBe(7)
+    expect(
+      fixture.history
+        .tileIndex()
+        .find((surface) => surface.surfaceId === placed)!.tiles
+    ).toHaveLength(1)
+
+    await fixture.history.undo(() => {})
+    expect(fixture.read(placed, ORIGIN)).toBeNull()
+    await fixture.history.redo(() => {})
+    expect(fixture.read(placed, ORIGIN)![0]).toBe(7)
+  })
+
   test("an operation that changed nothing is not a step", async () => {
     const { history } = setup()
     const doc = createDocument({ width: 512, height: 512 })
