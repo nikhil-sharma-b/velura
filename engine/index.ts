@@ -177,8 +177,8 @@ export type EngineColor = Readonly<{
  */
 const SAMPLE_CAPACITY = 512
 
-/** A light default: enough to steady a hand, little enough to feel direct. */
-export const DEFAULT_STABILIZATION = 0.2
+/** Fresh strokes follow the hand directly until the artist asks for smoothing. */
+export const DEFAULT_STABILIZATION = 0
 
 export type EngineCommand =
   | { type: "initialize" }
@@ -276,8 +276,8 @@ export type EngineCommand =
   | { type: "flipView" }
   /** The whole piece in the window, at the angle it is being worked at. */
   | { type: "fitView" }
-  /** Back to square: no pan, no zoom, no rotation, no flip. */
-  | { type: "resetView" }
+  /** Back to square; a host may centre it around an open panel. */
+  | { type: "resetView"; panX?: number }
   /** Takes back the last stroke or layer operation. Nothing to undo is a no-op. */
   | { type: "undo" }
   | { type: "redo" }
@@ -1982,7 +1982,9 @@ export function createEngine(
           break
         }
         case "resetView":
-          setView(DEFAULT_VIEW)
+          if (command.panX !== undefined && !Number.isFinite(command.panX))
+            throw new Error("Reset pan must be finite.")
+          setView({ ...DEFAULT_VIEW, panX: command.panX ?? DEFAULT_VIEW.panX })
           break
         case "setStabilization": {
           if (!Number.isFinite(command.strength))

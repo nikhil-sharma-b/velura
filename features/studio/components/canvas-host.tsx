@@ -294,11 +294,15 @@ export function CanvasHost({
       const navigation = navigationForKey(key, event.shiftKey)
       if (!navigation) return
       event.preventDefault()
-      void engine.dispatch(navigation)
+      void engine.dispatch(
+        navigation.type === "resetView" && !panelsOpen
+          ? { ...navigation, panX: 0 }
+          : navigation
+      )
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [engine])
+  }, [engine, panelsOpen])
 
   // A brush names its textures and never carries them (24), so a library
   // synced from another machine arrives as definitions pointing at assets this
@@ -511,12 +515,10 @@ export function CanvasHost({
               onClick={() => {
                 setColorOpen((open) => !open)
                 setPanelsOpen(true)
-              }}
-              className="rounded-lg"
-            >
-              {/* The rail swatch is the current ink, so the colour in the hand
-                  is visible without opening anything. */}
-              <PaletteIcon style={{ color: snapshot.color.hex }} />
+            }}
+            className="rounded-lg"
+          >
+              <PaletteIcon />
             </Button>
             <Button
               variant={brushOpen ? "default" : "ghost"}
@@ -765,7 +767,12 @@ export function CanvasHost({
               variant="ghost"
               size="sm"
               aria-label="Reset view"
-              onClick={() => void engine?.dispatch({ type: "resetView" })}
+              onClick={() =>
+                void engine?.dispatch({
+                  type: "resetView",
+                  ...(panelsOpen ? {} : { panX: 0 }),
+                })
+              }
               className="rounded-lg text-xs"
             >
               Reset
@@ -804,7 +811,7 @@ export function CanvasHost({
             aria-label={panelsOpen ? "Collapse panels" : "Expand panels"}
             onClick={() => setPanelsOpen((open) => !open)}
             className={`absolute top-3 rounded-lg bg-background/88 shadow-md backdrop-blur-xl transition-[right] ${
-              panelsOpen ? "right-[18.75rem]" : "right-3"
+              panelsOpen ? "right-[19.5rem]" : "right-3"
             }`}
           >
             <SidebarSimpleIcon />
