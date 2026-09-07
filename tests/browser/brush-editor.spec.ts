@@ -41,7 +41,9 @@ function slider(page: Page, name: string) {
  * What is under test is that the control moves it, not what it moves it from.
  */
 async function diameter(page: Page, offsetPixels = 0): Promise<string> {
-  const radius = Number(await slider(page, "Size").getAttribute("aria-valuenow"))
+  const radius = Number(
+    await slider(page, "Size").getAttribute("aria-valuenow")
+  )
   return `${(radius * 2 + offsetPixels).toFixed(1)} px`
 }
 
@@ -128,7 +130,9 @@ test("any input can be mapped onto any parameter, through a curve", async ({
   // A further mapping stands beside it, and either can be taken away.
   await dialog.getByRole("button", { name: "Add mapping" }).click()
   await expect(dialog.getByTestId(`mapping-${existing + 1}`)).toBeVisible()
-  await dialog.getByRole("button", { name: `Remove ${label.toLowerCase()}` }).click()
+  await dialog
+    .getByRole("button", { name: `Remove ${label.toLowerCase()}` })
+    .click()
   await expect(dialog.getByTestId(`mapping-${existing + 1}`)).toHaveCount(0)
   await expect(mapping).toBeVisible()
 })

@@ -23,7 +23,9 @@ describe("built-in brushes", () => {
     const ids = BUILTIN_BRUSHES.map((brush) => brush.id)
     expect(new Set(ids).size).toBe(ids.length)
     expect(ids.length).toBeGreaterThanOrEqual(5)
-    expect(BUILTIN_BRUSHES.every((brush) => isBuiltinBrush(brush.id))).toBe(true)
+    expect(BUILTIN_BRUSHES.every((brush) => isBuiltinBrush(brush.id))).toBe(
+      true
+    )
     expect(builtinBrush(DEFAULT_LIBRARY_BRUSH_ID)).toBeDefined()
   })
 
@@ -41,7 +43,8 @@ describe("built-in brushes", () => {
     for (const brush of BUILTIN_BRUSHES) {
       if (brush.shape.tipTextureId)
         expect(BUILTIN_TEXTURE_IDS).toContain(brush.shape.tipTextureId)
-      if (brush.grain) expect(BUILTIN_TEXTURE_IDS).toContain(brush.grain.textureId)
+      if (brush.grain)
+        expect(BUILTIN_TEXTURE_IDS).toContain(brush.grain.textureId)
     }
   })
 })
@@ -75,7 +78,10 @@ describe("a stored brush definition", () => {
 
   test("refuses values the engine would throw on", () => {
     expect(() =>
-      normaliseBrushDefinition({ ...round, shape: { ...round.shape, radius: 0 } })
+      normaliseBrushDefinition({
+        ...round,
+        shape: { ...round.shape, radius: 0 },
+      })
     ).toThrow()
     expect(() =>
       normaliseBrushDefinition({
@@ -86,7 +92,14 @@ describe("a stored brush definition", () => {
     expect(() =>
       normaliseBrushDefinition({
         ...round,
-        dynamics: [{ source: "pressure", target: "angle", range: [0, 1], mix: "multiply" }],
+        dynamics: [
+          {
+            source: "pressure",
+            target: "angle",
+            range: [0, 1],
+            mix: "multiply",
+          },
+        ],
       })
     ).toThrow()
     expect(() => normaliseBrushDefinition(null)).toThrow()

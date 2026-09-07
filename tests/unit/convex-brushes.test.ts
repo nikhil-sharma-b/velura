@@ -75,9 +75,9 @@ describe("brushes on the account", () => {
     expect(await stranger.query(api.brushes.list, {})).toEqual([])
     // "Not yours" and "not there" answer the same way, so an id cannot be
     // probed for existence.
-    expect(
-      stranger.mutation(api.brushes.remove, { brushId })
-    ).rejects.toThrow("That brush does not exist.")
+    expect(stranger.mutation(api.brushes.remove, { brushId })).rejects.toThrow(
+      "That brush does not exist."
+    )
   })
 
   test("a definition that is not a brush is refused rather than stored", async () => {
@@ -128,9 +128,9 @@ describe("organising a growing library", () => {
       set: "Inks",
       index: 0,
     })
-    expect((await artist.query(api.brushes.list, {})).map((b) => b.name)).toEqual(
-      ["Third", "First", "Second"]
-    )
+    expect(
+      (await artist.query(api.brushes.list, {})).map((b) => b.name)
+    ).toEqual(["Third", "First", "Second"])
   })
 
   test("a brush moves into another set, and the set it left closes up", async () => {

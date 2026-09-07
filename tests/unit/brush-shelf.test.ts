@@ -42,7 +42,11 @@ describe("the shelf", () => {
     ])
     const inks = shelf.find((set) => set.name === "Inks")!
     expect(inks.brushes.map((entry) => entry.name)).toEqual(["First", "Second"])
-    expect(shelf.map((set) => set.name)).toEqual([BUILTIN_SET, "Inks", "Washes"])
+    expect(shelf.map((set) => set.name)).toEqual([
+      BUILTIN_SET,
+      "Inks",
+      "Washes",
+    ])
     expect(inks.brushes.every((entry) => entry.builtin)).toBe(false)
   })
 })
@@ -56,7 +60,14 @@ describe("a built-in", () => {
 
   test("duplicates into a set of the artist's own", () => {
     const copy = duplicateOf(
-      { id: pencil.id, name: pencil.name, set: BUILTIN_SET, brush: pencil, builtin: true, deletable: false },
+      {
+        id: pencil.id,
+        name: pencil.name,
+        set: BUILTIN_SET,
+        brush: pencil,
+        builtin: true,
+        deletable: false,
+      },
       []
     )
     expect(copy.set).not.toBe(BUILTIN_SET)
