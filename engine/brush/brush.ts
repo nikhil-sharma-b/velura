@@ -110,9 +110,21 @@ export const DEFAULT_BRUSH: Brush = {
   dynamics: [],
 }
 
+/**
+ * Distance between dabs in canvas pixels, for a dab of the given radius.
+ *
+ * Spacing is a fraction of the dab's diameter, so it has to follow the dab:
+ * a brush whose size is modulated by tilt or pressure and whose spacing is
+ * not would change how many dabs overlap each pixel as it grew, and under
+ * `buildup` that is a change in tone rather than in width.
+ */
+export function dabSpacing(brush: Brush, radius: number): number {
+  return Math.max(0.05, radius * 2 * brush.shape.spacing)
+}
+
 /** Distance between dabs in canvas pixels, for a brush at rest. */
 export function brushSpacing(brush: Brush): number {
-  return Math.max(0.05, brush.shape.radius * 2 * brush.shape.spacing)
+  return dabSpacing(brush, brush.shape.radius)
 }
 
 /** A brush is plain data, so a copy is a deep clone and nothing else. */

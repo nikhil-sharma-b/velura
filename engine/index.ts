@@ -3,6 +3,7 @@ import {
   type Brush,
   type BrushGrain,
   brushSpacing,
+  dabSpacing,
   cloneBrush,
   DEFAULT_BRUSH,
 } from "./brush/brush"
@@ -1002,7 +1003,8 @@ export function createEngine(
     const offset = stampCount * STAMP_STRIDE
     stamps[offset + STAMP.CENTER_X] = x
     stamps[offset + STAMP.CENTER_Y] = y
-    stamps[offset + STAMP.RADIUS] = brush.shape.radius * params.size
+    const radius = brush.shape.radius * params.size
+    stamps[offset + STAMP.RADIUS] = radius
     // Flow: the dab's own opacity, not the stroke's, which is applied once
     // when the buffer is composited (D27).
     stamps[offset + STAMP.OPACITY] = brush.rendering.flow * params.flow
@@ -1015,6 +1017,12 @@ export function createEngine(
     stamps[offset + STAMP.GRAIN_DEPTH] = params.grainDepth
     stampCount++
     frameStamps++
+    // What follows this dab, measured against the dab actually drawn rather
+    // than against the brush at rest. A brush whose size is modulated would
+    // otherwise keep laying dabs at its resting pitch: laid over, the pencil
+    // put down more than twice as many overlapping dabs per pixel, and under
+    // buildup that reads as tilt darkening the line rather than widening it.
+    resampler.setSpacing(dabSpacing(brush, radius))
   }
 
   /**
