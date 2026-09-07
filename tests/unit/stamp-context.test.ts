@@ -3,6 +3,7 @@ import {
   createStampContextTracker,
   normalizeTilt,
   REFERENCE_SPEED,
+  tiltFromAltitude,
   STROKE_PROGRESS_LENGTH,
 } from "../../engine/brush/stamp-context"
 
@@ -139,5 +140,63 @@ describe("stamp context from a stroke", () => {
     const context = tracker.begin(0, 0, 1, 0, 0, 1000)
     expect(context.strokeProgress).toBe(0)
     expect(context.velocity).toBe(0)
+  })
+})
+
+describe("altitude and azimuth as a fallback for the axis tilts", () => {
+  const HALF_PI = Math.PI / 2
+  const TAU = Math.PI * 2
+
+  test("a pen perpendicular to the screen is upright on both axes", () => {
+    const [tiltX, tiltY] = tiltFromAltitude(HALF_PI, 0)
+    expect(tiltX).toBeCloseTo(0, 6)
+    expect(tiltY).toBeCloseTo(0, 6)
+  })
+
+  test("halfway over leans 45 degrees along the azimuth", () => {
+    const [tiltX, tiltY] = tiltFromAltitude(Math.PI / 4, 0)
+    expect(tiltX).toBeCloseTo(45, 6)
+    expect(tiltY).toBeCloseTo(0, 6)
+  })
+
+  test("the azimuth chooses which axis the lean lands on", () => {
+    const [tiltX, tiltY] = tiltFromAltitude(Math.PI / 4, HALF_PI)
+    expect(tiltX).toBeCloseTo(0, 6)
+    expect(tiltY).toBeCloseTo(45, 6)
+  })
+
+  test("it is the inverse of what normalizeTilt then undoes", () => {
+    // The round trip is the whole point: a pen described either way has to
+    // reach the dynamics graph as the same lean and the same direction.
+    for (const altitude of [0.2, 0.6, 1.0, 1.4, HALF_PI])
+      for (const azimuth of [0, 1, 2.5, 4, 6]) {
+        const [tiltX, tiltY] = tiltFromAltitude(altitude, azimuth)
+        const [tilt, direction] = normalizeTilt(tiltX, tiltY)
+        expect(tilt).toBeCloseTo((HALF_PI - altitude) / HALF_PI, 5)
+        // An upright pen leans nowhere, so it has no direction to recover.
+        if (altitude < HALF_PI) expect(direction).toBeCloseTo(azimuth / TAU, 5)
+      }
+  })
+
+  test("a pen reported flat on the screen stays finite", () => {
+    for (const azimuth of [0, HALF_PI, Math.PI, 4.7]) {
+      const [tiltX, tiltY] = tiltFromAltitude(0, azimuth)
+      expect(Number.isFinite(tiltX)).toBe(true)
+      expect(Number.isFinite(tiltY)).toBe(true)
+      const [tilt] = normalizeTilt(tiltX, tiltY)
+      expect(tilt).toBeGreaterThan(0.95)
+      expect(tilt).toBeLessThanOrEqual(1)
+    }
+  })
+
+  test("an unreadable altitude falls back to upright, not to flat", () => {
+    // Taking a missing reading as zero would put the pen on its side, which
+    // is the loudest answer available to a device that reported nothing.
+    for (const bad of [NaN, undefined as unknown as number]) {
+      const [tiltX, tiltY] = tiltFromAltitude(bad, bad)
+      expect(tiltX).toBeCloseTo(0, 6)
+      expect(tiltY).toBeCloseTo(0, 6)
+      expect(normalizeTilt(tiltX, tiltY)[0]).toBeCloseTo(0, 6)
+    }
   })
 })

@@ -36,6 +36,13 @@ const DEGREES = Math.PI / 180
 /** Keeps `tan` finite for a pen reported as lying exactly flat. */
 const MAX_TILT_DEGREES = 89.9
 
+/**
+ * The same limit read from the other end: an altitude this close to the
+ * surface is as flat as a pen is allowed to be, which keeps `tan` off zero
+ * and the division below finite.
+ */
+const MIN_ALTITUDE_RADIANS = (90 - MAX_TILT_DEGREES) * (Math.PI / 180)
+
 export interface StampContextTracker {
   /** Opens a stroke at the first dab. `seed` makes `random` reproducible. */
   begin(
@@ -88,6 +95,41 @@ export function normalizeTilt(
   // far over is the pen" rather than as an altitude counting the other way.
   const fromVertical = clamp01(Math.atan(lean) / (Math.PI / 2))
   return [fromVertical, lean === 0 ? 0 : turn(Math.atan2(y, x))]
+}
+
+/**
+ * The axis tilts a pen's altitude and azimuth describe, in degrees.
+ *
+ * Pointer Events reports orientation two ways, and a device need only give
+ * one: `tiltX`/`tiltY` as a pair of axis angles, or `altitudeAngle` and
+ * `azimuthAngle` as a spherical direction. WebKit prefers the spherical pair
+ * for Apple Pencil, so a canvas that reads only the axis angles would take an
+ * iPad's pen as permanently upright and never shade with it.
+ *
+ * The conversion is the spec's own, and it is the exact inverse of what
+ * `normalizeTilt` then undoes: the tangents of the axis angles are the
+ * horizontal components of a unit vector along the pen, and those are
+ * `cos(azimuth)` and `sin(azimuth)` over `tan(altitude)`.
+ */
+export function tiltFromAltitude(
+  altitudeAngle: number,
+  azimuthAngle: number
+): readonly [number, number] {
+  // The spec's own default is upright, and it is what a missing or unreadable
+  // reading has to fall back to: taking it as zero would read as a pen lying
+  // flat on the glass, which is the loudest possible answer to a device that
+  // said nothing.
+  const reported = Number.isFinite(altitudeAngle) ? altitudeAngle : Math.PI / 2
+  const altitude = Math.max(
+    MIN_ALTITUDE_RADIANS,
+    Math.min(Math.PI / 2, reported)
+  )
+  const lean = 1 / Math.tan(altitude)
+  const azimuth = Number.isFinite(azimuthAngle) ? azimuthAngle : 0
+  return [
+    Math.atan(Math.cos(azimuth) * lean) / DEGREES,
+    Math.atan(Math.sin(azimuth) * lean) / DEGREES,
+  ]
 }
 
 /** Mulberry32: small, fast, and seeded, so a stroke's jitter is repeatable. */

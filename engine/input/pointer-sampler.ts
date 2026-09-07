@@ -1,4 +1,5 @@
 import type { Curve } from "../brush/curve"
+import { tiltFromAltitude } from "../brush/stamp-context"
 import { DEFAULT_PRESSURE_CURVE, shapePressure } from "./pressure-curve"
 import type { SampleBuffer } from "./sample-buffer"
 import { isViewPanButton } from "./view-gestures"
@@ -103,13 +104,30 @@ export function attachPointerSampler(
           event.pressure
         )
 
+  /**
+   * The pen's orientation as a pair of axis angles.
+   *
+   * A device need only report one of the two forms the spec defines, and
+   * WebKit prefers the spherical one for Apple Pencil. The axis angles win
+   * where a device gives them, because a browser that reports both has
+   * already done this conversion; the fallback is read only from a pen that
+   * says it is upright on both axes, where deriving it either recovers a real
+   * lean or agrees with the zeroes it replaces.
+   */
+  function canvasTilt(event: PointerEvent): readonly [number, number] {
+    if (event.tiltX || event.tiltY) return [event.tiltX, event.tiltY]
+    if (event.altitudeAngle === undefined) return [0, 0]
+    return tiltFromAltitude(event.altitudeAngle, event.azimuthAngle ?? 0)
+  }
+
   function record(event: PointerEvent) {
+    const [tiltX, tiltY] = canvasTilt(event)
     buffer.push(
       canvasX(event),
       canvasY(event),
       canvasPressure(event),
-      event.tiltX,
-      event.tiltY,
+      tiltX,
+      tiltY,
       event.timeStamp - strokeStart
     )
   }
@@ -143,12 +161,13 @@ export function attachPointerSampler(
     event.preventDefault()
     buffer.clear()
     strokeStart = event.timeStamp
+    const [tiltX, tiltY] = canvasTilt(event)
     handlers.begin(
       canvasX(event),
       canvasY(event),
       canvasPressure(event),
-      event.tiltX,
-      event.tiltY,
+      tiltX,
+      tiltY,
       0,
       event.timeStamp
     )
