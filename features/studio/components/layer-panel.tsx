@@ -6,6 +6,7 @@ import {
   EyeIcon,
   EyeSlashIcon,
   FolderPlusIcon,
+  ImageIcon,
   IntersectIcon,
   LockIcon,
   LockOpenIcon,
@@ -13,7 +14,7 @@ import {
   PlusIcon,
   TrashIcon,
 } from "@phosphor-icons/react"
-import { useState } from "react"
+import { useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -34,6 +35,7 @@ import {
   type LayerSummary,
 } from "@/engine"
 
+import { placeImageFile } from "../lib/image-import"
 import { IconButton } from "./icon-button"
 
 type LayerPanelProps = { engine: Engine; snapshot: EngineSnapshot }
@@ -276,6 +278,9 @@ function Rows({
 
 export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  /** Why the last image would not come in; cleared by the next attempt. */
+  const [imageProblem, setImageProblem] = useState<string | null>(null)
+  const imageInput = useRef<HTMLInputElement>(null)
   const selected =
     findSummary(snapshot.layers, selectedId ?? snapshot.activeLayerId) ??
     findSummary(snapshot.layers, snapshot.activeLayerId)
@@ -292,6 +297,43 @@ export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
           Layers
         </h2>
         <div className="flex">
+          {/*
+            The button is the control and the input is only how it reaches a
+            file: the browser's picker cannot be opened any other way, but a
+            bare file input would sit beside its neighbours looking like
+            something else — a different weight, and no tooltip.
+          */}
+          <IconButton
+            variant="ghost"
+            size="icon-sm"
+            label="Place an image on its own layer"
+            onClick={() => imageInput.current?.click()}
+          >
+            <ImageIcon />
+          </IconButton>
+          <input
+            ref={imageInput}
+            type="file"
+            accept="image/*"
+            tabIndex={-1}
+            aria-hidden
+            className="sr-only"
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              // Cleared, so placing the same file twice in a row is a change
+              // the input reports rather than silently swallows.
+              event.target.value = ""
+              if (!file) return
+              setImageProblem(null)
+              void placeImageFile(engine, file).catch((error: unknown) =>
+                setImageProblem(
+                  error instanceof Error
+                    ? error.message
+                    : "That image could not be placed."
+                )
+              )
+            }}
+          />
           <IconButton
             variant="ghost"
             size="icon-sm"
@@ -310,6 +352,12 @@ export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
           </IconButton>
         </div>
       </header>
+
+      {imageProblem && (
+        <p role="alert" className="shrink-0 px-3 py-2 text-xs text-destructive">
+          {imageProblem}
+        </p>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <Rows
