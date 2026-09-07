@@ -57,6 +57,7 @@ import { resolveLibraryBrush, setForNewBrush } from "../lib/brush-shelf"
 import { DEFAULT_LIBRARY_BRUSH_ID } from "@/engine/brush/presets"
 import { readTextureFile } from "../lib/texture-import"
 import { BrushEditor } from "./brush-editor"
+import { TOOL_CURSOR } from "../lib/tool-cursor"
 import { BrushIcon, EraserToolIcon } from "./brush-icon"
 import { BrushLibrary } from "./brush-library"
 import { IconButton } from "./icon-button"
@@ -473,6 +474,8 @@ export function CanvasHost({
         }}
         // Touch and pen gestures belong to the stroke, not to the scroller.
         className="block h-full w-full touch-none"
+        // A dot under the hand, so the mark has a visible starting point.
+        style={{ cursor: TOOL_CURSOR }}
       />
       {snapshot.status === "ready" && (
         <>
