@@ -46,6 +46,12 @@ export interface SamplerOptions {
    * the next time input happens to be reattached.
    */
   pressureCurve?: () => Curve
+  /**
+   * Whether the pen's tilt is read at all. Off, every sample reports an
+   * upright pen — read per sample for the same reason the curve is, so the
+   * switch takes effect on the next mark.
+   */
+  tiltEnabled?: () => boolean
 }
 
 /** Whether the browser reports raw pointer updates ahead of `pointermove`. */
@@ -115,6 +121,10 @@ export function attachPointerSampler(
    * lean or agrees with the zeroes it replaces.
    */
   function canvasTilt(event: PointerEvent): readonly [number, number] {
+    // Switched off, the pen reads as upright rather than as untilted-and-
+    // unknown: zero is what an upright pen genuinely reports, so a brush that
+    // shades with tilt falls back to its own size instead of to nothing.
+    if (options.tiltEnabled?.() === false) return [0, 0]
     if (event.tiltX || event.tiltY) return [event.tiltX, event.tiltY]
     if (event.altitudeAngle === undefined) return [0, 0]
     return tiltFromAltitude(event.altitudeAngle, event.azimuthAngle ?? 0)

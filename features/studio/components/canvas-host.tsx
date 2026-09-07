@@ -872,10 +872,10 @@ export function CanvasHost({
                   <Button
                     variant="ghost"
                     size="sm"
-                    aria-label="Pen pressure response"
+                    aria-label="Pen settings"
                     className="h-8 w-full justify-between px-1 text-xs"
                   >
-                    <span className="text-muted-foreground">Pen pressure</span>
+                    <span className="text-muted-foreground">Pen</span>
                     <CaretDownIcon className="shrink-0" />
                   </Button>
                 </PopoverPrimitive.Trigger>
@@ -885,8 +885,8 @@ export function CanvasHost({
                     align="start"
                     sideOffset={10}
                     collisionPadding={12}
-                    aria-label="Pen pressure response"
-                    className="z-50 rounded-xl border bg-background p-3 shadow-xl outline-none"
+                    aria-label="Pen settings"
+                    className="z-50 flex flex-col gap-3 rounded-xl border bg-background p-3 shadow-xl outline-none"
                   >
                     {/* Driven by what the engine holds rather than by state of
                       its own: the curve the artist drags and the curve every
@@ -902,6 +902,22 @@ export function CanvasHost({
                         })
                       }
                     />
+                    {/* Switched off, a pen reads as upright, which is what a
+                      noisy or absent tilt sensor needs and what an artist who
+                      rests their hand at an angle asks for. */}
+                    <Button
+                      variant={snapshot.tiltEnabled ? "secondary" : "outline"}
+                      size="sm"
+                      aria-pressed={snapshot.tiltEnabled}
+                      onClick={() =>
+                        void engine?.dispatch({
+                          type: "setTiltEnabled",
+                          enabled: !snapshot.tiltEnabled,
+                        })
+                      }
+                    >
+                      Tilt
+                    </Button>
                   </PopoverPrimitive.Content>
                 </PopoverPrimitive.Portal>
               </PopoverPrimitive.Root>

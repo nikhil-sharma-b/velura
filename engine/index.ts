@@ -206,6 +206,13 @@ export type EngineCommand =
    * for why this is a property of the hand rather than of the brush.
    */
   | { type: "setPressureCurve"; curve: Curve | null }
+  /**
+   * Whether pen tilt reaches the dynamics graph at all. Switched off, every
+   * sample reads as an upright pen, so a brush that shades with tilt draws at
+   * its own size instead — which is what a device with a noisy or absent tilt
+   * sensor needs, and what an artist who rests their hand at an angle wants.
+   */
+  | { type: "setTiltEnabled"; enabled: boolean }
   | { type: "setEraser"; kind?: EraserKind; radius?: number; opacity?: number }
   /**
    * The ink, as authored sRGB hex. Hex rather than the working space because
@@ -322,6 +329,8 @@ export type EngineSnapshot = Readonly<{
    * driven by what the engine actually holds rather than its own copy.
    */
   pressureCurve: Curve
+  /** Whether pen tilt reaches the dynamics graph. */
+  tiltEnabled: boolean
   /** The persistent mark-making tool; Alt/Option sampling never changes it. */
   tool: PaintTool
   /** Current display-encoded ink, updated by the eyedropper. */
@@ -389,6 +398,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   outputColorSpace: "srgb",
   stabilization: DEFAULT_STABILIZATION,
   pressureCurve: DEFAULT_PRESSURE_CURVE,
+  tiltEnabled: true,
   tool: "brush",
   color: Object.freeze({
     red: 36 / 255,
@@ -621,6 +631,9 @@ export function createEngine(
   // The pen response curve is engine state rather than a sampler argument: it
   // outlives any one attachment, and the sampler reads it back per sample.
   let pressureCurve: Curve = DEFAULT_PRESSURE_CURVE
+  // On unless the artist says otherwise: a pen that reports tilt should use
+  // it, and a pen that does not already reads as upright.
+  let tiltEnabled = true
   // Rebuilt only when the brush changes its spacing, which never happens
   // inside a stroke: a frame of drawing still allocates nothing (D30).
   let resampler = createStrokeResampler(brushSpacing(DEFAULT_BRUSH))
@@ -1590,7 +1603,10 @@ export function createEngine(
               void sampleColor(x, y).catch(fail)
             },
           },
-          { pressureCurve: () => pressureCurve }
+          {
+            pressureCurve: () => pressureCurve,
+            tiltEnabled: () => tiltEnabled,
+          }
         )
         // Navigation is input too, and it belongs to the same canvas. Holding
         // it here rather than in the host is what keeps the pen, the present
@@ -2034,6 +2050,11 @@ export function createEngine(
           validatePressureCurve(next)
           pressureCurve = next
           publish({ pressureCurve: Object.freeze(next.map((p) => ({ ...p }))) })
+          break
+        }
+        case "setTiltEnabled": {
+          tiltEnabled = command.enabled !== false
+          publish({ tiltEnabled })
           break
         }
         case "setStabilization": {
