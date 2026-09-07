@@ -139,12 +139,15 @@ function findLayer(
  */
 export function CanvasHost({
   documentId,
+  documentSize,
   remote,
   palettes,
   brushes,
   openElsewhere = false,
 }: {
   documentId?: string
+  /** Fixed authored size supplied by the document created in the library. */
+  documentSize?: { width: number; height: number }
   /**
    * Where palettes are kept. The cloud host passes an account-backed store so
    * they follow the artist between machines; a host that passes none — the
@@ -180,6 +183,8 @@ export function CanvasHost({
   /** Why the last attempt to keep a brush failed, if it did. */
   const [brushProblem, setBrushProblem] = useState<string | null>(null)
   const [paintNotice, setPaintNotice] = useState<string | null>(null)
+  const documentWidth = documentSize?.width
+  const documentHeight = documentSize?.height
   // Created once per host: the store owns the subscription the picker reads
   // through, so a new one each render would resubscribe on every keystroke.
   const localPalettes = useMemo(() => createLocalPaletteStore(), [])
@@ -197,15 +202,13 @@ export function CanvasHost({
   const attach = useCallback(
     (canvas: HTMLCanvasElement | null) => {
       if (!canvas) return
-      const attached = createEngine(
-        canvas,
-        documentId
-          ? {
-              persistence: { documentId },
-              ...(remote ? { cloud: { remote } } : {}),
-            }
-          : {}
-      )
+      const attached = createEngine(canvas, {
+        ...(documentWidth !== undefined && documentHeight !== undefined
+          ? { documentSize: { width: documentWidth, height: documentHeight } }
+          : {}),
+        ...(documentId ? { persistence: { documentId } } : {}),
+        ...(remote ? { cloud: { remote } } : {}),
+      })
       setEngine(attached)
       const resize = () => {
         const bounds = canvas.getBoundingClientRect()
@@ -238,7 +241,7 @@ export function CanvasHost({
         attached.dispose()
       }
     },
-    [documentId, remote]
+    [documentHeight, documentId, documentWidth, remote]
   )
 
   // Completed strokes are already on disk; this is for the save that a commit

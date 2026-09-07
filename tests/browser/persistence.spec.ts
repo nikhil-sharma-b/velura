@@ -47,6 +47,9 @@ async function openDocument(
         devicePixelRatio: 1,
       })
       await window.engine.dispatch({ type: "initialize" })
+      const snapshot = window.engine.getSnapshot()
+      if (snapshot.status !== "ready")
+        throw new Error(snapshot.error ?? `Engine is ${snapshot.status}.`)
       await window.engine.dispatch({ type: "setStabilization", strength: 0 })
       await window.engine.dispatch({ type: "setBrush", radius: 6 })
     },
@@ -178,7 +181,7 @@ test("an unknown document opens on a fresh canvas", async ({ page }) => {
   expect(isInk(await painted(page), MARKED)).toBe(true)
 })
 
-test("a document opened at the wrong size is shown but not written over", async ({
+test("a document keeps its stored size when opened in a smaller window", async ({
   page,
 }) => {
   const documentId = newId()
@@ -187,8 +190,7 @@ test("a document opened at the wrong size is shown but not written over", async 
   const marked = await painted(page)
   await page.evaluate(() => window.engine.save())
 
-  // The same document in a smaller window: the canvas is the document's extent
-  // until ticket 29, so saving here would drop everything past the new edge.
+  // The same document in a smaller window keeps its authored extent.
   await page.reload()
   await page.waitForFunction(() => !!window.engine)
   const narrow = await openDocument(page, documentId, {
@@ -196,15 +198,21 @@ test("a document opened at the wrong size is shown but not written over", async 
     height: HEIGHT,
   })
   expect(isInk(await painted(page), MARKED)).toBe(true)
-  expect(await page.evaluate(() => window.restoreErrors)).toEqual([
-    expect.stringContaining("nothing will be saved"),
-  ])
+  expect(await page.evaluate(() => window.restoreErrors)).toEqual([])
+  expect(await page.evaluate(() => window.engine.getSnapshot().width)).toBe(
+    WIDTH
+  )
   await paint(page, narrow, 60)
   await page.evaluate(() => window.engine.save())
 
-  // Back at the size it was painted at, the work is untouched.
+  // Back at the original viewport size, both marks are still in the fixed
+  // document. The narrower view centred the document, so screen x=20 mapped
+  // to document x=70 for the second stroke.
   await page.reload()
   await page.waitForFunction(() => !!window.engine)
   await openDocument(page, documentId)
-  expect(await painted(page)).toEqual(marked)
+  const reopened = await painted(page)
+  expect(isInk(reopened, MARKED)).toBe(true)
+  expect(isInk(reopened, { x: 70, y: 60 })).toBe(true)
+  expect(reopened).not.toEqual(marked)
 })

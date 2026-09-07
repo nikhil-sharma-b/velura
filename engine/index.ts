@@ -50,7 +50,6 @@ import {
   removeLayer,
   reserveIds,
   removeMask,
-  resizeDocument,
   selectLayer,
   selectMask,
   setLayer,
@@ -149,6 +148,8 @@ export type {
 
 /** §9.2's flush trigger: how long a document sits idle before an unforced upload. */
 const DEFAULT_CLOUD_IDLE_MS = 30_000
+/** Product canvas ceiling; a device may impose a lower texture limit. */
+const MAX_DOCUMENT_EDGE = 8192
 
 export type PaintTool = "brush" | "eraser"
 
@@ -535,6 +536,8 @@ export type CloudOptions = {
 export function createEngine(
   canvas: HTMLCanvasElement | OffscreenCanvas,
   options: {
+    /** Fixed pixel extent of a newly-created document. Stored work overrides it. */
+    documentSize?: { width: number; height: number }
     history?: HistoryBudget
     persistence?: PersistenceOptions
     cloud?: CloudOptions
@@ -551,12 +554,11 @@ export function createEngine(
   // The view (D28). Held here rather than in the host so that the pen, the
   // present pass and the snapshot cannot disagree about where the canvas is.
   let view: CanvasView = DEFAULT_VIEW
-  // Screen pixels to document pixels, rebuilt whenever the view or the canvas
-  // size changes. Cached because every pen sample is mapped through it.
+  // Screen pixels to document pixels, rebuilt whenever the view, document or
+  // viewport changes. Cached because every pen sample is mapped through it.
   let toDoc: ViewMatrix = IDENTITY_MATRIX
-  // The document: the layer stack and its pixels. Undefined until a device is
-  // acquired, because the canvas size the layers are tiled at is not known
-  // before then.
+  // The document: the layer stack and its pixels. Its fixed authored extent is
+  // independent of the swap chain used to look at it.
   let doc: PaintDocument | undefined
   // Session-scoped, local undo (D9): tile hashes, tiered by bytes (D21).
   let history: DocumentHistory | undefined
@@ -703,6 +705,34 @@ export function createEngine(
     await initialize()
   }
 
+  function validateDocumentSize(size: { width: number; height: number }) {
+    if (
+      !Number.isInteger(size.width) ||
+      !Number.isInteger(size.height) ||
+      size.width < 1 ||
+      size.height < 1
+    )
+      throw new Error("Document dimensions must be positive whole pixels.")
+    const limit = Math.min(
+      MAX_DOCUMENT_EDGE,
+      device?.limits.maxTextureDimension2D ?? MAX_DOCUMENT_EDGE
+    )
+    if (size.width > limit || size.height > limit)
+      throw new Error(
+        `This device supports documents up to ${limit} pixels on either edge; ` +
+          `${size.width}x${size.height} cannot be allocated.`
+      )
+  }
+
+  function setDocumentSize(size: { width: number; height: number }) {
+    validateDocumentSize(size)
+    doc = createDocument(size)
+    renderer?.resize(size.width, size.height)
+    uploadLayers()
+    syncComposition()
+    publish({ width: size.width, height: size.height, ...describeLayers(doc) })
+  }
+
   function resize() {
     const limit = device?.limits.maxTextureDimension2D ?? 8192
     const width = Math.max(1, viewport.width * viewport.devicePixelRatio)
@@ -711,42 +741,24 @@ export function createEngine(
     const scale = Math.min(1, limit / width, limit / height)
     const pixelWidth = Math.max(1, Math.round(width * scale))
     const pixelHeight = Math.max(1, Math.round(height * scale))
-    // Re-tiling and re-uploading the document is wasted work at the same size.
-    if (doc && pixelWidth === snapshot.width && pixelHeight === snapshot.height)
-      return
     if (canvas.width !== pixelWidth) canvas.width = pixelWidth
     if (canvas.height !== pixelHeight) canvas.height = pixelHeight
-    if (renderer) {
-      // The document is authored in canvas pixels for now, so a resize
-      // re-tiles it; sparse tiles make that cost what is actually covered.
-      // Every tile moved, so no step recorded against the old grid can be
-      // replayed against this one.
-      history?.clear()
-      if (doc) resizeDocument(doc, pixelWidth, pixelHeight)
-      else doc = createDocument({ width: pixelWidth, height: pixelHeight })
-      // Every texture went with the old size, so every layer is uploaded
-      // again and the caches are built from scratch.
-      renderer.resize(pixelWidth, pixelHeight)
-      uploadLayers()
-      syncComposition()
-    }
-    publish({
-      width: pixelWidth,
-      height: pixelHeight,
-      ...(doc ? describeLayers(doc) : {}),
-    })
+    if (!doc && renderer)
+      setDocumentSize(
+        options.documentSize ?? { width: pixelWidth, height: pixelHeight }
+      )
     // The viewport the view is centred in just changed, so the matrix the
     // present pass and the pen share has to be rebuilt against the new size.
     applyView()
   }
 
-  /**
-   * The document's extent, which is also the viewport's: the canvas is
-   * authored in backing-store pixels for now. Both are named because the view
-   * maps between them, and only this function changes when they diverge.
-   */
+  /** The fixed authored extent of the document, in document pixels. */
   function extent() {
     return { width: snapshot.width, height: snapshot.height }
+  }
+
+  function viewportExtent() {
+    return { width: canvas.width, height: canvas.height }
   }
 
   /**
@@ -756,24 +768,23 @@ export function createEngine(
    */
   function applyView() {
     const size = extent()
-    const matrix = docToScreen(view, size, size)
-    toDoc = screenToDoc(view, size, size)
+    const viewportSize = viewportExtent()
+    const matrix = docToScreen(view, size, viewportSize)
+    toDoc = screenToDoc(view, size, viewportSize)
     renderer?.setView(matrix)
   }
 
   /**
-   * CSS pixels to backing-store pixels, per axis. The host speaks the units
-   * the DOM gave it; the canvas is drawn, and painted on, at device
-   * resolution. Both axes are scaled separately because the backing store is
-   * capped against the device's texture limit, which need not divide the two
-   * dimensions by the same amount.
+   * CSS pixels to swap-chain pixels, per axis. The host speaks the units the
+   * DOM gave it; the view transform then maps these viewport pixels into the
+   * fixed document extent.
    */
   function toBackingX(value: number): number {
-    return value * (snapshot.width / Math.max(1, viewport.width))
+    return value * (canvas.width / Math.max(1, viewport.width))
   }
 
   function toBackingY(value: number): number {
-    return value * (snapshot.height / Math.max(1, viewport.height))
+    return value * (canvas.height / Math.max(1, viewport.height))
   }
 
   /**
@@ -801,6 +812,7 @@ export function createEngine(
   function uploadLayers() {
     if (!renderer || !doc) return
     const target = renderer
+    const document = doc
     const upload = (node: LayerNode) => {
       if (node.mask) target.uploadMask(node.mask.id, node.mask.surface)
       if (node.kind === "group") {
@@ -813,12 +825,12 @@ export function createEngine(
       // what it covered without reading anything back.
       if (layer.surface.tileCount() > 0 && layer.surface.dirtyBounds())
         history?.recordUpload(layer.id, layer.surface.tiles(), {
-          width: snapshot.width,
-          height: snapshot.height,
+          width: document.width,
+          height: document.height,
         })
       target.uploadLayer(layer.id, layer.surface)
     }
-    doc.layers.forEach(upload)
+    document.layers.forEach(upload)
   }
 
   /**
@@ -1037,17 +1049,14 @@ export function createEngine(
    * hash, so nothing here has to decide whether what the device holds is
    * current — an immutable tile cannot be stale.
    *
-   * Answers whether this session may write over what it just read. It may not
-   * where the stored document does not fit the canvas it was reopened on: a
-   * document is authored at canvas size until ticket 29, and a save taken at
-   * the smaller size would write a manifest that no longer names the tiles
-   * outside it. Showing the work and refusing to save it is recoverable; a
-   * save is not.
+   * Answers whether this session may write over what it just read. A stored
+   * manifest owns its dimensions, so reopening it in any viewport restores
+   * the same tile grid and remains safe to save.
    */
   async function restoreDocument(): Promise<boolean> {
     const target = renderer
     const past = history
-    const document = doc
+    let document = doc
     const store = documents
     if (!target || !past || !document || !store) return true
     // Bound once, here, so the batch loader below reads a hash and writes a
@@ -1091,6 +1100,14 @@ export function createEngine(
       stored = await persistence?.load()
     }
     if (!stored || disposed) return true
+    if (stored.width !== document.width || stored.height !== document.height) {
+      validateDocumentSize(stored)
+      for (const id of structureSurfaceIds(captureStructure(document)))
+        target.releaseLayer(id)
+      setDocumentSize({ width: stored.width, height: stored.height })
+      document = requireDocument()
+      applyView()
+    }
     // The seeded canvas this session opened on is not part of the document
     // that was stored, and neither is the upload that recorded it.
     past.clear()
@@ -1098,9 +1115,7 @@ export function createEngine(
       target.releaseLayer(id)
     reserveIds(structureSurfaceIds(stored.structure))
     restoreStructure(document, stored.structure)
-    const canvas = { width: snapshot.width, height: snapshot.height }
-    const fits =
-      stored.width === canvas.width && stored.height === canvas.height
+    const canvas = { width: document.width, height: document.height }
 
     // A tile is a file read and an inflate, so a batch is asked for together
     // rather than one at a time, and reads a surface's own texels into the
@@ -1123,7 +1138,7 @@ export function createEngine(
       writeTiles(surface.surfaceId, tiles)
       // These texels are exactly what the GPU now holds, so the index history
       // keeps — and the next manifest written from it — starts out true.
-      if (fits) recordUpload(surface.surfaceId, tiles, canvas)
+      recordUpload(surface.surfaceId, tiles, canvas)
     }
 
     // The visible region resolves first (18): every surface's own tiles are
@@ -1158,15 +1173,6 @@ export function createEngine(
     await past.settle()
     syncComposition()
     publish(describeLayers(document))
-    if (!fits)
-      options.persistence?.onError?.(
-        new Error(
-          `This document was painted at ${stored.width}x${stored.height} and ` +
-            `this window is ${canvas.width}x${canvas.height}. It is open, but ` +
-            `nothing will be saved until the window is the size it was.`
-        )
-      )
-
     if (background.length > 0) {
       publish({ loading: true })
       void (async () => {
@@ -1188,7 +1194,7 @@ export function createEngine(
       })()
     }
 
-    return fits
+    return true
   }
 
   function drawFrame(timestamp: number) {
@@ -1550,7 +1556,7 @@ export function createEngine(
             setView(
               zoomView(view, factor, {
                 anchor: { x: toBackingX(anchor.x), y: toBackingY(anchor.y) },
-                viewport: extent(),
+                viewport: viewportExtent(),
               })
             ),
           // A twist is continuous: it snaps at the cardinal angles like any
@@ -1931,7 +1937,7 @@ export function createEngine(
                       x: toBackingX(anchor.x),
                       y: toBackingY(anchor.y),
                     },
-                    viewport: extent(),
+                    viewport: viewportExtent(),
                   }
                 : undefined
             )
@@ -1951,7 +1957,7 @@ export function createEngine(
           break
         case "fitView": {
           const size = extent()
-          setView(fitCanvasView(view, size, size))
+          setView(fitCanvasView(view, size, viewportExtent()))
           break
         }
         case "resetView":
@@ -2147,6 +2153,7 @@ export function createEngine(
       if (snapshot.status !== "ready" || !renderer || !history)
         throw new Error("The graphics device is not ready.")
       const imported = await decodeVeluraFile(bytes)
+      validateDocumentSize(imported.manifest)
       if (disposed) return
       const previous = doc
       if (!previous) throw new Error("The graphics device is not ready.")
@@ -2161,8 +2168,6 @@ export function createEngine(
         renderer.releaseLayer(id)
       reserveIds(structureSurfaceIds(imported.manifest.structure))
       restoreStructure(doc, imported.manifest.structure)
-      canvas.width = imported.manifest.width
-      canvas.height = imported.manifest.height
       renderer.resize(imported.manifest.width, imported.manifest.height)
       const size = {
         width: imported.manifest.width,

@@ -85,9 +85,11 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
   })
 
   if (document === undefined) return <CentredSpinner />
+  const documentSize = { width: document.width, height: document.height }
   return (
     <CanvasHost
       documentId={documentId}
+      documentSize={documentSize}
       remote={remote}
       palettes={palettes}
       brushes={brushes}

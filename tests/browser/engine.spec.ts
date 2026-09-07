@@ -37,12 +37,13 @@ test("initializes the facade and presents opaque pixels", async ({ page }) => {
   )
 })
 
-test("resizing preserves the presented backdrop and snapshots only change with state", async ({
+test("resizing changes the viewport without changing the document", async ({
   page,
 }) => {
   await page.goto("http://127.0.0.1:3101/tests/harness/")
   await page.waitForFunction(() => !!window.engine)
   const result = await page.evaluate(async () => {
+    window.remountEngine({ documentSize: { width: 42, height: 30 } })
     const engine = window.engine
     await engine.dispatch({ type: "initialize" })
     let notifications = 0
@@ -79,8 +80,77 @@ test("resizing preserves the presented backdrop and snapshots only change with s
     height: 30,
     lastPixel: [24, 24, 27, 255],
     stable: true,
-    notifications: 1,
+    notifications: 0,
   })
+})
+
+test("resizing preserves document pixels, structure, and undo history", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.engine)
+  const result = await page.evaluate(async () => {
+    window.remountEngine({ documentSize: { width: 320, height: 240 } })
+    await window.engine.dispatch({
+      type: "resize",
+      width: 160,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    await window.engine.dispatch({ type: "addLayer" })
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    const before = window.engine.getSnapshot()
+    const beforePixels = await window.engine.readPixels()
+    await window.engine.dispatch({
+      type: "resize",
+      width: 80,
+      height: 60,
+      devicePixelRatio: 2,
+    })
+    const after = window.engine.getSnapshot()
+    const afterPixels = await window.engine.readPixels()
+    await window.engine.dispatch({ type: "fitView" })
+    return {
+      size: [after.width, after.height],
+      layers: after.layers.length,
+      canUndo: after.canUndo,
+      snapshotPreserved: before === after,
+      pixelsPreserved:
+        beforePixels.data.every(
+          (value, index) => value === afterPixels.data[index]
+        ) &&
+        beforePixels.width === afterPixels.width &&
+        beforePixels.height === afterPixels.height,
+      fitZoom: window.engine.getSnapshot().view.zoom,
+    }
+  })
+  expect(result).toMatchObject({
+    size: [320, 240],
+    layers: 2,
+    canUndo: true,
+    snapshotPreserved: true,
+    pixelsPreserved: true,
+  })
+  expect(result.fitZoom).toBeCloseTo(0.48)
+})
+
+test("refuses a document beyond the device texture limit with its real size", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.engine)
+  const snapshot = await page.evaluate(async () => {
+    const adapter = await navigator.gpu.requestAdapter()
+    const limit = adapter!.limits.maxTextureDimension2D
+    window.remountEngine({
+      documentSize: { width: limit + 1, height: 1 },
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    return window.engine.getSnapshot()
+  })
+  expect(snapshot.status).toBe("failed")
+  expect(snapshot.error).toContain("cannot be allocated")
 })
 
 test("disposing during initialization cannot disturb a replacement on the same canvas", async ({
