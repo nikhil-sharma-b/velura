@@ -1,3 +1,4 @@
+import { eraserBrush, type EraserKind } from "./brush/eraser"
 import {
   type Brush,
   type BrushGrain,
@@ -186,6 +187,7 @@ export type EngineCommand =
   /** Stabilizer strength in [0, 1]; zero restores the raw unfiltered path. */
   | { type: "setStabilization"; strength: number }
   | { type: "setTool"; tool: PaintTool }
+  | { type: "setEraser"; kind?: EraserKind; radius?: number; opacity?: number }
   /**
    * The ink, as authored sRGB hex. Hex rather than the working space because
    * that is the one colour notation the artist can also type, and the picker
@@ -302,6 +304,7 @@ export type EngineSnapshot = Readonly<{
   color: EngineColor
   /** The brush in the hand: serialisable data, never code (D23). */
   brush: Brush
+  eraser: Brush
   /**
    * Every texture id a brush may name (D24): the built-ins, plus whatever has
    * been imported. The editor offers these, so a brush cannot be pointed at a
@@ -371,6 +374,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
     hex: "#242526",
   }),
   brush: Object.freeze(cloneBrush(DEFAULT_BRUSH)),
+  eraser: Object.freeze(eraserBrush()),
   textures: BUILTIN_TEXTURE_IDS,
   // A host that has not started an engine has no document to describe.
   layers: Object.freeze([]),
@@ -620,6 +624,8 @@ export function createEngine(
   // Mirrors the snapshot so the per-dab path reads plain fields off one object
   // rather than a frozen snapshot that is replaced on every publish.
   let brush = cloneBrush(DEFAULT_BRUSH)
+  let eraser = eraserBrush()
+  const activeBrush = () => (tool === "eraser" ? eraser : brush)
   let tool: PaintTool = "brush"
   let ink = [...BRUSH_COLOR] as [number, number, number, number]
   // Jitter is seeded per stroke, so a `random` mapping differs between marks
@@ -948,6 +954,7 @@ export function createEngine(
   ) {
     // The tracker was opened by the pen going down, so every dab advances it:
     // the first one has not moved from that point and so has no speed yet.
+    const brush = activeBrush()
     const context = dynamics.next(x, y, pressure, tiltX, tiltY, time)
     evaluateDynamics(brush.dynamics, context, params)
     if (stampCount === MAX_STAMPS_PER_DRAW) flushStamps()
@@ -976,6 +983,7 @@ export function createEngine(
    * starts with no textures and the brush may already name some.
    */
   function applyBrushTextures() {
+    const brush = activeBrush()
     if (!renderer) return
     const grain = brush.grain
     // Feather is a uniform write and nothing more, so it is applied outside
@@ -1284,6 +1292,7 @@ export function createEngine(
     // position means the same thing at any view.
     const x = toDocX(screenX, screenY)
     const y = toDocY(screenX, screenY)
+    const brush = activeBrush()
     strokeOrigin = origin
     // Stroke opacity is applied once, at composite, so it is decided once,
     // here — from the pen state the stroke opened with. Nothing derived from
@@ -1778,10 +1787,11 @@ export function createEngine(
           else delete next.grain
           // Spacing is fixed for the life of a resampler, so a brush that
           // changes it needs a new one. Never mid-stroke: the pen is up.
-          if (brushSpacing(next) !== brushSpacing(brush))
+          if (tool === "brush" && brushSpacing(next) !== brushSpacing(brush))
             resampler = createStrokeResampler(brushSpacing(next))
           brush = next
           applyBrushTextures()
+          if (snapshot.status === "ready") render()
           publish({ brush: Object.freeze(cloneBrush(next)) })
           break
         }
@@ -1993,8 +2003,29 @@ export function createEngine(
           publish({ stabilization: stabilizer.strength() })
           break
         }
+        case "setEraser": {
+          const next = eraserBrush(
+            command.kind ??
+              (eraser.id === "eraser:pressure" ? "pressure" : "solid"),
+            command.radius ?? eraser.shape.radius,
+            command.opacity ?? eraser.rendering.opacity
+          )
+          cancelStroke()
+          eraser = next
+          if (tool === "eraser") {
+            resampler = createStrokeResampler(brushSpacing(eraser))
+            applyBrushTextures()
+          }
+          if (snapshot.status === "ready") render()
+          publish({ eraser: Object.freeze(cloneBrush(eraser)) })
+          break
+        }
         case "setTool":
+          cancelStroke()
           tool = command.tool
+          resampler = createStrokeResampler(brushSpacing(activeBrush()))
+          applyBrushTextures()
+          if (snapshot.status === "ready") render()
           publish({ tool })
           break
         case "setColor": {

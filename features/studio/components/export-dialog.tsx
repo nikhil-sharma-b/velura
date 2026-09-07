@@ -26,6 +26,12 @@ import {
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { encodeExportImage, type Engine } from "@/engine"
 
 function download(blob: Blob, name: string) {
@@ -61,16 +67,25 @@ export function ExportDialog({ engine }: { engine: Engine }) {
 
   return (
     <Dialog>
-      <DialogTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Export or import"
-          className="rounded-lg"
-        >
-          <DownloadSimpleIcon />
-        </Button>
-      </DialogTrigger>
+      <TooltipProvider delayDuration={350}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DialogTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Export or import"
+                className="rounded-lg"
+              >
+                <DownloadSimpleIcon />
+              </Button>
+            </DialogTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={8}>
+            Export or import
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Export or import</DialogTitle>

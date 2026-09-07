@@ -2,6 +2,7 @@
 
 import {
   CopyIcon,
+  PencilSimpleIcon,
   FolderPlusIcon,
   TrashIcon,
   XIcon,
@@ -20,7 +21,10 @@ import {
   setForNewBrush,
 } from "../lib/brush-shelf"
 import type { BrushLibraryState, BrushStore } from "../lib/brush-store"
+import { brushDescription } from "../lib/brush-description"
+import { BrushIcon } from "./brush-icon"
 import { BrushPreview } from "./brush-preview"
+import { IconButton } from "./icon-button"
 
 /**
  * The brush library (25): the shelf the artist reaches into, and the only
@@ -49,7 +53,7 @@ export function BrushLibrary({
   brush: Brush
   /** Whether the working brush has moved away from what was last saved. */
   edited: boolean
-  onSelect(brush: Brush): void
+  onSelect(brush: Brush, keepOpen?: boolean): void
   onClose(): void
 }) {
   const [problem, setProblem] = useState<string | null>(null)
@@ -105,15 +109,15 @@ export function BrushLibrary({
     >
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium">Brushes</h2>
-        <Button
+        <IconButton
           variant="ghost"
           size="icon"
-          aria-label="Close brush library"
+          label="Close brush library"
           onClick={onClose}
           className="size-7 rounded-md"
         >
           <XIcon className="size-3.5" />
-        </Button>
+        </IconButton>
       </div>
 
       {problem && (
@@ -121,35 +125,6 @@ export function BrushLibrary({
           {problem}
         </p>
       )}
-
-      <div className="flex gap-1.5">
-        {/* Saving over a brush is offered only where there is a brush to save
-            over: a built-in has no row, so the one door out of it is a copy. */}
-        {selected && (
-          <Button
-            size="sm"
-            className="flex-1"
-            disabled={!edited}
-            onClick={() => run(store.update(selected.id, brush))}
-          >
-            Save
-          </Button>
-        )}
-        <Button
-          variant={selected ? "outline" : "default"}
-          size="sm"
-          className="flex-1"
-          onClick={() =>
-            run(
-              store
-                .save(brush.name, setForNewBrush(selected), brush)
-                .then((id) => onSelect({ ...brush, id }))
-            )
-          }
-        >
-          Save as new
-        </Button>
-      </div>
 
       {!library.loaded && (
         <p className="text-xs text-muted-foreground">Fetching your brushes…</p>
@@ -184,10 +159,6 @@ export function BrushLibrary({
             >
               {/* The same stroke the editor previews, from the same dynamics
                   evaluation: what a brush looks like is how it is chosen. */}
-              <BrushPreview
-                brush={entry.brush}
-                className="h-8 w-14 shrink-0 rounded-md border border-border/60 bg-card text-foreground"
-              />
               {renaming === entry.id ? (
                 <Input
                   autoFocus
@@ -206,22 +177,33 @@ export function BrushLibrary({
               ) : (
                 <button
                   type="button"
-                  className="flex-1 truncate text-left text-xs"
+                  className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-xs focus-visible:outline-2 focus-visible:outline-primary"
+                  aria-pressed={entry.id === brush.id}
                   aria-label={`Paint with ${entry.name}`}
                   onClick={() => onSelect(entry.brush)}
-                  // A second click on the brush already in the hand is how it
-                  // is renamed, so a name is reachable without a menu — and a
-                  // built-in, which has no name of the artist's to change,
-                  // simply stays selected.
-                  onDoubleClick={() => !entry.builtin && setRenaming(entry.id)}
                 >
-                  {entry.name}
+                  <BrushPreview
+                    brush={entry.brush}
+                    className="h-10 w-14 shrink-0 rounded-md bg-muted"
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium">
+                      <BrushIcon
+                        id={entry.id}
+                        className="mr-1 inline size-3.5"
+                      />
+                      {entry.name}
+                    </span>
+                    <span className="mt-1 block text-[10px] leading-snug text-muted-foreground">
+                      {brushDescription(entry.id)}
+                    </span>
+                  </span>
                 </button>
               )}
-              <Button
+              <IconButton
                 variant="ghost"
                 size="icon"
-                aria-label={`Duplicate ${entry.name}`}
+                label={`Duplicate ${entry.name}`}
                 className="size-7 rounded-md"
                 onClick={() => {
                   const copy = duplicateOf(entry, library.brushes)
@@ -229,28 +211,68 @@ export function BrushLibrary({
                     store
                       .save(copy.name, copy.set, copy.brush)
                       .then((id) =>
-                        onSelect({ ...copy.brush, id, name: copy.name })
+                        onSelect({ ...copy.brush, id, name: copy.name }, true)
                       )
                   )
                 }}
               >
                 <CopyIcon className="size-3.5" />
-              </Button>
-              {entry.deletable && (
-                <Button
+              </IconButton>
+              {!entry.builtin && (
+                <IconButton
                   variant="ghost"
                   size="icon"
-                  aria-label={`Delete ${entry.name}`}
+                  label={`Rename ${entry.name}`}
+                  className="size-7 rounded-md"
+                  onClick={() => setRenaming(entry.id)}
+                >
+                  <PencilSimpleIcon className="size-3.5" />
+                </IconButton>
+              )}
+              {entry.deletable && (
+                <IconButton
+                  variant="ghost"
+                  size="icon"
+                  label={`Delete ${entry.name}`}
                   className="size-7 rounded-md"
                   onClick={() => run(store.remove(entry.id))}
                 >
                   <TrashIcon className="size-3.5" />
-                </Button>
+                </IconButton>
               )}
             </div>
           ))}
         </section>
       ))}
+
+      <div className="flex gap-1.5">
+        {/* Saving over a brush is offered only where there is a brush to save
+            over: a built-in has no row, so the one door out of it is a copy. */}
+        {selected && (
+          <Button
+            size="sm"
+            className="flex-1"
+            disabled={!edited}
+            onClick={() => run(store.update(selected.id, brush))}
+          >
+            Save
+          </Button>
+        )}
+        <Button
+          variant={selected ? "outline" : "default"}
+          size="sm"
+          className="flex-1"
+          onClick={() =>
+            run(
+              store
+                .save(brush.name, setForNewBrush(selected), brush)
+                .then((id) => onSelect({ ...brush, id }, true))
+            )
+          }
+        >
+          Save as new
+        </Button>
+      </div>
 
       <div className="flex gap-1.5">
         <Input
@@ -260,10 +282,10 @@ export function BrushLibrary({
           className="h-7 flex-1 text-xs"
           onChange={(event) => setNewSet(event.target.value)}
         />
-        <Button
+        <IconButton
           variant="outline"
           size="icon"
-          aria-label="Add set"
+          label="Add set"
           className="size-7 rounded-md"
           disabled={!newSet.trim() || newSet.trim() === BUILTIN_SET}
           onClick={() => {
@@ -272,7 +294,7 @@ export function BrushLibrary({
           }}
         >
           <FolderPlusIcon className="size-3.5" />
-        </Button>
+        </IconButton>
       </div>
     </div>
   )

@@ -361,7 +361,7 @@ test("the canvas is navigated by button and by keystroke", async ({ page }) => {
   // Rotating and then resetting leaves nothing behind: the view is state, and
   // one action returns all of it.
   await page.keyboard.press("]")
-  await page.getByRole("button", { name: "Fit to window" }).click()
+  await page.getByRole("button", { name: "Fit canvas to window" }).click()
   await expect(zoom).not.toHaveText("100%")
   await page.getByRole("button", { name: "Reset view" }).click()
   await expect(zoom).toHaveText("64%")

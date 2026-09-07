@@ -158,7 +158,7 @@ async function erasedPixelCount(page: Page, settings: BrushCommand) {
   return { changed, delta }
 }
 
-test("the eraser uses brush shape, texture, grain, and pressure dynamics", async ({
+test("the solid eraser ignores painting brush shape, texture, grain, and dynamics", async ({
   page,
 }) => {
   const shaped = { radius: 14, roundness: 0.2 } as const
@@ -188,10 +188,10 @@ test("the eraser uses brush shape, texture, grain, and pressure dynamics", async
     tipTextureId: "graphite",
     grain: { textureId: "paper", scale: 1, depth: 0.8, movement: 0 },
   })
-  expect(narrow.changed).not.toBe(round.changed)
-  expect(pressureSized.changed).not.toBe(narrow.changed)
-  expect(textured.delta).not.toBe(pressureSized.delta)
-  expect(grained.delta).not.toBe(textured.delta)
+  expect(narrow).toEqual(round)
+  expect(pressureSized).toEqual(round)
+  expect(textured).toEqual(round)
+  expect(grained).toEqual(round)
 })
 
 async function strokeWithoutHistory(

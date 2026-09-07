@@ -2,21 +2,18 @@
 
 import {
   ArrowClockwiseIcon,
+  ArrowsClockwiseIcon,
   ClockCounterClockwiseIcon,
   ArrowCounterClockwiseIcon,
   ArrowUUpLeftIcon,
   ArrowUUpRightIcon,
   CornersOutIcon,
-  EraserIcon,
+  CaretDownIcon,
   FlipHorizontalIcon,
-  HandIcon,
   LockIcon,
-  MagnifyingGlassIcon,
   MagnifyingGlassMinusIcon,
   MagnifyingGlassPlusIcon,
-  PaintBrushIcon,
   PaletteIcon,
-  BookmarksSimpleIcon,
   SlidersIcon,
   SidebarSimpleIcon,
 } from "@phosphor-icons/react"
@@ -29,7 +26,15 @@ import {
   useSyncExternalStore,
 } from "react"
 
+import { Popover as PopoverPrimitive } from "radix-ui"
 import { Button } from "@/components/ui/button"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import type { ComponentProps } from "react"
 import type { Brush } from "@/engine/brush/brush"
 import {
   createEngine,
@@ -52,7 +57,9 @@ import { resolveLibraryBrush, setForNewBrush } from "../lib/brush-shelf"
 import { DEFAULT_LIBRARY_BRUSH_ID } from "@/engine/brush/presets"
 import { readTextureFile } from "../lib/texture-import"
 import { BrushEditor } from "./brush-editor"
+import { BrushIcon, EraserToolIcon } from "./brush-icon"
 import { BrushLibrary } from "./brush-library"
+import { IconButton } from "./icon-button"
 import { SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
 import { VersionPanel } from "./version-panel"
@@ -64,6 +71,13 @@ const ZOOM_STEP = 1.25
 const ROTATE_STEP = Math.PI / 12
 /** One press of an arrow key, in CSS pixels: a nudge, not a leap. */
 const PAN_STEP = 40
+
+function RailAction({
+  side = "right",
+  ...props
+}: ComponentProps<typeof IconButton>) {
+  return <IconButton {...props} side={side} className="rounded-lg" />
+}
 
 /**
  * The navigation a key asks for, or nothing. Unmodified keys, because the
@@ -171,6 +185,7 @@ export function CanvasHost({
   const [historyOpen, setHistoryOpen] = useState(false)
   const [colorOpen, setColorOpen] = useState(false)
   const [brushOpen, setBrushOpen] = useState(false)
+  const [eraserOpen, setEraserOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   /**
    * The brush as it was last saved. The engine holds the *working* brush — so
@@ -394,10 +409,54 @@ export function CanvasHost({
   // the baseline needs no effect to establish: an unsaved session is measured
   // against the default brush, exactly as the engine's own is.
   const saved = savedBrush ?? INITIAL_SNAPSHOT.brush
+  const activeTip =
+    snapshot.tool === "eraser" ? snapshot.eraser : snapshot.brush
   const brushEdited = isBrushEdited(saved, snapshot.brush)
 
   const unavailable = snapshot.status === "unavailable"
   const failed = snapshot.status === "failed"
+  const viewActions = [
+    [
+      "Zoom out",
+      <MagnifyingGlassMinusIcon key="zoom-out" />,
+      () => void engine?.dispatch({ type: "zoomView", factor: 1 / ZOOM_STEP }),
+    ],
+    [
+      "Zoom in",
+      <MagnifyingGlassPlusIcon key="zoom-in" />,
+      () => void engine?.dispatch({ type: "zoomView", factor: ZOOM_STEP }),
+    ],
+    [
+      "Rotate left",
+      <ArrowCounterClockwiseIcon key="rotate-left" />,
+      () =>
+        void engine?.dispatch({ type: "rotateView", radians: -ROTATE_STEP }),
+    ],
+    [
+      "Rotate right",
+      <ArrowClockwiseIcon key="rotate-right" />,
+      () => void engine?.dispatch({ type: "rotateView", radians: ROTATE_STEP }),
+    ],
+    [
+      "Flip canvas horizontally",
+      <FlipHorizontalIcon key="flip" />,
+      () => void engine?.dispatch({ type: "flipView" }),
+    ],
+    [
+      "Fit canvas to window",
+      <CornersOutIcon key="fit" />,
+      () => void engine?.dispatch({ type: "fitView" }),
+    ],
+    [
+      "Reset view",
+      <ArrowsClockwiseIcon key="reset" />,
+      () =>
+        void engine?.dispatch({
+          type: "resetView",
+          ...(panelsOpen ? {} : { panX: 0 }),
+        }),
+    ],
+  ] as const
   return (
     <main
       className="fixed inset-0 overflow-hidden bg-zinc-900"
@@ -466,99 +525,83 @@ export function CanvasHost({
               Also open on another device — work here may conflict with it.
             </div>
           )}
-          <div className="absolute top-1/2 left-3 flex -translate-y-1/2 flex-col gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl">
-            <Button
-              variant={snapshot.tool === "brush" ? "default" : "ghost"}
-              size="icon"
-              aria-label="Brush tool"
-              aria-pressed={snapshot.tool === "brush"}
-              onClick={() =>
-                void engine?.dispatch({ type: "setTool", tool: "brush" })
-              }
-              className="rounded-lg"
-            >
-              <PaintBrushIcon />
-            </Button>
-            <Button
-              variant={snapshot.tool === "eraser" ? "default" : "ghost"}
-              size="icon"
-              aria-label="Eraser tool"
-              aria-pressed={snapshot.tool === "eraser"}
-              onClick={() =>
-                void engine?.dispatch({ type: "setTool", tool: "eraser" })
-              }
-              className="rounded-lg"
-            >
-              <EraserIcon />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Hand tool"
-              className="rounded-lg"
-            >
-              <HandIcon />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Zoom tool"
-              className="rounded-lg"
-            >
-              <MagnifyingGlassIcon />
-            </Button>
-            <Button
-              variant={colorOpen ? "default" : "ghost"}
-              size="icon"
-              aria-label="Colour"
-              aria-pressed={colorOpen}
-              onClick={() => {
-                setColorOpen((open) => !open)
-                setPanelsOpen(true)
-            }}
-            className="rounded-lg"
-          >
-              <PaletteIcon />
-            </Button>
-            <Button
-              variant={brushOpen ? "default" : "ghost"}
-              size="icon"
-              aria-label="Brush editor"
-              aria-pressed={brushOpen}
-              onClick={() => setBrushOpen((open) => !open)}
-              className="rounded-lg"
-            >
-              <SlidersIcon />
-            </Button>
-            <Button
-              variant={libraryOpen ? "default" : "ghost"}
-              size="icon"
-              aria-label="Brush library"
-              aria-pressed={libraryOpen}
-              onClick={() => {
-                setLibraryOpen((open) => !open)
-                setPanelsOpen(true)
-              }}
-              className="rounded-lg"
-            >
-              <BookmarksSimpleIcon />
-            </Button>
-            {/* Restore points only exist for a document with a cloud copy
-                behind it (§9.4), so an anonymous local document has no ladder
-                to offer and is not shown a door to one. */}
-            {remote && (
-              <Button
-                variant={historyOpen ? "default" : "ghost"}
+          <TooltipProvider delayDuration={350}>
+            <div className="absolute top-1/2 left-3 flex -translate-y-1/2 flex-col items-center gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl">
+              <RailAction
+                label="Brush tool"
+                variant={snapshot.tool === "brush" ? "default" : "ghost"}
                 size="icon"
-                aria-label="Version history"
-                aria-pressed={historyOpen}
-                onClick={() => setHistoryOpen((open) => !open)}
+                aria-pressed={snapshot.tool === "brush"}
+                onClick={() => {
+                  setEraserOpen(false)
+                  if (snapshot.tool === "brush") setLibraryOpen((open) => !open)
+                  void engine?.dispatch({ type: "setTool", tool: "brush" })
+                }}
                 className="rounded-lg"
               >
-                <ClockCounterClockwiseIcon />
-              </Button>
-            )}
-          </div>
+                <BrushIcon id={snapshot.brush.id} />
+              </RailAction>
+              <RailAction
+                label="Eraser tool"
+                variant={snapshot.tool === "eraser" ? "default" : "ghost"}
+                size="icon"
+                aria-pressed={snapshot.tool === "eraser"}
+                onClick={() => {
+                  setLibraryOpen(false)
+                  if (snapshot.tool === "eraser") setEraserOpen((open) => !open)
+                  void engine?.dispatch({ type: "setTool", tool: "eraser" })
+                }}
+                className="rounded-lg"
+              >
+                <EraserToolIcon
+                  kind={
+                    snapshot.eraser.id === "eraser:pressure"
+                      ? "pressure"
+                      : "solid"
+                  }
+                />
+              </RailAction>
+              <RailAction
+                label="Colour"
+                variant={colorOpen ? "default" : "ghost"}
+                size="icon"
+                aria-pressed={colorOpen}
+                onClick={() => {
+                  setColorOpen((open) => !open)
+                  setPanelsOpen(true)
+                }}
+                className="rounded-lg"
+              >
+                <PaletteIcon />
+              </RailAction>
+              <RailAction
+                label="Brush editor"
+                variant={brushOpen ? "default" : "ghost"}
+                size="icon"
+                disabled={snapshot.tool === "eraser"}
+                aria-pressed={brushOpen}
+                onClick={() => setBrushOpen((open) => !open)}
+                className="rounded-lg"
+              >
+                <SlidersIcon />
+              </RailAction>
+              {/* Restore points only exist for a document with a cloud copy
+                behind it (§9.4), so an anonymous local document has no ladder
+                to offer and is not shown a door to one. */}
+              {remote && (
+                <RailAction
+                  variant={historyOpen ? "default" : "ghost"}
+                  size="icon"
+                  label="Version history"
+                  aria-pressed={historyOpen}
+                  onClick={() => setHistoryOpen((open) => !open)}
+                  className="rounded-lg"
+                >
+                  <ClockCounterClockwiseIcon />
+                </RailAction>
+              )}
+            </div>
+          </TooltipProvider>
 
           {engine && (
             <BrushEditor
@@ -622,178 +665,230 @@ export function CanvasHost({
 
           <div className="absolute top-3 left-3 flex gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl">
             {engine && <ExportDialog engine={engine} />}
-            <Button
+            <IconButton
               variant="ghost"
               size="icon"
-              aria-label="Undo"
+              label="Undo"
+              side="bottom"
               disabled={!snapshot.canUndo}
               onClick={() => void engine?.dispatch({ type: "undo" })}
               className="rounded-lg"
             >
               <ArrowUUpLeftIcon />
-            </Button>
-            <Button
+            </IconButton>
+            <IconButton
               variant="ghost"
               size="icon"
-              aria-label="Redo"
+              label="Redo"
+              side="bottom"
               disabled={!snapshot.canRedo}
               onClick={() => void engine?.dispatch({ type: "redo" })}
               className="rounded-lg"
             >
               <ArrowUUpRightIcon />
-            </Button>
+            </IconButton>
           </div>
 
-          <div className="absolute bottom-3 left-3 w-56 space-y-2 rounded-xl border bg-background/88 p-3 shadow-lg backdrop-blur-xl">
-            {/* Size and opacity are the two a hand reaches for mid-piece, so
+          <TooltipProvider delayDuration={350}>
+            <div
+              className={`absolute bottom-3 w-56 space-y-2 rounded-xl border bg-background/88 p-3 shadow-lg backdrop-blur-xl ${panelsOpen ? "right-[19.5rem]" : "right-3"}`}
+            >
+              {snapshot.tool === "eraser" ? (
+                <PopoverPrimitive.Root
+                  open={eraserOpen}
+                  onOpenChange={setEraserOpen}
+                >
+                  <PopoverPrimitive.Trigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Choose eraser: ${snapshot.eraser.name}`}
+                      className="h-8 w-full justify-between px-1 text-xs"
+                    >
+                      <span className="flex items-center gap-2">
+                        <EraserToolIcon
+                          kind={
+                            snapshot.eraser.id === "eraser:pressure"
+                              ? "pressure"
+                              : "solid"
+                          }
+                        />
+                        {snapshot.eraser.name}
+                      </span>
+                      <CaretDownIcon />
+                    </Button>
+                  </PopoverPrimitive.Trigger>
+                  <PopoverPrimitive.Portal>
+                    <PopoverPrimitive.Content
+                      side="top"
+                      align="end"
+                      sideOffset={10}
+                      collisionPadding={12}
+                      aria-label="Choose an eraser"
+                      className="z-50 w-72 rounded-xl border bg-background p-3 shadow-xl"
+                    >
+                      <h2 className="mb-2 text-sm font-medium">Erasers</h2>
+                      {(["solid", "pressure"] as const).map((kind) => (
+                        <button
+                          key={kind}
+                          type="button"
+                          aria-pressed={snapshot.eraser.id === `eraser:${kind}`}
+                          className="mb-1 flex w-full items-center gap-3 rounded-lg border border-transparent p-3 text-left hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
+                          onClick={() => {
+                            void engine?.dispatch({ type: "setEraser", kind })
+                            setEraserOpen(false)
+                          }}
+                        >
+                          <EraserToolIcon kind={kind} className="size-5" />
+                          <span>
+                            <span className="block text-xs font-medium">
+                              {kind === "solid"
+                                ? "Solid eraser"
+                                : "Pressure eraser"}
+                            </span>
+                            <span className="block text-[10px] text-muted-foreground">
+                              {kind === "solid"
+                                ? "Hard edge · constant size at any pressure"
+                                : "Hard edge · press harder for a wider erase"}
+                            </span>
+                          </span>
+                        </button>
+                      ))}
+                    </PopoverPrimitive.Content>
+                  </PopoverPrimitive.Portal>
+                </PopoverPrimitive.Root>
+              ) : (
+                <PopoverPrimitive.Root
+                  open={libraryOpen}
+                  onOpenChange={setLibraryOpen}
+                >
+                  <PopoverPrimitive.Trigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Choose brush: ${snapshot.brush.name}`}
+                      className="h-8 w-full justify-between px-1 text-xs"
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <BrushIcon
+                          id={snapshot.brush.id}
+                          className="shrink-0"
+                        />
+                        <span className="truncate">{snapshot.brush.name}</span>
+                      </span>
+                      <CaretDownIcon className="shrink-0" />
+                    </Button>
+                  </PopoverPrimitive.Trigger>
+                  <PopoverPrimitive.Portal>
+                    <PopoverPrimitive.Content
+                      side="top"
+                      align="start"
+                      sideOffset={10}
+                      collisionPadding={12}
+                      aria-label="Choose a brush"
+                      className="z-50 max-h-[min(36rem,var(--radix-popover-content-available-height))] w-80 max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border bg-background shadow-xl outline-none"
+                    >
+                      {engine && (
+                        <BrushLibrary
+                          library={library}
+                          store={brushStore}
+                          brush={snapshot.brush}
+                          edited={brushEdited}
+                          onSelect={(next, keepOpen) => {
+                            void engine.dispatch(brushCommand(next))
+                            setSavedBrush(next)
+                            if (!keepOpen) setLibraryOpen(false)
+                          }}
+                          onClose={() => setLibraryOpen(false)}
+                        />
+                      )}
+                    </PopoverPrimitive.Content>
+                  </PopoverPrimitive.Portal>
+                </PopoverPrimitive.Root>
+              )}
+              {/* Size and opacity are the two a hand reaches for mid-piece, so
                 they stay on the canvas: the editor is for shaping a brush,
                 not for the adjustment made between one stroke and the next. */}
-            <SliderSetting
-              label="Size"
-              value={snapshot.brush.shape.radius}
-              min={0.5}
-              max={200}
-              step={0.5}
-              format={`${(snapshot.brush.shape.radius * 2).toFixed(1)} px`}
-              onChange={(radius) =>
-                void engine?.dispatch({ type: "setBrush", radius })
-              }
-            />
-            <SliderSetting
-              label="Opacity"
-              value={snapshot.brush.rendering.opacity}
-              min={0}
-              max={1}
-              step={0.01}
-              format={`${Math.round(snapshot.brush.rendering.opacity * 100)}%`}
-              onChange={(opacity) =>
-                void engine?.dispatch({ type: "setBrush", opacity })
-              }
-            />
-            <SliderSetting
-              label="Smoothing"
-              value={snapshot.stabilization}
-              min={0}
-              max={1}
-              step={0.01}
-              format={`${Math.round(snapshot.stabilization * 100)}%`}
-              onChange={(strength) =>
-                void engine?.dispatch({ type: "setStabilization", strength })
-              }
-            />
-          </div>
+              <SliderSetting
+                label="Size"
+                value={activeTip.shape.radius}
+                min={0.5}
+                max={200}
+                step={0.5}
+                format={`${(activeTip.shape.radius * 2).toFixed(1)} px`}
+                onChange={(radius) =>
+                  void engine?.dispatch({
+                    type: snapshot.tool === "eraser" ? "setEraser" : "setBrush",
+                    radius,
+                  })
+                }
+              />
+              <SliderSetting
+                label="Opacity"
+                value={activeTip.rendering.opacity}
+                min={0}
+                max={1}
+                step={0.01}
+                format={`${Math.round(activeTip.rendering.opacity * 100)}%`}
+                onChange={(opacity) =>
+                  void engine?.dispatch({
+                    type: snapshot.tool === "eraser" ? "setEraser" : "setBrush",
+                    opacity,
+                  })
+                }
+              />
+              <SliderSetting
+                label="Smoothing"
+                value={snapshot.stabilization}
+                min={0}
+                max={1}
+                step={0.01}
+                format={`${Math.round(snapshot.stabilization * 100)}%`}
+                onChange={(strength) =>
+                  void engine?.dispatch({ type: "setStabilization", strength })
+                }
+              />
+            </div>
 
-          <div className="absolute bottom-3 left-[15.5rem] flex items-center gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl">
-            <span
-              aria-label="Zoom level"
-              aria-live="polite"
-              className="w-14 px-1 text-center text-xs text-muted-foreground tabular-nums"
+            <div
+              aria-label="View controls"
+              className={`absolute bottom-56 flex flex-col items-center gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl ${panelsOpen ? "right-[19.5rem]" : "right-3"}`}
             >
-              {Math.round(snapshot.view.zoom * 100)}%
-            </span>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Zoom out"
-              onClick={() =>
-                void engine?.dispatch({
-                  type: "zoomView",
-                  factor: 1 / ZOOM_STEP,
-                })
-              }
-              className="rounded-lg"
-            >
-              <MagnifyingGlassMinusIcon />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Zoom in"
-              onClick={() =>
-                void engine?.dispatch({ type: "zoomView", factor: ZOOM_STEP })
-              }
-              className="rounded-lg"
-            >
-              <MagnifyingGlassPlusIcon />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Rotate left"
-              onClick={() =>
-                void engine?.dispatch({
-                  type: "rotateView",
-                  radians: -ROTATE_STEP,
-                })
-              }
-              className="rounded-lg"
-            >
-              <ArrowCounterClockwiseIcon />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Rotate right"
-              onClick={() =>
-                void engine?.dispatch({
-                  type: "rotateView",
-                  radians: ROTATE_STEP,
-                })
-              }
-              className="rounded-lg"
-            >
-              <ArrowClockwiseIcon />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Flip canvas horizontally"
-              aria-pressed={snapshot.view.flipped}
-              onClick={() => void engine?.dispatch({ type: "flipView" })}
-              className="rounded-lg"
-            >
-              <FlipHorizontalIcon />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Fit to window"
-              onClick={() => void engine?.dispatch({ type: "fitView" })}
-              className="rounded-lg"
-            >
-              <CornersOutIcon />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label="Reset view"
-              onClick={() =>
-                void engine?.dispatch({
-                  type: "resetView",
-                  ...(panelsOpen ? {} : { panX: 0 }),
-                })
-              }
-              className="rounded-lg text-xs"
-            >
-              Reset
-            </Button>
-          </div>
+              <span
+                aria-label="Zoom level"
+                aria-live="polite"
+                className="w-8 text-center text-xs text-muted-foreground tabular-nums"
+              >
+                {Math.round(snapshot.view.zoom * 100)}%
+              </span>
+              {viewActions.map(([label, icon, action]) => (
+                <Tooltip key={label}>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={label}
+                      aria-pressed={
+                        label === "Flip canvas horizontally"
+                          ? snapshot.view.flipped
+                          : undefined
+                      }
+                      onClick={action}
+                      className="rounded-lg"
+                    >
+                      {icon}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="left" sideOffset={8}>
+                    {label}
+                  </TooltipContent>
+                </Tooltip>
+              ))}
+            </div>
+          </TooltipProvider>
 
           {engine && panelsOpen && (
             <aside className="absolute top-3 right-3 bottom-3 flex w-72 flex-col overflow-y-auto rounded-xl border bg-background/88 shadow-xl backdrop-blur-xl">
-              {libraryOpen && (
-                <BrushLibrary
-                  library={library}
-                  store={brushStore}
-                  brush={snapshot.brush}
-                  edited={brushEdited}
-                  onSelect={(next) => {
-                    void engine.dispatch(brushCommand(next))
-                    setSavedBrush(next)
-                  }}
-                  onClose={() => setLibraryOpen(false)}
-                />
-              )}
               {colorOpen && (
                 <ColorPanel
                   engine={engine}

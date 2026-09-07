@@ -38,8 +38,8 @@ export const BRUSH_COLOR: LinearColor = [INK[0], INK[1], INK[2], 1]
  * How dabs within one stroke combine (D27).
  *
  * - `coverage` takes the maximum: a stroke that crosses itself reads as one
- *   flat mark, which is what a marker or an airbrush does.
- * - `buildup` accumulates: each dab adds, as wet and dry media do.
+ *   flat mark, which is what a marker does.
+ * - `buildup` accumulates: each dab adds, as spray, wet and dry media do.
  */
 export type Accumulation = "coverage" | "buildup"
 

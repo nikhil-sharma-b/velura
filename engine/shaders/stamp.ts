@@ -130,7 +130,11 @@ fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
   // The feather is authored in pixels, so it stays one pixel wide whatever
   // the dab's size: small dabs would otherwise be all falloff and no core.
   let edge = max(0.0, 1.0 - stamp.feather / max(varyings.radius, 1.0));
-  let disc = 1.0 - smoothstep(edge, 1.0, distance);
+  // A hard tip must not call smoothstep with identical endpoints.
+  var disc = 1.0 - step(1.0, distance);
+  if (stamp.feather > 0.0) {
+    disc = 1.0 - smoothstep(edge, 1.0, distance);
+  }
   // Stamp space: the quad's own coordinates, so the tip turned and stretched
   // with it in the vertex stage and nothing more is needed here.
   let tip = textureSample(tipTexture, tipSampler, varyings.local * 0.5 + 0.5).r;

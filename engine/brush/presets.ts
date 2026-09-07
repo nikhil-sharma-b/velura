@@ -57,9 +57,9 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
       spacing: 0.08,
       tipTextureId: GRAPHITE_TIP,
     },
-    grain: { textureId: PAPER_GRAIN, scale: 1, depth: 0.75, movement: 0 },
+    grain: { textureId: PAPER_GRAIN, scale: 0.45, depth: 0.8, movement: 0 },
     // Dry media build: going over a line twice is how a pencil darkens.
-    rendering: { accumulation: "buildup", opacity: 1, flow: 0.35 },
+    rendering: { accumulation: "buildup", opacity: 1, flow: 0.18 },
     dynamics: [
       // A pencil barely changes width with force; what it changes is how much
       // graphite it leaves, which is flow against the paper's tooth.
@@ -84,8 +84,8 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
       spacing: 0.06,
       tipTextureId: CHARCOAL_TIP,
     },
-    grain: { textureId: PAPER_GRAIN, scale: 2.5, depth: 0.85, movement: 0.35 },
-    rendering: { accumulation: "buildup", opacity: 1, flow: 0.3 },
+    grain: { textureId: PAPER_GRAIN, scale: 0.8, depth: 0.9, movement: 0 },
+    rendering: { accumulation: "buildup", opacity: 1, flow: 0.16 },
     dynamics: [
       scaledBy("pressure", "flow", 0.1, 1),
       scaledBy("pressure", "size", 0.6, 1.15),
@@ -98,7 +98,7 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
   {
     id: `${BUILTIN_BRUSH_PREFIX}ink`,
     name: "Inking pen",
-    shape: { radius: 4, feather: 0.4, roundness: 1, angle: 0, spacing: 0.05 },
+    shape: { radius: 4, feather: 0.2, roundness: 1, angle: 0, spacing: 0.05 },
     // One flat mark however often the nib crosses itself.
     rendering: { accumulation: "coverage", opacity: 1, flow: 1 },
     dynamics: [
@@ -111,8 +111,8 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
   {
     id: `${BUILTIN_BRUSH_PREFIX}round`,
     name: "Round brush",
-    shape: { radius: 12, feather: 3, roundness: 1, angle: 0, spacing: 0.05 },
-    grain: { textureId: PAPER_GRAIN, scale: 4, depth: 0.25, movement: 0 },
+    shape: { radius: 12, feather: 1.5, roundness: 1, angle: 0, spacing: 0.05 },
+    grain: { textureId: PAPER_GRAIN, scale: 0.6, depth: 0.3, movement: 0 },
     rendering: { accumulation: "buildup", opacity: 1, flow: 0.45 },
     dynamics: [
       scaledBy("pressure", "size", 0.25, 1),
@@ -125,8 +125,8 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
     id: `${BUILTIN_BRUSH_PREFIX}airbrush`,
     name: "Airbrush",
     // Wide falloff and low flow: an airbrush is built out of overlap.
-    shape: { radius: 28, feather: 8, roundness: 1, angle: 0, spacing: 0.04 },
-    rendering: { accumulation: "coverage", opacity: 0.85, flow: 0.06 },
+    shape: { radius: 28, feather: 28, roundness: 1, angle: 0, spacing: 0.04 },
+    rendering: { accumulation: "buildup", opacity: 0.85, flow: 0.025 },
     dynamics: [
       // The trigger meters paint, not the size of the cone.
       scaledBy("pressure", "flow", 0.08, 1),
@@ -139,7 +139,7 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
     // A chisel nib: flat, held at an angle, and that is its whole character.
     shape: {
       radius: 10,
-      feather: 0.6,
+      feather: 0.3,
       roundness: 0.3,
       angle: 0.125,
       spacing: 0.04,

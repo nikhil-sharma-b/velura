@@ -34,6 +34,8 @@ import {
   type LayerSummary,
 } from "@/engine"
 
+import { IconButton } from "./icon-button"
+
 type LayerPanelProps = { engine: Engine; snapshot: EngineSnapshot }
 
 function findSummary(
@@ -160,10 +162,10 @@ function LayerRow({
               </span>
             )}
           </button>
-          <Button
+          <IconButton
             variant="ghost"
             size="icon-xs"
-            aria-label={`${layer.visible ? "Hide" : "Show"} ${layer.name}`}
+            label={`${layer.visible ? "Hide" : "Show"} ${layer.name}`}
             onClick={() =>
               void engine.dispatch({
                 type: "setLayer",
@@ -173,12 +175,12 @@ function LayerRow({
             }
           >
             {layer.visible ? <EyeIcon /> : <EyeSlashIcon />}
-          </Button>
+          </IconButton>
           {layer.kind === "raster" && (
-            <Button
+            <IconButton
               variant="ghost"
               size="icon-xs"
-              aria-label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
+              label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
               onClick={() =>
                 void engine.dispatch({
                   type: "setLayer",
@@ -188,15 +190,15 @@ function LayerRow({
               }
             >
               {layer.locked ? <LockIcon /> : <LockOpenIcon />}
-            </Button>
+            </IconButton>
           )}
           {(selected || layer.id === activeLayerId) && (
             <>
               {layer.kind === "raster" && (
-                <Button
+                <IconButton
                   variant="ghost"
                   size="icon-xs"
-                  aria-label={`Duplicate ${layer.name}`}
+                  label={`Duplicate ${layer.name}`}
                   onClick={() =>
                     void engine.dispatch({
                       type: "duplicateLayer",
@@ -205,19 +207,19 @@ function LayerRow({
                   }
                 >
                   <CopyIcon />
-                </Button>
+                </IconButton>
               )}
-              <Button
+              <IconButton
                 variant="ghost"
                 size="icon-xs"
-                aria-label={`Delete ${layer.name}`}
+                label={`Delete ${layer.name}`}
                 disabled={totalRasters === removedRasters}
                 onClick={() =>
                   void engine.dispatch({ type: "removeLayer", id: layer.id })
                 }
               >
                 <TrashIcon />
-              </Button>
+              </IconButton>
             </>
           )}
         </div>
@@ -287,22 +289,22 @@ export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
           Layers
         </h2>
         <div className="flex">
-          <Button
+          <IconButton
             variant="ghost"
             size="icon-sm"
-            aria-label="Group active layer"
+            label="Group active layer"
             onClick={() => void engine.dispatch({ type: "addGroup" })}
           >
             <FolderPlusIcon />
-          </Button>
-          <Button
+          </IconButton>
+          <IconButton
             variant="ghost"
             size="icon-sm"
-            aria-label="Add layer"
+            label="Add layer"
             onClick={() => void engine.dispatch({ type: "addLayer" })}
           >
             <PlusIcon />
-          </Button>
+          </IconButton>
         </div>
       </header>
 
