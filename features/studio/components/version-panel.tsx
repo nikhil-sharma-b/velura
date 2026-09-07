@@ -104,7 +104,7 @@ export function VersionPanel({
     <aside
       aria-label="Version history"
       data-testid="version-panel"
-      className="absolute top-3 bottom-3 left-16 flex w-64 flex-col gap-2 rounded-xl border bg-background/88 p-3 shadow-lg backdrop-blur-xl"
+      className="absolute top-3 bottom-3 left-16 flex w-64 flex-col gap-2 rounded-xl border border-studio-edge bg-studio-surface/88 p-3 shadow-lg backdrop-blur-xl"
     >
       <header className="flex items-center gap-2">
         <ClockCounterClockwiseIcon className="size-4" />
@@ -149,7 +149,7 @@ export function VersionPanel({
       </ul>
 
       {previewing ? (
-        <div className="space-y-2 rounded-lg border bg-background/60 p-2">
+        <div className="space-y-2 rounded-lg border border-studio-edge bg-studio-surface/60 p-2">
           <p className="text-xs text-muted-foreground">
             Previewing {restorePointLabel(previewing.createdAt, now)}.
             {canCancel

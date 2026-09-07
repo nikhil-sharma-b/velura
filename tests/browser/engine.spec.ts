@@ -250,7 +250,7 @@ test("a resize during startup is painted before the engine reports ready", async
   // swap-chain texture (canvas drawImage/readback can discard that texture).
   const rendered = PNG.sync.read(await page.locator("canvas").screenshot())
   const lastPixel = rendered.data.subarray(-4)
-  expect(Array.from(lastPixel)).toEqual([24, 24, 27, 255])
+  expect(Array.from(lastPixel)).toEqual([48, 49, 54, 255])
 })
 
 test("presents the tiled layer through the display transform", async ({

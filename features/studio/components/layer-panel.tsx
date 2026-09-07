@@ -113,12 +113,15 @@ function LayerRow({
             void engine.dispatch({ type: "moveLayer", id, index, parentId })
         }}
         className={`group border-b border-border/70 ${
-          selected ? "bg-accent/80" : "bg-background/80 hover:bg-muted/60"
+          selected ? "bg-accent/80" : "bg-studio-surface/80 hover:bg-muted/60"
         }`}
         style={{ paddingLeft: `${depth * 14}px` }}
       >
         <div className="flex min-h-12 items-center gap-1.5 px-2 py-1.5">
-          <DotsSixVerticalIcon className="size-3.5 shrink-0 text-muted-foreground opacity-50" />
+          <DotsSixVerticalIcon
+            aria-hidden
+            className="size-4 shrink-0 cursor-grab text-muted-foreground transition-colors group-hover:text-foreground"
+          />
           <button
             type="button"
             aria-label={`${selected ? "Selected" : "Select"} ${layer.name}`}
@@ -320,7 +323,7 @@ export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
       </div>
 
       {selected && (
-        <div className="shrink-0 space-y-3 border-t bg-background/95 p-3">
+        <div className="shrink-0 space-y-3 border-t bg-studio-surface/95 p-3">
           <div className="flex items-center gap-1">
             <Button
               variant={selected.clip ? "secondary" : "outline"}

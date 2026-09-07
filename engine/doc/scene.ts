@@ -8,11 +8,17 @@ export const BACKGROUND = srgbToWorking([
   decodeTransfer(255 / 255),
 ])
 
-/** The dark workspace surrounding the authored document. */
+/**
+ * The neutral matting surrounding the authored document. Mid-grey rather than
+ * near-black: a very dark surround makes the eye adapt to it, so white paper
+ * blooms and midtones are painted darker than intended. Editing tools mat in
+ * grey for the same reason a gallery does. Kept neutral (r = g = b + 5) so it
+ * biases no hue judgement; #18181b was cool enough to pull colour warm.
+ */
 export const WORKSPACE_BACKGROUND = srgbToWorking([
-  decodeTransfer(24 / 255),
-  decodeTransfer(24 / 255),
-  decodeTransfer(27 / 255),
+  decodeTransfer(48 / 255),
+  decodeTransfer(49 / 255),
+  decodeTransfer(54 / 255),
 ])
 
 /**

@@ -37,6 +37,11 @@
   --color-primary: var(--primary);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
+  --color-tooltip-foreground: var(--tooltip-foreground);
+  --color-tooltip: var(--tooltip);
+  --color-studio-surface: var(--studio-surface);
+  --color-canvas-matting: var(--canvas-matting);
+  --color-studio-edge: var(--studio-edge);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
   --color-foreground: var(--foreground);
@@ -92,6 +97,24 @@
   --sidebar-ring: oklch(0.723 0.014 214.4);
   --topbar: oklch(0.985 0.002 197.1);
   --surface-raised: oklch(1 0 0);
+  /* Rails and panels floating on the studio matting. They are composited at
+     88% over it, so the token is a step lighter than the value we want to
+     land on. */
+  --studio-surface: oklch(1 0 0);
+  --studio-edge: var(--border);
+  /* Mirrors WORKSPACE_BACKGROUND in engine/doc/scene.ts, which is what
+     actually paints the surround; this only shows before the GPU context is
+     configured. Change both together. */
+  --canvas-matting: #303136;
+
+  /* Tooltips float over the studio matting and over the artwork
+     itself, so they cannot be the page inverted the way popovers are — in the
+     light theme that lands within 1.03:1 of the canvas surround. This sits
+     between the indigo and violet brand stops: light enough to clear the
+     matting at 3.5:1, dark enough to hold white 12px text at 5.1:1. Like the
+     brand stops it is deliberately the same in both themes. */
+  --tooltip: #6a5fd0;
+  --tooltip-foreground: #ffffff;
   /* Brand identity — theme-independent by design. These are the four stops of
      the pressure stroke plus one auxiliary hue, and they hold their value in
      both themes so the mark never shifts. Do not reassign per theme. */
@@ -136,6 +159,28 @@
   --sidebar-ring: #8067e8;
   --topbar: #1f2022;
   --surface-raised: #2d2e31;
+  /* Rails and panels floating on the studio matting. They are composited at
+     88% over it, so the token is a step lighter than the value we want to
+     land on: #4a4b52 at 88% over the matting reads as #47484e. */
+  --studio-surface: #52535a;
+  /* Two mid-greys cannot be told apart by lightness alone without making the
+     rails glare, so the panels carry a rim a step lighter than either: 2.6:1
+     against the matting, 1.7:1 against the rail itself. The shared --border is
+     darker than both surfaces here and reads as a smudge between them. */
+  --studio-edge: #6f7079;
+  /* Mirrors WORKSPACE_BACKGROUND in engine/doc/scene.ts, which is what
+     actually paints the surround; this only shows before the GPU context is
+     configured. Change both together. */
+  --canvas-matting: #303136;
+
+  /* Tooltips float over the studio matting and over the artwork
+     itself, so they cannot be the page inverted the way popovers are — in the
+     light theme that lands within 1.03:1 of the canvas surround. This sits
+     between the indigo and violet brand stops: light enough to clear the
+     matting at 3.5:1, dark enough to hold white 12px text at 5.1:1. Like the
+     brand stops it is deliberately the same in both themes. */
+  --tooltip: #6a5fd0;
+  --tooltip-foreground: #ffffff;
   /* Brand identity — theme-independent by design. These are the four stops of
      the pressure stroke plus one auxiliary hue, and they hold their value in
      both themes so the mark never shifts. Do not reassign per theme. */

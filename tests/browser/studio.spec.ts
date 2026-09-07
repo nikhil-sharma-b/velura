@@ -272,10 +272,10 @@ test("device loss rebuilds automatically and restores the in-progress session", 
   const restored = PNG.sync.read(await canvas.screenshot())
   const offset = (40 * restored.width + 70) * 4
   expect(Array.from(before.data.subarray(offset, offset + 3))).not.toEqual([
-    24, 24, 27,
+    48, 49, 54,
   ])
   expect(Array.from(restored.data.subarray(offset, offset + 3))).not.toEqual([
-    24, 24, 27,
+    48, 49, 54,
   ])
 })
 

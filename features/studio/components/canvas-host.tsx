@@ -459,7 +459,7 @@ export function CanvasHost({
   ] as const
   return (
     <main
-      className="fixed inset-0 overflow-hidden bg-zinc-900"
+      className="fixed inset-0 overflow-hidden bg-canvas-matting"
       data-engine-status={snapshot.status}
     >
       <canvas
@@ -476,7 +476,7 @@ export function CanvasHost({
       />
       {snapshot.status === "ready" && (
         <>
-          <div className="pointer-events-none absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border bg-background/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
+          <div className="pointer-events-none absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-studio-edge bg-studio-surface/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
             <span>Untitled artwork</span>
             {snapshot.loading && (
               <span className="text-muted-foreground" data-testid="load-status">
@@ -511,7 +511,7 @@ export function CanvasHost({
             <div
               role="alert"
               data-recovery-action={snapshot.problem.action}
-              className="absolute top-14 left-1/2 max-w-xl -translate-x-1/2 rounded-lg border border-destructive/40 bg-background/95 px-4 py-3 text-sm shadow-lg"
+              className="absolute top-14 left-1/2 max-w-xl -translate-x-1/2 rounded-lg border border-destructive/40 bg-studio-surface/95 px-4 py-3 text-sm shadow-lg"
             >
               {snapshot.problem.message}
             </div>
@@ -526,7 +526,7 @@ export function CanvasHost({
             </div>
           )}
           <TooltipProvider delayDuration={350}>
-            <div className="absolute top-1/2 left-3 flex -translate-y-1/2 flex-col items-center gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl">
+            <div className="absolute top-1/2 left-3 flex -translate-y-1/2 flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl">
               <RailAction
                 label="Brush tool"
                 variant={snapshot.tool === "brush" ? "default" : "ghost"}
@@ -663,7 +663,7 @@ export function CanvasHost({
             />
           )}
 
-          <div className="absolute top-3 left-3 flex gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl">
+          <div className="absolute top-3 left-3 flex gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl">
             {engine && <ExportDialog engine={engine} />}
             <IconButton
               variant="ghost"
@@ -691,7 +691,7 @@ export function CanvasHost({
 
           <TooltipProvider delayDuration={350}>
             <div
-              className={`absolute bottom-3 w-56 space-y-2 rounded-xl border bg-background/88 p-3 shadow-lg backdrop-blur-xl ${panelsOpen ? "right-[19.5rem]" : "right-3"}`}
+              className={`absolute bottom-3 w-56 space-y-2 rounded-xl border border-studio-edge bg-studio-surface/88 p-3 shadow-lg backdrop-blur-xl ${panelsOpen ? "right-[19.5rem]" : "right-3"}`}
             >
               {snapshot.tool === "eraser" ? (
                 <PopoverPrimitive.Root
@@ -852,7 +852,7 @@ export function CanvasHost({
 
             <div
               aria-label="View controls"
-              className={`absolute top-1/2 flex -translate-y-1/2 flex-col items-center gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl ${panelsOpen ? "right-[19.5rem]" : "right-3"}`}
+              className={`absolute top-1/2 flex -translate-y-1/2 flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl ${panelsOpen ? "right-[19.5rem]" : "right-3"}`}
             >
               <span
                 aria-label="Zoom level"
@@ -888,7 +888,7 @@ export function CanvasHost({
           </TooltipProvider>
 
           {engine && panelsOpen && (
-            <aside className="absolute top-3 right-3 bottom-3 flex w-72 flex-col overflow-y-auto rounded-xl border bg-background/88 shadow-xl backdrop-blur-xl">
+            <aside className="absolute top-3 right-3 bottom-3 flex w-72 flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl">
               {colorOpen && (
                 <ColorPanel
                   engine={engine}
@@ -905,7 +905,7 @@ export function CanvasHost({
             size="icon"
             aria-label={panelsOpen ? "Collapse panels" : "Expand panels"}
             onClick={() => setPanelsOpen((open) => !open)}
-            className={`absolute top-3 rounded-lg bg-background/88 shadow-md backdrop-blur-xl transition-[right] ${
+            className={`absolute top-3 rounded-lg border border-studio-edge bg-studio-surface/88 shadow-md backdrop-blur-xl transition-[right] ${
               panelsOpen ? "right-[19.5rem]" : "right-3"
             }`}
           >
@@ -915,7 +915,7 @@ export function CanvasHost({
           {paintNotice && (
             <div
               role="status"
-              className="absolute bottom-5 left-1/2 -translate-x-1/2 rounded-lg border border-brand-gold/40 bg-background/95 px-4 py-2 text-sm shadow-lg"
+              className="absolute bottom-5 left-1/2 -translate-x-1/2 rounded-lg border border-brand-gold/40 bg-studio-surface/95 px-4 py-2 text-sm shadow-lg"
             >
               <LockIcon className="mr-2 inline size-4 text-brand-gold" />
               {paintNotice}
