@@ -24,6 +24,8 @@ struct Present {
   docSize: vec2<f32>,
   // One for destination-out erasing, zero for ordinary painting.
   strokeMode: f32,
+  // Opaque workspace outside the document, making its edge visible.
+  workspaceBackground: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> present: Present;
@@ -72,10 +74,10 @@ fn documentUv(position: vec2<f32>) -> vec3<f32> {
 fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
   let sampled = documentUv(position.xy);
   let uv = sampled.xy;
-  // Off the canvas there is nothing to composite: the backdrop shows through,
-  // which is what makes the document's edge visible once it is zoomed out.
+  // Off the canvas there is nothing to composite: the dark workspace shows
+  // through, leaving the document's white backdrop visually distinct.
   if (sampled.z < 0.5) {
-    return vec4<f32>(encodeTransfer(present.toOutput * present.background.rgb), 1.0);
+    return vec4<f32>(encodeTransfer(present.toOutput * present.workspaceBackground.rgb), 1.0);
   }
   var color = vec4<f32>(0.0);
   if (present.hasBelow > 0.5) {

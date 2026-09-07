@@ -115,16 +115,16 @@ const BAND = { from: Y - 30, to: Y + 30 }
 function thickness(image: Image, x: number): number {
   let inked = 0
   for (let y = BAND.from; y <= BAND.to; y++)
-    if (level(image, x, y) > 128) inked++
+    if (level(image, x, y) < 128) inked++
   return inked
 }
 
 /** The darkest the mark gets in one column. */
 function peak(image: Image, x: number): number {
-  let highest = 0
+  let darkest = 255
   for (let y = BAND.from; y <= BAND.to; y++)
-    highest = Math.max(highest, level(image, x, y))
-  return highest
+    darkest = Math.min(darkest, level(image, x, y))
+  return darkest
 }
 
 /** A straight run at a fixed pen state, sampled every `step` pixels. */
@@ -170,7 +170,7 @@ test("pressing harder deepens the tone", async ({ page }) => {
   await pen(page, samples)
   const image = await painted(page)
 
-  expect(peak(image, 200)).toBeGreaterThan(peak(image, 40) + 40)
+  expect(peak(image, 200)).toBeLessThan(peak(image, 40) - 40)
 })
 
 test("a pressure curve decides how the taper is shaped", async ({ page }) => {

@@ -88,7 +88,9 @@ const channel = (image: Image, at: { x: number; y: number }, index: number) =>
   image.data[(at.y * image.width + at.x) * 4 + index]
 
 const isInk = (image: Image, at: { x: number; y: number }) =>
-  channel(image, at, 0) > 200 && channel(image, at, 2) > 200
+  channel(image, at, 0) < 128 &&
+  channel(image, at, 1) < 128 &&
+  channel(image, at, 2) < 128
 
 /** A fresh id per test: OPFS outlives the page, which is the whole point. */
 const newId = () => `doc-${Math.random().toString(36).slice(2)}`

@@ -85,7 +85,7 @@ async function painted(page: Page, x: number, y: number) {
     },
     [x, y] as const
   )
-  return pixel[0]! > 200 && pixel[2]! > 200
+  return pixel[0]! < 128 && pixel[2]! < 128
 }
 
 const restorePoints = (page: Page) =>

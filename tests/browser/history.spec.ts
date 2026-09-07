@@ -99,9 +99,11 @@ const redo = (page: Page) =>
 const channel = (image: Image, at: { x: number; y: number }, index: number) =>
   image.data[(at.y * image.width + at.x) * 4 + index]
 
-/** Painting is white ink, so a marked pixel is bright in every channel. */
+/** Painting is dark ink, so a marked pixel is dark in every channel. */
 const isInk = (image: Image, at: { x: number; y: number }) =>
-  channel(image, at, 0) > 200 && channel(image, at, 2) > 200
+  channel(image, at, 0) < 128 &&
+  channel(image, at, 1) < 128 &&
+  channel(image, at, 2) < 128
 
 test("undo takes back a stroke, pixel for pixel, and redo puts it back", async ({
   page,

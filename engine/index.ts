@@ -61,7 +61,7 @@ import {
   DEFAULT_WARM_BYTES,
   type DocumentHistory,
 } from "./doc/history"
-import { BACKGROUND } from "./doc/scene"
+import { BACKGROUND, WORKSPACE_BACKGROUND } from "./doc/scene"
 import {
   captureStructure,
   type DocumentStructure,
@@ -360,12 +360,12 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   stabilization: DEFAULT_STABILIZATION,
   tool: "brush",
   color: Object.freeze({
-    red: 244 / 255,
-    green: 244 / 255,
-    blue: 245 / 255,
+    red: 36 / 255,
+    green: 37 / 255,
+    blue: 38 / 255,
     alpha: 1,
     colorSpace: "srgb",
-    hex: "#f4f4f5",
+    hex: "#242526",
   }),
   brush: Object.freeze(cloneBrush(DEFAULT_BRUSH)),
   textures: BUILTIN_TEXTURE_IDS,
@@ -1413,6 +1413,7 @@ export function createEngine(
         format,
         outputColorSpace: colorSpace,
         background: BACKGROUND,
+        workspaceBackground: WORKSPACE_BACKGROUND,
         ink: BRUSH_COLOR,
         feather: BRUSH_FEATHER,
       })

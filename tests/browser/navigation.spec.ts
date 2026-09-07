@@ -50,13 +50,13 @@ async function painted(page: Page) {
   })
 }
 
-/** Ink is far brighter than the backdrop, so one channel decides it. */
+/** Ink is much darker than the white document backdrop, so one channel decides it. */
 function isInk(
   image: { width: number; data: number[] },
   x: number,
   y: number
 ): boolean {
-  return image.data[(Math.round(y) * image.width + Math.round(x)) * 4] > 128
+  return image.data[(Math.round(y) * image.width + Math.round(x)) * 4] < 128
 }
 
 /** Drags the pen across the canvas, in screen pixels from its top-left. */

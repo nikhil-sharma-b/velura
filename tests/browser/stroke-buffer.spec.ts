@@ -50,7 +50,7 @@ async function painted(page: Page) {
 
 type Image = { width: number; data: number[] }
 
-/** Red channel at a pixel. Ink is far brighter than the backdrop. */
+/** Red channel at a pixel. Ink is much darker than the document backdrop. */
 function level(image: Image, x: number, y: number): number {
   return image.data[(Math.round(y) * image.width + Math.round(x)) * 4]
 }
@@ -82,7 +82,7 @@ test("a coverage stroke does not darken where it crosses itself", async ({
   const image = await painted(page)
   // Both arms are inked, and the crossing is no darker than either: coverage
   // takes the maximum, so the mark reads as one flat pass of the marker.
-  expect(level(image, ON_ONE_ARM.x, ON_ONE_ARM.y)).toBeGreaterThan(
+  expect(level(image, ON_ONE_ARM.x, ON_ONE_ARM.y)).toBeLessThan(
     level(image, 5, 5)
   )
   expect(level(image, CROSSING.x, CROSSING.y)).toBeCloseTo(
@@ -95,8 +95,8 @@ test("a buildup stroke darkens where it crosses itself", async ({ page }) => {
   const origin = await openCanvas(page, { accumulation: "buildup", flow: FLOW })
   await drawCross(page, origin)
   const image = await painted(page)
-  expect(level(image, CROSSING.x, CROSSING.y)).toBeGreaterThan(
-    level(image, ON_ONE_ARM.x, ON_ONE_ARM.y) + 10
+  expect(level(image, CROSSING.x, CROSSING.y)).toBeLessThan(
+    level(image, ON_ONE_ARM.x, ON_ONE_ARM.y) - 10
   )
 })
 
@@ -107,9 +107,9 @@ test("a buildup stroke darkens where it crosses itself", async ({ page }) => {
  */
 function coverage(image: Image, x: number, y: number): number {
   const backdrop = decodeTransfer(level(image, 5, 5) / 255)
-  const ink = decodeTransfer(1)
+  const ink = decodeTransfer(36 / 255)
   const pixel = decodeTransfer(level(image, x, y) / 255)
-  return (pixel - backdrop) / (ink - backdrop)
+  return (backdrop - pixel) / (backdrop - ink)
 }
 
 test("stroke opacity fades the whole mark, not each dab", async ({ page }) => {
@@ -195,8 +195,8 @@ test("a second stroke does build over the first, because each composites on lift
   const single = await painted(page)
   await armStroke([140, 20], [20, 140])
   const crossed = await painted(page)
-  expect(level(crossed, CROSSING.x, CROSSING.y)).toBeGreaterThan(
-    level(single, CROSSING.x, CROSSING.y) + 10
+  expect(level(crossed, CROSSING.x, CROSSING.y)).toBeLessThan(
+    level(single, CROSSING.x, CROSSING.y) - 10
   )
   // The first stroke survived the second: it is in the layer, not the buffer.
   expect(level(crossed, ON_ONE_ARM.x, ON_ONE_ARM.y)).toBeCloseTo(

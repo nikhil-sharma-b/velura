@@ -3,6 +3,13 @@ import type { LinearColor, TiledLayer } from "./tiled-layer"
 
 /** The canvas backdrop, authored as sRGB bytes and held in the working space. */
 export const BACKGROUND = srgbToWorking([
+  decodeTransfer(255 / 255),
+  decodeTransfer(255 / 255),
+  decodeTransfer(255 / 255),
+])
+
+/** The dark workspace surrounding the authored document. */
+export const WORKSPACE_BACKGROUND = srgbToWorking([
   decodeTransfer(24 / 255),
   decodeTransfer(24 / 255),
   decodeTransfer(27 / 255),

@@ -39,9 +39,10 @@ const BYTES_PER_TEXEL = TILE_CHANNELS * 2
 /**
  * mat3x3 occupies three 16-byte columns, then one vec4 of background, then the
  * four floats the present pass needs to know about the stack it is showing,
- * then the view (D28) as a second mat3x3, the document's size, and stroke mode.
+ * then the view (D28) as a second mat3x3, the document's size, stroke mode,
+ * and the workspace surrounding the document.
  */
-const UNIFORM_BYTES = 144
+const UNIFORM_BYTES = 160
 /** Where the stroke opacity sits in that buffer: after matrix and background. */
 const STROKE_OPACITY_OFFSET = 64
 /**
@@ -55,6 +56,8 @@ const VIEW_OFFSET = 80
 const DOC_SIZE_OFFSET = 128
 /** Whether the in-flight stroke removes coverage instead of adding it. */
 const STROKE_MODE_OFFSET = 136
+/** The dark editor workspace visible beyond the document's bounds. */
+const WORKSPACE_BACKGROUND_OFFSET = 144
 /**
  * vec2 viewport, feather and the tip flag, one vec4 of ink, then the grain's
  * scale, depth and movement padded out to the 16-byte alignment a uniform
@@ -209,6 +212,8 @@ export function createRenderer(
     outputColorSpace: OutputColorSpace
     /** Opaque canvas backdrop, working-space linear. */
     background: readonly [number, number, number]
+    /** Opaque workspace surrounding the canvas; defaults to the canvas backdrop. */
+    workspaceBackground?: readonly [number, number, number]
     /** Premultiplied linear-light ink, and the dab rim falloff in pixels. */
     ink: readonly [number, number, number, number]
     feather: number
@@ -265,7 +270,8 @@ export function createRenderer(
     0,
     packUniform(
       workingToOutputMatrix(options.outputColorSpace),
-      options.background
+      options.background,
+      options.workspaceBackground ?? options.background
     )
   )
 
@@ -1560,13 +1566,15 @@ export function createRenderer(
 /** WGSL matrices are column-major with 16-byte column stride. */
 function packUniform(
   rowMajor: ColorMatrix,
-  background: readonly [number, number, number]
+  background: readonly [number, number, number],
+  workspaceBackground: readonly [number, number, number]
 ): Float32Array {
   const data = new Float32Array(UNIFORM_BYTES / 4)
   for (let column = 0; column < 3; column++)
     for (let row = 0; row < 3; row++)
       data[column * 4 + row] = rowMajor[row * 3 + column]
   data.set([...background, 1], 12)
+  data.set([...workspaceBackground, 1], WORKSPACE_BACKGROUND_OFFSET / 4)
   // Stroke opacity, rewritten per stroke; opaque until one begins. The active
   // layer is opaque, and the cache flags stay zero until a composition sets them.
   data[STROKE_OPACITY_OFFSET / 4] = 1

@@ -26,9 +26,9 @@ export const BRUSH_SPACING_RATIO = 0.25
 export const BRUSH_FEATHER = 1
 
 const INK = srgbToWorking([
-  decodeTransfer(244 / 255),
-  decodeTransfer(244 / 255),
-  decodeTransfer(245 / 255),
+  decodeTransfer(36 / 255),
+  decodeTransfer(37 / 255),
+  decodeTransfer(38 / 255),
 ])
 
 /** Premultiplied linear-light ink. Stroke opacity is applied at composite. */

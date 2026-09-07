@@ -25,7 +25,7 @@ test("initializes the facade and presents opaque pixels", async ({ page }) => {
       width: pixels.width,
       height: pixels.height,
       alphas: [...alphas],
-      // Rows below the hardcoded shape are untouched backdrop.
+      // Rows below the hardcoded shape are untouched document backdrop.
       lastRow: Array.from(pixels.data.slice(-65 * 4)),
     }
   })
@@ -33,7 +33,7 @@ test("initializes the facade and presents opaque pixels", async ({ page }) => {
   expect([result.width, result.height]).toEqual([65, 33])
   expect(result.alphas).toEqual([255])
   expect(result.lastRow).toEqual(
-    Array.from({ length: 65 }, () => [24, 24, 27, 255]).flat()
+    Array.from({ length: 65 }, () => [255, 255, 255, 255]).flat()
   )
 })
 
@@ -78,7 +78,7 @@ test("resizing changes the viewport without changing the document", async ({
   expect(result).toEqual({
     width: 42,
     height: 30,
-    lastPixel: [24, 24, 27, 255],
+    lastPixel: [255, 255, 255, 255],
     stable: true,
     notifications: 0,
   })
@@ -174,7 +174,7 @@ test("disposing during initialization cannot disturb a replacement on the same c
   expect(result).toEqual({
     old: "disposed",
     current: "ready",
-    pixel: [24, 24, 27, 255],
+    pixel: [255, 255, 255, 255],
   })
 })
 

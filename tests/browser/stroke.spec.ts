@@ -38,13 +38,13 @@ async function painted(page: Page) {
   })
 }
 
-/** Ink is far brighter than the backdrop, so one channel decides it. */
+/** Ink is much darker than the white document backdrop, so one channel decides it. */
 function isInk(
   image: { width: number; data: number[] },
   x: number,
   y: number
 ): boolean {
-  return image.data[(Math.round(y) * image.width + Math.round(x)) * 4] > 128
+  return image.data[(Math.round(y) * image.width + Math.round(x)) * 4] < 128
 }
 
 test("a stroke paints a continuous mark under the pen", async ({ page }) => {
@@ -203,7 +203,7 @@ test("hardness sets how sharply the mark ends at its rim", async ({ page }) => {
     let falling = 0
     for (let y = 60; y < 60 + 24; y++) {
       const level = image.data[(y * image.width + 100) * 4]
-      if (level > 16 && level < 240) falling++
+      if (level > 50 && level < 240) falling++
     }
     return falling
   }
