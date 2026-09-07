@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { gestureChange, wheelChange } from "../../engine/input/view-gestures"
+import {
+  gestureChange,
+  isViewPanButton,
+  wheelChange,
+} from "../../engine/input/view-gestures"
 
 const close = (actual: number, expected: number, epsilon = 1e-6) =>
   expect(Math.abs(actual - expected)).toBeLessThan(epsilon)
@@ -7,6 +11,16 @@ const close = (actual: number, expected: number, epsilon = 1e-6) =>
 const pair = (ax: number, ay: number, bx: number, by: number) => ({
   a: { x: ax, y: ay },
   b: { x: bx, y: by },
+})
+
+describe("pan buttons", () => {
+  test("includes mouse navigation buttons and the pen barrel only", () => {
+    expect(isViewPanButton({ pointerType: "mouse", button: 1 })).toBe(true)
+    expect(isViewPanButton({ pointerType: "mouse", button: 2 })).toBe(true)
+    expect(isViewPanButton({ pointerType: "pen", button: 2 })).toBe(true)
+    expect(isViewPanButton({ pointerType: "pen", button: 0 })).toBe(false)
+    expect(isViewPanButton({ pointerType: "pen", button: 5 })).toBe(false)
+  })
 })
 
 describe("two-finger gestures", () => {

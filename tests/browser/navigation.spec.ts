@@ -205,6 +205,74 @@ test("a middle-button drag pans, which is the mouse's own gesture", async ({
   expect(isInk(image, 115, 52)).toBe(false)
 })
 
+test("a right-button drag pans without painting or opening a menu", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const before = await painted(page)
+  await page.locator("canvas").evaluate((canvas) => {
+    canvas.addEventListener("contextmenu", (event) => {
+      canvas.dataset.contextMenuPrevented = String(event.defaultPrevented)
+    })
+  })
+  await page.mouse.move(origin.x + 80, origin.y + 50)
+  await page.mouse.down({ button: "right" })
+  await page.mouse.move(origin.x + 115, origin.y + 70, { steps: 5 })
+  await page.mouse.up({ button: "right" })
+
+  const view = await page.evaluate(() => window.engine.getSnapshot().view)
+  expect(view.panX).toBeCloseTo(DEFAULT_VIEW.panX + 35, 0)
+  expect(view.panY).toBeCloseTo(DEFAULT_VIEW.panY + 20, 0)
+  await expect(page.locator("canvas")).toHaveAttribute(
+    "data-context-menu-prevented",
+    "true"
+  )
+  const image = await painted(page)
+  expect(image.data).toEqual(before.data)
+})
+
+test("a pen barrel-button drag pans without painting", async ({ page }) => {
+  const origin = await openCanvas(page)
+  const before = await painted(page)
+  const view = await page.evaluate(
+    async ([left, top]) => {
+      const canvas = document.querySelector("canvas")!
+      const send = (
+        type: string,
+        x: number,
+        y: number,
+        button: number,
+        buttons: number
+      ) =>
+        canvas.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId: 7,
+            pointerType: "pen",
+            isPrimary: true,
+            clientX: left + x,
+            clientY: top + y,
+            button,
+            buttons,
+            pressure: 0.5,
+            bubbles: true,
+          })
+        )
+      // Some pens report the barrel switch only after the tip is already in
+      // contact. That half-started mark must become a pan, not survive it.
+      send("pointerdown", 80, 50, 0, 1)
+      send("pointermove", 80, 50, 2, 3)
+      send("pointermove", 115, 70, -1, 3)
+      send("pointerup", 115, 70, 0, 0)
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+      return window.engine.getSnapshot().view
+    },
+    [origin.x, origin.y]
+  )
+  expect(view.panX).toBeCloseTo(DEFAULT_VIEW.panX + 35, 0)
+  expect(view.panY).toBeCloseTo(DEFAULT_VIEW.panY + 20, 0)
+  expect((await painted(page)).data).toEqual(before.data)
+})
+
 test("a second finger takes back the mark and navigates instead", async ({
   page,
 }) => {
