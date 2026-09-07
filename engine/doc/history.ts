@@ -70,6 +70,17 @@ export interface DocumentHistory {
       /** Surfaces the operation filled by copying another's pixels. */
       copied?: readonly { from: string; to: string }[]
       /**
+       * Surfaces the operation filled with pixels of its own — a placed image
+       * arrives this way. The tiles go on the GPU as part of the step, so
+       * taking the step back takes the pixels with it.
+       */
+      filled?: readonly {
+        surfaceId: string
+        tiles: readonly (TileCoord & { texels: Uint16Array })[]
+      }[]
+      /** Canvas the filled tiles were made for; they are clipped to it. */
+      canvas?: { width: number; height: number }
+      /**
        * Names a run of adjustments that is one act to the artist. A dragged
        * opacity slider dispatches a command per tick, and thirty steps to undo
        * one drag would bury the stroke underneath it: consecutive operations
@@ -262,6 +273,30 @@ export function createDocumentHistory(options: {
     return { surfaceId, tiles: changes }
   }
 
+  /** Tiles becoming a surface's own, as the step that put them there. */
+  function captureFill(
+    surfaceId: string,
+    tiles: readonly (TileCoord & { texels: Uint16Array })[],
+    canvas: { width: number; height: number }
+  ): SurfaceChange {
+    const current = index.get(surfaceId)
+    const changes = tiles.flatMap((tile) => {
+      const clipped = clipTile(tile.texels, tile, canvas)
+      if (isBlank(clipped)) return []
+      const key = tileKey(tile.x, tile.y)
+      const before = current?.get(key)
+      const after = store.put(clipped)
+      if (before === after) {
+        store.release(after)
+        return []
+      }
+      if (before) store.retain(before)
+      setTile(surfaceId, key, after)
+      return [{ x: tile.x, y: tile.y, before, after }]
+    })
+    return { surfaceId, tiles: changes }
+  }
+
   function captureCopy(from: string, to: string): SurfaceChange {
     const source = index.get(from)
     const changes = [...(source?.entries() ?? [])].map(([key, hash]) => {
@@ -394,13 +429,23 @@ export function createDocumentHistory(options: {
       })
     },
     recordOperation(label, structure, operation) {
-      enqueue(() => {
+      enqueue(async () => {
+        const canvas = operation?.canvas
+        const filled = (operation?.filled ?? []).map((surface) => {
+          if (!canvas)
+            throw new Error("Filled surfaces need the canvas they belong to.")
+          return captureFill(surface.surfaceId, surface.tiles, canvas)
+        })
         const surfaces = [
           ...(operation?.removed ?? []).map(captureRemoval),
           ...(operation?.copied ?? []).map(({ from, to }) =>
             captureCopy(from, to)
           ),
+          ...filled,
         ]
+        // The index already names these pixels; only the GPU needs telling.
+        if (filled.length > 0)
+          await writePixels({ label, surfaces: filled }, "after")
         const key = operation?.coalesceAs
         // Extending the step in place keeps the state it started from, which
         // is where undoing the whole run has to land.
