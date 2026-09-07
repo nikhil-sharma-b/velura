@@ -852,7 +852,7 @@ export function CanvasHost({
 
             <div
               aria-label="View controls"
-              className={`absolute bottom-56 flex flex-col items-center gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl ${panelsOpen ? "right-[19.5rem]" : "right-3"}`}
+              className={`absolute top-1/2 flex -translate-y-1/2 flex-col items-center gap-1 rounded-xl border bg-background/88 p-1.5 shadow-lg backdrop-blur-xl ${panelsOpen ? "right-[19.5rem]" : "right-3"}`}
             >
               <span
                 aria-label="Zoom level"
