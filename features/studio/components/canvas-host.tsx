@@ -82,6 +82,14 @@ const ZOOM_STEP = 1.25
 const ROTATE_STEP = Math.PI / 12
 /** One press of an arrow key, in CSS pixels: a nudge, not a leap. */
 const PAN_STEP = 40
+/**
+ * One press of a size key. Multiplicative, because the step an artist wants
+ * between 2px and 3px is not the step they want between 100px and 101px.
+ */
+const SIZE_STEP = 1.15
+/** The radius bounds the size slider offers, so the keys cannot leave them. */
+const MIN_RADIUS = 0.5
+const MAX_RADIUS = 200
 
 function RailAction({
   side = "right",
@@ -106,11 +114,19 @@ function navigationForKey(
     case "_":
       return { type: "zoomView", factor: 1 / ZOOM_STEP }
     case "0":
-      // Fit is the overview; with shift it is the way back to square.
+      // Fit is the overview; with shift it is the way back to square. The
+      // shifted key arrives as `)` on a US layout and as `0` on the layouts
+      // that put a digit there unshifted, so both spellings mean the same key.
       return shift ? { type: "resetView" } : { type: "fitView" }
-    case "[":
+    case ")":
+      return { type: "resetView" }
+    // The brackets are size (see `sizeForKey`); rotation takes the pair beside
+    // them, which is where Krita and Blender put a step through an angle too.
+    case ",":
+    case "<":
       return { type: "rotateView", radians: -ROTATE_STEP }
-    case "]":
+    case ".":
+    case ">":
       return { type: "rotateView", radians: ROTATE_STEP }
     case "h":
       return { type: "flipView" }
@@ -125,6 +141,24 @@ function navigationForKey(
     case "arrowdown":
       return { type: "panView", dx: 0, dy: -PAN_STEP }
   }
+}
+
+/**
+ * The radius a size key asks for, given the one in the hand, or nothing.
+ *
+ * The brackets, because that is where every hand trained on Photoshop,
+ * Procreate, Krita or Clip Studio already reaches — a size change is the
+ * adjustment made most often, and it should not cost a trip to a panel.
+ */
+function sizeForKey(key: string, radius: number): number | undefined {
+  if (key !== "[" && key !== "]") return
+  const next = key === "]" ? radius * SIZE_STEP : radius / SIZE_STEP
+  // A step that rounds back to where it started would make the key look dead
+  // at the small end, where the multiplicative step is under half a pixel.
+  const nudged =
+    key === "]" ? Math.max(next, radius + 0.5) : Math.min(next, radius - 0.5)
+  const clamped = Math.min(MAX_RADIUS, Math.max(MIN_RADIUS, nudged))
+  return clamped === radius ? undefined : clamped
 }
 
 const getInitialSnapshot = () => INITIAL_SNAPSHOT
@@ -398,6 +432,20 @@ export function CanvasHost({
       // Navigation is unmodified: the hand that reaches for it is the one not
       // holding the pen, and it should not have to hold a modifier too.
       if (accelerated || event.altKey) return
+      // Size before navigation: the brackets belong to the brush, and the
+      // radius is read from the engine rather than closed over, so holding the
+      // key steps from the size the last press left rather than repeating one.
+      const current = engine.getSnapshot()
+      const tip = current.tool === "eraser" ? current.eraser : current.brush
+      const radius = sizeForKey(key, tip.shape.radius)
+      if (radius !== undefined) {
+        event.preventDefault()
+        void engine.dispatch({
+          type: current.tool === "eraser" ? "setEraser" : "setBrush",
+          radius,
+        })
+        return
+      }
       const navigation = navigationForKey(key, event.shiftKey)
       if (!navigation) return
       event.preventDefault()
