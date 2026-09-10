@@ -1,7 +1,7 @@
 "use client"
 
 import { PlusIcon, TrashIcon, XIcon } from "@phosphor-icons/react"
-import { useMemo, useState } from "react"
+import { useMemo, useState, useSyncExternalStore } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -301,6 +301,14 @@ function PaletteSection({
  * while looking at the painting, and a picker that covers the area being
  * painted makes that impossible.
  */
+/** The keyboard never changes under a running tab, so there is nothing to watch. */
+const subscribeToPlatform = () => () => {}
+const serverAltLabel = () => "Alt"
+const readAltLabel = () =>
+  /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent)
+    ? "Option"
+    : "Alt"
+
 export function ColorPanel({
   engine,
   snapshot,
@@ -359,6 +367,16 @@ export function ColorPanel({
   // during render rather than in an effect, so no frame shows the old colour.
   // Only a colour the panel did not itself send counts, which is what
   // comparing against the last dispatched hex distinguishes.
+  // One key, two names: `altKey` is what the browser reports either way, but a
+  // Mac keyboard has no cap reading "Alt" to reach for. Read as an external
+  // value rather than derived, because the server has no keyboard to name:
+  // "Alt" is what it renders, and the client corrects it as it hydrates.
+  const altLabel = useSyncExternalStore(
+    subscribeToPlatform,
+    readAltLabel,
+    serverAltLabel
+  )
+
   const [sentHex, setSentHex] = useState(snapshot.color.hex)
   if (snapshot.color.hex !== sentHex) {
     setSentHex(snapshot.color.hex)
@@ -484,6 +502,16 @@ export function ColorPanel({
             ))}
           </div>
         )}
+        {/* The eyedropper has no button to be found on, being a held modifier
+            rather than a tool. This is where an artist looks when they want a
+            colour, so it is where the way to take one off the canvas belongs. */}
+        <p className="text-xs text-muted-foreground">
+          Hold{" "}
+          <kbd className="rounded border border-border/70 px-1 font-mono text-[0.65rem]">
+            {altLabel}
+          </kbd>{" "}
+          and click the canvas to pick a colour from it.
+        </p>
       </section>
 
       <div className="space-y-3">

@@ -16,3 +16,13 @@ function dotRing(diameter: number): string {
 
 /** The CSS `cursor` value for painting on the canvas. */
 export const TOOL_CURSOR = dotRing(5)
+
+/**
+ * What the canvas wears while Alt is held. The eyedropper is a modifier and
+ * not a tool, so this is the only place it can announce itself: the artist
+ * holding the key sees the pen become a dropper before they commit to a click.
+ * The hotspot is the tip, which is the pixel that gets read.
+ */
+const dropper = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M2 18l1-4 8-8 3 3-8 8-4 1z" fill="#fff" stroke="#18181b" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 3l5 5-2 2-5-5 2-2z" fill="#18181b" stroke="#fff" stroke-width="1.25" stroke-linejoin="round"/></svg>`
+
+export const SAMPLING_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(dropper)}") 2 18, crosshair`

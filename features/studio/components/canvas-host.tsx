@@ -66,7 +66,7 @@ import {
 } from "../lib/image-import"
 import { readTextureFile } from "../lib/texture-import"
 import { BrushEditor } from "./brush-editor"
-import { TOOL_CURSOR } from "../lib/tool-cursor"
+import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor"
 import { BrushIcon, EraserToolIcon } from "./brush-icon"
 import { BrushLibrary } from "./brush-library"
 import { TiltToggle } from "./tilt-toggle"
@@ -248,6 +248,8 @@ export function CanvasHost({
   const [imageProblem, setImageProblem] = useState<string | null>(null)
   /** An image is over the canvas and would land if let go of. */
   const [imageOverCanvas, setImageOverCanvas] = useState(false)
+  /** Alt is down, so the next click on the canvas samples rather than paints. */
+  const [sampling, setSampling] = useState(false)
   const documentWidth = documentSize?.width
   const documentHeight = documentSize?.height
   // Created once per host: the store owns the subscription the picker reads
@@ -459,6 +461,24 @@ export function CanvasHost({
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [engine, panelsOpen])
 
+  // The eyedropper is a held modifier rather than a tool (D-input), which
+  // leaves it with nowhere to announce itself. Tracking the key is what lets
+  // the cursor do it: the dropper appears under the hand before the click.
+  useEffect(() => {
+    const track = (event: KeyboardEvent) => setSampling(event.altKey)
+    // A window that loses focus mid-hold never sees the keyup, and a canvas
+    // still wearing the dropper would be lying about what a click does.
+    const clear = () => setSampling(false)
+    window.addEventListener("keydown", track)
+    window.addEventListener("keyup", track)
+    window.addEventListener("blur", clear)
+    return () => {
+      window.removeEventListener("keydown", track)
+      window.removeEventListener("keyup", track)
+      window.removeEventListener("blur", clear)
+    }
+  }, [])
+
   // A brush names its textures and never carries them (24), so a library
   // synced from another machine arrives as definitions pointing at assets this
   // engine has never seen. Registering them is what makes those brushes
@@ -641,7 +661,7 @@ export function CanvasHost({
         // Touch and pen gestures belong to the stroke, not to the scroller.
         className="block h-full w-full touch-none"
         // A dot under the hand, so the mark has a visible starting point.
-        style={{ cursor: TOOL_CURSOR }}
+        style={{ cursor: sampling ? SAMPLING_CURSOR : TOOL_CURSOR }}
       />
       {snapshot.status === "ready" && (
         <>
