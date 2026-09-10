@@ -83,6 +83,12 @@ const ROTATE_STEP = Math.PI / 12
 /** One press of an arrow key, in CSS pixels: a nudge, not a leap. */
 const PAN_STEP = 40
 /**
+ * How much of the right edge the open panel column covers, in CSS pixels: a
+ * `w-72` aside inset by `right-3`, plus the same gap again on its left. Framing
+ * reads this so the document is centred in what is left, not behind the panel.
+ */
+const PANEL_OCCLUSION = 312
+/**
  * One press of a size key. Multiplicative, because the step an artist wants
  * between 2px and 3px is not the step they want between 100px and 101px.
  */
@@ -452,14 +458,38 @@ export function CanvasHost({
       if (!navigation) return
       event.preventDefault()
       void engine.dispatch(
-        navigation.type === "resetView" && !panelsOpen
-          ? { ...navigation, panX: 0 }
+        navigation.type === "resetView" || navigation.type === "fitView"
+          ? { ...navigation, occludedRight: panelsOpen ? PANEL_OCCLUSION : 0 }
           : navigation
       )
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [engine, panelsOpen])
+
+  /**
+   * Frames the document the first time it is ready to be looked at.
+   *
+   * The engine opens on the identity view, which is the honest default for
+   * geometry but shows an 8192px piece at 8192px. Fitting is the host's call
+   * because only the host knows the panels are there — and it waits for
+   * `ready`, by which point the resize dispatched on attach has told the
+   * engine how big the window is.
+   */
+  const framed = useRef<string | undefined>(undefined)
+  const documentKey = documentId ?? "session"
+  useEffect(() => {
+    if (!engine || snapshot.status !== "ready") return
+    if (framed.current === documentKey) return
+    framed.current = documentKey
+    void engine.dispatch({
+      type: "fitView",
+      occludedRight: panelsOpen ? PANEL_OCCLUSION : 0,
+    })
+    // Only on the way in: re-fitting when the artist opens a panel would throw
+    // away the zoom they had chosen to work at.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, snapshot.status, documentKey])
 
   // The eyedropper is a held modifier rather than a tool (D-input), which
   // leaves it with nowhere to announce itself. Tracking the key is what lets
@@ -605,7 +635,11 @@ export function CanvasHost({
     [
       "Fit canvas to window",
       <CornersOutIcon key="fit" />,
-      () => void engine?.dispatch({ type: "fitView" }),
+      () =>
+        void engine?.dispatch({
+          type: "fitView",
+          occludedRight: panelsOpen ? PANEL_OCCLUSION : 0,
+        }),
     ],
     [
       "Reset view",
@@ -613,7 +647,7 @@ export function CanvasHost({
       () =>
         void engine?.dispatch({
           type: "resetView",
-          ...(panelsOpen ? {} : { panX: 0 }),
+          occludedRight: panelsOpen ? PANEL_OCCLUSION : 0,
         }),
     ],
   ] as const

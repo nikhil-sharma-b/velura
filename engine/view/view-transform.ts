@@ -60,12 +60,15 @@ export const SNAP_RADIANS = Math.PI / 60
 /** The margin fit-to-window leaves around the document, as a fraction. */
 export const FIT_MARGIN = 0.04
 
+/**
+ * The view that changes nothing: a document pixel is the screen pixel it sits
+ * on. Where a document *opens* is a framing question, and framing belongs to
+ * whoever knows what else is on screen — panels are not a fact about geometry.
+ */
 export const DEFAULT_VIEW: CanvasView = Object.freeze({
-  // The layers panel opens on the right, so centre the document in the
-  // remaining workspace rather than behind it.
-  panX: -160,
+  panX: 0,
   panY: 0,
-  zoom: 0.64,
+  zoom: 1,
   rotation: 0,
   flipped: false,
 })
@@ -238,18 +241,33 @@ export function flipView(view: CanvasView): CanvasView {
 export function fitView(
   view: CanvasView,
   doc: Extent,
-  viewport: Extent
+  viewport: Extent,
+  /**
+   * A strip along the right edge the artist cannot see into, in the same
+   * pixels as `viewport` — an open panel sits over it. The document is fitted
+   * to what is left and centred in it, rather than behind the panel.
+   */
+  occludedRight = 0
 ): CanvasView {
   const cos = Math.abs(Math.cos(view.rotation))
   const sin = Math.abs(Math.sin(view.rotation))
   // What the turned document actually occupies on screen at zoom 1.
   const width = doc.width * cos + doc.height * sin
   const height = doc.width * sin + doc.height * cos
-  const usableWidth = Math.max(1, viewport.width) * (1 - FIT_MARGIN)
+  const hidden = Math.max(0, occludedRight)
+  const visible = Math.max(1, viewport.width - hidden)
+  const usableWidth = visible * (1 - FIT_MARGIN)
   const usableHeight = Math.max(1, viewport.height) * (1 - FIT_MARGIN)
   const zoom =
     width <= 0 || height <= 0
       ? view.zoom
       : Math.min(usableWidth / width, usableHeight / height)
-  return { ...view, panX: 0, panY: 0, zoom: clampZoom(zoom) }
+  // Half the hidden strip: centring in the visible part is the same as
+  // centring in the whole viewport, shifted left by half of what is covered.
+  return {
+    ...view,
+    panX: hidden ? -hidden / 2 : 0,
+    panY: 0,
+    zoom: clampZoom(zoom),
+  }
 }

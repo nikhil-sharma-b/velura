@@ -323,10 +323,16 @@ export type EngineCommand =
   | { type: "rotateView"; radians: number; absolute?: boolean; snap?: boolean }
   /** Mirrors the view horizontally, and back: the fresh-eyes check. */
   | { type: "flipView" }
-  /** The whole piece in the window, at the angle it is being worked at. */
-  | { type: "fitView" }
-  /** Back to square; a host may centre it around an open panel. */
-  | { type: "resetView"; panX?: number }
+  /**
+   * The whole piece in the window, at the angle it is being worked at.
+   *
+   * `occludedRight` is a strip of the viewport, in CSS pixels, that the artist
+   * cannot see into because a panel covers it. Only the host knows what is on
+   * screen, so only the host can say — the engine holds no opinion on panels.
+   */
+  | { type: "fitView"; occludedRight?: number }
+  /** Back to square, centred in whatever the panels leave visible. */
+  | { type: "resetView"; occludedRight?: number }
   /** Takes back the last stroke or layer operation. Nothing to undo is a no-op. */
   | { type: "undo" }
   | { type: "redo" }
@@ -879,6 +885,14 @@ export function createEngine(
 
   function toBackingY(value: number): number {
     return value * (canvas.height / Math.max(1, viewport.height))
+  }
+
+  /** A host's CSS-pixel occlusion in the backing pixels the view is kept in. */
+  function backingOcclusion(occludedRight: number | undefined): number {
+    if (occludedRight === undefined) return 0
+    if (!Number.isFinite(occludedRight) || occludedRight < 0)
+      throw new Error("Occlusion must be a non-negative, finite width.")
+    return toBackingX(occludedRight)
   }
 
   /**
@@ -2155,15 +2169,23 @@ export function createEngine(
           setView(flipView(view))
           break
         case "fitView": {
-          const size = extent()
-          setView(fitCanvasView(view, size, viewportExtent()))
+          setView(
+            fitCanvasView(
+              view,
+              extent(),
+              viewportExtent(),
+              backingOcclusion(command.occludedRight)
+            )
+          )
           break
         }
-        case "resetView":
-          if (command.panX !== undefined && !Number.isFinite(command.panX))
-            throw new Error("Reset pan must be finite.")
-          setView({ ...DEFAULT_VIEW, panX: command.panX ?? DEFAULT_VIEW.panX })
+        case "resetView": {
+          // Square is zoom 1, so the only thing reset has to decide is where
+          // the middle is — and a covered strip moves it.
+          const hidden = backingOcclusion(command.occludedRight)
+          setView({ ...DEFAULT_VIEW, panX: hidden ? -hidden / 2 : 0 })
           break
+        }
         case "setPressureCurve": {
           const next = command.curve ?? DEFAULT_PRESSURE_CURVE
           validatePressureCurve(next)
