@@ -1649,8 +1649,18 @@ export function createEngine(
           {
             begin: beginStroke,
             end: endStroke,
+            // A colour that could not be read is a colour the artist did not
+            // get. It says so and leaves the session standing: the eyedropper
+            // touches no pixel of the artwork, so nothing it fails at is work.
             sample: (x, y) => {
-              void sampleColor(x, y).catch(fail)
+              void sampleColor(x, y).catch(() => {
+                publish({
+                  problem: {
+                    action: "retry",
+                    message: "That colour could not be read. Try again.",
+                  },
+                })
+              })
             },
           },
           {
@@ -1722,14 +1732,25 @@ export function createEngine(
   async function sampleColor(x: number, y: number): Promise<EngineColor> {
     if (snapshot.status !== "ready" || !device)
       throw new Error("The graphics device is not ready.")
-    const pixelX = Math.min(snapshot.width - 1, Math.max(0, Math.floor(x)))
-    const pixelY = Math.min(snapshot.height - 1, Math.max(0, Math.floor(y)))
+    // What is read is the *presented* pixel, so the bounds are the swap
+    // chain's and not the document's. Clamping to the document instead lets an
+    // origin outside the texture through whenever the artwork is larger than
+    // the window it is being viewed in — which is the ordinary case, and which
+    // WebGPU answers with a validation error rather than a clamp of its own.
+    const presented = viewportExtent()
+    const pixelX = Math.min(presented.width - 1, Math.max(0, Math.floor(x)))
+    const pixelY = Math.min(presented.height - 1, Math.max(0, Math.floor(y)))
     const acquired = device
     // WebGPU requires 256-byte row alignment even for a single RGBA8 texel.
     const buffer = acquired.createBuffer({
       size: 256,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     })
+    // Scoped, so that a readback this function gets wrong is a colour the
+    // artist did not get rather than a session they lost: without the scope
+    // the validation error reaches `uncapturederror`, which treats every
+    // arrival as a dead device and tears the engine down.
+    acquired.pushErrorScope("validation")
     try {
       const texture = render()
       const encoder = acquired.createCommandEncoder()
@@ -1756,6 +1777,9 @@ export function createEngine(
       return snapshot.color
     } finally {
       buffer.destroy()
+      const invalid = await acquired.popErrorScope()
+      if (invalid && !disposed && device === acquired)
+        throw new Error(invalid.message)
     }
   }
 
