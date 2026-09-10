@@ -766,6 +766,10 @@ export function createEngine(
    * committed to the local tile cache. Let the current disk write finish,
    * discard only the dead runtime, and initialize through the normal restore
    * path. A failed replacement falls through to the ordinary retry screen.
+   *
+   * Through the same latch the retry screen's button uses: a recovery already
+   * under way is what an artist pressing Try again should be made to wait for,
+   * not something they race a second device acquisition against.
    */
   async function recoverDevice(acquired: GPUDevice): Promise<void> {
     if (disposed || device !== acquired) return
@@ -773,7 +777,20 @@ export function createEngine(
     await persistence?.settle()
     if (disposed || device !== acquired) return
     release()
-    await initialize()
+    await startInitialization()
+  }
+
+  /**
+   * Runs `initialize`, or joins the run already in flight. One device
+   * acquisition at a time: two would leave the loser's `device !== acquired`
+   * guards to abandon a half-built engine on the screen.
+   */
+  function startInitialization(): Promise<void> {
+    if (!initialization)
+      initialization = initialize().finally(() => {
+        initialization = undefined
+      })
+    return initialization
   }
 
   function validateDocumentSize(size: { width: number; height: number }) {
@@ -1755,11 +1772,7 @@ export function createEngine(
       switch (command.type) {
         case "initialize":
           if (snapshot.status === "ready") return
-          if (!initialization)
-            initialization = initialize().finally(() => {
-              initialization = undefined
-            })
-          await initialization
+          await startInitialization()
           break
         case "resize":
           if (
