@@ -1709,10 +1709,21 @@ export function createEngine(
      */
     encoded?: readonly [number, number, number]
   ) {
-    ink = [working[0] * alpha, working[1] * alpha, working[2] * alpha, alpha]
+    // Every colour arriving here is display-referred and therefore in gamut,
+    // but the primaries matrices are published rounded to seven decimals, so
+    // their rows do not sum to exactly one: white comes back as 1.0000001 in
+    // red. Unclamped, that hair trips the renderer's own bounds check and the
+    // artist simply cannot pick white — from the picker or the eyedropper.
+    const bounded = [0, 1, 2].map((channel) =>
+      Math.min(1, Math.max(0, working[channel]))
+    ) as [number, number, number]
+    ink = [bounded[0] * alpha, bounded[1] * alpha, bounded[2] * alpha, alpha]
     renderer?.setInk(ink)
+    // The snapshot reports the ink that was actually taken, not the one asked
+    // for, so a swatch and a hex field never describe a colour the brush is
+    // not carrying.
     const [red, green, blue] =
-      encoded ?? displayTransform(working, snapshot.outputColorSpace)
+      encoded ?? displayTransform(bounded, snapshot.outputColorSpace)
     publish({
       color: Object.freeze({
         red,
@@ -1720,7 +1731,7 @@ export function createEngine(
         blue,
         alpha,
         colorSpace: snapshot.outputColorSpace,
-        hex: workingToHex(working),
+        hex: workingToHex(bounded),
       }),
     })
   }
