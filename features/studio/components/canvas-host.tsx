@@ -220,6 +220,11 @@ export function CanvasHost({
   // through, so a new one each render would resubscribe on every keystroke.
   const localPalettes = useMemo(() => createLocalPaletteStore(), [])
   const paletteStore = palettes ?? localPalettes
+  // Held in a ref so that swapping the store — which happens when anonymous
+  // work is carried into an account — does not tear the engine down and take
+  // the document with it.
+  const paletteRef = useRef(paletteStore)
+  paletteRef.current = paletteStore
   const localBrushes = useMemo(() => createLocalBrushStore(), [])
   const brushStore = brushes ?? localBrushes
   const penStore = useMemo(() => createLocalPenSettingsStore(), [])
@@ -241,6 +246,15 @@ export function CanvasHost({
           : {}),
         ...(documentId ? { persistence: { documentId } } : {}),
         ...(remote ? { cloud: { remote } } : {}),
+        // What "recent" means: a colour that reached the canvas. A recents
+        // list fed by the picker instead records colours dialled past and
+        // never used, and misses every colour actually painted with.
+        onStrokeCommitted: (hex) => {
+          void paletteRef.current.recordUsed(hex).catch(() => {
+            // A recent colour is a convenience, not work. Losing one is not
+            // worth interrupting a stroke to report.
+          })
+        },
       })
       setEngine(attached)
       const resize = () => {

@@ -604,6 +604,12 @@ export function createEngine(
     history?: HistoryBudget
     persistence?: PersistenceOptions
     cloud?: CloudOptions
+    /**
+     * The ink a finished stroke actually laid down. A colour is "used" when it
+     * reaches the canvas, not when it is dialled in the picker, so this — and
+     * not the picker's own commit — is what a recents list should listen to.
+     */
+    onStrokeCommitted?: (hex: string) => void
   } = {}
 ): Engine {
   let snapshot: EngineSnapshot = INITIAL_SNAPSHOT
@@ -1435,6 +1441,9 @@ export function createEngine(
     // the pen actually lifted from rather than stopping a sample short.
     stroking = false
     scheduleFrame()
+    // An eraser removes ink rather than using it, so it never counts.
+    if (snapshot.tool !== "eraser")
+      options.onStrokeCommitted?.(snapshot.color.hex)
   }
 
   function render(): GPUTexture {
