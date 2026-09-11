@@ -74,6 +74,80 @@ export function structureSurfaceIds(structure: DocumentStructure): Set<string> {
   return ids
 }
 
+/** A surface as a save names it: enough to tell whether it holds anything. */
+type NamedSurface = { surfaceId: string; tiles: readonly unknown[] }
+
+/** Surfaces with pixels that no node in `structure` refers to. */
+function strandedSurfaceIds(
+  structure: DocumentStructure,
+  surfaces: readonly NamedSurface[]
+): string[] {
+  const named = structureSurfaceIds(structure)
+  return surfaces
+    .filter((surface) => surface.tiles.length > 0)
+    .filter((surface) => !named.has(surface.surfaceId))
+    .map((surface) => surface.surfaceId)
+}
+
+/**
+ * Gives pixels a layer when the tree they were saved with has none for them.
+ * Restoring builds surfaces from the tree, so tiles under an id it does not
+ * name would load into nothing: the work is on disk and the canvas is blank.
+ * Each stranded surface comes back as a plain layer on top, under its own id,
+ * where the artist can see it and decide what it was.
+ */
+export function adoptStrandedSurfaces(
+  structure: DocumentStructure,
+  surfaces: readonly NamedSurface[]
+): DocumentStructure {
+  const stranded = strandedSurfaceIds(structure, surfaces)
+  if (stranded.length === 0) return structure
+  return {
+    ...structure,
+    layers: [
+      ...structure.layers,
+      ...stranded.map((id): NodeStructure => ({
+        id,
+        kind: "raster",
+        name: "Recovered layer",
+        opacity: 1,
+        visible: true,
+        blend: "normal",
+        clip: false,
+        locked: false,
+      })),
+    ],
+  }
+}
+
+function isDevelopment(): boolean {
+  // Next inlines this literal into its bundles. A page with no `process` at
+  // all is the test harness, which is development.
+  try {
+    return process.env.NODE_ENV !== "production"
+  } catch {
+    return true
+  }
+}
+
+/**
+ * The tree a save may write alongside `surfaces`. Pixels the tree does not
+ * name mean history and the document disagree, which is a bug to hear about
+ * while developing rather than on an artist's next open; in production the
+ * save goes ahead with those pixels given a layer, so they are never lost.
+ */
+export function savedStructure(
+  structure: DocumentStructure,
+  surfaces: readonly NamedSurface[]
+): DocumentStructure {
+  const stranded = strandedSurfaceIds(structure, surfaces)
+  if (stranded.length > 0 && isDevelopment())
+    throw new Error(
+      `Saving pixels for ${stranded.join(", ")}, which no layer in the saved structure refers to.`
+    )
+  return adoptStrandedSurfaces(structure, surfaces)
+}
+
 function index(nodes: readonly LayerNode[], into: Map<string, LayerNode>) {
   for (const node of nodes) {
     into.set(node.id, node)

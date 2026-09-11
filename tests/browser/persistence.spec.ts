@@ -149,6 +149,38 @@ test("layers come back with the stack they were left in", async ({ page }) => {
   expect(await painted(page)).toEqual(marked)
 })
 
+test("pixels saved under a layer the stack lost still show when reopened", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openDocument(page, documentId)
+  const added = await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "addLayer" })
+    return window.engine.getSnapshot().activeLayerId
+  })
+  await paint(page, origin, 40)
+  const marked = await painted(page)
+  await page.evaluate(() => window.engine.save())
+
+  await page.reload()
+  await page.waitForFunction(() => !!window.engine)
+  // A document whose history and tree disagreed when it was saved: the
+  // painted layer's tiles are on disk, and the stack beside them does not
+  // name it.
+  await page.evaluate(([id, layer]) => window.strandLayer(id, layer), [
+    documentId,
+    added,
+  ] as const)
+  await openDocument(page, documentId)
+  expect(await painted(page)).toEqual(marked)
+  expect(
+    await page.evaluate(() =>
+      window.engine.getSnapshot().layers.map((layer) => layer.id)
+    )
+  ).toContain(added)
+  expect(await page.evaluate(() => window.restoreErrors)).toEqual([])
+})
+
 test("a completed stroke is durable without any save being asked for", async ({
   page,
 }) => {

@@ -89,6 +89,11 @@ declare global {
     createFakeCloud(size: { width: number; height: number }): FakeCloud
     /** How many tiles a document's local manifest names, total, for 18's tests. */
     tileCountFor(documentId: string): Promise<number>
+    /**
+     * Rewrites a stored manifest so its tree no longer names `layerId` while
+     * its tiles stay listed: pixels on disk that no layer will load into.
+     */
+    strandLayer(documentId: string, layerId: string): Promise<void>
     encodePreview: typeof encodePreview
     encodeExportImage: typeof encodeExportImage
   }
@@ -102,6 +107,23 @@ window.tileCountFor = async (documentId) => {
       (sum, surface) => sum + surface.tiles.length,
       0
     ) ?? 0
+  )
+}
+
+window.strandLayer = async (documentId, layerId) => {
+  const store = createDocumentStore(createLocalBlobStore())
+  const manifest = await store.load(documentId)
+  if (!manifest) throw new Error(`No document ${documentId} is stored.`)
+  const layers = manifest.structure.layers.filter((node) => node.id !== layerId)
+  await store.save(
+    {
+      ...manifest,
+      structure: { ...manifest.structure, layers, activeLayerId: layers[0].id },
+    },
+    // Every tile the manifest names is already on the device.
+    async (hash) => {
+      throw new Error(`Tile ${hash} should already be stored.`)
+    }
   )
 }
 

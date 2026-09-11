@@ -9,13 +9,72 @@ import {
   setLayer,
 } from "../../engine/doc/document"
 import {
+  adoptStrandedSurfaces,
   captureStructure,
   restoreStructure,
   sameStructure,
+  savedStructure,
   structureSurfaceIds,
 } from "../../engine/doc/structure"
 
 const document = () => createDocument({ width: 512, height: 512 })
+
+/** The manifest observed in the field: pixels under an id no layer has. */
+const stranded = () => {
+  const doc = document()
+  const structure = captureStructure(doc)
+  const surfaces = [
+    { surfaceId: doc.activeLayerId, tiles: [] },
+    { surfaceId: "layer-9000", tiles: [{ x: 0, y: 0, hash: "painted" }] },
+  ]
+  return { doc, structure, surfaces }
+}
+
+describe("pixels no layer refers to", () => {
+  test("a stored document gets a layer for them, on top, so they show", () => {
+    const { doc, structure, surfaces } = stranded()
+    const adopted = adoptStrandedSurfaces(structure, surfaces)
+    expect(adopted.layers.map((node) => node.id)).toEqual([
+      doc.activeLayerId,
+      "layer-9000",
+    ])
+    expect(adopted.layers[1]).toMatchObject({
+      kind: "raster",
+      opacity: 1,
+      visible: true,
+      blend: "normal",
+    })
+    // The selection is the artist's, and recovering pixels does not move it.
+    expect(adopted.activeLayerId).toBe(structure.activeLayerId)
+    restoreStructure(doc, adopted)
+    expect(findLayer(doc, "layer-9000").kind).toBe("raster")
+  })
+
+  test("a surface that holds nothing is not a layer worth recovering", () => {
+    const { structure } = stranded()
+    const adopted = adoptStrandedSurfaces(structure, [
+      { surfaceId: "layer-9001", tiles: [] },
+    ])
+    expect(adopted).toBe(structure)
+  })
+
+  test("a document with nothing stranded is left exactly as it is", () => {
+    const doc = document()
+    addMask(doc, doc.activeLayerId)
+    const structure = captureStructure(doc)
+    const surfaces = [...structureSurfaceIds(structure)].map((surfaceId) => ({
+      surfaceId,
+      tiles: [{ x: 0, y: 0, hash: surfaceId }],
+    }))
+    expect(adoptStrandedSurfaces(structure, surfaces)).toBe(structure)
+    expect(savedStructure(structure, surfaces)).toBe(structure)
+  })
+
+  test("saving them fails loudly outside production", () => {
+    const { structure, surfaces } = stranded()
+    expect(() => savedStructure(structure, surfaces)).toThrow(/layer-9000/)
+  })
+})
 
 describe("structure snapshots", () => {
   test("a snapshot carries settings and the tree but no pixels", () => {

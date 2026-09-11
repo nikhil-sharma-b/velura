@@ -9,8 +9,15 @@ import {
   type TileCoord,
   tileKey,
 } from "../../engine/doc/tile-grid"
-import { createMemorySpill, createTileStore } from "../../engine/doc/tile-store"
-import { captureStructure } from "../../engine/doc/structure"
+import {
+  createMemorySpill,
+  createTileStore,
+  type TileStore,
+} from "../../engine/doc/tile-store"
+import {
+  captureStructure,
+  structureSurfaceIds,
+} from "../../engine/doc/structure"
 import {
   addLayer,
   createDocument,
@@ -522,5 +529,87 @@ describe("restoring a stored state", () => {
     await history.settle()
 
     expect(history.stepsBack()).toBe(stepsBefore)
+  })
+})
+
+describe("undo racing a stroke", () => {
+  test("a stroke that lands while undo waits on the store is what undo takes back", async () => {
+    // The store's own settling is the last thing undo waits on. Whatever is
+    // handed to this runs inside that wait, after the recording queue was
+    // last seen empty.
+    let duringSettle: (() => void) | undefined
+    const inner = createTileStore({
+      hotBytes: TILE_BYTES * 2,
+      warmBytes: 64 * 1024,
+      spill: createMemorySpill(),
+    })
+    const store: TileStore = {
+      ...inner,
+      async settle() {
+        await inner.settle()
+        const landed = duringSettle
+        duringSettle = undefined
+        landed?.()
+      },
+    }
+    const surfaces = createFakeSurfaces()
+    const history = createDocumentHistory({
+      bridge: {
+        ...surfaces.bridge,
+        // A GPU readback is a real wait, not a resolved promise: the pixels
+        // come back on a later task, which is the window the race needs.
+        async readTiles(surfaceId, coords) {
+          await new Promise((resolve) => setTimeout(resolve, 0))
+          return surfaces.bridge.readTiles(surfaceId, coords)
+        },
+      },
+      store,
+    })
+    const doc = createDocument({ width: 512, height: 512 })
+    const before = captureStructure(doc)
+    const added = addLayer(doc)
+    history.recordOperation("add layer", {
+      before,
+      after: captureStructure(doc),
+    })
+    await history.settle()
+
+    // The pen lifts on the new layer as the artist reaches for undo: the
+    // stroke's readback is queued while undo is still settling.
+    surfaces.paint(added, ORIGIN, 5)
+    duringSettle = () => history.recordStroke(added, wholeTile(ORIGIN))
+    let structure = captureStructure(doc)
+    await history.undo((restored) => {
+      structure = restored
+    })
+    await history.settle()
+
+    // Undo took back the stroke, not the layer it was painted on.
+    expect(structureSurfaceIds(structure).has(added)).toBe(true)
+    expect(surfaces.read(added, ORIGIN)).toBeNull()
+    // So no surface with pixels is left that the tree does not name, which is
+    // the manifest a reopened document would have shown blank.
+    const named = structureSurfaceIds(structure)
+    expect(
+      history
+        .tileIndex()
+        .filter((surface) => surface.tiles.length > 0)
+        .filter((surface) => !named.has(surface.surfaceId))
+    ).toEqual([])
+    expect(history.canUndo()).toBe(true)
+  })
+
+  test("recording still queued when history is cleared does not outlive it", async () => {
+    // A document replaced by a stored one: the canvas it opened on was queued
+    // for recording, and clearing happens before that queue has run.
+    const { history } = setup()
+    history.recordUpload(
+      "seeded",
+      [{ ...ORIGIN, texels: new Uint16Array(TILE_VALUES).fill(3) }],
+      CANVAS
+    )
+    history.clear()
+    await history.settle()
+    expect(history.tileIndex()).toEqual([])
   })
 })

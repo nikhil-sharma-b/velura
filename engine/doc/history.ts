@@ -212,9 +212,21 @@ export function createDocumentHistory(options: {
   const index = new Map<string, Map<string, string>>()
   /** Recording is serialized: a readback must not overtake the step after it. */
   let queue: Promise<void> = Promise.resolve()
+  /**
+   * Bumped by `clear`. Recording queued before a clear describes a document
+   * that is gone: landing it would put that document's surfaces back in the
+   * index, under ids the tree that replaced it does not have.
+   */
+  let generation = 0
 
-  function enqueue(work: () => void | Promise<void>) {
-    queue = queue.then(work).catch((error) => options.onError?.(error))
+  function enqueue(
+    work: (stillCurrent: () => boolean) => void | Promise<void>
+  ) {
+    const queuedIn = generation
+    const stillCurrent = () => queuedIn === generation
+    queue = queue
+      .then(() => (stillCurrent() ? work(stillCurrent) : undefined))
+      .catch((error) => options.onError?.(error))
   }
 
   function tilesOf(surfaceId: string): Map<string, string> {
@@ -356,10 +368,13 @@ export function createDocumentHistory(options: {
       })
     },
     recordStroke(surfaceId, region) {
-      enqueue(async () => {
+      enqueue(async (stillCurrent) => {
         const coords = tilesCoveringRect(region)
         if (coords.length === 0) return
         const texels = await bridge.readTiles(surfaceId, coords)
+        // The readback is a wait, and the document may have been replaced
+        // during it.
+        if (!stillCurrent()) return
         const tiles = coords.flatMap((coord, position) => {
           const key = tileKey(coord.x, coord.y)
           const before = index.get(surfaceId)?.get(key)
@@ -494,6 +509,7 @@ export function createDocumentHistory(options: {
     residentBytes: () => store.residentBytes(),
     spilledBytes: () => store.spilledBytes(),
     clear() {
+      generation++
       stack.clear()
       for (const [surfaceId, tiles] of index)
         for (const [key] of tiles) setTile(surfaceId, key, undefined)
@@ -502,13 +518,17 @@ export function createDocumentHistory(options: {
     },
     async settle() {
       let pending = queue
-      // Recording can queue more recording; drain until it stops.
+      // Recording can queue more recording, and so can anything that runs
+      // while the store settles — a stroke's pen-up lands on a frame of its
+      // own. The queue is looked at last, after every wait: undo acts the
+      // moment this returns, and popping past a step still being recorded
+      // leaves that step's pixels on a layer the tree no longer has.
       while (true) {
         await pending
+        await store.settle()
         if (pending === queue) break
         pending = queue
       }
-      await store.settle()
     },
   }
 }

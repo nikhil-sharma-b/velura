@@ -66,9 +66,11 @@ import {
 } from "./doc/history"
 import { BACKGROUND, WORKSPACE_BACKGROUND } from "./doc/scene"
 import {
+  adoptStrandedSurfaces,
   captureStructure,
   type DocumentStructure,
   restoreStructure,
+  savedStructure,
   structureSurfaceIds,
 } from "./doc/structure"
 import { fitPlacement, imageTiles, type SourceImage } from "./doc/image-tiles"
@@ -1235,8 +1237,11 @@ export function createEngine(
     past.clear()
     for (const id of structureSurfaceIds(captureStructure(document)))
       target.releaseLayer(id)
-    reserveIds(structureSurfaceIds(stored.structure))
-    restoreStructure(document, stored.structure)
+    // A document saved with pixels its tree does not name opens with a layer
+    // for them, rather than leaving them on disk behind a blank canvas.
+    const structure = adoptStrandedSurfaces(stored.structure, stored.surfaces)
+    reserveIds(structureSurfaceIds(structure))
+    restoreStructure(document, structure)
     const canvas = { width: document.width, height: document.height }
 
     // A tile is a file read and an inflate, so a batch is asked for together
@@ -1590,12 +1595,18 @@ export function createEngine(
           // The texels come out of the store history is already holding them
           // in, so undo and the local cache share one copy of every tile (D21).
           tiles: (hash) => past.store.get(hash),
-          snapshot: () => ({
-            width: snapshot.width,
-            height: snapshot.height,
-            structure: captureStructure(requireDocument()),
-            surfaces: past.tileIndex(),
-          }),
+          snapshot: () => {
+            const surfaces = past.tileIndex()
+            return {
+              width: snapshot.width,
+              height: snapshot.height,
+              structure: savedStructure(
+                captureStructure(requireDocument()),
+                surfaces
+              ),
+              surfaces,
+            }
+          },
           onError: (error) => {
             local.onError?.(error)
             publish({ problem: explainFailure(error, "storage") })
@@ -1609,10 +1620,16 @@ export function createEngine(
             // Same tile source and tile index as local persistence: the
             // upload set is exactly what disk already holds (D14).
             tiles: (hash) => past.store.get(hash),
-            snapshot: () => ({
-              structure: captureStructure(requireDocument()),
-              surfaces: past.tileIndex(),
-            }),
+            snapshot: () => {
+              const surfaces = past.tileIndex()
+              return {
+                structure: savedStructure(
+                  captureStructure(requireDocument()),
+                  surfaces
+                ),
+                surfaces,
+              }
+            },
             // readPixels presents through the renderer's one display-transform
             // pass. PNG encoding and scaling happen after the GPU readback,
             // off the stroke frame and only when the flush scheduler fires.
@@ -2289,10 +2306,17 @@ export function createEngine(
 
       const before = captureStructure(document)
       const previous = structureSurfaceIds(before)
+      const replacement = [...bySurface].map(([surfaceId, tiles]) => ({
+        surfaceId,
+        tiles,
+      }))
+      // A restore point flushed with pixels its tree does not name brings
+      // them back on a layer of their own, as reopening the document would.
+      const structure = adoptStrandedSurfaces(version.structure, replacement)
       // Layers the version had that this session does not must exist before
       // their pixels are written, and their ids must not be handed out again.
-      reserveIds(structureSurfaceIds(version.structure))
-      restoreStructure(document, version.structure)
+      reserveIds(structureSurfaceIds(structure))
+      restoreStructure(document, structure)
       // Uploaded before the replacement's tiles land, for the same reason undo
       // does it: a layer that came back must not have its restored pixels
       // overwritten by the sparse surface it was seeded from.
@@ -2300,8 +2324,8 @@ export function createEngine(
 
       past.recordReplacement(
         "restore",
-        { before, after: version.structure },
-        [...bySurface].map(([surfaceId, tiles]) => ({ surfaceId, tiles })),
+        { before, after: structure },
+        replacement,
         { width: snapshot.width, height: snapshot.height }
       )
       await past.settle()
@@ -2393,14 +2417,18 @@ export function createEngine(
       if (snapshot.status !== "ready" || !history)
         throw new Error("The graphics device is not ready.")
       await history.settle()
+      const surfaces = history.tileIndex()
       const manifest = {
         version: 1 as const,
         id: options.persistence?.documentId ?? "exported-document",
         name: "Untitled artwork",
         width: snapshot.width,
         height: snapshot.height,
-        structure: captureStructure(requireDocument()),
-        surfaces: history.tileIndex(),
+        structure: savedStructure(
+          captureStructure(requireDocument()),
+          surfaces
+        ),
+        surfaces,
         updatedAt: Date.now(),
       }
       return encodeVeluraFile(manifest, (hash) => history!.store.get(hash))
@@ -2422,8 +2450,12 @@ export function createEngine(
       })
       for (const id of structureSurfaceIds(captureStructure(doc)))
         renderer.releaseLayer(id)
-      reserveIds(structureSurfaceIds(imported.manifest.structure))
-      restoreStructure(doc, imported.manifest.structure)
+      const structure = adoptStrandedSurfaces(
+        imported.manifest.structure,
+        imported.manifest.surfaces
+      )
+      reserveIds(structureSurfaceIds(structure))
+      restoreStructure(doc, structure)
       renderer.resize(imported.manifest.width, imported.manifest.height)
       const size = {
         width: imported.manifest.width,
