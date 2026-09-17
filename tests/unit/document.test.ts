@@ -140,6 +140,15 @@ describe("the layer tree", () => {
     )
   })
 
+  test("moves a grouped layer explicitly to the root", () => {
+    const doc = document()
+    const child = doc.activeLayerId
+    const group = addGroup(doc, [child])
+    moveLayer(doc, child, 1, null)
+    expect(doc.layers.map((node) => node.id)).toEqual([group, child])
+    expect(findNode(doc, group)).toMatchObject({ children: [] })
+  })
+
   test("masks are reversible paint targets and can be removed", () => {
     const doc = document()
     const layer = findLayer(doc, doc.activeLayerId)

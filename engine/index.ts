@@ -297,7 +297,7 @@ export type EngineCommand =
   /** Chooses where the pen paints, which is what the caches are built around. */
   | { type: "selectLayer"; id: string }
   /** Moves a layer to a position in the stack, counted from the bottom. */
-  | { type: "moveLayer"; id: string; index: number; parentId?: string }
+  | { type: "moveLayer"; id: string; index: number; parentId?: string | null }
   | { type: "addMask"; id: string }
   | { type: "selectMask"; id: string }
   | { type: "setMaskEnabled"; id: string; enabled: boolean }

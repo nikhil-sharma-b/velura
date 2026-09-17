@@ -64,8 +64,9 @@ function rasterCount(nodes: readonly LayerSummary[]): number {
 function LayerRow({
   engine,
   layer,
-  index,
-  parentId,
+  dragProps,
+  dropPosition,
+  dragging,
   depth,
   selected,
   activeLayerId,
@@ -74,8 +75,9 @@ function LayerRow({
 }: {
   engine: Engine
   layer: LayerSummary
-  index: number
-  parentId?: string
+  dragProps: React.HTMLAttributes<HTMLDivElement>
+  dropPosition?: "above" | "below" | "inside"
+  dragging: boolean
   depth: number
   selected: boolean
   activeLayerId: string
@@ -100,25 +102,36 @@ function LayerRow({
         draggable={!editing}
         data-layer-row
         data-testid={`layer-row-${layer.name}`}
-        onDragStart={(event) => {
-          event.dataTransfer.effectAllowed = "move"
-          event.dataTransfer.setData("text/plain", layer.id)
-        }}
-        onDragOver={(event) => {
-          event.preventDefault()
-          event.dataTransfer.dropEffect = "move"
-        }}
-        onDrop={(event) => {
-          event.preventDefault()
-          const id = event.dataTransfer.getData("text/plain")
-          if (id && id !== layer.id)
-            void engine.dispatch({ type: "moveLayer", id, index, parentId })
-        }}
-        className={`group border-b border-border/70 ${
+        {...dragProps}
+        className={`group relative border-b border-border/70 ${dragging ? "opacity-40" : ""} ${
           selected ? "bg-accent/80" : "bg-studio-surface/80 hover:bg-muted/60"
-        }`}
+        } ${dropPosition === "inside" ? "bg-primary/15 ring-2 ring-primary ring-inset" : ""}`}
         style={{ paddingLeft: `${depth * 14}px` }}
       >
+        {dropPosition && (
+          <div
+            data-testid="layer-drop-indicator"
+            aria-label={
+              dropPosition === "inside"
+                ? `Move into ${layer.name}`
+                : `Move ${dropPosition} ${layer.name}`
+            }
+            className={
+              dropPosition === "inside"
+                ? "pointer-events-none absolute top-0 right-2 z-10 bg-primary px-1 text-[10px] text-primary-foreground"
+                : `pointer-events-none absolute right-0 z-10 h-0.5 bg-primary ${dropPosition === "above" ? "top-0" : "bottom-0"}`
+            }
+            style={
+              dropPosition === "inside" ? undefined : { left: depth * 14 + 8 }
+            }
+          >
+            {dropPosition === "inside" ? (
+              "Move into group"
+            ) : (
+              <span className="absolute -top-0.5 -left-1 size-1.5 rounded-full bg-primary" />
+            )}
+          </div>
+        )}
         <div className="flex min-h-12 items-center gap-1.5 px-2 py-1.5">
           <DotsSixVerticalIcon
             aria-hidden
@@ -248,6 +261,30 @@ function Rows({
   totalRasters: number
   onSelect(id: string): void
 }) {
+  const [draggedId, setDraggedId] = useState<string | null>(null)
+  const [target, setTarget] = useState<{
+    id: string
+    position: "above" | "below" | "inside"
+    parentId: string | null
+    index: number
+  } | null>(null)
+  const reset = () => {
+    setDraggedId(null)
+    setTarget(null)
+  }
+  const locate = (
+    items: readonly LayerSummary[],
+    id: string,
+    parentId: string | null = null
+  ): { index: number; parentId: string | null } | undefined => {
+    for (const [index, node] of items.entries()) {
+      if (node.id === id) return { index, parentId }
+      if (node.kind === "group") {
+        const found = locate(node.children, id, node.id)
+        if (found) return found
+      }
+    }
+  }
   const render = (
     items: readonly LayerSummary[],
     depth: number,
@@ -260,8 +297,86 @@ function Rows({
           key={layer.id}
           engine={engine}
           layer={layer}
-          index={index}
-          parentId={parentId}
+          dragging={draggedId === layer.id}
+          dropPosition={
+            target?.id === layer.id &&
+            !(layer.kind === "group" && target.position === "below")
+              ? target.position
+              : undefined
+          }
+          dragProps={{
+            onDragStart: (event) => {
+              event.dataTransfer.effectAllowed = "move"
+              event.dataTransfer.setData("text/plain", layer.id)
+              setDraggedId(layer.id)
+            },
+            onDragEnd: reset,
+            onDragLeave: (event) => {
+              if (
+                !event.currentTarget.contains(
+                  event.relatedTarget as Node | null
+                )
+              )
+                setTarget(null)
+            },
+            onDragOver: (event) => {
+              const source = draggedId
+                ? findSummary(nodes, draggedId)
+                : undefined
+              if (
+                !source ||
+                source.id === layer.id ||
+                (source.kind === "group" &&
+                  findSummary(source.children, layer.id))
+              ) {
+                setTarget(null)
+                return
+              }
+              event.preventDefault()
+              event.dataTransfer.dropEffect = "move"
+              const bounds = event.currentTarget.getBoundingClientRect()
+              const fraction = (event.clientY - bounds.top) / bounds.height
+              const position =
+                layer.kind === "group" && fraction > 0.25 && fraction < 0.75
+                  ? "inside"
+                  : fraction < 0.5
+                    ? "above"
+                    : "below"
+              const destinationParent =
+                position === "inside" ? layer.id : (parentId ?? null)
+              let destinationIndex =
+                position === "inside" && layer.kind === "group"
+                  ? layer.children.length
+                  : index + (position === "above" ? 1 : 0)
+              const origin = locate(nodes, source.id)
+              if (
+                origin?.parentId === destinationParent &&
+                origin.index < destinationIndex
+              )
+                destinationIndex--
+              setTarget({
+                id: layer.id,
+                position,
+                parentId: destinationParent,
+                index: destinationIndex,
+              })
+            },
+            onDrop: (event) => {
+              event.preventDefault()
+              if (
+                target?.id === layer.id &&
+                draggedId &&
+                event.dataTransfer.getData("text/plain") === draggedId
+              )
+                void engine.dispatch({
+                  type: "moveLayer",
+                  id: draggedId,
+                  index: target.index,
+                  parentId: target.parentId,
+                })
+              reset()
+            },
+          }}
           depth={depth}
           selected={layer.id === selectedId}
           activeLayerId={activeLayerId}
@@ -270,6 +385,25 @@ function Rows({
         />,
         ...(layer.kind === "group"
           ? render(layer.children, depth + 1, layer.id)
+          : []),
+        ...(layer.kind === "group" &&
+        target?.id === layer.id &&
+        target.position === "below"
+          ? [
+              <div
+                key={`drop-${layer.id}`}
+                className="pointer-events-none relative"
+                aria-label={`Move below ${layer.name}`}
+                data-testid="layer-drop-indicator"
+              >
+                <div
+                  className="absolute -top-0.5 right-0 z-10 h-0.5 bg-primary"
+                  style={{ left: depth * 14 + 8 }}
+                >
+                  <span className="absolute -top-0.5 -left-1 size-1.5 rounded-full bg-primary" />
+                </div>
+              </div>,
+            ]
           : []),
       ]
     })

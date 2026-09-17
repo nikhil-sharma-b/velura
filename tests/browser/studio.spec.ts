@@ -110,7 +110,7 @@ test("the layer panel manages the stack and explains locked painting", async ({
 
   const copy = layers.getByTestId("layer-row-Highlights copy")
   const original = layers.getByTestId("layer-row-Highlights")
-  await copy.dragTo(original)
+  await copy.dragTo(original, { targetPosition: { x: 80, y: 40 } })
   await expect(layers.locator("[data-layer-row]").first()).toHaveAttribute(
     "data-testid",
     "layer-row-Highlights"
@@ -387,4 +387,54 @@ test("the canvas is navigated by button and by keystroke", async ({ page }) => {
   await expect(zoom).not.toHaveValue("100")
   await page.getByRole("button", { name: "Reset view" }).click()
   await expect(zoom).toHaveValue("64")
+})
+
+test("layer dragging previews insertion and moves children out of and into groups", async ({
+  page,
+}) => {
+  await page.goto("/")
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  const layers = page.getByRole("region", { name: "Layers" })
+  await layers.getByRole("button", { name: "Group active layer" }).click()
+  const child = layers.getByTestId("layer-row-Layer 1")
+  const group = layers.locator("[data-layer-row]").first()
+  const groupName = await group.getAttribute("data-testid")
+  const transfer = await page.evaluateHandle(() => new DataTransfer())
+  await child.dispatchEvent("dragstart", { dataTransfer: transfer })
+  const box = (await group.boundingBox())!
+  await group.dispatchEvent("dragover", {
+    dataTransfer: transfer,
+    clientY: box.y + 2,
+  })
+  await expect(layers.getByTestId("layer-drop-indicator")).toHaveAttribute(
+    "aria-label",
+    /Move above/
+  )
+  await group.dispatchEvent("drop", { dataTransfer: transfer })
+  await expect(layers.locator("[data-layer-row]").first()).toHaveAttribute(
+    "data-testid",
+    "layer-row-Layer 1"
+  )
+  await expect(child).toHaveCSS("padding-left", "0px")
+  await expect(layers.getByTestId("layer-drop-indicator")).toHaveCount(0)
+
+  const destination = layers.getByTestId(groupName!)
+  await child.dispatchEvent("dragstart", { dataTransfer: transfer })
+  const destinationBox = (await destination.boundingBox())!
+  await destination.dispatchEvent("dragover", {
+    dataTransfer: transfer,
+    clientY: destinationBox.y + destinationBox.height / 2,
+  })
+  await expect(layers.getByTestId("layer-drop-indicator")).toContainText(
+    "Move into group"
+  )
+  await destination.dispatchEvent("drop", { dataTransfer: transfer })
+  await expect(child).toHaveCSS("padding-left", "14px")
+  await expect(layers.locator("[data-layer-row]").first()).toHaveAttribute(
+    "data-testid",
+    groupName!
+  )
 })

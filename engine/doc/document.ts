@@ -282,7 +282,7 @@ export function moveLayer(
   doc: PaintDocument,
   id: string,
   index: number,
-  parentId?: string
+  parentId?: string | null
 ): void {
   const source = requireNode(doc, id)
   const destination = parentId
@@ -292,7 +292,9 @@ export function moveLayer(
           throw new Error(`${parentId} is not a group.`)
         return parent.children
       })()
-    : source.siblings
+    : parentId === null
+      ? doc.layers
+      : source.siblings
   if (!Number.isInteger(index) || index < 0 || index > destination.length)
     throw new Error("A layer cannot move outside the stack.")
   if (
