@@ -1,6 +1,7 @@
 import { Caveat, Geist_Mono, Karla } from "next/font/google"
 
 import { ThemeProvider } from "@/components/theme-provider"
+import { Toaster } from "@/components/ui/sonner"
 import { APP_NAME } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 import { Metadata } from "next"
@@ -43,7 +44,10 @@ export default function RootLayout({
       )}
     >
       <body>
-        <ThemeProvider>{children}</ThemeProvider>
+        <ThemeProvider>
+          {children}
+          <Toaster />
+        </ThemeProvider>
       </body>
     </html>
   )
