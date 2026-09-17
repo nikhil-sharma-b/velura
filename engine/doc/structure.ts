@@ -23,6 +23,7 @@ export type NodeStructure = {
   blend: BlendMode
   clip: boolean
   locked?: boolean
+  image?: boolean
   mask?: { id: string; enabled: boolean }
   children?: NodeStructure[]
 }
@@ -43,6 +44,9 @@ function captureNode(node: LayerNode): NodeStructure {
     blend: node.blend,
     clip: node.clip,
     ...(node.kind === "raster" ? { locked: node.locked } : {}),
+    // Only written when set, so structures saved before image layers existed
+    // read back unchanged.
+    ...(node.kind === "raster" && node.image ? { image: true } : {}),
     ...(node.mask
       ? { mask: { id: node.mask.id, enabled: node.mask.enabled } }
       : {}),
@@ -207,6 +211,7 @@ export function restoreStructure(
       ...settings,
       kind: "raster",
       locked: snapshot.locked ?? false,
+      image: snapshot.image ?? false,
       surface:
         found?.kind === "raster"
           ? found.surface

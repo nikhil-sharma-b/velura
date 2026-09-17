@@ -153,3 +153,20 @@ describe("structure snapshots", () => {
     expect(ids.has(groupId)).toBe(false)
   })
 })
+
+describe("image layers", () => {
+  test("keep their flag through a save and a restore", () => {
+    const doc = document()
+    const id = addLayer(doc)
+    findLayer(doc, id).image = true
+    const structure = captureStructure(doc)
+    expect(structure.layers[1]).toMatchObject({ id, image: true })
+    // An ordinary layer writes nothing, so older saves compare unchanged.
+    expect(structure.layers[0]).not.toHaveProperty("image")
+
+    const restored = document()
+    restoreStructure(restored, structure)
+    expect(findLayer(restored, id).image).toBe(true)
+    expect(findLayer(restored, structure.layers[0].id).image).toBe(false)
+  })
+})

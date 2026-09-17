@@ -1403,7 +1403,10 @@ export function createEngine(
     if (snapshot.status !== "ready" || !doc) return
     // A locked layer is one the painter has said not to touch, and the pen is
     // the one place that has to be told so.
-    if (activeLayer(doc).locked) return
+    // An image layer refuses it too, unless the stroke is going to its mask.
+    const layer = activeLayer(doc)
+    if (layer.locked || (layer.image && !(doc.paintingMask && layer.mask)))
+      return
     // The opening pen state is read in document space too, so a mapping onto
     // position means the same thing at any view.
     const x = toDocX(screenX, screenY)
@@ -2001,6 +2004,7 @@ export function createEngine(
           const before = captureStructure(document)
           const id = addLayer(document)
           if (command.name) setLayer(document, id, { name: command.name })
+          findLayer(document, id).image = true
           const origin = command.origin ?? fitPlacement(image, canvas)
           const tiles = imageTiles(image, origin, canvas)
           recordOperation("place image", before, {

@@ -27,15 +27,19 @@ const Toaster = ({ ...props }: ToasterProps) => {
       }}
       style={
         {
-          "--normal-bg": "var(--popover)",
-          "--normal-text": "var(--popover-foreground)",
-          "--normal-border": "var(--border)",
+          // The studio's panel surface and rim rather than --popover: in dark
+          // mode --popover is a shade off the canvas matting and the toast
+          // disappears into it.
+          "--normal-bg": "var(--studio-surface)",
+          "--normal-text": "var(--foreground)",
+          "--normal-border": "var(--studio-edge)",
           "--border-radius": "var(--radius)",
         } as React.CSSProperties
       }
       toastOptions={{
         classNames: {
-          toast: "cn-toast",
+          toast: "cn-toast shadow-lg",
+          info: "[&_[data-icon]]:text-brand-gold",
         },
       }}
       {...props}

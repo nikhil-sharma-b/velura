@@ -10,7 +10,6 @@ import {
   CornersOutIcon,
   CaretDownIcon,
   FlipHorizontalIcon,
-  LockIcon,
   MagnifyingGlassMinusIcon,
   MagnifyingGlassPlusIcon,
   PaletteIcon,
@@ -27,6 +26,8 @@ import {
 } from "react"
 
 import { Popover as PopoverPrimitive } from "radix-ui"
+import { toast } from "sonner"
+import { isViewPanButton } from "@/engine/input/view-gestures"
 import { Button } from "@/components/ui/button"
 import { PressureCurve } from "@/components/ui/pressure-curve"
 import {
@@ -249,7 +250,6 @@ export function CanvasHost({
   const [savedBrush, setSavedBrush] = useState<Brush | null>(null)
   /** Why the last attempt to keep a brush failed, if it did. */
   const [brushProblem, setBrushProblem] = useState<string | null>(null)
-  const [paintNotice, setPaintNotice] = useState<string | null>(null)
   /** Why the last dropped or pasted image did not come in, if it did not. */
   const [imageProblem, setImageProblem] = useState<string | null>(null)
   /** An image is over the canvas and would land if let go of. */
@@ -687,10 +687,38 @@ export function CanvasHost({
         ref={attach}
         role="img"
         aria-label="Drawing canvas"
-        onPointerDown={() => {
+        onPointerDown={(event) => {
+          // Only input that would have painted is worth a refusal: the
+          // navigation buttons and the eyedropper were never a stroke. This
+          // is the sampler's own rule, in engine/input/pointer-sampler.ts.
+          if (
+            !event.isPrimary ||
+            (event.pointerType === "mouse" && event.button !== 0) ||
+            isViewPanButton(event) ||
+            sampling ||
+            event.altKey
+          )
+            return
           const selected = findLayer(snapshot.layers, snapshot.activeLayerId)
-          if (selected?.kind === "raster" && selected.locked)
-            setPaintNotice(`${selected.name} is locked. Unlock it to paint.`)
+          // The engine refuses these strokes without a word, so the refusal
+          // is said here. Fixed ids keep repeated taps to one toast each.
+          if (selected?.kind !== "raster") return
+          if (selected.locked)
+            toast.info(
+              <>
+                <strong className="font-semibold">{selected.name}</strong> is
+                locked. Unlock it to paint.
+              </>,
+              { id: "locked-layer" }
+            )
+          else if (selected.image && !(snapshot.paintingMask && selected.mask))
+            toast.info(
+              <>
+                <strong className="font-semibold">{selected.name}</strong> is an
+                image layer. Add a new layer to paint over it.
+              </>,
+              { id: "image-layer" }
+            )
         }}
         // Touch and pen gestures belong to the stroke, not to the scroller.
         className="block h-full w-full touch-none"
@@ -1228,16 +1256,6 @@ export function CanvasHost({
               className="absolute bottom-5 left-1/2 -translate-x-1/2 rounded-lg border border-destructive/40 bg-studio-surface/95 px-4 py-2 text-sm shadow-lg"
             >
               {imageProblem}
-            </div>
-          )}
-
-          {paintNotice && (
-            <div
-              role="status"
-              className="absolute bottom-5 left-1/2 -translate-x-1/2 rounded-lg border border-brand-gold/40 bg-studio-surface/95 px-4 py-2 text-sm shadow-lg"
-            >
-              <LockIcon className="mr-2 inline size-4 text-brand-gold" />
-              {paintNotice}
             </div>
           )}
         </>

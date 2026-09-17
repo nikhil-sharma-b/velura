@@ -97,9 +97,9 @@ test("the layer panel manages the stack and explains locked painting", async ({
   await page.getByRole("img", { name: "Drawing canvas" }).click({
     position: { x: 400, y: 300 },
   })
-  await expect(page.getByRole("status")).toContainText(
-    "Highlights copy is locked"
-  )
+  await expect(
+    page.getByText("Highlights copy is locked. Unlock it to paint.")
+  ).toBeVisible()
 
   const opacity = layers.getByRole("slider", { name: "Layer opacity" })
   await opacity.press("End")
@@ -437,4 +437,59 @@ test("layer dragging previews insertion and moves children out of and into group
     "data-testid",
     groupName!
   )
+})
+
+test("painting on a placed image says why nothing lands", async ({ page }) => {
+  await page.goto("/")
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  const pixel = new PNG({ width: 2, height: 2 })
+  pixel.data.fill(255)
+  await page
+    .getByRole("region", { name: "Layers" })
+    .locator('input[type="file"]')
+    .setInputFiles({
+      name: "photo.png",
+      mimeType: "image/png",
+      buffer: PNG.sync.write(pixel),
+    })
+  await expect(page.getByRole("region", { name: "Layers" })).toContainText(
+    "photo"
+  )
+  await page.getByRole("img", { name: "Drawing canvas" }).click({
+    position: { x: 400, y: 300 },
+  })
+  await expect(page.getByText(/is an image layer/)).toBeVisible()
+  await expect(page.getByText(/is locked/)).toHaveCount(0)
+})
+
+test("a right-click on an image layer is not a refused stroke", async ({
+  page,
+}) => {
+  await page.goto("/")
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  const pixel = new PNG({ width: 2, height: 2 })
+  pixel.data.fill(255)
+  await page
+    .getByRole("region", { name: "Layers" })
+    .locator('input[type="file"]')
+    .setInputFiles({
+      name: "photo.png",
+      mimeType: "image/png",
+      buffer: PNG.sync.write(pixel),
+    })
+  await expect(page.getByRole("region", { name: "Layers" })).toContainText(
+    "photo"
+  )
+  // The right button pans the view; it was never going to paint.
+  await page.getByRole("img", { name: "Drawing canvas" }).click({
+    button: "right",
+    position: { x: 400, y: 300 },
+  })
+  await expect(page.getByText(/is an image layer/)).toHaveCount(0)
 })

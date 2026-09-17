@@ -29,6 +29,11 @@ type NodeSettings = {
 export type Layer = NodeSettings & {
   readonly kind: "raster"
   locked: boolean
+  /**
+   * Holds a placed image. Its pixels are the picture, so the pen is refused
+   * here as it is on a locked layer; a mask still takes paint.
+   */
+  image: boolean
   surface: TiledLayer
 }
 
@@ -106,6 +111,7 @@ function createLayer(
     ...base(name, id),
     kind: "raster",
     locked: false,
+    image: false,
     surface: createTiledLayer({ width, height }),
   }
 }

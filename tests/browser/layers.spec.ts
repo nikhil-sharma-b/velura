@@ -153,6 +153,22 @@ test("a locked layer refuses the pen", async ({ page }) => {
   expect(channel(after, IN_GREEN, 0)).toBe(channel(before, IN_GREEN, 0))
 })
 
+test("an image layer refuses the pen", async ({ page }) => {
+  const origin = await openCanvas(page)
+  await page.evaluate(async () => {
+    // A fully transparent image: the layer holds nothing, so any mark the
+    // pen left would show over the green.
+    await window.engine.dispatch({
+      type: "placeImage",
+      image: { width: 4, height: 4, pixels: new Uint8ClampedArray(16 * 4) },
+    })
+  })
+  const before = await painted(page)
+  await paintThroughGreen(page, origin)
+  const after = await painted(page)
+  expect(channel(after, IN_GREEN, 0)).toBe(channel(before, IN_GREEN, 0))
+})
+
 test("duplicating a painted layer copies its committed pixels", async ({
   page,
 }) => {
