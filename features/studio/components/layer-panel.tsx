@@ -424,7 +424,7 @@ export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
     <section
       role="region"
       aria-label="Layers"
-      className="flex min-h-0 flex-1 flex-col"
+      className="flex min-h-0 flex-col"
     >
       <header className="flex h-10 shrink-0 items-center justify-between border-b px-3">
         <h2 className="text-xs font-semibold tracking-wide uppercase">
@@ -493,7 +493,7 @@ export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
         </p>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="max-h-48 min-h-12 shrink-0 overflow-y-auto">
         <Rows
           engine={engine}
           nodes={snapshot.layers}
@@ -505,116 +505,124 @@ export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
       </div>
 
       {selected && (
-        <div className="shrink-0 space-y-3 border-t bg-studio-surface/95 p-3">
-          <div className="flex items-center gap-1">
-            <Button
-              variant={selected.clip ? "secondary" : "outline"}
-              size="sm"
-              aria-pressed={selected.clip}
-              onClick={() =>
-                void engine.dispatch({
-                  type: "setLayer",
-                  id: selected.id,
-                  clip: !selected.clip,
-                })
-              }
-            >
-              <IntersectIcon /> Clip
-            </Button>
-            {selected.kind === "raster" && (
+        <details className="shrink-0 border-t bg-studio-surface/95">
+          <summary className="cursor-pointer px-3 py-2 text-xs text-muted-foreground hover:text-foreground">
+            Layer properties
+          </summary>
+          <div className="space-y-3 px-3 pb-3">
+            <div className="flex items-center gap-1">
               <Button
-                variant={snapshot.paintingMask ? "secondary" : "outline"}
+                variant={selected.clip ? "secondary" : "outline"}
                 size="sm"
-                onClick={() =>
-                  void engine.dispatch(
-                    selected.mask
-                      ? { type: "selectMask", id: selected.id }
-                      : { type: "addMask", id: selected.id }
-                  )
-                }
-              >
-                <MaskHappyIcon /> {selected.mask ? "Paint mask" : "Add mask"}
-              </Button>
-            )}
-          </div>
-          {selected.mask && (
-            <div className="flex gap-1">
-              <Button
-                variant="outline"
-                size="sm"
+                aria-pressed={selected.clip}
                 onClick={() =>
                   void engine.dispatch({
-                    type: "setMaskEnabled",
+                    type: "setLayer",
                     id: selected.id,
-                    enabled: !selected.mask!.enabled,
+                    clip: !selected.clip,
                   })
                 }
               >
-                {selected.mask.enabled ? "Disable mask" : "Enable mask"}
+                <IntersectIcon /> Clip
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  void engine.dispatch({ type: "removeMask", id: selected.id })
+              {selected.kind === "raster" && (
+                <Button
+                  variant={snapshot.paintingMask ? "secondary" : "outline"}
+                  size="sm"
+                  onClick={() =>
+                    void engine.dispatch(
+                      selected.mask
+                        ? { type: "selectMask", id: selected.id }
+                        : { type: "addMask", id: selected.id }
+                    )
+                  }
+                >
+                  <MaskHappyIcon /> {selected.mask ? "Paint mask" : "Add mask"}
+                </Button>
+              )}
+            </div>
+            {selected.mask && (
+              <div className="flex gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    void engine.dispatch({
+                      type: "setMaskEnabled",
+                      id: selected.id,
+                      enabled: !selected.mask!.enabled,
+                    })
+                  }
+                >
+                  {selected.mask.enabled ? "Disable mask" : "Enable mask"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    void engine.dispatch({
+                      type: "removeMask",
+                      id: selected.id,
+                    })
+                  }
+                >
+                  Remove mask
+                </Button>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="blend-mode">Blend</Label>
+              <Select
+                value={selected.blend}
+                onValueChange={(blend: BlendMode) =>
+                  void engine.dispatch({
+                    type: "setLayer",
+                    id: selected.id,
+                    blend,
+                  })
                 }
               >
-                Remove mask
-              </Button>
+                <SelectTrigger
+                  id="blend-mode"
+                  aria-label="Blend mode"
+                  size="sm"
+                  className="w-36"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {Object.entries(blendModes).map(([value, mode]) => (
+                    <SelectItem key={value} value={value}>
+                      {mode.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-          )}
-          <div className="flex items-center justify-between gap-3">
-            <Label htmlFor="blend-mode">Blend</Label>
-            <Select
-              value={selected.blend}
-              onValueChange={(blend: BlendMode) =>
-                void engine.dispatch({
-                  type: "setLayer",
-                  id: selected.id,
-                  blend,
-                })
-              }
-            >
-              <SelectTrigger
-                id="blend-mode"
-                aria-label="Blend mode"
-                size="sm"
-                className="w-36"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="end">
-                {Object.entries(blendModes).map(([value, mode]) => (
-                  <SelectItem key={value} value={value}>
-                    {mode.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label id="layer-opacity-label">Opacity</Label>
-              <span className="text-xs text-muted-foreground tabular-nums">
-                {Math.round(selected.opacity * 100)}%
-              </span>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label id="layer-opacity-label">Opacity</Label>
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {Math.round(selected.opacity * 100)}%
+                </span>
+              </div>
+              <Slider
+                aria-label="Layer opacity"
+                min={0}
+                max={100}
+                step={1}
+                value={[Math.round(selected.opacity * 100)]}
+                onValueChange={([opacity]) =>
+                  void engine.dispatch({
+                    type: "setLayer",
+                    id: selected.id,
+                    opacity: opacity / 100,
+                  })
+                }
+              />
             </div>
-            <Slider
-              aria-label="Layer opacity"
-              min={0}
-              max={100}
-              step={1}
-              value={[Math.round(selected.opacity * 100)]}
-              onValueChange={([opacity]) =>
-                void engine.dispatch({
-                  type: "setLayer",
-                  id: selected.id,
-                  opacity: opacity / 100,
-                })
-              }
-            />
           </div>
-        </div>
+        </details>
       )}
     </section>
   )

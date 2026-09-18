@@ -47,6 +47,7 @@ test("the studio opens with a ready-made brush already in the hand", async ({
   )
   // Without opening anything: the pen is on a brush from the library, not on
   // the engine's dynamics-free default.
+  await page.keyboard.press("Escape")
   await page.getByRole("button", { name: "Brush editor" }).click()
   await expect(page.getByRole("dialog")).toContainText("Round brush")
   await expect(page.getByRole("dialog").getByText("No changes")).toBeVisible()
@@ -59,6 +60,7 @@ test("a built-in is picked up, and cannot be deleted", async ({ page }) => {
     .click()
 
   // The brush in the hand is the one chosen: the editor titles what it holds.
+  await page.keyboard.press("Escape")
   await page.getByRole("button", { name: "Brush editor" }).click()
   await expect(page.getByRole("dialog")).toContainText("Charcoal")
   await page.keyboard.press("Escape")
@@ -147,6 +149,7 @@ test("the brush and size a document was left with are restored", async ({
   await library(page)
     .getByRole("button", { name: "Paint with Inking pen" })
     .click()
+  await page.getByRole("button", { name: /^Size:/ }).click()
   const size = page.getByRole("slider", { name: "Size", exact: true })
   await size.focus()
   await size.press("ArrowRight")
@@ -160,9 +163,11 @@ test("the brush and size a document was left with are restored", async ({
     "data-engine-status",
     "ready"
   )
+  await page.getByRole("button", { name: /^Size:/ }).click()
   await expect(
     page.getByRole("slider", { name: "Size", exact: true })
   ).toHaveAttribute("aria-valuenow", left ?? "")
+  await page.keyboard.press("Escape")
   await page.getByRole("button", { name: "Brush editor" }).click()
   await expect(page.getByRole("dialog")).toContainText("Inking pen")
 })

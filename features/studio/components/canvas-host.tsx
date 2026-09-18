@@ -8,13 +8,16 @@ import {
   ArrowUUpLeftIcon,
   ArrowUUpRightIcon,
   CornersOutIcon,
-  CaretDownIcon,
+  CircleIcon,
+  DropHalfIcon,
+  WaveSineIcon,
+  PenNibIcon,
   FlipHorizontalIcon,
   MagnifyingGlassMinusIcon,
   MagnifyingGlassPlusIcon,
   PaletteIcon,
   SlidersIcon,
-  SidebarSimpleIcon,
+  StackIcon,
 } from "@phosphor-icons/react"
 import {
   useCallback,
@@ -84,12 +87,6 @@ const ROTATE_STEP = Math.PI / 12
 /** One press of an arrow key, in CSS pixels: a nudge, not a leap. */
 const PAN_STEP = 40
 /**
- * How much of the right edge the open panel column covers, in CSS pixels: a
- * `w-72` aside inset by `right-3`, plus the same gap again on its left. Framing
- * reads this so the document is centred in what is left, not behind the panel.
- */
-const PANEL_OCCLUSION = 312
-/**
  * One press of a size key. Multiplicative, because the step an artist wants
  * between 2px and 3px is not the step they want between 100px and 101px.
  */
@@ -103,6 +100,47 @@ function RailAction({
   ...props
 }: ComponentProps<typeof IconButton>) {
   return <IconButton {...props} side={side} className="rounded-lg" />
+}
+
+/** Compact triggers keep adjustments close without covering the artwork. */
+function QuickSetting({
+  label,
+  value,
+  icon,
+  children,
+}: {
+  label: string
+  value: string
+  icon: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <PopoverPrimitive.Root>
+      <PopoverPrimitive.Trigger asChild>
+        <IconButton
+          label={`${label}: ${value}`}
+          side="right"
+          variant="ghost"
+          size="icon"
+          className="rounded-lg"
+        >
+          {icon}
+        </IconButton>
+      </PopoverPrimitive.Trigger>
+      <PopoverPrimitive.Portal>
+        <PopoverPrimitive.Content
+          side="right"
+          align="start"
+          sideOffset={10}
+          collisionPadding={12}
+          aria-label={`${label} adjustment`}
+          className="z-50 w-56 rounded-xl border bg-background p-3 shadow-xl outline-none"
+        >
+          {children}
+        </PopoverPrimitive.Content>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
+  )
 }
 
 /**
@@ -459,20 +497,20 @@ export function CanvasHost({
       event.preventDefault()
       void engine.dispatch(
         navigation.type === "resetView" || navigation.type === "fitView"
-          ? { ...navigation, occludedRight: panelsOpen ? PANEL_OCCLUSION : 0 }
+          ? { ...navigation, occludedRight: 0 }
           : navigation
       )
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [engine, panelsOpen])
+  }, [engine])
 
   /**
    * Frames the document the first time it is ready to be looked at.
    *
    * The engine opens on the identity view, which is the honest default for
    * geometry but shows an 8192px piece at 8192px. Fitting is the host's call
-   * because only the host knows the panels are there — and it waits for
+   * so the artwork uses the full viewport beneath floating controls. It waits for
    * `ready`, by which point the resize dispatched on attach has told the
    * engine how big the window is.
    */
@@ -484,7 +522,7 @@ export function CanvasHost({
     framed.current = documentKey
     void engine.dispatch({
       type: "fitView",
-      occludedRight: panelsOpen ? PANEL_OCCLUSION : 0,
+      occludedRight: 0,
     })
     // Only on the way in: re-fitting when the artist opens a panel would throw
     // away the zoom they had chosen to work at.
@@ -638,7 +676,7 @@ export function CanvasHost({
       () =>
         void engine?.dispatch({
           type: "fitView",
-          occludedRight: panelsOpen ? PANEL_OCCLUSION : 0,
+          occludedRight: 0,
         }),
     ],
     [
@@ -647,7 +685,7 @@ export function CanvasHost({
       () =>
         void engine?.dispatch({
           type: "resetView",
-          occludedRight: panelsOpen ? PANEL_OCCLUSION : 0,
+          occludedRight: 0,
         }),
     ],
   ] as const
@@ -777,7 +815,7 @@ export function CanvasHost({
             </div>
           )}
           <TooltipProvider delayDuration={350}>
-            <div className="absolute top-1/2 left-3 flex -translate-y-1/2 flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl">
+            <div className="absolute top-[17rem] left-3 flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl">
               <RailAction
                 label="Brush tool"
                 variant={snapshot.tool === "brush" ? "default" : "ghost"}
@@ -819,7 +857,6 @@ export function CanvasHost({
                 aria-pressed={colorOpen}
                 onClick={() => {
                   setColorOpen((open) => !open)
-                  setPanelsOpen(true)
                 }}
                 className="rounded-lg"
               >
@@ -942,7 +979,8 @@ export function CanvasHost({
 
           <TooltipProvider delayDuration={350}>
             <div
-              className={`absolute bottom-3 w-56 space-y-2 rounded-xl border border-studio-edge bg-studio-surface/88 p-3 shadow-lg backdrop-blur-xl ${panelsOpen ? "right-[19.5rem]" : "right-3"}`}
+              aria-label="Brush adjustments"
+              className="absolute top-16 left-3 flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
             >
               {snapshot.tool === "eraser" ? (
                 <PopoverPrimitive.Root
@@ -954,7 +992,8 @@ export function CanvasHost({
                       variant="ghost"
                       size="sm"
                       aria-label={`Choose eraser: ${snapshot.eraser.name}`}
-                      className="h-8 w-full justify-between px-1 text-xs"
+                      title={`Choose eraser: ${snapshot.eraser.name}`}
+                      className="size-8 rounded-lg p-0"
                     >
                       <span className="flex items-center gap-2">
                         <EraserToolIcon
@@ -964,14 +1003,12 @@ export function CanvasHost({
                               : "solid"
                           }
                         />
-                        {snapshot.eraser.name}
                       </span>
-                      <CaretDownIcon />
                     </Button>
                   </PopoverPrimitive.Trigger>
                   <PopoverPrimitive.Portal>
                     <PopoverPrimitive.Content
-                      side="top"
+                      side="right"
                       align="end"
                       sideOffset={10}
                       collisionPadding={12}
@@ -1018,21 +1055,20 @@ export function CanvasHost({
                       variant="ghost"
                       size="sm"
                       aria-label={`Choose brush: ${snapshot.brush.name}`}
-                      className="h-8 w-full justify-between px-1 text-xs"
+                      title={`Choose brush: ${snapshot.brush.name}`}
+                      className="size-8 rounded-lg p-0"
                     >
                       <span className="flex min-w-0 items-center gap-2">
                         <BrushIcon
                           id={snapshot.brush.id}
                           className="shrink-0"
                         />
-                        <span className="truncate">{snapshot.brush.name}</span>
                       </span>
-                      <CaretDownIcon className="shrink-0" />
                     </Button>
                   </PopoverPrimitive.Trigger>
                   <PopoverPrimitive.Portal>
                     <PopoverPrimitive.Content
-                      side="top"
+                      side="right"
                       align="start"
                       sideOffset={10}
                       collisionPadding={12}
@@ -1060,49 +1096,72 @@ export function CanvasHost({
               {/* Size and opacity are the two a hand reaches for mid-piece, so
                 they stay on the canvas: the editor is for shaping a brush,
                 not for the adjustment made between one stroke and the next. */}
-              <SliderSetting
+              <QuickSetting
                 label="Size"
-                value={activeTip.shape.radius}
-                min={0.5}
-                max={200}
-                step={0.5}
-                scale={2}
-                decimals={1}
-                unit="px"
-                onChange={(radius) =>
-                  void engine?.dispatch({
-                    type: snapshot.tool === "eraser" ? "setEraser" : "setBrush",
-                    radius,
-                  })
-                }
-              />
-              <SliderSetting
+                value={`${(activeTip.shape.radius * 2).toFixed(1)} px`}
+                icon={<CircleIcon />}
+              >
+                <SliderSetting
+                  label="Size"
+                  value={activeTip.shape.radius}
+                  min={0.5}
+                  max={200}
+                  step={0.5}
+                  scale={2}
+                  decimals={1}
+                  unit="px"
+                  onChange={(radius) =>
+                    void engine?.dispatch({
+                      type:
+                        snapshot.tool === "eraser" ? "setEraser" : "setBrush",
+                      radius,
+                    })
+                  }
+                />
+              </QuickSetting>
+              <QuickSetting
                 label="Opacity"
-                value={activeTip.rendering.opacity}
-                min={0}
-                max={1}
-                step={0.01}
-                scale={100}
-                unit="%"
-                onChange={(opacity) =>
-                  void engine?.dispatch({
-                    type: snapshot.tool === "eraser" ? "setEraser" : "setBrush",
-                    opacity,
-                  })
-                }
-              />
-              <SliderSetting
+                value={`${Math.round(activeTip.rendering.opacity * 100)}%`}
+                icon={<DropHalfIcon />}
+              >
+                <SliderSetting
+                  label="Opacity"
+                  value={activeTip.rendering.opacity}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  scale={100}
+                  unit="%"
+                  onChange={(opacity) =>
+                    void engine?.dispatch({
+                      type:
+                        snapshot.tool === "eraser" ? "setEraser" : "setBrush",
+                      opacity,
+                    })
+                  }
+                />
+              </QuickSetting>
+              <QuickSetting
                 label="Smoothing"
-                value={snapshot.stabilization}
-                min={0}
-                max={1}
-                step={0.01}
-                scale={100}
-                unit="%"
-                onChange={(strength) =>
-                  void engine?.dispatch({ type: "setStabilization", strength })
-                }
-              />
+                value={`${Math.round(snapshot.stabilization * 100)}%`}
+                icon={<WaveSineIcon />}
+              >
+                <SliderSetting
+                  label="Smoothing"
+                  value={snapshot.stabilization}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  scale={100}
+                  unit="%"
+                  onChange={(strength) =>
+                    void engine?.dispatch({
+                      type: "setStabilization",
+                      strength,
+                    })
+                  }
+                />
+              </QuickSetting>
               {/* Pen response is a calibration rather than an adjustment, so it
                 sits behind a popover instead of taking a fourth slider: an
                 artist sets it once for their hand and then leaves it. It is
@@ -1117,19 +1176,20 @@ export function CanvasHost({
                     variant="ghost"
                     size="sm"
                     aria-label="Pen settings"
-                    className="h-8 w-full justify-between px-1 text-xs"
+                    title="Pen settings"
+                    className="size-8 rounded-lg p-0"
                   >
-                    <span className="text-muted-foreground">Pen</span>
-                    <CaretDownIcon className="shrink-0" />
+                    <PenNibIcon />
                   </Button>
                 </PopoverPrimitive.Trigger>
                 <PopoverPrimitive.Portal>
                   <PopoverPrimitive.Content
-                    side="top"
+                    side="right"
                     align="start"
                     sideOffset={10}
                     collisionPadding={12}
                     aria-label="Pen settings"
+                    title="Pen settings"
                     className="z-50 flex flex-col gap-3 rounded-xl border bg-background p-3 shadow-xl outline-none"
                   >
                     {/* Driven by what the engine holds rather than by state of
@@ -1167,7 +1227,7 @@ export function CanvasHost({
 
             <div
               aria-label="View controls"
-              className={`absolute top-1/2 flex -translate-y-1/2 flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl ${panelsOpen ? "right-[19.5rem]" : "right-3"}`}
+              className="absolute right-3 bottom-3 flex flex-col items-center gap-0.5 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
             >
               {/* Typed as a percentage, dispatched as a factor: the view only
                 knows how to scale by a ratio, and the ratio that lands on the
@@ -1214,30 +1274,34 @@ export function CanvasHost({
             </div>
           </TooltipProvider>
 
-          {engine && panelsOpen && (
-            <aside className="absolute top-3 right-3 bottom-3 flex w-72 flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl">
-              {colorOpen && (
-                <ColorPanel
-                  engine={engine}
-                  snapshot={snapshot}
-                  store={paletteStore}
-                  onClose={() => setColorOpen(false)}
-                />
-              )}
-              <LayerPanel engine={engine} snapshot={snapshot} />
+          {engine && colorOpen && (
+            <aside className="absolute top-16 left-16 z-10 max-h-[calc(100dvh-5rem)] w-72 max-w-[calc(100vw-5rem)] overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/95 shadow-xl backdrop-blur-xl">
+              <ColorPanel
+                engine={engine}
+                snapshot={snapshot}
+                store={paletteStore}
+                onClose={() => setColorOpen(false)}
+              />
             </aside>
           )}
-          <Button
-            variant="outline"
-            size="icon"
-            aria-label={panelsOpen ? "Collapse panels" : "Expand panels"}
-            onClick={() => setPanelsOpen((open) => !open)}
-            className={`absolute top-3 rounded-lg border border-studio-edge bg-studio-surface/88 shadow-md backdrop-blur-xl transition-[right] ${
-              panelsOpen ? "right-[19.5rem]" : "right-3"
-            }`}
-          >
-            <SidebarSimpleIcon />
-          </Button>
+          <div className="absolute top-3 right-3 flex max-h-[calc(100dvh-19rem)] w-72 max-w-[calc(100vw-6rem)] flex-col items-end gap-2">
+            <IconButton
+              variant={panelsOpen ? "secondary" : "outline"}
+              size="icon"
+              label={panelsOpen ? "Collapse panels" : "Expand panels"}
+              side="left"
+              aria-expanded={panelsOpen}
+              onClick={() => setPanelsOpen((open) => !open)}
+              className="shrink-0 rounded-lg border border-studio-edge bg-studio-surface/88 shadow-md backdrop-blur-xl"
+            >
+              <StackIcon />
+            </IconButton>
+            {engine && panelsOpen && (
+              <aside className="flex min-h-0 w-full flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl">
+                <LayerPanel engine={engine} snapshot={snapshot} />
+              </aside>
+            )}
+          </div>
 
           {imageOverCanvas && (
             <div

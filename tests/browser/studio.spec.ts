@@ -101,6 +101,7 @@ test("the layer panel manages the stack and explains locked painting", async ({
     page.getByText("Highlights copy is locked. Unlock it to paint.")
   ).toBeVisible()
 
+  await layers.getByText("Layer properties", { exact: true }).click()
   const opacity = layers.getByRole("slider", { name: "Layer opacity" })
   await opacity.press("End")
   for (let step = 0; step < 45; step++) await opacity.press("ArrowLeft")
@@ -156,6 +157,7 @@ test("the layer panel groups layers and manages a reversible mask", async ({
   await expect(layers.getByText("Layer 2")).toBeVisible()
 
   await layers.getByRole("button", { name: "Selected Layer 2" }).click()
+  await layers.getByText("Layer properties", { exact: true }).click()
   await layers.getByRole("button", { name: "Add mask" }).click()
   await expect(layers.getByRole("button", { name: "Paint mask" })).toBeVisible()
   await layers.getByRole("button", { name: "Paint mask" }).click()
@@ -323,23 +325,23 @@ test("the canvas is navigated by button and by keystroke", async ({ page }) => {
     "ready"
   )
   const zoom = page.getByLabel("Zoom level")
-  await expect(zoom).toHaveValue("64")
+  await expect(zoom).toHaveValue("96")
 
   await page.getByRole("button", { name: "Zoom in" }).click()
-  await expect(zoom).toHaveValue("80")
+  await expect(zoom).toHaveValue("120")
   await page.getByRole("button", { name: "Zoom out" }).click()
-  await expect(zoom).toHaveValue("64")
+  await expect(zoom).toHaveValue("96")
 
   // Unmodified, because the hand reaching for these is not holding the pen.
   await page.keyboard.press("=")
-  await expect(zoom).toHaveValue("80")
+  await expect(zoom).toHaveValue("120")
   // Fitting is the overview; the document is the window's own size, so it
   // comes back a little under a hundred percent with its margin.
   await page.keyboard.press("0")
   await expect(zoom).toHaveValue("96")
   // And shift is the way back to square.
   await page.keyboard.press("Shift+0")
-  await expect(zoom).toHaveValue("64")
+  await expect(zoom).toHaveValue("100")
 
   // A zoom can also be asked for outright. Committed exactly once: the view
   // only scales by a ratio, so an entry applied twice would overshoot by that
@@ -386,7 +388,7 @@ test("the canvas is navigated by button and by keystroke", async ({ page }) => {
   await page.getByRole("button", { name: "Fit canvas to window" }).click()
   await expect(zoom).not.toHaveValue("100")
   await page.getByRole("button", { name: "Reset view" }).click()
-  await expect(zoom).toHaveValue("64")
+  await expect(zoom).toHaveValue("100")
 })
 
 test("layer dragging previews insertion and moves children out of and into groups", async ({

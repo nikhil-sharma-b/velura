@@ -64,12 +64,15 @@ test("size and opacity stay adjustable without opening the editor", async ({
 }) => {
   await openStudio(page)
   await expect(page.getByRole("dialog")).toHaveCount(0)
+  await page.getByRole("button", { name: /^Size:/ }).click()
   const size = slider(page, "Size")
   // One press is half a pixel of radius, which is a whole pixel of diameter.
   const wider = await diameter(page, 1)
   await size.focus()
   await size.press("ArrowRight")
   await expect(field(page, "Size")).toHaveValue(wider)
+  await page.keyboard.press("Escape")
+  await page.getByRole("button", { name: /^Opacity:/ }).click()
   const opacity = slider(page, "Opacity")
   await opacity.focus()
   await opacity.press("ArrowLeft")
@@ -77,6 +80,8 @@ test("size and opacity stay adjustable without opening the editor", async ({
 
   // And typing into the field is the other half of the same control: a size
   // asked for exactly, rather than arrived at by dragging.
+  await page.keyboard.press("Escape")
+  await page.getByRole("button", { name: /^Size:/ }).click()
   await field(page, "Size").fill("48")
   await field(page, "Size").press("Enter")
   await expect(slider(page, "Size")).toHaveAttribute("aria-valuenow", "24")
@@ -178,10 +183,10 @@ test("an edit paints immediately and is kept only when it is saved", async ({
   const size = dialog.getByRole("slider", { name: "Size", exact: true })
   await size.focus()
   await size.press("ArrowRight")
-  // Two: the editor's field and the canvas's, over the one brush.
-  await expect(field(page, "Size")).toHaveCount(2)
-  for (const index of [0, 1])
-    await expect(field(page, "Size").nth(index)).toHaveValue(wider)
+  await expect(field(page, "Size")).toHaveValue(wider)
+  await expect(
+    page.locator(`button[aria-label="Size: ${wider} px"]`)
+  ).toHaveCount(1)
 
   const hardness = dialog.getByRole("slider", { name: "Hardness" })
   await hardness.focus()
@@ -192,8 +197,10 @@ test("an edit paints immediately and is kept only when it is saved", async ({
   // well as in the dialog, since they are the same brush.
   await dialog.getByRole("button", { name: "Revert" }).click()
   await expect(dialog.getByText("No changes")).toBeVisible()
-  for (const index of [0, 1])
-    await expect(field(page, "Size").nth(index)).toHaveValue(started)
+  await expect(field(page, "Size")).toHaveValue(started)
+  await expect(
+    page.locator(`button[aria-label="Size: ${started} px"]`)
+  ).toHaveCount(1)
 
   await hardness.focus()
   await hardness.press("ArrowLeft")
