@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
+import { PNG } from "pngjs"
 
 /**
  * The brush editor (D32).
@@ -292,4 +293,32 @@ test("at the narrowest window the editor leaves canvas to paint on", async ({
   const panelBox = (await editor(page).boundingBox())!
   // Half the window is still canvas beside the docked column.
   expect(panelBox.x).toBeGreaterThan(768 / 2)
+})
+
+test("fitting the view with the editor open keeps the piece clear of it", async ({
+  page,
+}) => {
+  // Tall, so a fit is limited by width and the piece would reach
+  // the right edge of the window if nothing told it about the editor.
+  await page.setViewportSize({ width: 1280, height: 1200 })
+  await openEditor(page)
+  await page.getByRole("button", { name: "Fit canvas to window" }).click()
+  const panel = (await editor(page)
+    .locator("xpath=ancestor::aside[1]")
+    .boundingBox())!
+  const canvas = page.locator("canvas").first()
+  const box = (await canvas.boundingBox())!
+
+  // Just short of the editor, on the middle row. The panel's shadow tints
+  // whatever is there, so compare brightness rather than exact colour: with
+  // the editor accounted for it is the dark matting in the fit's margin, and
+  // without it the white paper running on under the editor.
+  const x = Math.round(panel.x - box.x - 6)
+  const y = Math.round(box.height / 2)
+  await expect(async () => {
+    const image = PNG.sync.read(await canvas.screenshot())
+    const offset = (y * image.width + x) * 4
+    const [r, g, b] = image.data.subarray(offset, offset + 3)
+    expect((r + g + b) / 3).toBeLessThan(128)
+  }).toPass({ timeout: 3000 })
 })

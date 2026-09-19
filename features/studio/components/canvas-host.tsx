@@ -284,6 +284,8 @@ export function CanvasHost({
   const [colorOpen, setColorOpen] = useState(false)
   const [brushOpen, setBrushOpen] = useState(false)
   const brushButton = useRef<HTMLButtonElement>(null)
+  /** The docked editor's panel, whose strip fitting the view has to avoid. */
+  const brushPanel = useRef<HTMLElement>(null)
   /** Whichever of collapse and expand is showing; focus follows the swap. */
   const layersToggle = useRef<HTMLButtonElement>(null)
   const layersToggled = useRef(false)
@@ -470,6 +472,18 @@ export function CanvasHost({
   }, [engine, placeImage])
 
   /**
+   * How much of the right of the window fitting and resetting should leave
+   * clear. Only the docked brush editor counts: the artist is testing strokes
+   * beside it, so the piece must not sit under it. The other floating controls
+   * are small enough that the artwork keeps the full window beneath them.
+   */
+  const occludedRight = useCallback(() => {
+    const panel = brushPanel.current
+    if (!panel) return 0
+    return Math.max(0, window.innerWidth - panel.getBoundingClientRect().left)
+  }, [])
+
+  /**
    * Collapse and expand are two buttons that replace each other, so the one
    * pressed unmounts under the keyboard. Focus moves to its replacement — only
    * after a press, never on the first render.
@@ -523,13 +537,13 @@ export function CanvasHost({
       event.preventDefault()
       void engine.dispatch(
         navigation.type === "resetView" || navigation.type === "fitView"
-          ? { ...navigation, occludedRight: 0 }
+          ? { ...navigation, occludedRight: occludedRight() }
           : navigation
       )
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [engine])
+  }, [engine, occludedRight])
 
   /**
    * Frames the document the first time it is ready to be looked at.
@@ -702,7 +716,7 @@ export function CanvasHost({
       () =>
         void engine?.dispatch({
           type: "fitView",
-          occludedRight: 0,
+          occludedRight: occludedRight(),
         }),
     ],
     [
@@ -711,7 +725,7 @@ export function CanvasHost({
       () =>
         void engine?.dispatch({
           type: "resetView",
-          occludedRight: 0,
+          occludedRight: occludedRight(),
         }),
     ],
   ] as const
@@ -1294,7 +1308,10 @@ export function CanvasHost({
                 in the hand rather than showing a brush the next stroke will
                 not use. */}
             {engine && brushOpen && snapshot.tool !== "eraser" && (
-              <aside className="pointer-events-auto flex min-h-0 w-full shrink flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl">
+              <aside
+                ref={brushPanel}
+                className="pointer-events-auto flex min-h-0 w-full shrink flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl"
+              >
                 <BrushEditor
                   brush={snapshot.brush}
                   textures={snapshot.textures}
