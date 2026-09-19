@@ -3,9 +3,9 @@
  *
  * The document is fitted into the thumbnail whole, letterboxed with
  * transparency, so its shape reads the same in every row. Shrinking a
- * document forty-fold with one bilinear tap would drop a thin line entirely,
- * so each thumbnail pixel averages a grid of taps across its footprint — what
- * a mip chain would give, without keeping one for every layer.
+ * document forty-fold would drop a thin line entirely, whether by one tap or
+ * by a true average, so each thumbnail pixel reads a dense grid of taps and
+ * keeps the strongest coverage among them: linework stays legible as lines.
  *
  * Colour is laid over a checkerboard, so transparent and white stay
  * different things. A mask is shown as what it lets through: white reveals,
@@ -52,18 +52,26 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
       any(origin + footprint * 0.5 > thumbnail.docSize)) {
     return vec4<f32>(0.0);
   }
-  // Each bilinear tap already averages two texels a side, so a footprint of
-  // n texels needs n / 2 taps a side. Capped: past that, a shrunk document is
-  // a picture of its composition rather than of its strokes.
-  let taps = clamp(u32(ceil(footprint * 0.5)), 1u, 8u);
+  // A tap a texel and a half apart, so a line two texels wide cannot fall
+  // between them. Capped: past that, a shrunk document is a picture of its
+  // composition rather than of its strokes.
+  let taps = clamp(u32(ceil(footprint / 1.5)), 1u, 24u);
   var sum = vec4<f32>(0.0);
+  var strongest = 0.0;
   for (var row = 0u; row < taps; row++) {
     for (var column = 0u; column < taps; column++) {
       let point = origin + (vec2<f32>(f32(column), f32(row)) + 0.5) * footprint / f32(taps);
-      sum += textureSampleLevel(source, sourceSampler, point / thumbnail.docSize, 0.0);
+      let tap = textureSampleLevel(source, sourceSampler, point / thumbnail.docSize, 0.0);
+      sum += tap;
+      strongest = max(strongest, tap.a);
     }
   }
-  let texel = sum / f32(taps * taps);
+  // Coverage is the strongest under this pixel, not the average: averaged, a
+  // line covering a twentieth of the footprint reads as a twentieth of a line,
+  // which is nothing. Colour is the average of what is there, so the line
+  // keeps its hue at the strength it was painted with.
+  let straight = select(vec3<f32>(0.0), sum.rgb / max(sum.a, 1e-6), sum.a > 0.0);
+  let texel = vec4<f32>(straight * strongest, strongest);
   if (thumbnail.mode > 0.5) {
     // A mask holds how much it hides, in alpha.
     let reveal = vec3<f32>(1.0 - texel.a);
