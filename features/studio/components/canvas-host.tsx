@@ -1207,54 +1207,6 @@ export function CanvasHost({
                 )}
               </div>
             </div>
-
-            <div
-              aria-label="View controls"
-              className="absolute right-3 bottom-3 flex flex-col items-center gap-0.5 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
-            >
-              {/* Typed as a percentage, dispatched as a factor: the view only
-                knows how to scale by a ratio, and the ratio that lands on the
-                asked-for zoom is that zoom over the current one. */}
-              <NumberField
-                label="Zoom level"
-                value={snapshot.view.zoom * 100}
-                min={MIN_ZOOM * 100}
-                max={MAX_ZOOM * 100}
-                step={1}
-                decimals={0}
-                unit="%"
-                className="w-10"
-                onCommit={(percent) =>
-                  void engine?.dispatch({
-                    type: "zoomView",
-                    factor: percent / 100 / snapshot.view.zoom,
-                  })
-                }
-              />
-              {viewActions.map(([label, icon, action]) => (
-                <Tooltip key={label}>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={label}
-                      aria-pressed={
-                        label === "Flip canvas horizontally"
-                          ? snapshot.view.flipped
-                          : undefined
-                      }
-                      onClick={action}
-                      className="rounded-lg"
-                    >
-                      {icon}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="left" sideOffset={8}>
-                    {label}
-                  </TooltipContent>
-                </Tooltip>
-              ))}
-            </div>
           </TooltipProvider>
 
           {engine && colorOpen && (
@@ -1267,9 +1219,14 @@ export function CanvasHost({
               />
             </aside>
           )}
+          {/* One column down the right edge — panels trigger, layers, brush
+              editor, view controls — so the gaps between them come from the
+              layout and match the tool rail's rather than from an offset
+              guessed against the view controls' height. The column itself
+              lets strokes through; only what is in it takes the pointer. */}
           <div
             className={cn(
-              "absolute top-3 right-3 flex max-h-[calc(100dvh-19rem)] max-w-[calc(100vw-6rem)] flex-col items-end gap-2",
+              "pointer-events-none absolute top-3 right-3 bottom-3 flex max-w-[calc(100vw-6rem)] flex-col items-end gap-3",
               // The editor docks here beside the layers, so the column widens
               // for its mapping rows while it is open.
               brushOpen ? "w-80" : "w-72"
@@ -1282,15 +1239,28 @@ export function CanvasHost({
               side="left"
               aria-expanded={panelsOpen}
               onClick={() => setPanelsOpen((open) => !open)}
-              className="shrink-0 rounded-lg border border-studio-edge bg-studio-surface/88 shadow-md backdrop-blur-xl"
+              className="pointer-events-auto shrink-0 rounded-lg border border-studio-edge bg-studio-surface/88 shadow-md backdrop-blur-xl"
             >
               <StackIcon />
             </IconButton>
+            {engine && panelsOpen && (
+              <aside
+                className={cn(
+                  "pointer-events-auto flex min-h-0 w-full flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl",
+                  // The layers keep their height and the editor below them
+                  // scrolls, up to half the column so a long stack cannot
+                  // crowd the editor out.
+                  brushOpen ? "max-h-1/2 shrink-0" : "shrink"
+                )}
+              >
+                <LayerPanel engine={engine} snapshot={snapshot} />
+              </aside>
+            )}
             {/* The eraser has no editor, so the editor steps aside while it is
                 in the hand rather than showing a brush the next stroke will
                 not use. */}
             {engine && brushOpen && snapshot.tool !== "eraser" && (
-              <aside className="flex min-h-0 w-full shrink flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl">
+              <aside className="pointer-events-auto flex min-h-0 w-full shrink flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl">
                 <BrushEditor
                   brush={snapshot.brush}
                   textures={snapshot.textures}
@@ -1352,11 +1322,55 @@ export function CanvasHost({
                 />
               </aside>
             )}
-            {engine && panelsOpen && (
-              <aside className="flex min-h-0 w-full flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl">
-                <LayerPanel engine={engine} snapshot={snapshot} />
-              </aside>
-            )}
+            <TooltipProvider delayDuration={350}>
+              <div
+                aria-label="View controls"
+                className="pointer-events-auto mt-auto flex shrink-0 flex-col items-center gap-0.5 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
+              >
+                {/* Typed as a percentage, dispatched as a factor: the view only
+                    knows how to scale by a ratio, and the ratio that lands on the
+                    asked-for zoom is that zoom over the current one. */}
+                <NumberField
+                  label="Zoom level"
+                  value={snapshot.view.zoom * 100}
+                  min={MIN_ZOOM * 100}
+                  max={MAX_ZOOM * 100}
+                  step={1}
+                  decimals={0}
+                  unit="%"
+                  className="w-10"
+                  onCommit={(percent) =>
+                    void engine?.dispatch({
+                      type: "zoomView",
+                      factor: percent / 100 / snapshot.view.zoom,
+                    })
+                  }
+                />
+                {viewActions.map(([label, icon, action]) => (
+                  <Tooltip key={label}>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={label}
+                        aria-pressed={
+                          label === "Flip canvas horizontally"
+                            ? snapshot.view.flipped
+                            : undefined
+                        }
+                        onClick={action}
+                        className="rounded-lg"
+                      >
+                        {icon}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="left" sideOffset={8}>
+                      {label}
+                    </TooltipContent>
+                  </Tooltip>
+                ))}
+              </div>
+            </TooltipProvider>
           </div>
 
           {imageOverCanvas && (
