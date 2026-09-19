@@ -32,6 +32,7 @@ import { Popover as PopoverPrimitive } from "radix-ui"
 import { toast } from "sonner"
 import { isViewPanButton } from "@/engine/input/view-gestures"
 import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 import { PressureCurve } from "@/components/ui/pressure-curve"
 import {
   Tooltip,
@@ -281,6 +282,7 @@ export function CanvasHost({
   const [historyOpen, setHistoryOpen] = useState(false)
   const [colorOpen, setColorOpen] = useState(false)
   const [brushOpen, setBrushOpen] = useState(false)
+  const brushButton = useRef<HTMLButtonElement>(null)
   const [eraserOpen, setEraserOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [pressureOpen, setPressureOpen] = useState(false)
@@ -466,7 +468,10 @@ export function CanvasHost({
   useEffect(() => {
     if (!engine) return
     const onKeyDown = (event: KeyboardEvent) => {
-      // A layer being renamed owns its own keys, and these are not them.
+      // A layer being renamed owns its own keys, and these are not them. A key
+      // a control already handled, such as an arrow on one of the docked
+      // brush editor's sliders, must not also pan the canvas.
+      if (event.defaultPrevented) return
       const target = event.target as HTMLElement | null
       if (
         target?.isContentEditable ||
@@ -819,59 +824,6 @@ export function CanvasHost({
             >
               Also open on another device — work here may conflict with it.
             </div>
-          )}
-
-          {engine && (
-            <BrushEditor
-              open={brushOpen}
-              brush={snapshot.brush}
-              textures={snapshot.textures}
-              edited={brushEdited}
-              onOpenChange={setBrushOpen}
-              onEdit={(next) => void engine.dispatch(brushCommand(next))}
-              onImportTexture={async (file, name) => {
-                const texture = await readTextureFile(file)
-                const id = await brushStore.saveTexture(name, texture)
-                // Registered here as well as by the sync effect, so the
-                // texture is selectable in the dialog that imported it rather
-                // than only once the store has answered.
-                await engine.dispatch({ type: "registerTexture", id, texture })
-                return id
-              }}
-              problem={brushProblem}
-              onSave={() => {
-                const working = snapshot.brush
-                const stored = library.brushes.find(
-                  (brush) => brush.id === working.id
-                )
-                setBrushProblem(null)
-                // A built-in has no row to write over, so saving an edit to
-                // one keeps it and creates the artist's own brush beside it —
-                // which is what makes a shipped brush a starting point rather
-                // than a dead end.
-                const write: Promise<Brush> = stored
-                  ? brushStore.update(stored.id, working).then(() => working)
-                  : brushStore
-                      .save(working.name, setForNewBrush(stored), working)
-                      .then(async (id) => {
-                        // The brush in the hand becomes the brush that was
-                        // saved, id and all: without that, the editor would go
-                        // on measuring it against something it no longer is
-                        // and call a saved brush unsaved.
-                        const next = { ...working, id }
-                        await engine.dispatch(brushCommand(next))
-                        return next
-                      })
-                void write.then(setSavedBrush, (error: unknown) =>
-                  setBrushProblem(
-                    error instanceof Error
-                      ? error.message
-                      : "That brush could not be saved."
-                  )
-                )
-              }}
-              onRevert={() => void engine.dispatch(brushCommand(saved))}
-            />
           )}
 
           {engine && remote && historyOpen && (
@@ -1232,6 +1184,7 @@ export function CanvasHost({
                   size="icon"
                   disabled={snapshot.tool === "eraser"}
                   aria-pressed={brushOpen}
+                  ref={brushButton}
                   onClick={() => setBrushOpen((open) => !open)}
                   className="rounded-lg"
                 >
@@ -1314,7 +1267,14 @@ export function CanvasHost({
               />
             </aside>
           )}
-          <div className="absolute top-3 right-3 flex max-h-[calc(100dvh-19rem)] w-72 max-w-[calc(100vw-6rem)] flex-col items-end gap-2">
+          <div
+            className={cn(
+              "absolute top-3 right-3 flex max-h-[calc(100dvh-19rem)] max-w-[calc(100vw-6rem)] flex-col items-end gap-2",
+              // The editor docks here beside the layers, so the column widens
+              // for its mapping rows while it is open.
+              brushOpen ? "w-80" : "w-72"
+            )}
+          >
             <IconButton
               variant="secondary"
               size="icon"
@@ -1326,6 +1286,72 @@ export function CanvasHost({
             >
               <StackIcon />
             </IconButton>
+            {/* The eraser has no editor, so the editor steps aside while it is
+                in the hand rather than showing a brush the next stroke will
+                not use. */}
+            {engine && brushOpen && snapshot.tool !== "eraser" && (
+              <aside className="flex min-h-0 w-full shrink flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl">
+                <BrushEditor
+                  brush={snapshot.brush}
+                  textures={snapshot.textures}
+                  edited={brushEdited}
+                  onClose={() => {
+                    setBrushOpen(false)
+                    brushButton.current?.focus()
+                  }}
+                  onEdit={(next) => void engine.dispatch(brushCommand(next))}
+                  onImportTexture={async (file, name) => {
+                    const texture = await readTextureFile(file)
+                    const id = await brushStore.saveTexture(name, texture)
+                    // Registered here as well as by the sync effect, so
+                    // the texture is selectable in the editor that
+                    // imported it rather than only once the store has
+                    // answered.
+                    await engine.dispatch({
+                      type: "registerTexture",
+                      id,
+                      texture,
+                    })
+                    return id
+                  }}
+                  problem={brushProblem}
+                  onSave={() => {
+                    const working = snapshot.brush
+                    const stored = library.brushes.find(
+                      (brush) => brush.id === working.id
+                    )
+                    setBrushProblem(null)
+                    // A built-in has no row to write over, so saving an edit
+                    // to one keeps it and creates the artist's own brush
+                    // beside it — which is what makes a shipped brush a
+                    // starting point rather than a dead end.
+                    const write: Promise<Brush> = stored
+                      ? brushStore
+                          .update(stored.id, working)
+                          .then(() => working)
+                      : brushStore
+                          .save(working.name, setForNewBrush(stored), working)
+                          .then(async (id) => {
+                            // The brush in the hand becomes the brush that
+                            // was saved, id and all: without that, the editor
+                            // would go on measuring it against something it
+                            // no longer is and call a saved brush unsaved.
+                            const next = { ...working, id }
+                            await engine.dispatch(brushCommand(next))
+                            return next
+                          })
+                    void write.then(setSavedBrush, (error: unknown) =>
+                      setBrushProblem(
+                        error instanceof Error
+                          ? error.message
+                          : "That brush could not be saved."
+                      )
+                    )
+                  }}
+                  onRevert={() => void engine.dispatch(brushCommand(saved))}
+                />
+              </aside>
+            )}
             {engine && panelsOpen && (
               <aside className="flex min-h-0 w-full flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl">
                 <LayerPanel engine={engine} snapshot={snapshot} />

@@ -1,16 +1,9 @@
 "use client"
 
-import { PlusIcon, TrashIcon } from "@phosphor-icons/react"
+import { PlusIcon, TrashIcon, XIcon } from "@phosphor-icons/react"
 import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { PressureCurve } from "@/components/ui/pressure-curve"
 import {
@@ -57,6 +50,11 @@ import { SliderSetting } from "./slider-setting"
  * paints and that the saved brush is untouched until Save. That is what keeps
  * this a view of a `Brush` and nothing more, and what will let the brush
  * library (D25) reuse it over a brush that is not the one in the hand.
+ *
+ * It docks in the studio's panel column rather than opening as a dialog: a
+ * brush is judged by the mark it makes on the piece, so the canvas stays
+ * uncovered and paintable while the editor is open, and every edit reaches
+ * the next stroke without a confirm step.
  */
 
 const SOURCE_LABELS: Record<DynamicsSource, string> = {
@@ -308,18 +306,16 @@ function Mapping({
 }
 
 export function BrushEditor({
-  open,
   brush,
   textures,
   edited,
   problem,
-  onOpenChange,
+  onClose,
   onEdit,
   onImportTexture,
   onSave,
   onRevert,
 }: {
-  open: boolean
   /** The working brush: what the pen is painting with right now. */
   brush: Brush
   /** Texture ids the engine can resolve, so a brush cannot name a missing one. */
@@ -328,7 +324,8 @@ export function BrushEditor({
   edited: boolean
   /** Why keeping the brush failed, if it did. A brush is an hour's work. */
   problem?: string | null
-  onOpenChange(open: boolean): void
+  /** Dismisses the editor; Escape inside it does the same. */
+  onClose(): void
   onEdit(next: Brush): void
   /**
    * Brings a texture in from a file and resolves with the id it is stored
@@ -364,289 +361,304 @@ export function BrushEditor({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] gap-3 overflow-y-auto sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>{brush.name}</DialogTitle>
-        </DialogHeader>
-        {/* The preview sits above the tabs rather than inside one: every tab
+    <section
+      aria-label="Brush editor"
+      className="flex flex-col gap-3 p-3"
+      onKeyDown={(event) => {
+        // Only a key pressed in the editor itself: a select's list is portaled
+        // out of it and dismisses itself on Escape without closing the editor.
+        if (
+          event.key !== "Escape" ||
+          !event.currentTarget.contains(event.target as Node)
+        )
+          return
+        event.preventDefault()
+        onClose()
+      }}
+    >
+      <header className="flex items-center justify-between gap-2">
+        <h2 className="truncate text-sm font-medium">{brush.name}</h2>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Close brush editor"
+          onClick={onClose}
+        >
+          <XIcon />
+        </Button>
+      </header>
+      {/* The preview sits above the tabs rather than inside one: every tab
             changes what it shows, and an artist dialling a brush in by eye
             should never have to leave a control to see what it did. */}
-        <BrushPreview
-          brush={brush}
-          className="h-24 w-full border border-border/70 bg-card text-foreground"
-        />
-        {(importProblem ?? problem) && (
-          <p role="alert" className="text-xs text-destructive">
-            {importProblem ?? problem}
-          </p>
-        )}
-        <Tabs defaultValue="shape">
-          <TabsList>
-            <TabsTrigger value="shape">Shape</TabsTrigger>
-            <TabsTrigger value="grain">Grain</TabsTrigger>
-            <TabsTrigger value="rendering">Rendering</TabsTrigger>
-            <TabsTrigger value="dynamics">Dynamics</TabsTrigger>
-          </TabsList>
+      <BrushPreview
+        brush={brush}
+        className="h-24 w-full border border-border/70 bg-card text-foreground"
+      />
+      {(importProblem ?? problem) && (
+        <p role="alert" className="text-xs text-destructive">
+          {importProblem ?? problem}
+        </p>
+      )}
+      <Tabs defaultValue="shape">
+        <TabsList className="w-full">
+          <TabsTrigger value="shape">Shape</TabsTrigger>
+          <TabsTrigger value="grain">Grain</TabsTrigger>
+          <TabsTrigger value="rendering">Rendering</TabsTrigger>
+          <TabsTrigger value="dynamics">Dynamics</TabsTrigger>
+        </TabsList>
 
-          <TabsContent value="shape" className="space-y-3">
-            <TextureSelect
-              label="Tip"
-              value={brush.shape.tipTextureId ?? null}
-              textures={textures}
-              noneLabel="Round (procedural)"
-              onChange={(tipTextureId) => apply({ shape: { tipTextureId } })}
-              onImport={
-                onImportTexture &&
-                ((file) =>
-                  importTexture(file, (tipTextureId) =>
-                    apply({ shape: { tipTextureId } })
-                  ))
-              }
-            />
-            <SliderSetting
-              label="Size"
-              value={brush.shape.radius}
-              min={0.5}
-              max={200}
-              step={0.5}
-              scale={2}
-              decimals={1}
-              unit="px"
-              onChange={(radius) => apply({ shape: { radius } })}
-            />
-            <SliderSetting
-              label="Hardness"
-              value={hardnessOf(brush.shape.feather)}
-              min={0}
-              max={1}
-              step={0.01}
-              scale={100}
-              unit="%"
-              onChange={(hardness) =>
-                apply({ shape: { feather: featherOf(hardness) } })
-              }
-            />
-            <SliderSetting
-              label="Roundness"
-              value={brush.shape.roundness}
-              min={0.05}
-              max={1}
-              step={0.01}
-              scale={100}
-              unit="%"
-              onChange={(roundness) => apply({ shape: { roundness } })}
-            />
-            <SliderSetting
-              label="Angle"
-              value={brush.shape.angle}
-              min={0}
-              max={1}
-              step={1 / 360}
-              scale={360}
-              unit="°"
-              onChange={(angle) => apply({ shape: { angle } })}
-            />
-            <SliderSetting
-              label="Spacing"
-              value={brush.shape.spacing}
-              min={0.02}
-              max={2}
-              step={0.01}
-              scale={100}
-              unit="% of tip"
-              onChange={(spacing) => apply({ shape: { spacing } })}
-            />
-          </TabsContent>
+        <TabsContent value="shape" className="space-y-3">
+          <TextureSelect
+            label="Tip"
+            value={brush.shape.tipTextureId ?? null}
+            textures={textures}
+            noneLabel="Round (procedural)"
+            onChange={(tipTextureId) => apply({ shape: { tipTextureId } })}
+            onImport={
+              onImportTexture &&
+              ((file) =>
+                importTexture(file, (tipTextureId) =>
+                  apply({ shape: { tipTextureId } })
+                ))
+            }
+          />
+          <SliderSetting
+            label="Size"
+            value={brush.shape.radius}
+            min={0.5}
+            max={200}
+            step={0.5}
+            scale={2}
+            decimals={1}
+            unit="px"
+            onChange={(radius) => apply({ shape: { radius } })}
+          />
+          <SliderSetting
+            label="Hardness"
+            value={hardnessOf(brush.shape.feather)}
+            min={0}
+            max={1}
+            step={0.01}
+            scale={100}
+            unit="%"
+            onChange={(hardness) =>
+              apply({ shape: { feather: featherOf(hardness) } })
+            }
+          />
+          <SliderSetting
+            label="Roundness"
+            value={brush.shape.roundness}
+            min={0.05}
+            max={1}
+            step={0.01}
+            scale={100}
+            unit="%"
+            onChange={(roundness) => apply({ shape: { roundness } })}
+          />
+          <SliderSetting
+            label="Angle"
+            value={brush.shape.angle}
+            min={0}
+            max={1}
+            step={1 / 360}
+            scale={360}
+            unit="°"
+            onChange={(angle) => apply({ shape: { angle } })}
+          />
+          <SliderSetting
+            label="Spacing"
+            value={brush.shape.spacing}
+            min={0.02}
+            max={2}
+            step={0.01}
+            scale={100}
+            unit="% of tip"
+            onChange={(spacing) => apply({ shape: { spacing } })}
+          />
+        </TabsContent>
 
-          <TabsContent value="grain" className="space-y-3">
-            <TextureSelect
-              label="Paper"
-              value={grain?.textureId ?? null}
-              textures={textures}
-              noneLabel="Smooth (no grain)"
-              onImport={
-                onImportTexture &&
-                ((file) =>
-                  importTexture(file, (textureId) =>
-                    apply({
-                      grain: {
-                        scale: grain?.scale ?? 1,
-                        depth: grain?.depth ?? 0.6,
-                        movement: grain?.movement ?? 0,
-                        textureId,
-                      },
-                    })
-                  ))
-              }
-              onChange={(textureId) =>
+        <TabsContent value="grain" className="space-y-3">
+          <TextureSelect
+            label="Paper"
+            value={grain?.textureId ?? null}
+            textures={textures}
+            noneLabel="Smooth (no grain)"
+            onImport={
+              onImportTexture &&
+              ((file) =>
+                importTexture(file, (textureId) =>
+                  apply({
+                    grain: {
+                      scale: grain?.scale ?? 1,
+                      depth: grain?.depth ?? 0.6,
+                      movement: grain?.movement ?? 0,
+                      textureId,
+                    },
+                  })
+                ))
+            }
+            onChange={(textureId) =>
+              apply({
+                grain: textureId
+                  ? {
+                      scale: grain?.scale ?? 1,
+                      depth: grain?.depth ?? 0.6,
+                      movement: grain?.movement ?? 0,
+                      textureId,
+                    }
+                  : null,
+              })
+            }
+          />
+          {grain ? (
+            <>
+              <SliderSetting
+                label="Grain scale"
+                value={grain.scale}
+                min={0.25}
+                max={8}
+                step={0.05}
+                decimals={2}
+                unit="×"
+                onChange={(scale) => apply({ grain: { ...grain, scale } })}
+              />
+              <SliderSetting
+                label="Grain depth"
+                value={grain.depth}
+                min={0}
+                max={1}
+                step={0.01}
+                scale={100}
+                unit="%"
+                onChange={(depth) => apply({ grain: { ...grain, depth } })}
+              />
+              <SliderSetting
+                label="Grain movement"
+                value={grain.movement}
+                min={0}
+                max={1}
+                step={0.01}
+                scale={100}
+                unit="%"
+                onChange={(movement) =>
+                  apply({ grain: { ...grain, movement } })
+                }
+              />
+              <p className="text-xs text-muted-foreground">
+                Grain sits on the canvas, so the paper stays where it is as the
+                brush passes over it. Movement is how much of it travels with
+                the brush instead.
+              </p>
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              This brush lays ink on a perfectly smooth surface.
+            </p>
+          )}
+        </TabsContent>
+
+        <TabsContent value="rendering" className="space-y-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Dabs within a stroke</Label>
+            <Select
+              value={brush.rendering.accumulation}
+              onValueChange={(accumulation) =>
                 apply({
-                  grain: textureId
-                    ? {
-                        scale: grain?.scale ?? 1,
-                        depth: grain?.depth ?? 0.6,
-                        movement: grain?.movement ?? 0,
-                        textureId,
-                      }
-                    : null,
+                  rendering: {
+                    accumulation: accumulation as "coverage" | "buildup",
+                  },
+                })
+              }
+            >
+              <SelectTrigger className="w-full" aria-label="Accumulation">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="coverage">
+                  Coverage — a crossing stays flat
+                </SelectItem>
+                <SelectItem value="buildup">
+                  Buildup — a crossing darkens
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <SliderSetting
+            label="Opacity"
+            value={brush.rendering.opacity}
+            min={0}
+            max={1}
+            step={0.01}
+            scale={100}
+            unit="%"
+            onChange={(opacity) => apply({ rendering: { opacity } })}
+          />
+          <SliderSetting
+            label="Flow"
+            value={brush.rendering.flow}
+            min={0}
+            max={1}
+            step={0.01}
+            scale={100}
+            unit="%"
+            onChange={(flow) => apply({ rendering: { flow } })}
+          />
+        </TabsContent>
+
+        <TabsContent value="dynamics" className="space-y-3">
+          {dynamics.length === 0 && (
+            <p className="text-xs text-muted-foreground">
+              Nothing the artist does with the pen reaches this brush yet. Add a
+              mapping to drive a parameter from pressure, tilt, speed or
+              randomness.
+            </p>
+          )}
+          {dynamics.map((modulator, index) => (
+            <Mapping
+              key={index}
+              index={index}
+              modulator={modulator}
+              onChange={(next) =>
+                apply({
+                  dynamics: dynamics.map((existing, at) =>
+                    at === index ? next : existing
+                  ),
+                })
+              }
+              onRemove={() =>
+                apply({
+                  dynamics: dynamics.filter((_, at) => at !== index),
                 })
               }
             />
-            {grain ? (
-              <>
-                <SliderSetting
-                  label="Grain scale"
-                  value={grain.scale}
-                  min={0.25}
-                  max={8}
-                  step={0.05}
-                  decimals={2}
-                  unit="×"
-                  onChange={(scale) => apply({ grain: { ...grain, scale } })}
-                />
-                <SliderSetting
-                  label="Grain depth"
-                  value={grain.depth}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  scale={100}
-                  unit="%"
-                  onChange={(depth) => apply({ grain: { ...grain, depth } })}
-                />
-                <SliderSetting
-                  label="Grain movement"
-                  value={grain.movement}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  scale={100}
-                  unit="%"
-                  onChange={(movement) =>
-                    apply({ grain: { ...grain, movement } })
-                  }
-                />
-                <p className="text-xs text-muted-foreground">
-                  Grain sits on the canvas, so the paper stays where it is as
-                  the brush passes over it. Movement is how much of it travels
-                  with the brush instead.
-                </p>
-              </>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                This brush lays ink on a perfectly smooth surface.
-              </p>
-            )}
-          </TabsContent>
+          ))}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              apply({ dynamics: [...dynamics, newModulator("size")] })
+            }
+          >
+            <PlusIcon />
+            Add mapping
+          </Button>
+        </TabsContent>
+      </Tabs>
 
-          <TabsContent value="rendering" className="space-y-3">
-            <div className="space-y-1.5">
-              <Label className="text-xs">Dabs within a stroke</Label>
-              <Select
-                value={brush.rendering.accumulation}
-                onValueChange={(accumulation) =>
-                  apply({
-                    rendering: {
-                      accumulation: accumulation as "coverage" | "buildup",
-                    },
-                  })
-                }
-              >
-                <SelectTrigger className="w-full" aria-label="Accumulation">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="coverage">
-                    Coverage — a crossing stays flat
-                  </SelectItem>
-                  <SelectItem value="buildup">
-                    Buildup — a crossing darkens
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <SliderSetting
-              label="Opacity"
-              value={brush.rendering.opacity}
-              min={0}
-              max={1}
-              step={0.01}
-              scale={100}
-              unit="%"
-              onChange={(opacity) => apply({ rendering: { opacity } })}
-            />
-            <SliderSetting
-              label="Flow"
-              value={brush.rendering.flow}
-              min={0}
-              max={1}
-              step={0.01}
-              scale={100}
-              unit="%"
-              onChange={(flow) => apply({ rendering: { flow } })}
-            />
-          </TabsContent>
-
-          <TabsContent value="dynamics" className="space-y-3">
-            {dynamics.length === 0 && (
-              <p className="text-xs text-muted-foreground">
-                Nothing the artist does with the pen reaches this brush yet. Add
-                a mapping to drive a parameter from pressure, tilt, speed or
-                randomness.
-              </p>
-            )}
-            {dynamics.map((modulator, index) => (
-              <Mapping
-                key={index}
-                index={index}
-                modulator={modulator}
-                onChange={(next) =>
-                  apply({
-                    dynamics: dynamics.map((existing, at) =>
-                      at === index ? next : existing
-                    ),
-                  })
-                }
-                onRemove={() =>
-                  apply({
-                    dynamics: dynamics.filter((_, at) => at !== index),
-                  })
-                }
-              />
-            ))}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                apply({ dynamics: [...dynamics, newModulator("size")] })
-              }
-            >
-              <PlusIcon />
-              Add mapping
-            </Button>
-          </TabsContent>
-        </Tabs>
-
-        <DialogFooter>
-          {/* Edits are already on the brush in the hand; what Save changes is
+      <footer className="flex items-center gap-2">
+        {/* Edits are already on the brush in the hand; what Save changes is
               the brush they are measured against, and Revert is the way back
               to it. Both are dead until the working brush has actually moved. */}
-          <span className="mr-auto text-xs text-muted-foreground">
-            {edited ? "Unsaved changes" : "No changes"}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!edited}
-            onClick={onRevert}
-          >
-            Revert
-          </Button>
-          <Button size="sm" disabled={!edited} onClick={onSave}>
-            Save brush
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        <span className="mr-auto text-xs text-muted-foreground">
+          {edited ? "Unsaved changes" : "No changes"}
+        </span>
+        <Button variant="ghost" size="sm" disabled={!edited} onClick={onRevert}>
+          Revert
+        </Button>
+        <Button size="sm" disabled={!edited} onClick={onSave}>
+          Save brush
+        </Button>
+      </footer>
+    </section>
   )
 }

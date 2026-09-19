@@ -1,5 +1,10 @@
 import { expect, test, type Page } from "@playwright/test"
 
+/** The docked brush editor, which names the brush in the hand. */
+function editor(page: Page) {
+  return page.getByRole("region", { name: "Brush editor" })
+}
+
 /**
  * The brush library (25).
  *
@@ -49,8 +54,8 @@ test("the studio opens with a ready-made brush already in the hand", async ({
   // the engine's dynamics-free default.
   await page.keyboard.press("Escape")
   await page.getByRole("button", { name: "Brush editor" }).click()
-  await expect(page.getByRole("dialog")).toContainText("Round brush")
-  await expect(page.getByRole("dialog").getByText("No changes")).toBeVisible()
+  await expect(editor(page)).toContainText("Round brush")
+  await expect(editor(page).getByText("No changes")).toBeVisible()
 })
 
 test("a built-in is picked up, and cannot be deleted", async ({ page }) => {
@@ -62,7 +67,7 @@ test("a built-in is picked up, and cannot be deleted", async ({ page }) => {
   // The brush in the hand is the one chosen: the editor titles what it holds.
   await page.keyboard.press("Escape")
   await page.getByRole("button", { name: "Brush editor" }).click()
-  await expect(page.getByRole("dialog")).toContainText("Charcoal")
+  await expect(editor(page)).toContainText("Charcoal")
   await page.keyboard.press("Escape")
   await page.getByRole("button", { name: /^Choose brush:/ }).click()
 
@@ -169,5 +174,5 @@ test("the brush and size a document was left with are restored", async ({
   ).toHaveAttribute("aria-valuenow", left ?? "")
   await page.keyboard.press("Escape")
   await page.getByRole("button", { name: "Brush editor" }).click()
-  await expect(page.getByRole("dialog")).toContainText("Inking pen")
+  await expect(editor(page)).toContainText("Inking pen")
 })
