@@ -158,7 +158,10 @@ function LayerThumbnail({
   // Hidden wins the attribute; an empty hidden layer still draws its outline.
   const state = hidden ? "hidden" : empty ? "empty" : "shown"
   return (
-    <TooltipProvider delayDuration={450}>
+    // Nothing in the preview can be used, so it closes the moment the pointer
+    // leaves the thumbnail rather than waiting for it to cross the preview —
+    // which, heading back to the canvas, it never does.
+    <TooltipProvider delayDuration={450} disableHoverableContent>
       <Tooltip>
         <TooltipTrigger asChild>
           <span

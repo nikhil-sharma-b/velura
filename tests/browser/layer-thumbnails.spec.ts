@@ -163,6 +163,9 @@ test("pointing at a row dims the canvas around it and previews it larger", async
   await expect(preview).toBeVisible()
   await expect.poll(() => colours(preview)).toBeGreaterThan(2)
 
-  await page.mouse.move(5, 5)
+  // Straight off the list onto the canvas, as an artist heading back to
+  // paint would: the preview closes and the stack comes back.
+  await page.mouse.move(box.x + 300, box.y + 400)
+  await expect(preview).toBeHidden()
   await expect.poll(shot).toBe(plain)
 })
