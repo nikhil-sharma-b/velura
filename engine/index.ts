@@ -8,6 +8,7 @@ import {
   DEFAULT_BRUSH,
 } from "./brush/brush"
 import {
+  dynamicsForDevice,
   evaluateDynamics,
   type Modulator,
   NEUTRAL_STAMP_PARAMS,
@@ -733,6 +734,8 @@ export function createEngine(
   let rawX = 0
   let rawY = 0
   let rawPressure = 1
+  /** Whether the device drawing this stroke has a force sensor. */
+  let strokeSensesPressure = true
   let rawTiltX = 0
   let rawTiltY = 0
   let rawTime = 0
@@ -1246,7 +1249,11 @@ export function createEngine(
     // the first one has not moved from that point and so has no speed yet.
     const brush = activeBrush()
     const context = dynamics.next(x, y, pressure, tiltX, tiltY, time)
-    evaluateDynamics(brush.dynamics, context, params)
+    evaluateDynamics(
+      dynamicsForDevice(brush.dynamics, strokeSensesPressure),
+      context,
+      params
+    )
     if (stampCount === MAX_STAMPS_PER_DRAW) flushStamps()
     const offset = stampCount * STAMP_STRIDE
     stamps[offset + STAMP.CENTER_X] = x
@@ -1587,7 +1594,8 @@ export function createEngine(
     tiltX: number,
     tiltY: number,
     time: number,
-    origin: number
+    origin: number,
+    sensesPressure: boolean
   ) {
     if (snapshot.status !== "ready" || !doc) return
     // A locked layer is one the painter has said not to touch, and the pen is
@@ -1607,6 +1615,8 @@ export function createEngine(
     const y = toDocY(screenX, screenY)
     const brush = activeBrush()
     strokeOrigin = origin
+    // Per stroke, not per session: the next mark may come from another device.
+    strokeSensesPressure = sensesPressure
     // Stroke opacity is applied once, at composite, so it is decided once,
     // here — from the pen state the stroke opened with. Nothing derived from
     // movement is known yet, so a mapping onto `opacity` reads what the pen
@@ -1614,7 +1624,7 @@ export function createEngine(
     // for. Opening the tracker here is also what makes the first dab's own
     // context an advance rather than a restart.
     evaluateDynamics(
-      brush.dynamics,
+      dynamicsForDevice(brush.dynamics, sensesPressure),
       dynamics.begin(x, y, pressure, tiltX, tiltY, time, ++strokeSeed),
       strokeParams
     )

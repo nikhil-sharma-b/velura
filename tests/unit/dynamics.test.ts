@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { Curve } from "../../engine/brush/curve"
 import {
+  dynamicsForDevice,
   evaluateDynamics,
   type Modulator,
   NEUTRAL_STAMP_CONTEXT,
@@ -288,5 +289,49 @@ describe("dynamics graph evaluation", () => {
         ])
       ).toThrow(/unit square/)
     })
+  })
+})
+
+describe("dynamics for a device without a pressure sensor", () => {
+  const brush: Modulator[] = [
+    { source: "pressure", target: "flow", range: [0.1, 1], mix: "multiply" },
+    { source: "pressure", target: "size", range: [0.6, 1.15], mix: "multiply" },
+    { source: "tilt", target: "size", range: [1, 2.6], mix: "multiply" },
+    { source: "velocity", target: "size", range: [1, 0.5], mix: "multiply" },
+    { source: "random", target: "angle", range: [0, 1], mix: "add" },
+  ]
+
+  test("a device with no sensor draws at the brush's nominal size and flow", () => {
+    const params = evaluateDynamics(
+      dynamicsForDevice(brush, false),
+      context({ pressure: 1 })
+    )
+    expect(params.size).toBeCloseTo(1)
+    expect(params.flow).toBeCloseTo(1)
+  })
+
+  test("tilt, velocity and randomness still reach the dab", () => {
+    const params = evaluateDynamics(
+      dynamicsForDevice(brush, false),
+      context({ tilt: 1, velocity: 1, random: 0.25 })
+    )
+    expect(params.size).toBeCloseTo(1.3)
+    expect(params.angle).toBeCloseTo(0.25)
+  })
+
+  test("a pen reporting zero keeps its zero", () => {
+    const params = evaluateDynamics(
+      dynamicsForDevice(brush, true),
+      context({ pressure: 0 })
+    )
+    expect(params.flow).toBeCloseTo(0.1)
+    expect(params.size).toBeCloseTo(0.6)
+  })
+
+  test("the answer is stable per graph, so a stroke allocates nothing per dab", () => {
+    expect(dynamicsForDevice(brush, true)).toBe(brush)
+    expect(dynamicsForDevice(brush, false)).toBe(
+      dynamicsForDevice(brush, false)
+    )
   })
 })

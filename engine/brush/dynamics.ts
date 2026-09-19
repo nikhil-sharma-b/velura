@@ -224,6 +224,40 @@ export function evaluateDynamics(
   return out
 }
 
+/** One filtered graph per brush graph, so a stroke never filters per dab (D30). */
+const WITHOUT_PRESSURE = new WeakMap<
+  readonly Modulator[],
+  readonly Modulator[]
+>()
+
+/**
+ * The graph a device can actually drive.
+ *
+ * A device with no force sensor has no pressure to report, and standing in a
+ * full press for it would still pick one end of each mapping's range — the
+ * charcoal comes out oversized and the pencil skims the paper. Dropping the
+ * pressure mappings instead leaves those targets at the brush's own values,
+ * which is what the brush looks like when nothing is said about force. Every
+ * other source is still read: a mouse has speed, and randomness needs no
+ * device at all.
+ *
+ * A device that does report force keeps the graph whole, zero included.
+ */
+export function dynamicsForDevice(
+  modulators: readonly Modulator[],
+  sensesPressure: boolean
+): readonly Modulator[] {
+  if (sensesPressure) return modulators
+  let filtered = WITHOUT_PRESSURE.get(modulators)
+  if (!filtered) {
+    filtered = Object.freeze(
+      modulators.filter((modulator) => modulator.source !== "pressure")
+    )
+    WITHOUT_PRESSURE.set(modulators, filtered)
+  }
+  return filtered
+}
+
 const SOURCES: ReadonlySet<string> = new Set<DynamicsSource>([
   "pressure",
   "tilt",

@@ -22,7 +22,9 @@ export interface StrokeHandlers {
    * The pen went down, in canvas backing-store pixels. `time` is zero, since
    * every sample's clock is relative to this one; `origin` is that zero read
    * on the page's own clock, which is the only way anything downstream can
-   * say how old a sample is now.
+   * say how old a sample is now. `sensesPressure` says whether the device
+   * has a force sensor at all, decided per stroke so that a tablet plugged in
+   * mid-session is honoured from its first mark.
    */
   begin(
     x: number,
@@ -31,7 +33,8 @@ export interface StrokeHandlers {
     tiltX: number,
     tiltY: number,
     time: number,
-    origin: number
+    origin: number,
+    sensesPressure: boolean
   ): void
   /** The pen lifted or the stroke was cancelled. */
   end(): void
@@ -102,8 +105,12 @@ export function attachPointerSampler(
    * stand-in for a missing sensor, not a press, and shaping it would let a
    * curve the artist drew for their pen quietly thin every mouse stroke.
    */
+  // Only a pen is trusted to measure force: a mouse or trackpad has no sensor,
+  // and a finger on glass reports a constant stand-in (0.5 by the spec's own
+  // default) that would pin every pressure mapping partway up its range.
+  const sensesPressure = (event: PointerEvent) => event.pointerType === "pen"
   const canvasPressure = (event: PointerEvent) =>
-    event.pointerType === "mouse"
+    !sensesPressure(event)
       ? 1
       : shapePressure(
           options.pressureCurve?.() ?? DEFAULT_PRESSURE_CURVE,
@@ -179,7 +186,8 @@ export function attachPointerSampler(
       tiltX,
       tiltY,
       0,
-      event.timeStamp
+      event.timeStamp,
+      sensesPressure(event)
     )
   }
 
