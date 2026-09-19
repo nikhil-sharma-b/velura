@@ -1316,7 +1316,7 @@ export function CanvasHost({
           )}
           <div className="absolute top-3 right-3 flex max-h-[calc(100dvh-19rem)] w-72 max-w-[calc(100vw-6rem)] flex-col items-end gap-2">
             <IconButton
-              variant={panelsOpen ? "secondary" : "outline"}
+              variant="secondary"
               size="icon"
               label={panelsOpen ? "Collapse panels" : "Expand panels"}
               side="left"
