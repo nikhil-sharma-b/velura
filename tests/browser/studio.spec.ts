@@ -120,10 +120,17 @@ test("the layer panel manages the stack and explains locked painting", async ({
   await layers.getByRole("button", { name: "Delete Highlights copy" }).click()
   await expect(layers.getByText("Highlights copy")).toHaveCount(0)
 
-  await page.getByRole("button", { name: "Collapse panels" }).click()
+  // The collapse control lives in the panel's header, and focus follows the
+  // swap between it and the folded tab so the keyboard is never dropped.
+  await layers.getByRole("button", { name: "Collapse layers" }).click()
   await expect(layers).toBeHidden()
-  await page.getByRole("button", { name: "Expand panels" }).click()
+  const expand = page.getByRole("button", { name: "Expand layers" })
+  await expect(expand).toBeFocused()
+  await page.keyboard.press("Enter")
   await expect(layers).toBeVisible()
+  await expect(
+    layers.getByRole("button", { name: "Collapse layers" })
+  ).toBeFocused()
 })
 
 test("the tool rail switches between brush and eraser", async ({ page }) => {

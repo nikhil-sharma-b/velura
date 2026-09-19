@@ -1,6 +1,7 @@
 "use client"
 
 import {
+  CaretUpIcon,
   CopyIcon,
   DotsSixVerticalIcon,
   EyeIcon,
@@ -14,7 +15,7 @@ import {
   PlusIcon,
   TrashIcon,
 } from "@phosphor-icons/react"
-import { useRef, useState } from "react"
+import { type Ref, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -38,7 +39,17 @@ import {
 import { placeImageFile } from "../lib/image-import"
 import { IconButton } from "./icon-button"
 
-type LayerPanelProps = { engine: Engine; snapshot: EngineSnapshot }
+type LayerPanelProps = {
+  engine: Engine
+  snapshot: EngineSnapshot
+  /**
+   * Folds the panel away. The control sits in the panel's own header rather
+   * than above it, so what it collapses is never in doubt — a lone button over
+   * the column read as belonging to whatever panel happened to be under it.
+   */
+  onCollapse?(): void
+  collapseRef?: Ref<HTMLButtonElement>
+}
 
 function findSummary(
   nodes: readonly LayerSummary[],
@@ -410,7 +421,12 @@ function Rows({
   return <>{render(nodes, 0)}</>
 }
 
-export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
+export function LayerPanel({
+  engine,
+  snapshot,
+  onCollapse,
+  collapseRef,
+}: LayerPanelProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   /** Why the last image would not come in; cleared by the next attempt. */
   const [imageProblem, setImageProblem] = useState<string | null>(null)
@@ -484,6 +500,19 @@ export function LayerPanel({ engine, snapshot }: LayerPanelProps) {
           >
             <PlusIcon />
           </IconButton>
+          {onCollapse && (
+            <IconButton
+              ref={collapseRef}
+              variant="ghost"
+              size="icon-sm"
+              label="Collapse layers"
+              aria-expanded
+              onClick={onCollapse}
+              className="ml-1"
+            >
+              <CaretUpIcon />
+            </IconButton>
+          )}
         </div>
       </header>
 

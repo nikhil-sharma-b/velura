@@ -1,6 +1,7 @@
 "use client"
 
 import {
+  CaretDownIcon,
   ArrowClockwiseIcon,
   ArrowsClockwiseIcon,
   ClockCounterClockwiseIcon,
@@ -283,6 +284,9 @@ export function CanvasHost({
   const [colorOpen, setColorOpen] = useState(false)
   const [brushOpen, setBrushOpen] = useState(false)
   const brushButton = useRef<HTMLButtonElement>(null)
+  /** Whichever of collapse and expand is showing; focus follows the swap. */
+  const layersToggle = useRef<HTMLButtonElement>(null)
+  const layersToggled = useRef(false)
   const [eraserOpen, setEraserOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [pressureOpen, setPressureOpen] = useState(false)
@@ -464,6 +468,17 @@ export function CanvasHost({
     window.addEventListener("paste", onPaste)
     return () => window.removeEventListener("paste", onPaste)
   }, [engine, placeImage])
+
+  /**
+   * Collapse and expand are two buttons that replace each other, so the one
+   * pressed unmounts under the keyboard. Focus moves to its replacement — only
+   * after a press, never on the first render.
+   */
+  useEffect(() => {
+    if (!layersToggled.current) return
+    layersToggled.current = false
+    layersToggle.current?.focus()
+  }, [panelsOpen])
 
   useEffect(() => {
     if (!engine) return
@@ -1232,17 +1247,28 @@ export function CanvasHost({
               brushOpen ? "w-80" : "w-72"
             )}
           >
-            <IconButton
-              variant="secondary"
-              size="icon"
-              label={panelsOpen ? "Collapse panels" : "Expand panels"}
-              side="left"
-              aria-expanded={panelsOpen}
-              onClick={() => setPanelsOpen((open) => !open)}
-              className="pointer-events-auto shrink-0 rounded-lg border border-studio-edge bg-studio-surface/88 shadow-md backdrop-blur-xl"
-            >
-              <StackIcon />
-            </IconButton>
+            {/* Folded, the layers leave a labelled tab where their header
+                was, so the control and the panel it restores read as one
+                thing — and the brush editor below cannot be mistaken for
+                what it opens. */}
+            {engine && !panelsOpen && (
+              <Button
+                ref={layersToggle}
+                variant="secondary"
+                size="sm"
+                aria-expanded={false}
+                aria-label="Expand layers"
+                onClick={() => {
+                  layersToggled.current = true
+                  setPanelsOpen(true)
+                }}
+                className="pointer-events-auto h-10 shrink-0 gap-2 rounded-xl border border-studio-edge bg-studio-surface/88 px-3 text-xs font-semibold tracking-wide uppercase shadow-xl backdrop-blur-xl"
+              >
+                <StackIcon />
+                Layers
+                <CaretDownIcon />
+              </Button>
+            )}
             {engine && panelsOpen && (
               <aside
                 className={cn(
@@ -1253,7 +1279,15 @@ export function CanvasHost({
                   brushOpen ? "max-h-1/2 shrink-0" : "shrink"
                 )}
               >
-                <LayerPanel engine={engine} snapshot={snapshot} />
+                <LayerPanel
+                  engine={engine}
+                  snapshot={snapshot}
+                  collapseRef={layersToggle}
+                  onCollapse={() => {
+                    layersToggled.current = true
+                    setPanelsOpen(false)
+                  }}
+                />
               </aside>
             )}
             {/* The eraser has no editor, so the editor steps aside while it is
