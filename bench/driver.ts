@@ -251,6 +251,25 @@ export async function buildLayerStack(
   })
 }
 
+/**
+ * Gives every layer a thumbnail, as the studio's layer list does, so what is
+ * measured is the product's stack rather than one with its list folded away.
+ * A thumbnail must cost a frame of drawing nothing; this is where that holds.
+ */
+function attachThumbnails(engine: Engine): () => void {
+  const detach = engine.getSnapshot().layers.map((layer) => {
+    const thumbnail = document.createElement("canvas")
+    thumbnail.width = thumbnail.height = 64
+    document.body.append(thumbnail)
+    const stop = engine.attachThumbnail(layer.id, thumbnail)
+    return () => {
+      stop()
+      thumbnail.remove()
+    }
+  })
+  return () => detach.forEach((stop) => stop())
+}
+
 export async function runBenchmark(
   engine: Engine,
   canvas: HTMLCanvasElement,
@@ -283,6 +302,7 @@ export async function runBenchmark(
     toClientX,
     toClientY,
   })
+  const detachThumbnails = attachThumbnails(engine)
 
   const frames: FrameTiming[] = []
   engine.observeFrames((frame) => frames.push(frame))
@@ -355,6 +375,7 @@ export async function runBenchmark(
     }
   } finally {
     engine.observeFrames(null)
+    detachThumbnails()
     pump.close()
     readback.restore()
   }

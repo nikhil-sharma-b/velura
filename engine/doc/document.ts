@@ -420,6 +420,16 @@ function item(node: LayerNode): CompositeItem {
   }
 }
 
+/**
+ * A group as its thumbnail flattens it: its visible children in their own
+ * settings, whether or not the group itself is showing. Its own opacity,
+ * blend and mask are how it meets what is under it, which a thumbnail of it
+ * alone has nothing to say about.
+ */
+export function groupContents(group: LayerGroup): CompositeItem {
+  return item({ ...group, visible: true })
+}
+
 function pathTo(
   nodes: LayerNode[],
   id: string

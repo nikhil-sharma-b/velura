@@ -26,6 +26,7 @@ import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
 import { stampShader } from "../shaders/stamp"
 import { surfaceCompositeShader } from "../shaders/surface-composite"
+import { thumbnailShader } from "../shaders/thumbnail"
 import {
   IDENTITY_MATRIX,
   invertMatrix,
@@ -88,6 +89,15 @@ export const MAX_STAMPS_PER_STROKE = 1 << 16
 export const MAX_STAMPS_PER_DRAW = 2048
 
 export type StrokeMode = "paint" | "erase"
+
+/**
+ * What a layer-list thumbnail shows: a layer's own pixels, a mask's coverage,
+ * or a group's children flattened together as the group would draw them.
+ */
+export type ThumbnailSubject =
+  | { kind: "layer"; id: string }
+  | { kind: "mask"; id: string }
+  | { kind: "group"; item: CompositeItem }
 
 export interface Renderer {
   /** (Re)allocates every render target; layers must be uploaded again after. */
@@ -182,6 +192,16 @@ export interface Renderer {
    */
   setView(matrix: ViewMatrix): void
   render(view: GPUTextureView): void
+  /**
+   * Draws one thumbnail into a small target, reading the surfaces the
+   * compositor already holds: nothing crosses back to the CPU. Answers
+   * whether the subject held any pixels; an empty one is left transparent.
+   */
+  drawThumbnail(
+    target: GPUTextureView,
+    size: { width: number; height: number },
+    subject: ThumbnailSubject
+  ): boolean
   destroy(): void
 }
 
@@ -445,6 +465,39 @@ export function createRenderer(
       ],
     },
     primitive: { topology: "triangle-list" },
+  })
+
+  const thumbnailModule = device.createShaderModule({ code: thumbnailShader })
+  const thumbnailPipeline = device.createRenderPipeline({
+    label: "thumbnail",
+    layout: "auto",
+    vertex: { module: thumbnailModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: thumbnailModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format: options.format }],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  // mat3x3, two vec2s and the mode, padded to the struct's 16-byte size. The
+  // matrix leads, laid out exactly as the present uniform's does.
+  const thumbnailValues = new Float32Array(20)
+  thumbnailValues.set(
+    packUniform(
+      workingToOutputMatrix(options.outputColorSpace),
+      options.background,
+      options.background
+    ).subarray(0, 12)
+  )
+  const thumbnailUniform = device.createBuffer({
+    size: thumbnailValues.byteLength,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
+  const thumbnailSampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+    addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
   })
 
   /**
@@ -801,6 +854,41 @@ export function createRenderer(
     renderItems(children, target)
     validGroupCaches.add(item.id)
     return target.empty ? undefined : target
+  }
+
+  /**
+   * A group flattened for its thumbnail, through the same caches the
+   * compositor keeps, rebuilt from the layers as they stand. The compositor's
+   * own bookkeeping is put back after:
+   * a group around the active layer is never drawn from its cache while
+   * painting, so one built here would go stale unnoticed, and it is a
+   * canvas-sized texture the compositor never asked for.
+   */
+  function groupThumbnailSurface(item: CompositeItem): {
+    surface: Surface | undefined
+    release(): void
+  } {
+    const held = new Set(groupCaches.keys())
+    const valid = new Set(validGroupCaches)
+    // Every group under this one is rebuilt too: one around the active layer
+    // is not kept current while painting, so its cache may be behind.
+    validGroupCaches.clear()
+    const surface = itemSurface(item)
+    validGroupCaches.clear()
+    for (const id of valid) validGroupCaches.add(id)
+    return {
+      surface,
+      // Destroying a texture waits for work already submitted against it, so
+      // this may run as soon as the pass reading it is on the queue.
+      release() {
+        for (const [id, cache] of groupCaches)
+          if (!held.has(id)) {
+            cache.texture.destroy()
+            groupCaches.delete(id)
+            blendBindGroups.clear()
+          }
+      },
+    }
   }
 
   /** The alpha shape clipping reads, after the base item's mask and opacity. */
@@ -1524,7 +1612,59 @@ export function createRenderer(
       pass.end()
       device.queue.submit([encoder.finish()])
     },
+    drawThumbnail(target, size, subject) {
+      const group =
+        subject.kind === "group"
+          ? groupThumbnailSurface(subject.item)
+          : { surface: surfaces.get(subject.id), release() {} }
+      const source = group.surface
+      // A mask that has never been painted hides nothing, which is a picture
+      // worth showing — all white — rather than an empty one.
+      const view =
+        source && !source.empty
+          ? source.view
+          : subject.kind === "mask"
+            ? placeholderView
+            : undefined
+      const encoder = device.createCommandEncoder()
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: target,
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+      })
+      if (view) {
+        thumbnailValues[12] = width
+        thumbnailValues[13] = height
+        thumbnailValues[14] = size.width
+        thumbnailValues[15] = size.height
+        thumbnailValues[16] = subject.kind === "mask" ? 1 : 0
+        device.queue.writeBuffer(thumbnailUniform, 0, thumbnailValues)
+        pass.setPipeline(thumbnailPipeline)
+        pass.setBindGroup(
+          0,
+          device.createBindGroup({
+            layout: thumbnailPipeline.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: { buffer: thumbnailUniform } },
+              { binding: 1, resource: view },
+              { binding: 2, resource: thumbnailSampler },
+            ],
+          })
+        )
+        pass.draw(3)
+      }
+      pass.end()
+      device.queue.submit([encoder.finish()])
+      group.release()
+      return !!view
+    },
     destroy() {
+      thumbnailUniform.destroy()
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
       for (const surface of groupCaches.values()) surface.texture.destroy()

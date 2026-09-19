@@ -48,6 +48,7 @@ import {
   type LayerNode,
   type LayerPatch,
   moveLayer,
+  groupContents,
   type PaintDocument,
   planComposite,
   removeLayer,
@@ -105,7 +106,9 @@ import {
   createRenderer,
   MAX_STAMPS_PER_DRAW,
   type Renderer,
+  type ThumbnailSubject,
 } from "./gpu/renderer"
+import { createThumbnailScheduler, thumbnailOwners } from "./view/thumbnails"
 import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
 import { attachPointerSampler } from "./input/pointer-sampler"
 import {
@@ -167,6 +170,12 @@ export type {
 
 /** §9.2's flush trigger: how long a document sits idle before an unforced upload. */
 const DEFAULT_CLOUD_IDLE_MS = 30_000
+/**
+ * How long a document must go unchanged before its layer thumbnails catch up.
+ * Long enough that a run of quick strokes redraws once, after the last; short
+ * enough that the artist, looking over at the list, finds it already true.
+ */
+const THUMBNAIL_QUIET_MS = 300
 /** Product canvas ceiling; a device may impose a lower texture limit. */
 const MAX_DOCUMENT_EDGE = 8192
 
@@ -546,6 +555,17 @@ export interface Engine {
   revertRestore(): Promise<boolean>
   /** Cumulative R2/Convex operation counts for this session, or null with no cloud sync. */
   cloudMetrics(): SyncMetrics | null
+  /**
+   * Shows a layer, group or mask in a small canvas of the host's, kept up to
+   * date by the engine: redrawn from the GPU a moment after its pixels stop
+   * changing, and never while a stroke is in flight. `onDrawn` hears whether
+   * there was anything to show. Returns the detach.
+   */
+  attachThumbnail(
+    id: string,
+    canvas: HTMLCanvasElement | OffscreenCanvas,
+    onDrawn?: (drawn: { empty: boolean }) => void
+  ): () => void
   dispose(): void
 }
 
@@ -723,6 +743,74 @@ export function createEngine(
   let frameOldestSample: number | null = null
   stabilizer.setStrength(DEFAULT_STABILIZATION)
 
+  type ThumbnailView = {
+    canvas: HTMLCanvasElement | OffscreenCanvas
+    onDrawn?: (drawn: { empty: boolean }) => void
+    context?: GPUCanvasContext
+    /** The device the context was configured for; a new one reconfigures. */
+    configuredFor?: GPUDevice
+  }
+  const thumbnailViews = new Map<string, ThumbnailView>()
+  const thumbnails = createThumbnailScheduler({
+    quietMs: THUMBNAIL_QUIET_MS,
+    busy: () => stroking || opening,
+    draw: drawThumbnails,
+  })
+
+  /** Marks the thumbnails a change to one surface's pixels reaches. */
+  function invalidateThumbnailsOf(surfaceId: string) {
+    if (thumbnailViews.size === 0) return
+    thumbnails.invalidate(
+      doc ? thumbnailOwners(doc.layers, surfaceId) : [surfaceId]
+    )
+  }
+
+  /** What a thumbnail id names in the document now, if anything. */
+  function thumbnailSubject(id: string): ThumbnailSubject | undefined {
+    const find = (
+      nodes: readonly LayerNode[]
+    ): ThumbnailSubject | undefined => {
+      for (const node of nodes) {
+        if (node.id === id)
+          return node.kind === "group"
+            ? { kind: "group", item: groupContents(node) }
+            : { kind: "layer", id }
+        if (node.mask?.id === id) return { kind: "mask", id }
+        if (node.kind === "group") {
+          const found = find(node.children)
+          if (found) return found
+        }
+      }
+    }
+    return doc ? find(doc.layers) : undefined
+  }
+
+  function drawThumbnails(ids: ReadonlySet<string>) {
+    if (!renderer || !device || snapshot.status !== "ready") return
+    for (const id of ids) {
+      const view = thumbnailViews.get(id)
+      const subject = thumbnailSubject(id)
+      if (!view || !subject) continue
+      if (view.configuredFor !== device) {
+        view.context ??= view.canvas.getContext("webgpu") ?? undefined
+        if (!view.context) continue
+        view.context.configure({
+          device,
+          format,
+          alphaMode: "premultiplied",
+          colorSpace: snapshot.outputColorSpace,
+        })
+        view.configuredFor = device
+      }
+      const empty = !renderer.drawThumbnail(
+        view.context!.getCurrentTexture().createView(),
+        { width: view.canvas.width, height: view.canvas.height },
+        subject
+      )
+      view.onDrawn?.({ empty })
+    }
+  }
+
   function publish(update: Partial<EngineSnapshot>) {
     const next = { ...snapshot, ...update }
     if (
@@ -734,6 +822,11 @@ export function createEngine(
     )
       return
     snapshot = Object.freeze(next)
+    // A new structure can change what any thumbnail shows — a child hidden
+    // changes its group's, a layer moved changes nothing but is cheap to
+    // redraw — and pixels only reach the document once it is ready.
+    if ((update.layers || update.status === "ready") && thumbnailViews.size)
+      thumbnails.invalidate(thumbnailViews.keys())
     listeners.forEach((listener) => listener())
   }
 
@@ -1350,7 +1443,10 @@ export function createEngine(
       const region = renderer?.endStroke()
       // One stroke, one step. The region the mark landed in is read back off
       // the GPU after the frame, never during one.
-      if (region && doc) history?.recordStroke(paintTargetId(doc), region)
+      if (region && doc) {
+        history?.recordStroke(paintTargetId(doc), region)
+        invalidateThumbnailsOf(paintTargetId(doc))
+      }
     }
     flushStamps()
     try {
@@ -1560,7 +1656,11 @@ export function createEngine(
       history = createDocumentHistory({
         bridge: {
           readTiles: (id, coords) => target.readTiles(id, coords),
-          writeTiles: (id, tiles) => target.writeTiles(id, tiles),
+          writeTiles: (id, tiles) => {
+            target.writeTiles(id, tiles)
+            // Undo and redo land here, and may not change the structure.
+            invalidateThumbnailsOf(id)
+          },
         },
         // The oldest tiles leave memory for the browser's own filesystem, so
         // a session's history is bounded by disk rather than by the tab (D21).
@@ -2494,9 +2594,21 @@ export function createEngine(
       }
     },
     sampleColor,
+    attachThumbnail(id, canvas, onDrawn) {
+      const view: ThumbnailView = { canvas, onDrawn }
+      thumbnailViews.set(id, view)
+      thumbnails.invalidate([id])
+      return () => {
+        if (thumbnailViews.get(id) !== view) return
+        thumbnailViews.delete(id)
+        view.context?.unconfigure()
+      }
+    },
     dispose() {
       if (disposed) return
       disposed = true
+      thumbnails.dispose()
+      thumbnailViews.clear()
       detachSampler?.()
       detachSampler = undefined
       detachGestures?.()

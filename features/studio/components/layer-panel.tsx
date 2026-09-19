@@ -7,6 +7,7 @@ import {
   EyeIcon,
   EyeSlashIcon,
   FolderPlusIcon,
+  FolderSimpleIcon,
   ImageIcon,
   IntersectIcon,
   LockIcon,
@@ -15,7 +16,7 @@ import {
   PlusIcon,
   TrashIcon,
 } from "@phosphor-icons/react"
-import { type Ref, useRef, useState } from "react"
+import { type Ref, useEffect, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -72,6 +73,71 @@ function rasterCount(nodes: readonly LayerSummary[]): number {
   )
 }
 
+/** CSS pixels a side; the backing store is scaled by the device's density. */
+const THUMBNAIL_EDGE = 32
+
+/**
+ * A live picture of one layer, group or mask, drawn by the engine into a
+ * canvas this component owns. The engine decides when it is redrawn — never
+ * while a stroke is in flight — so React re-rendering the row costs no pixels.
+ *
+ * Empty and hidden are both states a reader must tell apart from work at a
+ * glance, and neither is a picture: empty is a dashed outline with nothing in
+ * it, hidden is the picture faded behind a slashed eye.
+ */
+function LayerThumbnail({
+  engine,
+  id,
+  label,
+  hidden,
+  className = "",
+  children,
+}: {
+  engine: Engine
+  id: string
+  label: string
+  hidden: boolean
+  className?: string
+  children?: React.ReactNode
+}) {
+  const canvas = useRef<HTMLCanvasElement>(null)
+  const [empty, setEmpty] = useState(false)
+  useEffect(() => {
+    const element = canvas.current
+    if (!element) return
+    const density = Math.min(2, window.devicePixelRatio || 1)
+    element.width = element.height = Math.round(THUMBNAIL_EDGE * density)
+    return engine.attachThumbnail(id, element, (drawn) => setEmpty(drawn.empty))
+  }, [engine, id])
+  // Hidden wins the attribute; an empty hidden layer still draws its outline.
+  const state = hidden ? "hidden" : empty ? "empty" : "shown"
+  return (
+    <span
+      data-testid={`thumbnail-${label}`}
+      data-state={state}
+      title={
+        empty ? `${label} is empty` : hidden ? `${label} is hidden` : undefined
+      }
+      className={`relative grid size-8 shrink-0 place-items-center ${
+        empty ? "border border-dashed border-muted-foreground/50" : "border"
+      } ${className}`}
+    >
+      <canvas
+        ref={canvas}
+        aria-hidden
+        className={`size-full ${empty ? "invisible" : hidden ? "opacity-30 grayscale" : ""}`}
+      />
+      {hidden && (
+        <EyeSlashIcon
+          aria-hidden
+          className="absolute size-3.5 text-foreground"
+        />
+      )}
+      {children}
+    </span>
+  )
+}
+
 function LayerRow({
   engine,
   layer,
@@ -81,6 +147,7 @@ function LayerRow({
   depth,
   selected,
   activeLayerId,
+  paintingMask,
   totalRasters,
   onSelect,
 }: {
@@ -92,6 +159,7 @@ function LayerRow({
   depth: number
   selected: boolean
   activeLayerId: string
+  paintingMask: boolean
   totalRasters: number
   onSelect(id: string): void
 }) {
@@ -158,9 +226,39 @@ function LayerRow({
             }}
             className="flex min-w-0 flex-1 items-center gap-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
-            <span className="grid size-8 shrink-0 place-items-center border bg-muted/50 text-xs">
-              {layer.kind === "group" ? "▣" : layer.mask ? "◐" : "●"}
-            </span>
+            {layer.clip && (
+              <IntersectIcon
+                aria-label="Clipped to the layer below"
+                className="size-3 shrink-0 text-muted-foreground"
+              />
+            )}
+            <LayerThumbnail
+              engine={engine}
+              id={layer.id}
+              label={layer.name}
+              hidden={!layer.visible}
+            >
+              {layer.kind === "group" && (
+                <FolderSimpleIcon
+                  aria-hidden
+                  weight="fill"
+                  className="absolute -right-1 -bottom-1 size-3 text-muted-foreground"
+                />
+              )}
+            </LayerThumbnail>
+            {layer.mask && (
+              <LayerThumbnail
+                engine={engine}
+                id={layer.mask.id}
+                label={`${layer.name} mask`}
+                hidden={!layer.visible || !layer.mask.enabled}
+                className={
+                  paintingMask && layer.id === activeLayerId
+                    ? "ring-2 ring-primary"
+                    : ""
+                }
+              />
+            )}
             {editing ? (
               <Input
                 autoFocus
@@ -262,6 +360,7 @@ function Rows({
   nodes,
   selectedId,
   activeLayerId,
+  paintingMask,
   totalRasters,
   onSelect,
 }: {
@@ -269,6 +368,7 @@ function Rows({
   nodes: readonly LayerSummary[]
   selectedId: string
   activeLayerId: string
+  paintingMask: boolean
   totalRasters: number
   onSelect(id: string): void
 }) {
@@ -391,6 +491,7 @@ function Rows({
           depth={depth}
           selected={layer.id === selectedId}
           activeLayerId={activeLayerId}
+          paintingMask={paintingMask}
           totalRasters={totalRasters}
           onSelect={onSelect}
         />,
@@ -528,6 +629,7 @@ export function LayerPanel({
           nodes={snapshot.layers}
           selectedId={selected?.id ?? snapshot.activeLayerId}
           activeLayerId={snapshot.activeLayerId}
+          paintingMask={snapshot.paintingMask}
           totalRasters={count}
           onSelect={setSelectedId}
         />
