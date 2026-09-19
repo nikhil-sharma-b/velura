@@ -210,6 +210,27 @@ Ticket 09 correction to D19: an above cache is valid only when all contributing 
 
 Generated pipeline per mode (D20), from shared `.wgsl` snippets expanded by a small include/define preprocessor. Pipelines are cached per renderer and created on first use. The layer stack is isolated: transparent document pixels do not blend with the display-only canvas background. Opacity scales premultiplied RGBA before source-over composition; colour is unpremultiplied only inside the blend operation. Add clamps the channel sum at one; Subtract clamps backdrop minus source at zero. Separable modes first (Normal, Multiply, Screen, Overlay, Darken, Lighten, Color Dodge, Color Burn, Hard Light, Soft Light, Difference, Exclusion, Add, Subtract); non-separable modes (Hue, Saturation, Color, Luminosity) as a second batch, since they need the full HSL/luminosity math.
 
+### 6.5 Layer thumbnails
+
+Every row in the layer list shows a live picture of that layer (post-v1 03). A thumbnail is a convenience, so it follows the same rules as everything else near painting (D30).
+
+- **When they are drawn.** A change only marks thumbnails stale: a stroke marks its layer and the groups around it; an undo or redo marks what it wrote; a structural change marks everything shown. Stale thumbnails are drawn together once the document has been quiet for 300 ms and no stroke is in flight — never on a frame of drawing. A canvas that has just appeared (a row mounting, a preview opening) is drawn at once, unless the pen is down.
+- **How they are drawn.** On the GPU, from the textures the compositor already holds, into a small canvas the row owns. No pixel is read back. Each thumbnail pixel reads a dense grid of taps and keeps the *strongest* coverage among them with the average colour, so a line a few pixels wide on a large canvas stays a line rather than averaging away.
+- **What they show.** Each thumbnail is framed on the layer's own work, not the whole canvas. Where the work is comes from what the engine already knows as pixels arrive — stroke regions, restored and undone tiles — trimmed to the tiles history's index says still hold something, so erasing shrinks it again.
+
+What each kind of row shows, decided rather than inherited:
+
+| Row | Thumbnail |
+| --- | --- |
+| Raster layer | Its own pixels, unmasked and unclipped, over a checker so transparent and white differ. |
+| Group | Its visible children flattened as the group draws them, without the group's own opacity, blend or mask; a folder badge marks it. |
+| Mask | A second thumbnail beside its layer: white reveals, black hides. A new mask is all white, not empty. Outlined while it is being painted. |
+| Clipped layer | Its own pixels, with a clip mark before the thumbnail: what it holds, not what the clip lets through. |
+| Empty | A dashed outline with no picture. "Empty" is history's index holding no tiles for it, so a layer erased back to nothing is empty again. |
+| Hidden | The picture faded; a slashed eye when hidden by its own eye, no eye when hidden by a group around it. |
+
+Pointing at a row (hover, or a long press on touch) dims every other layer on the canvas to 15%, and hovering a thumbnail opens a larger preview beside it. The dimming is how the canvas is looked at, like the view (D28): an export ignores it, and a stroke clears it.
+
 ---
 
 ## 7. Brush engine

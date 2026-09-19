@@ -445,7 +445,7 @@ export function groupContents(group: LayerGroup): CompositeItem {
   return item({ ...group, visible: true })
 }
 
-function findNodeIn(
+export function findNodeIn(
   nodes: readonly LayerNode[],
   id: string
 ): LayerNode | undefined {

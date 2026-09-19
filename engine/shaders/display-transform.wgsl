@@ -1,5 +1,6 @@
 #include "composite"
 #include "stroke"
+#include "transfer"
 
 struct Present {
   // Working (linear Display P3) -> output primaries. Identity when the swap
@@ -56,12 +57,6 @@ fn vertexMain(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32>
   return vec4<f32>(x, y, 0.0, 1.0);
 }
 
-fn encodeTransfer(linear: vec3<f32>) -> vec3<f32> {
-  let clipped = clamp(linear, vec3<f32>(0.0), vec3<f32>(1.0));
-  let low = clipped * 12.92;
-  let high = 1.055 * pow(clipped, vec3<f32>(1.0 / 2.4)) - 0.055;
-  return select(high, low, clipped <= vec3<f32>(0.0031308));
-}
 
 /** The document point under this screen pixel, and whether it is on canvas. */
 fn documentUv(position: vec2<f32>) -> vec3<f32> {

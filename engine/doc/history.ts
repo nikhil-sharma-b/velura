@@ -127,6 +127,13 @@ export interface DocumentHistory {
    * held in `store` until the entries naming them fall off the stack.
    */
   tileIndex(): SurfaceTileIndex[]
+  /**
+   * The tiles a surface holds anything in, as of the last recorded step. A
+   * transparent tile is held by nothing, so a layer erased back to nothing
+   * holds no tiles: this is how the list knows it is empty without reading a
+   * pixel back to ask.
+   */
+  occupiedTiles(surfaceId: string): TileCoord[]
   readonly store: TileStore
 }
 
@@ -501,6 +508,8 @@ export function createDocumentHistory(options: {
           hash,
         })),
       })),
+    occupiedTiles: (surfaceId) =>
+      [...(index.get(surfaceId)?.keys() ?? [])].map(tileCoordFromKey),
     canUndo: () => stack.canUndo(),
     canRedo: () => stack.canRedo(),
     depth: () => stack.depth(),

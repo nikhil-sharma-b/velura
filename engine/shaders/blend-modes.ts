@@ -21,6 +21,7 @@ import colour from "./blend/colour.wgsl"
 import luminosity from "./blend/luminosity.wgsl"
 import nonSeparable from "./blend/non-separable.wgsl"
 import nonSeparableComposite from "./blend/non-separable-composite.wgsl"
+import transfer from "./transfer.wgsl"
 import { preprocess } from "./preprocess"
 
 /** Adding a mode only adds its snippet and registry entry, never renderer logic. */
@@ -67,5 +68,6 @@ export function blendShader(mode: BlendMode, template = surface): string {
     composite: compositeSource,
     "non-separable": nonSeparable,
     stroke,
+    transfer,
   })
 }

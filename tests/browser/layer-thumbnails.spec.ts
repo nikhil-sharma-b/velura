@@ -115,6 +115,14 @@ test("a group shows its children together, and a mask sits beside its layer", as
   await expect(group).toHaveAttribute("data-state", "shown")
   await expect.poll(() => colours(group)).toBeGreaterThan(2)
 
+  // Hiding the group hides what is in it, which each row inside says too.
+  await layers.getByRole("button", { name: /^Hide Group / }).click()
+  const inside = layers.getByTestId("thumbnail-Layer 2")
+  await expect(inside).toHaveAttribute("data-state", "hidden")
+  await expect(inside).toHaveAttribute("data-hidden-by", "group")
+  await layers.getByRole("button", { name: /^Show Group / }).click()
+  await expect(inside).toHaveAttribute("data-state", "shown")
+
   await layers
     .getByRole("button", { name: /Layer 2$/ })
     .first()

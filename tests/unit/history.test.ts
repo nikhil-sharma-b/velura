@@ -110,6 +110,26 @@ const noStructure = () => {
   throw new Error("This step should not have restored a structure.")
 }
 
+describe("which tiles a surface still holds", () => {
+  test("follows painting, erasing back to nothing, and undo", async () => {
+    const fixture = setup()
+    expect(fixture.history.occupiedTiles("layer")).toEqual([])
+    await stroke(fixture, 1, { x: 0, y: 0 })
+    await stroke(fixture, 1, { x: 1, y: 0 })
+    expect(fixture.history.occupiedTiles("layer")).toEqual([
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+    ])
+    // Erased: the tile is transparent again, and so held by nothing.
+    await stroke(fixture, 0, { x: 1, y: 0 })
+    expect(fixture.history.occupiedTiles("layer")).toEqual([{ x: 0, y: 0 }])
+    await stroke(fixture, 0, { x: 0, y: 0 })
+    expect(fixture.history.occupiedTiles("layer")).toEqual([])
+    await fixture.history.undo(noStructure)
+    expect(fixture.history.occupiedTiles("layer")).toEqual([{ x: 0, y: 0 }])
+  })
+})
+
 describe("recording strokes", () => {
   test("nothing to undo before anything is painted", () => {
     const { history } = setup()

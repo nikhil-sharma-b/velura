@@ -67,6 +67,11 @@ export function createContentBounds(): ContentBounds {
   }
 }
 
+/** One box around a set of tiles, each counted as its whole square. */
+export function tileBox(tiles: readonly TileCoord[]): PixelRect {
+  return tiles.map(tileBounds).reduce<PixelRect | undefined>(unite, undefined)!
+}
+
 /** The smallest region a thumbnail zooms to, in document pixels. */
 const MIN_FRAME = 64
 

@@ -48,6 +48,7 @@ import {
   type LayerNode,
   type LayerPatch,
   moveLayer,
+  findNodeIn,
   groupContents,
   rasterLayers,
   type PaintDocument,
@@ -78,6 +79,7 @@ import {
 import { fitPlacement, imageTiles, type SourceImage } from "./doc/image-tiles"
 import { createOpfsSpill, createTileStore } from "./doc/tile-store"
 import {
+  intersectRect,
   type PixelRect,
   type TileCoord,
   tileIndexForPixel,
@@ -114,7 +116,11 @@ import {
   type ThumbnailSubject,
 } from "./gpu/renderer"
 import { createThumbnailScheduler, thumbnailOwners } from "./view/thumbnails"
-import { createContentBounds, frameContent } from "./view/content-bounds"
+import {
+  createContentBounds,
+  frameContent,
+  tileBox,
+} from "./view/content-bounds"
 import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
 import { attachPointerSampler } from "./input/pointer-sampler"
 import {
@@ -782,6 +788,35 @@ export function createEngine(
     )
   }
 
+  /** Per shown id, the tiles history said its layers held when last asked. */
+  const holdings = new Map<string, string>()
+
+  /**
+   * Marks the thumbnails whose layers' held tiles moved since last asked.
+   * Only ids with a canvas are asked, and asking is a walk over an index in
+   * memory, never a pixel.
+   */
+  function invalidateChangedHoldings() {
+    const past = history
+    if (!past || !doc) return
+    const changed: string[] = []
+    for (const id of thumbnailViews.keys()) {
+      const node = findNodeIn(doc.layers, id)
+      if (!node) continue
+      const layers =
+        node.kind === "group" ? rasterLayers(node.children) : [node]
+      const held = layers
+        .flatMap((layer) =>
+          past.occupiedTiles(layer.id).map((tile) => `${tile.x},${tile.y}`)
+        )
+        .sort()
+        .join(";")
+      if (holdings.get(id) !== held) changed.push(id)
+      holdings.set(id, held)
+    }
+    if (changed.length) thumbnails.invalidate(changed)
+  }
+
   /**
    * What a thumbnail id names in the document now, if anything, and the
    * region to show of it: where its work is, framed. A mask means something
@@ -790,9 +825,27 @@ export function createEngine(
    */
   function resolveThumbnail(
     id: string
-  ): { subject: ThumbnailSubject; crop?: PixelRect } | undefined {
+  ):
+    | { subject: ThumbnailSubject; crop?: PixelRect; empty?: boolean }
+    | undefined {
     const framed = (box: PixelRect | undefined) =>
       box ? frameContent(box, extent()) : undefined
+    /**
+     * What a set of raster layers holds, from history's index of their tiles:
+     * nothing at all, or the region their marks cover, trimmed to the tiles
+     * still holding something so that erasing shrinks it again.
+     */
+    const holding = (ids: readonly string[]) => {
+      const past = history
+      if (!past) return { crop: framed(contentBounds.union(ids)) }
+      const tiles = ids.flatMap((layerId) => past.occupiedTiles(layerId))
+      if (tiles.length === 0) return { empty: true }
+      const held = tileBox(tiles)
+      const marked = contentBounds.union(ids)
+      return {
+        crop: framed((marked && intersectRect(marked, held)) ?? held),
+      }
+    }
     const find = (
       nodes: readonly LayerNode[]
     ): ReturnType<typeof resolveThumbnail> => {
@@ -802,16 +855,11 @@ export function createEngine(
           return node.kind === "group"
             ? {
                 subject: { kind: "group", item: groupContents(node) },
-                crop: framed(
-                  contentBounds.union(
-                    rasterLayers(node.children).map((layer) => layer.id)
-                  )
+                ...holding(
+                  rasterLayers(node.children).map((layer) => layer.id)
                 ),
               }
-            : {
-                subject: { kind: "layer", id },
-                crop: framed(contentBounds.get(id)),
-              }
+            : { subject: { kind: "layer", id }, ...holding([id]) }
         if (node.kind === "group") {
           const found = find(node.children)
           if (found) return found
@@ -847,7 +895,7 @@ export function createEngine(
       resolved.subject,
       resolved.crop
     )
-    view.onDrawn?.({ empty })
+    view.onDrawn?.({ empty: empty || !!resolved.empty })
   }
 
   function publish(update: Partial<EngineSnapshot>) {
@@ -1731,6 +1779,9 @@ export function createEngine(
         // operation, an undo — ends here, which is why the write to disk hangs
         // off the commit rather than off the pen (§9.2).
         onCommit: () => {
+          // Recording lands after the stroke that caused it, so this is when
+          // a layer is first known to hold something — or, erased, nothing.
+          invalidateChangedHoldings()
           if (!restored) return
           void persistence?.save()
           // Scheduling is a timer reset, not a network call, so this never

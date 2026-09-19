@@ -145,7 +145,12 @@ function LayerThumbnail({
   engine: Engine
   id: string
   label: string
-  hidden: boolean
+  /**
+   * Hidden by its own eye, or by a group around it that is. Both keep it off
+   * the canvas; only the first is something to switch back on from this row,
+   * so only the first gets the slashed eye.
+   */
+  hidden: "self" | "group" | false
   className?: string
   children?: React.ReactNode
 }) {
@@ -159,6 +164,7 @@ function LayerThumbnail({
           <span
             data-testid={`thumbnail-${label}`}
             data-state={state}
+            data-hidden-by={hidden || undefined}
             className={`relative grid size-8 shrink-0 place-items-center ${
               empty
                 ? "border border-dashed border-muted-foreground/50"
@@ -174,7 +180,7 @@ function LayerThumbnail({
                 empty ? "invisible" : hidden ? "opacity-30 grayscale" : ""
               }
             />
-            {hidden && (
+            {hidden === "self" && (
               <EyeSlashIcon
                 aria-hidden
                 className="absolute size-3.5 text-foreground"
@@ -197,7 +203,13 @@ function LayerThumbnail({
           )}
           <span className="px-0.5">
             {label}
-            {empty ? " — empty" : hidden ? " — hidden" : ""}
+            {empty
+              ? " — empty"
+              : hidden === "group"
+                ? " — hidden with its group"
+                : hidden
+                  ? " — hidden"
+                  : ""}
           </span>
         </TooltipContent>
       </Tooltip>
@@ -215,11 +227,14 @@ function LayerRow({
   selected,
   activeLayerId,
   paintingMask,
+  groupHidden,
   totalRasters,
   onSelect,
 }: {
   engine: Engine
   layer: LayerSummary
+  /** A group somewhere around this row is hidden, which hides it too. */
+  groupHidden: boolean
   dragProps: React.HTMLAttributes<HTMLDivElement>
   dropPosition?: "above" | "below" | "inside"
   dragging: boolean
@@ -239,6 +254,7 @@ function LayerRow({
     else setName(layer.name)
     setEditing(false)
   }
+  const hiddenBy = !layer.visible ? "self" : groupHidden ? "group" : false
   const removedRasters =
     layer.kind === "raster" ? 1 : rasterCount(layer.children)
   const highlight = (id: string | null) =>
@@ -326,7 +342,7 @@ function LayerRow({
               engine={engine}
               id={layer.id}
               label={layer.name}
-              hidden={!layer.visible}
+              hidden={hiddenBy}
             >
               {layer.kind === "group" && (
                 <FolderSimpleIcon
@@ -341,7 +357,7 @@ function LayerRow({
                 engine={engine}
                 id={layer.mask.id}
                 label={`${layer.name} mask`}
-                hidden={!layer.visible || !layer.mask.enabled}
+                hidden={hiddenBy || (!layer.mask.enabled && "self")}
                 className={
                   paintingMask && layer.id === activeLayerId
                     ? "ring-2 ring-primary"
@@ -489,7 +505,8 @@ function Rows({
   const render = (
     items: readonly LayerSummary[],
     depth: number,
-    parentId?: string
+    parentId?: string,
+    groupHidden = false
   ): React.ReactNode[] =>
     [...items].reverse().flatMap((layer, reverseIndex) => {
       const index = items.length - reverseIndex - 1
@@ -582,11 +599,17 @@ function Rows({
           selected={layer.id === selectedId}
           activeLayerId={activeLayerId}
           paintingMask={paintingMask}
+          groupHidden={groupHidden}
           totalRasters={totalRasters}
           onSelect={onSelect}
         />,
         ...(layer.kind === "group"
-          ? render(layer.children, depth + 1, layer.id)
+          ? render(
+              layer.children,
+              depth + 1,
+              layer.id,
+              groupHidden || !layer.visible
+            )
           : []),
         ...(layer.kind === "group" &&
         target?.id === layer.id &&

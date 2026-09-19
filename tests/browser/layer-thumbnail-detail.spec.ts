@@ -96,3 +96,58 @@ test("pointing at a layer dims the rest on screen but not in an export", async (
   )
   await expect.poll(green).toBe(before.screen)
 })
+
+test("a layer erased back to nothing reads as empty again", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.engine)
+  await page.evaluate(async () => {
+    window.remountEngine({ documentSize: { width: 1024, height: 1024 } })
+    await window.engine.dispatch({
+      type: "resize",
+      width: 400,
+      height: 400,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+    await window.engine.dispatch({ type: "setBrush", radius: 3 })
+    await window.engine.dispatch({ type: "addLayer" })
+    const states: boolean[] = []
+    Object.assign(window, { thumbnailStates: states })
+    const thumbnail = document.createElement("canvas")
+    thumbnail.width = thumbnail.height = 64
+    document.body.append(thumbnail)
+    const layers = window.engine.getSnapshot().layers
+    window.engine.attachThumbnail(
+      layers[layers.length - 1].id,
+      thumbnail,
+      (drawn) => states.push(drawn.empty)
+    )
+  })
+  const empty = () =>
+    page.evaluate(() => {
+      const states = (window as unknown as { thumbnailStates: boolean[] })
+        .thumbnailStates
+      return states[states.length - 1]
+    })
+  const box = (await page.locator("canvas").first().boundingBox())!
+  const sweep = async () => {
+    await page.mouse.move(box.x + 100, box.y + 200)
+    await page.mouse.down()
+    for (let step = 1; step <= 10; step++)
+      await page.mouse.move(box.x + 100 + step * 20, box.y + 200)
+    await page.mouse.up()
+  }
+  await expect.poll(empty).toBe(true)
+  await sweep()
+  await expect.poll(empty).toBe(false)
+
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setTool", tool: "eraser" })
+    await window.engine.dispatch({ type: "setBrush", radius: 40 })
+  })
+  await sweep()
+  await expect.poll(empty).toBe(true)
+})
