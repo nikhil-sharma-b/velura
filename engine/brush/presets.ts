@@ -59,7 +59,7 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
     },
     grain: { textureId: PAPER_GRAIN, scale: 0.45, depth: 0.8, movement: 0 },
     // Dry media build: going over a line twice is how a pencil darkens.
-    rendering: { accumulation: "buildup", opacity: 1, flow: 0.18 },
+    rendering: { accumulation: "buildup", opacity: 1, flow: 0.35 },
     dynamics: [
       // A pencil barely changes width with force; what it changes is how much
       // graphite it leaves, which is flow against the paper's tooth.
@@ -84,8 +84,8 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
       spacing: 0.06,
       tipTextureId: CHARCOAL_TIP,
     },
-    grain: { textureId: PAPER_GRAIN, scale: 0.8, depth: 0.9, movement: 0 },
-    rendering: { accumulation: "buildup", opacity: 1, flow: 0.16 },
+    grain: { textureId: PAPER_GRAIN, scale: 0.8, depth: 0.75, movement: 0 },
+    rendering: { accumulation: "buildup", opacity: 1, flow: 0.65 },
     dynamics: [
       scaledBy("pressure", "flow", 0.1, 1),
       scaledBy("pressure", "size", 0.6, 1.15),
@@ -126,7 +126,7 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
     name: "Airbrush",
     // Wide falloff and low flow: an airbrush is built out of overlap.
     shape: { radius: 28, feather: 28, roundness: 1, angle: 0, spacing: 0.04 },
-    rendering: { accumulation: "buildup", opacity: 0.85, flow: 0.025 },
+    rendering: { accumulation: "buildup", opacity: 0.85, flow: 0.06 },
     dynamics: [
       // The trigger meters paint, not the size of the cone.
       scaledBy("pressure", "flow", 0.08, 1),
