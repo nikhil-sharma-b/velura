@@ -980,7 +980,7 @@ export function CanvasHost({
           <TooltipProvider delayDuration={350}>
             <div
               aria-label="Brush adjustments"
-              className="absolute top-16 left-3 flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
+              className="absolute top-[4.375rem] left-3 flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
             >
               {snapshot.tool === "eraser" ? (
                 <PopoverPrimitive.Root
