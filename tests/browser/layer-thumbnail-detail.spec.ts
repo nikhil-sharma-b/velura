@@ -46,5 +46,53 @@ test("a thin line on a large document still shows in its thumbnail", async ({
         if (png.data[offset] < 120) inked++
       return inked
     })
-    .toBeGreaterThan(8)
+    // Framed on the line rather than the canvas, it runs the width of the
+    // thumbnail instead of a tenth of it.
+    .toBeGreaterThan(48)
+})
+
+test("pointing at a layer dims the rest on screen but not in an export", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.engine)
+  await page.evaluate(async () => {
+    window.remountEngine()
+    await window.engine.dispatch({
+      type: "resize",
+      width: 200,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    await window.engine.dispatch({ type: "addLayer" })
+  })
+  const canvas = page.locator("canvas").first()
+  // Inside the seeded scene's green rectangle, which is on the first layer.
+  const green = async () => {
+    const png = PNG.sync.read(await canvas.screenshot())
+    return (
+      png.data[(10 * png.width + 20) * 4 + 1] -
+      png.data[(10 * png.width + 20) * 4]
+    )
+  }
+  const exported = () =>
+    page.evaluate(async () =>
+      Array.from((await window.engine.readPixels()).data.slice(0, 4000))
+    )
+  const before = { screen: await green(), file: await exported() }
+  await page.evaluate(async () => {
+    const layers = window.engine.getSnapshot().layers
+    await window.engine.dispatch({
+      type: "highlightLayer",
+      id: layers[layers.length - 1].id,
+    })
+  })
+  // Dimmed over white, the green washes out toward grey.
+  await expect.poll(green).toBeLessThan(before.screen / 2)
+  expect(await exported()).toEqual(before.file)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "highlightLayer", id: null })
+  )
+  await expect.poll(green).toBe(before.screen)
 })

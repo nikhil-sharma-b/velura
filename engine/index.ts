@@ -49,6 +49,7 @@ import {
   type LayerPatch,
   moveLayer,
   groupContents,
+  rasterLayers,
   type PaintDocument,
   planComposite,
   removeLayer,
@@ -76,7 +77,11 @@ import {
 } from "./doc/structure"
 import { fitPlacement, imageTiles, type SourceImage } from "./doc/image-tiles"
 import { createOpfsSpill, createTileStore } from "./doc/tile-store"
-import { type TileCoord, tileIndexForPixel } from "./doc/tile-grid"
+import {
+  type PixelRect,
+  type TileCoord,
+  tileIndexForPixel,
+} from "./doc/tile-grid"
 import type { SurfaceTiles, TileRef } from "./store/document-store"
 import { type BlobStore, createLocalBlobStore } from "./store/blob-store"
 import { createDocumentStore, type DocumentStore } from "./store/document-store"
@@ -109,6 +114,7 @@ import {
   type ThumbnailSubject,
 } from "./gpu/renderer"
 import { createThumbnailScheduler, thumbnailOwners } from "./view/thumbnails"
+import { createContentBounds, frameContent } from "./view/content-bounds"
 import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
 import { attachPointerSampler } from "./input/pointer-sampler"
 import {
@@ -345,6 +351,13 @@ export type EngineCommand =
   /** Back to square, centred in whatever the panels leave visible. */
   | { type: "resetView"; occludedRight?: number }
   /** Takes back the last stroke or layer operation. Nothing to undo is a no-op. */
+  /**
+   * Picks one layer or group out on the canvas while the artist points at it
+   * in the list: everything else dims until null puts the stack back. How
+   * the canvas is looked at, never what is in it — an export ignores it, and
+   * a stroke clears it.
+   */
+  | { type: "highlightLayer"; id: string | null }
   | { type: "undo" }
   | { type: "redo" }
 
@@ -750,7 +763,11 @@ export function createEngine(
     /** The device the context was configured for; a new one reconfigures. */
     configuredFor?: GPUDevice
   }
-  const thumbnailViews = new Map<string, ThumbnailView>()
+  /** Every canvas showing each id: a row's thumbnail, and its larger preview. */
+  const thumbnailViews = new Map<string, Set<ThumbnailView>>()
+  const contentBounds = createContentBounds()
+  /** The layer or group the list is pointing at, if any. */
+  let highlight: string | undefined
   const thumbnails = createThumbnailScheduler({
     quietMs: THUMBNAIL_QUIET_MS,
     busy: () => stroking || opening,
@@ -765,17 +782,36 @@ export function createEngine(
     )
   }
 
-  /** What a thumbnail id names in the document now, if anything. */
-  function thumbnailSubject(id: string): ThumbnailSubject | undefined {
+  /**
+   * What a thumbnail id names in the document now, if anything, and the
+   * region to show of it: where its work is, framed. A mask means something
+   * everywhere it covers, so it is shown whole; so is anything no pixel has
+   * been seen arriving on.
+   */
+  function resolveThumbnail(
+    id: string
+  ): { subject: ThumbnailSubject; crop?: PixelRect } | undefined {
+    const framed = (box: PixelRect | undefined) =>
+      box ? frameContent(box, extent()) : undefined
     const find = (
       nodes: readonly LayerNode[]
-    ): ThumbnailSubject | undefined => {
+    ): ReturnType<typeof resolveThumbnail> => {
       for (const node of nodes) {
+        if (node.mask?.id === id) return { subject: { kind: "mask", id } }
         if (node.id === id)
           return node.kind === "group"
-            ? { kind: "group", item: groupContents(node) }
-            : { kind: "layer", id }
-        if (node.mask?.id === id) return { kind: "mask", id }
+            ? {
+                subject: { kind: "group", item: groupContents(node) },
+                crop: framed(
+                  contentBounds.union(
+                    rasterLayers(node.children).map((layer) => layer.id)
+                  )
+                ),
+              }
+            : {
+                subject: { kind: "layer", id },
+                crop: framed(contentBounds.get(id)),
+              }
         if (node.kind === "group") {
           const found = find(node.children)
           if (found) return found
@@ -786,29 +822,32 @@ export function createEngine(
   }
 
   function drawThumbnails(ids: ReadonlySet<string>) {
+    for (const id of ids)
+      for (const view of thumbnailViews.get(id) ?? []) drawThumbnail(id, view)
+  }
+
+  function drawThumbnail(id: string, view: ThumbnailView) {
     if (!renderer || !device || snapshot.status !== "ready") return
-    for (const id of ids) {
-      const view = thumbnailViews.get(id)
-      const subject = thumbnailSubject(id)
-      if (!view || !subject) continue
-      if (view.configuredFor !== device) {
-        view.context ??= view.canvas.getContext("webgpu") ?? undefined
-        if (!view.context) continue
-        view.context.configure({
-          device,
-          format,
-          alphaMode: "premultiplied",
-          colorSpace: snapshot.outputColorSpace,
-        })
-        view.configuredFor = device
-      }
-      const empty = !renderer.drawThumbnail(
-        view.context!.getCurrentTexture().createView(),
-        { width: view.canvas.width, height: view.canvas.height },
-        subject
-      )
-      view.onDrawn?.({ empty })
+    const resolved = resolveThumbnail(id)
+    if (!resolved) return
+    if (view.configuredFor !== device) {
+      view.context ??= view.canvas.getContext("webgpu") ?? undefined
+      if (!view.context) return
+      view.context.configure({
+        device,
+        format,
+        alphaMode: "premultiplied",
+        colorSpace: snapshot.outputColorSpace,
+      })
+      view.configuredFor = device
     }
+    const empty = !renderer.drawThumbnail(
+      view.context!.getCurrentTexture().createView(),
+      { width: view.canvas.width, height: view.canvas.height },
+      resolved.subject,
+      resolved.crop
+    )
+    view.onDrawn?.({ empty })
   }
 
   function publish(update: Partial<EngineSnapshot>) {
@@ -852,6 +891,7 @@ export function createEngine(
     cloudSync = undefined
     documents = undefined
     doc = undefined
+    contentBounds.clear()
     context?.unconfigure()
     context = null
     device?.destroy()
@@ -922,6 +962,7 @@ export function createEngine(
   function setDocumentSize(size: { width: number; height: number }) {
     validateDocumentSize(size)
     doc = createDocument(size)
+    contentBounds.clear()
     renderer?.resize(size.width, size.height)
     uploadLayers()
     syncComposition()
@@ -1026,11 +1067,13 @@ export function createEngine(
       // Hashed before the upload clears the mark: these texels are exactly
       // what the GPU is about to hold, so the first stroke over them knows
       // what it covered without reading anything back.
-      if (layer.surface.tileCount() > 0 && layer.surface.dirtyBounds())
+      if (layer.surface.tileCount() > 0 && layer.surface.dirtyBounds()) {
         history?.recordUpload(layer.id, layer.surface.tiles(), {
           width: document.width,
           height: document.height,
         })
+        contentBounds.growTiles(layer.id, layer.surface.tiles())
+      }
       target.uploadLayer(layer.id, layer.surface)
     }
     document.layers.forEach(upload)
@@ -1044,7 +1087,7 @@ export function createEngine(
    */
   function syncComposition() {
     if (!renderer || !doc) return
-    renderer.setComposition(planComposite(doc))
+    renderer.setComposition(planComposite(doc, { highlight }))
   }
 
   /** The stack as the snapshot carries it: settings, never pixels. */
@@ -1359,6 +1402,7 @@ export function createEngine(
       // These texels are exactly what the GPU now holds, so the index history
       // keeps — and the next manifest written from it — starts out true.
       recordUpload(surface.surfaceId, tiles, canvas)
+      contentBounds.growTiles(surface.surfaceId, tiles)
     }
 
     // The visible region resolves first (18): every surface's own tiles are
@@ -1445,6 +1489,7 @@ export function createEngine(
       // the GPU after the frame, never during one.
       if (region && doc) {
         history?.recordStroke(paintTargetId(doc), region)
+        contentBounds.grow(paintTargetId(doc), region)
         invalidateThumbnailsOf(paintTargetId(doc))
       }
     }
@@ -1503,6 +1548,11 @@ export function createEngine(
     const layer = activeLayer(doc)
     if (layer.locked || (layer.image && !(doc.paintingMask && layer.mask)))
       return
+    // The artist is painting, so the canvas shows what they are painting on.
+    if (highlight) {
+      highlight = undefined
+      syncComposition()
+    }
     // The opening pen state is read in document space too, so a mapping onto
     // position means the same thing at any view.
     const x = toDocX(screenX, screenY)
@@ -1658,6 +1708,7 @@ export function createEngine(
           readTiles: (id, coords) => target.readTiles(id, coords),
           writeTiles: (id, tiles) => {
             target.writeTiles(id, tiles)
+            contentBounds.growTiles(id, tiles)
             // Undo and redo land here, and may not change the structure.
             invalidateThumbnailsOf(id)
           },
@@ -2133,6 +2184,7 @@ export function createEngine(
             const copyId = duplicateLayer(document, command.id)
             const copy = findLayer(document, copyId)
             renderer?.duplicateLayer(command.id, copyId)
+            contentBounds.copy(command.id, copyId)
             if (source.mask && copy.mask)
               renderer?.duplicateLayer(source.mask.id, copy.mask.id)
             // The copy's pixels are the source's, so history holds one copy of
@@ -2231,6 +2283,15 @@ export function createEngine(
             coalesceAs: `${id}:${Object.keys(patch).sort().join(",")}`,
           })
           applyLayerChange()
+          break
+        }
+        case "highlightLayer": {
+          const next = command.id ?? undefined
+          if (next === highlight) break
+          highlight = next
+          if (!doc) break
+          syncComposition()
+          if (snapshot.status === "ready") render()
           break
         }
         case "undo":
@@ -2476,6 +2537,8 @@ export function createEngine(
         // The artwork is what was painted, not how it is being looked at, so
         // the export presents through the identity rather than the view (D28).
         renderer?.setView(IDENTITY_MATRIX)
+        // A layer picked out in the list is how it is being looked at too.
+        if (highlight && doc) renderer?.setComposition(planComposite(doc))
         // Preview/export rendering has its own target. It never replaces the
         // visible swap-chain frame while its asynchronous readback completes.
         renderer?.render(output.createView())
@@ -2515,6 +2578,7 @@ export function createEngine(
         output.destroy()
         // Also restore after an early failure before the normal restoration.
         applyView()
+        syncComposition()
       }
     },
     async exportDocument() {
@@ -2596,11 +2660,16 @@ export function createEngine(
     sampleColor,
     attachThumbnail(id, canvas, onDrawn) {
       const view: ThumbnailView = { canvas, onDrawn }
-      thumbnailViews.set(id, view)
-      thumbnails.invalidate([id])
+      const views = thumbnailViews.get(id) ?? new Set()
+      views.add(view)
+      thumbnailViews.set(id, views)
+      // A canvas that has just appeared is drawn now, unless the pen is down:
+      // a preview that waited out the quiet window would open blank.
+      if (stroking || opening) thumbnails.invalidate([id])
+      else drawThumbnail(id, view)
       return () => {
-        if (thumbnailViews.get(id) !== view) return
-        thumbnailViews.delete(id)
+        views.delete(view)
+        if (views.size === 0) thumbnailViews.delete(id)
         view.context?.unconfigure()
       }
     },

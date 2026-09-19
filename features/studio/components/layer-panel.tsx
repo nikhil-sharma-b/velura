@@ -30,6 +30,12 @@ import {
 } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import {
   blendModes,
   type BlendMode,
   type Engine,
@@ -73,13 +79,56 @@ function rasterCount(nodes: readonly LayerSummary[]): number {
   )
 }
 
+/** How long a finger rests on a row before the canvas picks its layer out. */
+const LONG_PRESS_MS = 400
+
 /** CSS pixels a side; the backing store is scaled by the device's density. */
 const THUMBNAIL_EDGE = 32
+/** The preview shown beside a thumbnail pointed at: big enough to read. */
+const PREVIEW_EDGE = 176
 
 /**
- * A live picture of one layer, group or mask, drawn by the engine into a
- * canvas this component owns. The engine decides when it is redrawn — never
- * while a stroke is in flight — so React re-rendering the row costs no pixels.
+ * A canvas the engine draws one layer, group or mask into. The engine decides
+ * when it is redrawn — never while a stroke is in flight — so React
+ * re-rendering around it costs no pixels.
+ */
+function ThumbnailCanvas({
+  engine,
+  id,
+  edge,
+  className,
+  onEmpty,
+}: {
+  engine: Engine
+  id: string
+  edge: number
+  className?: string
+  /** Must be stable, such as a state setter: a new one reattaches the canvas. */
+  onEmpty?(empty: boolean): void
+}) {
+  const canvas = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const element = canvas.current
+    if (!element) return
+    const density = Math.min(2, window.devicePixelRatio || 1)
+    element.width = element.height = Math.round(edge * density)
+    return engine.attachThumbnail(id, element, (drawn) =>
+      onEmpty?.(drawn.empty)
+    )
+  }, [engine, id, edge, onEmpty])
+  return (
+    <canvas
+      ref={canvas}
+      aria-hidden
+      style={{ width: edge, height: edge }}
+      className={className}
+    />
+  )
+}
+
+/**
+ * A live picture of one layer, group or mask, framed on its own work, with a
+ * larger one beside it while pointed at.
  *
  * Empty and hidden are both states a reader must tell apart from work at a
  * glance, and neither is a picture: empty is a dashed outline with nothing in
@@ -100,41 +149,59 @@ function LayerThumbnail({
   className?: string
   children?: React.ReactNode
 }) {
-  const canvas = useRef<HTMLCanvasElement>(null)
   const [empty, setEmpty] = useState(false)
-  useEffect(() => {
-    const element = canvas.current
-    if (!element) return
-    const density = Math.min(2, window.devicePixelRatio || 1)
-    element.width = element.height = Math.round(THUMBNAIL_EDGE * density)
-    return engine.attachThumbnail(id, element, (drawn) => setEmpty(drawn.empty))
-  }, [engine, id])
   // Hidden wins the attribute; an empty hidden layer still draws its outline.
   const state = hidden ? "hidden" : empty ? "empty" : "shown"
   return (
-    <span
-      data-testid={`thumbnail-${label}`}
-      data-state={state}
-      title={
-        empty ? `${label} is empty` : hidden ? `${label} is hidden` : undefined
-      }
-      className={`relative grid size-8 shrink-0 place-items-center ${
-        empty ? "border border-dashed border-muted-foreground/50" : "border"
-      } ${className}`}
-    >
-      <canvas
-        ref={canvas}
-        aria-hidden
-        className={`size-full ${empty ? "invisible" : hidden ? "opacity-30 grayscale" : ""}`}
-      />
-      {hidden && (
-        <EyeSlashIcon
-          aria-hidden
-          className="absolute size-3.5 text-foreground"
-        />
-      )}
-      {children}
-    </span>
+    <TooltipProvider delayDuration={450}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            data-testid={`thumbnail-${label}`}
+            data-state={state}
+            className={`relative grid size-8 shrink-0 place-items-center ${
+              empty
+                ? "border border-dashed border-muted-foreground/50"
+                : "border"
+            } ${className}`}
+          >
+            <ThumbnailCanvas
+              engine={engine}
+              id={id}
+              edge={THUMBNAIL_EDGE}
+              onEmpty={setEmpty}
+              className={
+                empty ? "invisible" : hidden ? "opacity-30 grayscale" : ""
+              }
+            />
+            {hidden && (
+              <EyeSlashIcon
+                aria-hidden
+                className="absolute size-3.5 text-foreground"
+              />
+            )}
+            {children}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent
+          side="left"
+          sideOffset={12}
+          data-testid={`preview-${label}`}
+          // Radix repeats tooltip content for screen readers unless given a
+          // label, and a repeated canvas is a second thumbnail to draw.
+          aria-label={`${label}${empty ? ", empty" : hidden ? ", hidden" : ""}`}
+          className="flex-col items-stretch gap-1.5 p-1.5"
+        >
+          {!empty && (
+            <ThumbnailCanvas engine={engine} id={id} edge={PREVIEW_EDGE} />
+          )}
+          <span className="px-0.5">
+            {label}
+            {empty ? " — empty" : hidden ? " — hidden" : ""}
+          </span>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
 
@@ -174,6 +241,17 @@ function LayerRow({
   }
   const removedRasters =
     layer.kind === "raster" ? 1 : rasterCount(layer.children)
+  const highlight = (id: string | null) =>
+    void engine.dispatch({ type: "highlightLayer", id })
+  // A finger has no hover, so a touch picks the layer out by holding still on
+  // its row; lifting puts the canvas back.
+  const press = useRef<number | undefined>(undefined)
+  const release = () => {
+    if (press.current === undefined) return
+    window.clearTimeout(press.current)
+    press.current = undefined
+    highlight(null)
+  }
 
   return (
     <>
@@ -182,6 +260,18 @@ function LayerRow({
         data-layer-row
         data-testid={`layer-row-${layer.name}`}
         {...dragProps}
+        onPointerEnter={(event) => {
+          if (event.pointerType !== "touch") highlight(layer.id)
+        }}
+        onPointerDown={(event) => {
+          if (event.pointerType !== "touch") return
+          press.current = window.setTimeout(
+            () => highlight(layer.id),
+            LONG_PRESS_MS
+          )
+        }}
+        onPointerUp={release}
+        onPointerCancel={release}
         className={`group relative border-b border-border/70 ${dragging ? "opacity-40" : ""} ${
           selected ? "bg-accent/80" : "bg-studio-surface/80 hover:bg-muted/60"
         } ${dropPosition === "inside" ? "bg-primary/15 ring-2 ring-primary ring-inset" : ""}`}
@@ -536,6 +626,11 @@ export function LayerPanel({
     findSummary(snapshot.layers, selectedId ?? snapshot.activeLayerId) ??
     findSummary(snapshot.layers, snapshot.activeLayerId)
   const count = rasterCount(snapshot.layers)
+  // A folded or closed panel cannot leave a layer picked out behind it.
+  useEffect(
+    () => () => void engine.dispatch({ type: "highlightLayer", id: null }),
+    [engine]
+  )
 
   return (
     <section
@@ -623,7 +718,18 @@ export function LayerPanel({
         </p>
       )}
 
-      <div className="max-h-48 min-h-12 shrink-0 overflow-y-auto">
+      {/*
+        Pointing at a row picks its layer out on the canvas, everything else
+        dimmed; leaving the list, rather than each row, puts it back, so
+        moving from row to row does not flash the whole stack between them.
+      */}
+      <div
+        className="max-h-48 min-h-12 shrink-0 overflow-y-auto"
+        onPointerLeave={(event) => {
+          if (event.pointerType !== "touch")
+            void engine.dispatch({ type: "highlightLayer", id: null })
+        }}
+      >
         <Rows
           engine={engine}
           nodes={snapshot.layers}

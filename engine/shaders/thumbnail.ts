@@ -1,8 +1,9 @@
 /**
  * One layer's pixels, shrunk to a layer-list thumbnail.
  *
- * The document is fitted into the thumbnail whole, letterboxed with
- * transparency, so its shape reads the same in every row. Shrinking a
+ * The region holding the layer's work is fitted into the thumbnail,
+ * letterboxed with transparency, so a face on a large canvas fills its
+ * square instead of sitting in it as a speck. Shrinking a
  * document forty-fold would drop a thin line entirely, whether by one tap or
  * by a true average, so each thumbnail pixel reads a dense grid of taps and
  * keeps the strongest coverage among them: linework stays legible as lines.
@@ -19,6 +20,10 @@ struct Thumbnail {
   targetSize: vec2<f32>,
   // Zero for a layer's colour, one for a mask's coverage.
   mode: f32,
+  // The region of the document shown, in document pixels: where the layer's
+  // work is, rather than the whole canvas around it.
+  cropOrigin: vec2<f32>,
+  cropSize: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> thumbnail: Thumbnail;
@@ -42,14 +47,14 @@ fn encodeTransfer(linear: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
   let scale = min(
-    thumbnail.targetSize.x / thumbnail.docSize.x,
-    thumbnail.targetSize.y / thumbnail.docSize.y
+    thumbnail.targetSize.x / thumbnail.cropSize.x,
+    thumbnail.targetSize.y / thumbnail.cropSize.y
   );
-  let offset = (thumbnail.targetSize - thumbnail.docSize * scale) * 0.5;
-  let origin = (position.xy - vec2<f32>(0.5) - offset) / scale;
+  let offset = (thumbnail.targetSize - thumbnail.cropSize * scale) * 0.5;
+  let local = (position.xy - vec2<f32>(0.5) - offset) / scale;
   let footprint = 1.0 / scale;
-  if (any(origin + footprint * 0.5 < vec2<f32>(0.0)) ||
-      any(origin + footprint * 0.5 > thumbnail.docSize)) {
+  if (any(local + footprint * 0.5 < vec2<f32>(0.0)) ||
+      any(local + footprint * 0.5 > thumbnail.cropSize)) {
     return vec4<f32>(0.0);
   }
   // A tap a texel and a half apart, so a line two texels wide cannot fall
@@ -60,7 +65,7 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   var strongest = 0.0;
   for (var row = 0u; row < taps; row++) {
     for (var column = 0u; column < taps; column++) {
-      let point = origin + (vec2<f32>(f32(column), f32(row)) + 0.5) * footprint / f32(taps);
+      let point = thumbnail.cropOrigin + local + (vec2<f32>(f32(column), f32(row)) + 0.5) * footprint / f32(taps);
       let tap = textureSampleLevel(source, sourceSampler, point / thumbnail.docSize, 0.0);
       sum += tap;
       strongest = max(strongest, tap.a);

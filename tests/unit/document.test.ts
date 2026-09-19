@@ -9,6 +9,7 @@ import {
   duplicateLayer,
   findLayer,
   findNode,
+  HIGHLIGHT_DIM,
   moveLayer,
   planComposite,
   removeLayer,
@@ -174,6 +175,42 @@ describe("the layer tree", () => {
     expect(() => moveLayer(doc, doc.activeLayerId, 4)).toThrow(
       "A layer cannot move outside the stack."
     )
+  })
+})
+
+describe("the composite plan with one layer picked out", () => {
+  test("dims every other layer and leaves the picked one alone", () => {
+    const doc = document()
+    const bottom = doc.layers[0].id
+    const middle = addLayer(doc)
+    const top = addLayer(doc)
+    setLayer(doc, top, { opacity: 0.5 })
+    selectLayer(doc, middle)
+    const plan = planComposite(doc, { highlight: bottom })
+    expect(plan.below[0].opacity).toBe(1)
+    expect(plan.active?.opacity).toBe(HIGHLIGHT_DIM)
+    expect(plan.above[0].opacity).toBe(0.5 * HIGHLIGHT_DIM)
+  })
+
+  test("a picked group keeps all its children lit", () => {
+    const doc = document()
+    const outside = doc.layers[0].id
+    addLayer(doc)
+    const group = addGroup(doc)
+    // Added beside the active layer, which is inside the group.
+    addLayer(doc)
+    selectLayer(doc, outside)
+    const plan = planComposite(doc, { highlight: group })
+    expect(plan.active?.opacity).toBe(HIGHLIGHT_DIM)
+    const picked = plan.above.find((item) => item.id === group)!
+    expect(picked.opacity).toBe(1)
+    expect(picked.children?.map((child) => child.opacity)).toEqual([1, 1])
+  })
+
+  test("without a pick the plan is the ordinary one", () => {
+    const doc = document()
+    addLayer(doc)
+    expect(planComposite(doc, {})).toEqual(planComposite(doc))
   })
 })
 

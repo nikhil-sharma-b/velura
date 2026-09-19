@@ -200,7 +200,9 @@ export interface Renderer {
   drawThumbnail(
     target: GPUTextureView,
     size: { width: number; height: number },
-    subject: ThumbnailSubject
+    subject: ThumbnailSubject,
+    /** The document region to show; the whole canvas when omitted. */
+    crop?: PixelRect
   ): boolean
   destroy(): void
 }
@@ -479,9 +481,10 @@ export function createRenderer(
     },
     primitive: { topology: "triangle-list" },
   })
-  // mat3x3, two vec2s and the mode, padded to the struct's 16-byte size. The
-  // matrix leads, laid out exactly as the present uniform's does.
-  const thumbnailValues = new Float32Array(20)
+  // mat3x3, two vec2s, the mode, then the crop's origin and size, padded to
+  // the struct's 16-byte size. The matrix leads, laid out as the present
+  // uniform's is.
+  const thumbnailValues = new Float32Array(24)
   thumbnailValues.set(
     packUniform(
       workingToOutputMatrix(options.outputColorSpace),
@@ -1612,7 +1615,7 @@ export function createRenderer(
       pass.end()
       device.queue.submit([encoder.finish()])
     },
-    drawThumbnail(target, size, subject) {
+    drawThumbnail(target, size, subject, crop) {
       const group =
         subject.kind === "group"
           ? groupThumbnailSurface(subject.item)
@@ -1643,6 +1646,10 @@ export function createRenderer(
         thumbnailValues[14] = size.width
         thumbnailValues[15] = size.height
         thumbnailValues[16] = subject.kind === "mask" ? 1 : 0
+        thumbnailValues[18] = crop?.x ?? 0
+        thumbnailValues[19] = crop?.y ?? 0
+        thumbnailValues[20] = crop?.width ?? width
+        thumbnailValues[21] = crop?.height ?? height
         device.queue.writeBuffer(thumbnailUniform, 0, thumbnailValues)
         pass.setPipeline(thumbnailPipeline)
         pass.setBindGroup(

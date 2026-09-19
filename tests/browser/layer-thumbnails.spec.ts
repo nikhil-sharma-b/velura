@@ -125,3 +125,36 @@ test("a group shows its children together, and a mask sits beside its layer", as
   const mask = layers.getByTestId("thumbnail-Layer 2 mask")
   await expect(mask).toHaveAttribute("data-state", "shown")
 })
+
+test("pointing at a row dims the canvas around it and previews it larger", async ({
+  page,
+}) => {
+  const layers = await openStudio(page)
+  await layers.getByRole("button", { name: "Add layer" }).click()
+  await (
+    await stroke(page, 200, 600)
+  )()
+  // The stretch the stroke crossed, clear of the panels and their tooltips.
+  const box = (await page
+    .getByRole("img", { name: "Drawing canvas" })
+    .boundingBox())!
+  const shot = async () =>
+    (
+      await page.screenshot({
+        clip: { x: box.x + 150, y: box.y + 250, width: 500, height: 100 },
+      })
+    ).toString("base64")
+  const plain = await shot()
+
+  // Layer 1 picked out: the stroke on Layer 2 is what dims.
+  await layers.getByTestId("layer-row-Layer 1").hover()
+  await expect.poll(shot).not.toBe(plain)
+
+  await layers.getByTestId("thumbnail-Layer 2").hover()
+  const preview = page.getByTestId("preview-Layer 2")
+  await expect(preview).toBeVisible()
+  await expect.poll(() => colours(preview)).toBeGreaterThan(2)
+
+  await page.mouse.move(5, 5)
+  await expect.poll(shot).toBe(plain)
+})

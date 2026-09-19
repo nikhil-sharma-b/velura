@@ -406,16 +406,31 @@ export function resizeDocument(
 
 const contributes = (node: LayerNode) => node.visible && node.opacity > 0
 
-function item(node: LayerNode): CompositeItem {
+/**
+ * How far every other layer fades while the artist points at one in the list.
+ * Enough to push the rest back without losing where the picked layer sits.
+ */
+export const HIGHLIGHT_DIM = 0.15
+
+/**
+ * `lit`, when given, is the raster layers picked out; every other raster
+ * layer is dimmed. Groups keep their own opacity, so nothing is dimmed twice.
+ */
+function item(node: LayerNode, lit?: ReadonlySet<string>): CompositeItem {
+  const dim = node.kind === "raster" && lit && !lit.has(node.id)
   return {
     id: node.id,
     ...(node.kind === "group" ? { kind: "group" as const } : {}),
-    opacity: node.visible ? node.opacity : 0,
+    opacity: (node.visible ? node.opacity : 0) * (dim ? HIGHLIGHT_DIM : 1),
     blend: node.blend,
     clip: node.clip,
     ...(node.mask?.enabled ? { maskId: node.mask.id } : {}),
     ...(node.kind === "group"
-      ? { children: node.children.filter(contributes).map(item) }
+      ? {
+          children: node.children
+            .filter(contributes)
+            .map((child) => item(child, lit)),
+        }
       : {}),
   }
 }
@@ -428,6 +443,19 @@ function item(node: LayerNode): CompositeItem {
  */
 export function groupContents(group: LayerGroup): CompositeItem {
   return item({ ...group, visible: true })
+}
+
+function findNodeIn(
+  nodes: readonly LayerNode[],
+  id: string
+): LayerNode | undefined {
+  for (const node of nodes) {
+    if (node.id === id) return node
+    if (node.kind === "group") {
+      const found = findNodeIn(node.children, id)
+      if (found) return found
+    }
+  }
 }
 
 function pathTo(
@@ -444,7 +472,22 @@ function pathTo(
   }
 }
 
-export function planComposite(doc: PaintDocument): CompositePlan {
+export function planComposite(
+  doc: PaintDocument,
+  options: { highlight?: string } = {}
+): CompositePlan {
+  const picked = options.highlight
+    ? findNodeIn(doc.layers, options.highlight)
+    : undefined
+  const lit = picked
+    ? new Set(
+        (picked.kind === "group"
+          ? rasterLayers(picked.children)
+          : [picked]
+        ).map((layer) => layer.id)
+      )
+    : undefined
+  const itemOf = (node: LayerNode) => item(node, lit)
   const path = pathTo(doc.layers, doc.activeLayerId)
   if (!path)
     throw new Error(`No layer ${doc.activeLayerId} is in this document.`)
@@ -454,29 +497,29 @@ export function planComposite(doc: PaintDocument): CompositePlan {
   const innerToOuter = [...path.groups].reverse()
   for (const container of innerToOuter) {
     stages.push({
-      below: siblings.slice(0, index).filter(contributes).map(item),
+      below: siblings.slice(0, index).filter(contributes).map(itemOf),
       above: siblings
         .slice(index + 1)
         .filter(contributes)
-        .map(item),
-      container: item({ ...container, children: [] }),
+        .map(itemOf),
+      container: item({ ...container, children: [] }, lit),
     })
     const parent = requireNode(doc, container.id)
     siblings = parent.siblings
     index = parent.index
   }
   stages.push({
-    below: siblings.slice(0, index).filter(contributes).map(item),
+    below: siblings.slice(0, index).filter(contributes).map(itemOf),
     above: siblings
       .slice(index + 1)
       .filter(contributes)
-      .map(item),
+      .map(itemOf),
     container: null,
   })
   const active = findLayer(doc, doc.activeLayerId)
   return {
     below: stages.at(-1)!.below,
-    active: item(active),
+    active: item(active, lit),
     above: stages.at(-1)!.above,
     stages,
     paintTargetId: doc.paintingMask ? active.mask!.id : active.id,
