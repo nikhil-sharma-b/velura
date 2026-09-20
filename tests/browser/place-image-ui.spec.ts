@@ -150,10 +150,10 @@ test("the refusal offers the way through, and the panel offers it too", async ({
 
   const canvas = page.getByRole("img", { name: "Drawing canvas" })
   await canvas.click({ position: { x: 300, y: 300 } })
-  await expect(page.getByText("is an image layer")).toBeVisible()
+  await expect(page.getByText("is a placed photo")).toBeVisible()
   // The mask is named, so the non-destructive answer is not a secret.
   await expect(
-    page.getByText("A mask hides part of it without erasing.")
+    page.getByText("A mask hides parts without changing it.")
   ).toBeVisible()
   await page.getByRole("button", { name: "Paint on it" }).click()
 
@@ -162,7 +162,7 @@ test("the refusal offers the way through, and the panel offers it too", async ({
   await expect(
     layers.getByRole("button", { name: /^Paint on Reference/ })
   ).toBeHidden()
-  await expect(page.getByText("is an image layer")).toBeHidden()
+  await expect(page.getByText("is a placed photo")).toBeHidden()
   await canvas.click({ position: { x: 320, y: 320 } })
-  await expect(page.getByText("is an image layer")).toBeHidden()
+  await expect(page.getByText("is a placed photo")).toBeHidden()
 })

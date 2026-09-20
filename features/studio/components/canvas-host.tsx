@@ -797,9 +797,9 @@ export function CanvasHost({
             // be studied is one the artist dismisses unread.
             toast.info(
               <>
-                <strong className="font-semibold">{selected.name}</strong> is an
-                image layer. Painting marks the picture itself. A mask hides
-                part of it without erasing.
+                <strong className="font-semibold">{selected.name}</strong> is a
+                placed photo. Paint on it and your marks change the photo. A
+                mask hides parts without changing it.
               </>,
               {
                 id: "image-layer",
