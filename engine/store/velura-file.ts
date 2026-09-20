@@ -1,3 +1,4 @@
+import { assetId } from "../doc/image-source"
 import { structureSurfaceIds, type DocumentStructure } from "../doc/structure"
 import { TILE_CHANNELS, TILE_TEXELS } from "../doc/tile-grid"
 import { hashTexels } from "../doc/tile-store"
@@ -201,12 +202,16 @@ function assertStructure(structure: DocumentStructure): Set<string> {
 export type ImportedVeluraFile = {
   manifest: DocumentManifest
   tiles: ReadonlyMap<string, Uint16Array>
+  /** The originals placed images were made from (06), by asset id. */
+  assets: ReadonlyMap<string, Uint8Array>
 }
 
 /** Creates the documented ZIP container: manifest.json plus compressed tile blobs. */
 export async function encodeVeluraFile(
   manifest: DocumentManifest,
-  readTile: (hash: string) => Promise<Uint16Array>
+  readTile: (hash: string) => Promise<Uint16Array>,
+  /** An original's own file bytes, for the assets the manifest names. */
+  readAsset?: (id: string) => Promise<Uint8Array>
 ): Promise<Uint8Array> {
   const entries: Omit<Entry, "offset">[] = []
   const manifestBytes = encoder.encode(JSON.stringify(manifest))
@@ -226,6 +231,13 @@ export async function encodeVeluraFile(
   for (const hash of hashes) {
     const bytes = await encodeTile(await readTile(hash))
     entries.push({ name: `tiles/${hash}.zst`, bytes, crc: crc32(bytes) })
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  }
+  // The originals, as the files they came in as: a backup that could show a
+  // photograph but not move it would not be the document.
+  for (const asset of readAsset ? (manifest.assets ?? []) : []) {
+    const bytes = await readAsset!(asset.id)
+    entries.push({ name: `assets/${asset.id}`, bytes, crc: crc32(bytes) })
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
   }
   return await zip(entries)
@@ -301,9 +313,30 @@ export async function decodeVeluraFile(
       tiles.set(ref.hash, tile)
     }
   }
+  const assets = new Map<string, Uint8Array>()
+  for (const asset of manifest.assets ?? []) {
+    if (
+      typeof asset?.id !== "string" ||
+      !asset.id ||
+      typeof asset.mime !== "string" ||
+      !Number.isInteger(asset.width) ||
+      !Number.isInteger(asset.height) ||
+      asset.width < 1 ||
+      asset.height < 1
+    )
+      throw new Error("The .velura manifest has an invalid placed image.")
+    const bytes = entries.get(`assets/${asset.id}`)
+    // A manifest naming an original the file does not carry is a picture that
+    // could be shown and not moved, which is not what this file claims to be.
+    if (!bytes)
+      throw new Error(`The .velura file is missing image ${asset.id}.`)
+    if (assetId(bytes) !== asset.id)
+      throw new Error(`Image ${asset.id} is corrupt.`)
+    assets.set(asset.id, bytes)
+  }
   const expected = structureSurfaceIds(manifest.structure)
   for (const surface of manifest.surfaces)
     if (!expected.has(surface.surfaceId))
       throw new Error("The .velura manifest contains an extra surface.")
-  return { manifest, tiles }
+  return { manifest, tiles, assets }
 }

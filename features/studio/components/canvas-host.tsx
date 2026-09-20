@@ -72,6 +72,7 @@ import {
 } from "../lib/image-import"
 import { readTextureFile } from "../lib/texture-import"
 import { BrushEditor } from "./brush-editor"
+import { ImageTransform } from "./image-transform"
 import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor"
 import { BrushIcon, EraserToolIcon } from "./brush-icon"
 import { BrushLibrary } from "./brush-library"
@@ -308,6 +309,10 @@ export function CanvasHost({
   const [imageOverCanvas, setImageOverCanvas] = useState(false)
   /** Alt is down, so the next click on the canvas samples rather than paints. */
   const [sampling, setSampling] = useState(false)
+  /** The canvas the engine presents into; the transform box sits over it. */
+  const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(
+    null
+  )
   const documentWidth = documentSize?.width
   const documentHeight = documentSize?.height
   // Created once per host: the store owns the subscription the picker reads
@@ -334,6 +339,9 @@ export function CanvasHost({
   const attach = useCallback(
     (canvas: HTMLCanvasElement | null) => {
       if (!canvas) return
+      // Kept so the transform box can be laid out over exactly the pixels the
+      // engine is presenting into.
+      setCanvasElement(canvas)
       const attached = createEngine(canvas, {
         ...(documentWidth !== undefined && documentHeight !== undefined
           ? { documentSize: { width: documentWidth, height: documentHeight } }
@@ -1442,6 +1450,14 @@ export function CanvasHost({
               </div>
             </TooltipProvider>
           </div>
+
+          {engine && snapshot.imageTransform && (
+            <ImageTransform
+              engine={engine}
+              snapshot={snapshot}
+              canvas={canvasElement}
+            />
+          )}
 
           {imageOverCanvas && (
             <div

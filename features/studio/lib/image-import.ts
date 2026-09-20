@@ -1,44 +1,22 @@
 "use client"
 
 import type { Engine } from "@/engine"
-import { fitPlacement, type SourceImage } from "@/engine/doc/image-tiles"
 
 /**
  * Bringing a picture in from a file: a reference photo, a scan to trace over,
  * a plate to paint on top of.
  *
- * The resampling is the browser's, done once here at the size the image will
- * be drawn at, rather than the engine carrying a scaler of its own — the same
- * split `texture-import` makes, where the decode is the platform's and every
- * decision around it is ours and testable.
+ * The file's own bytes go to the engine, not a decoded and scaled buffer. A
+ * placed image keeps the picture it came from (06), so every later move and
+ * scale is rendered from the original rather than from the last render of it;
+ * the decoding and the scaler are still the browser's, in the engine's image
+ * codec, where the split `texture-import` makes is kept.
  */
 
 /** A file's name without its extension: what the layer ends up called. */
 export function layerNameForFile(fileName: string): string {
   const trimmed = fileName.replace(/\.[^.]+$/, "").trim()
   return trimmed === "" ? "Image" : trimmed
-}
-
-export async function readImageFile(
-  file: Blob,
-  canvas: { width: number; height: number }
-): Promise<SourceImage> {
-  const bitmap = await createImageBitmap(file)
-  try {
-    // Only the size is taken from the placement here; where it lands is the
-    // engine's to decide, so the two cannot disagree about the centre.
-    const size = fitPlacement(bitmap, canvas)
-    const surface = document.createElement("canvas")
-    surface.width = size.width
-    surface.height = size.height
-    const ink = surface.getContext("2d", { willReadFrequently: true })
-    if (!ink) throw new Error("This browser could not read that image.")
-    ink.drawImage(bitmap, 0, 0, size.width, size.height)
-    const pixels = ink.getImageData(0, 0, size.width, size.height)
-    return { width: size.width, height: size.height, pixels: pixels.data }
-  } finally {
-    bitmap.close()
-  }
 }
 
 /**
@@ -77,18 +55,21 @@ export function dragCarriesFile(transfer: DataTransfer | null): boolean {
 }
 
 /**
- * Puts a file on a layer of its own, at the document's size rather than the
- * window's: an image is placed in the artwork, not in the view of it.
+ * Puts a file on a layer of its own, centred in the artwork rather than in the
+ * window: an image is placed in the document, not in the view of it.
  */
 export async function placeImageFile(
   engine: Engine,
   file: File
 ): Promise<void> {
-  const { width, height } = engine.getSnapshot()
-  const image = await readImageFile(file, { width, height })
   await engine.dispatch({
     type: "placeImage",
-    image,
+    file: {
+      bytes: new Uint8Array(await file.arrayBuffer()),
+      // A file dragged from a place that did not say what it was: the decoder
+      // sniffs the bytes, so an empty type is not a reason to refuse it.
+      mime: file.type || "application/octet-stream",
+    },
     name: layerNameForFile(file.name),
   })
 }

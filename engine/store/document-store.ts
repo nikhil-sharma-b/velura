@@ -11,6 +11,7 @@
  * never rewritten or invalidated (D14).
  */
 
+import type { ImageAssetRef } from "../doc/image-source"
 import type { DocumentStructure } from "../doc/structure"
 import type { BlobStore } from "./blob-store"
 import { decodeTile, encodeTile } from "./tile-codec"
@@ -37,6 +38,12 @@ export type DocumentManifest = Readonly<{
   /** The layer tree without pixels, exactly as history snapshots it. */
   structure: DocumentStructure
   surfaces: readonly SurfaceTiles[]
+  /**
+   * The originals placed images were made from (06), by content hash. Absent
+   * in documents saved before images kept theirs, which read back as a
+   * picture that can still be shown but no longer moved.
+   */
+  assets?: readonly ImageAssetRef[]
   updatedAt: number
 }>
 
@@ -44,9 +51,18 @@ export const MANIFEST_VERSION = 1
 
 const manifestKey = (id: string) => `documents/${id}`
 const tileKeyFor = (hash: string) => `tiles/${hash}`
+/**
+ * An original next to the tiles, under its own content hash. The same
+ * immutability argument as a tile: a photograph's bytes never change, so the
+ * blob is written once however many documents or layers place it.
+ */
+const assetKeyFor = (id: string) => `assets/${id}`
 
 /** Where the tiles a manifest names are read from while they are still in RAM. */
 export type TileSource = (hash: string) => Promise<Uint16Array>
+
+/** An original's file bytes by id, read at save time like the tiles are. */
+export type AssetSource = (id: string) => Promise<Uint8Array>
 
 export interface DocumentStore {
   /**
@@ -54,10 +70,16 @@ export interface DocumentStore {
    * then the manifest. Returns how many blobs the save actually cost, which
    * is what dedup is measured by.
    */
-  save(manifest: DocumentManifest, tiles: TileSource): Promise<number>
+  save(
+    manifest: DocumentManifest,
+    tiles: TileSource,
+    assets?: AssetSource
+  ): Promise<number>
   load(id: string): Promise<DocumentManifest | null>
   /** The texels behind one hash, or null where the device does not hold it. */
   readTile(hash: string): Promise<Uint16Array | null>
+  /** The file behind one asset id, or null where the device does not hold it. */
+  readAsset(id: string): Promise<Uint8Array | null>
   has(hash: string): Promise<boolean>
   /** Every stored manifest id. Content blobs are deliberately excluded. */
   list(): Promise<DocumentManifest[]>
@@ -67,7 +89,7 @@ export interface DocumentStore {
 
 export function createDocumentStore(blobs: BlobStore): DocumentStore {
   return {
-    async save(manifest, tiles) {
+    async save(manifest, tiles, assets) {
       // One tile referenced by two layers, or by two coordinates of one, is
       // one blob: the write set is hashes, not placements.
       const hashes = new Set(
@@ -87,6 +109,15 @@ export function createDocumentStore(blobs: BlobStore): DocumentStore {
           written++
         })
       )
+      // Originals before the manifest, for the same reason as the tiles: a
+      // manifest may only name bytes that are already down.
+      if (assets)
+        for (const asset of manifest.assets ?? []) {
+          const key = assetKeyFor(asset.id)
+          if (await blobs.has(key)) continue
+          await blobs.put(key, await assets(asset.id))
+          written++
+        }
       await blobs.put(
         manifestKey(manifest.id),
         new TextEncoder().encode(JSON.stringify(manifest))
@@ -113,6 +144,9 @@ export function createDocumentStore(blobs: BlobStore): DocumentStore {
       // A tile a manifest names but the device no longer holds is a hole in
       // the document, not a broken document: the rest of the work still opens.
       return bytes ? decodeTile(bytes) : null
+    },
+    async readAsset(id) {
+      return await blobs.get(assetKeyFor(id))
     },
     has: (hash) => blobs.has(tileKeyFor(hash)),
     async list() {

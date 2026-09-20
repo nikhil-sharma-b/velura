@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { decodeFloat16 } from "@/engine/doc/float16"
-import { fitPlacement, imageTiles } from "@/engine/doc/image-tiles"
+import { imageTiles } from "@/engine/doc/image-tiles"
 import { TILE_CHANNELS, TILE_SIZE } from "@/engine/doc/tile-grid"
 
 const CANVAS = { width: 512, height: 512 }
@@ -100,26 +100,5 @@ describe("a placed image", () => {
     expect(imageTiles(pixel(255, 255, 255), { x: -5, y: -5 }, CANVAS)).toEqual(
       []
     )
-  })
-})
-
-describe("where an image lands by default", () => {
-  test("sits in the middle of the canvas", () => {
-    expect(fitPlacement({ width: 100, height: 50 }, CANVAS)).toEqual({
-      x: 206,
-      y: 231,
-      width: 100,
-      height: 50,
-    })
-  })
-
-  test("shrinks to fit a canvas smaller than it, keeping its shape", () => {
-    const placed = fitPlacement({ width: 2000, height: 1000 }, CANVAS)
-    expect(placed).toEqual({ x: 0, y: 128, width: 512, height: 256 })
-  })
-
-  test("never blows a small image up to fill the canvas", () => {
-    const placed = fitPlacement({ width: 10, height: 10 }, CANVAS)
-    expect(placed.width).toBe(10)
   })
 })

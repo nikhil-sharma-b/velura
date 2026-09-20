@@ -54,6 +54,37 @@ export function referencedHashesOf(
   return referenced
 }
 
+/**
+ * The marked set for the originals placed images keep (06).
+ *
+ * Their liveness is a different question from a tile's: nothing writes an
+ * index row per original, because a layer tree already names the one it was
+ * made from. So the mark walks the trees — the documents as they stand, and
+ * the trees retained restore points hold, for the same reason both are walked
+ * above. The tree is opaque here, as it is everywhere on this side, so it is
+ * read defensively rather than trusted to have the shape this build expects.
+ */
+export function referencedAssetIdsOf(
+  structures: readonly unknown[]
+): Set<string> {
+  const referenced = new Set<string>()
+  const walk = (nodes: unknown) => {
+    if (!Array.isArray(nodes)) return
+    for (const node of nodes) {
+      if (typeof node !== "object" || node === null) continue
+      const placed = (node as { placed?: { asset?: { id?: unknown } } }).placed
+      if (placed && typeof placed.asset?.id === "string")
+        referenced.add(placed.asset.id)
+      walk((node as { children?: unknown }).children)
+    }
+  }
+  for (const structure of structures) {
+    if (typeof structure !== "object" || structure === null) continue
+    walk((structure as { layers?: unknown }).layers)
+  }
+  return referenced
+}
+
 /** What one listed page comes to: what may go, and what the window held. */
 export type PagePlan = {
   collect: StoredTileObject[]

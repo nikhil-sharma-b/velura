@@ -2,7 +2,11 @@ import { getAuthUserId } from "@convex-dev/auth/server"
 import { ConvexError, v } from "convex/values"
 
 import { internalMutation, internalQuery, query } from "./_generated/server"
-import { reclaimedBytes, referencedHashesOf } from "./lib/collection"
+import {
+  reclaimedBytes,
+  referencedAssetIdsOf,
+  referencedHashesOf,
+} from "./lib/collection"
 
 /**
  * The database half of orphan collection (D17, §9.4): the mark, the ledger
@@ -51,6 +55,46 @@ export const markedVersionHashes = internalQuery({
       .paginate({ cursor, numItems: VERSION_PAGE_SIZE })
     return {
       hashes: [...referencedHashesOf([], page.page)],
+      cursor: page.isDone ? null : page.continueCursor,
+    }
+  },
+})
+
+/**
+ * The mark for the originals placed images keep (06): the trees the documents
+ * hold now, and the trees their retained restore points hold. A tree is small
+ * beside a document's tiles, but there is one per document, so this pages like
+ * the others.
+ */
+const DOCUMENT_PAGE_SIZE = 64
+
+export const markedDocumentAssetIds = internalQuery({
+  args: { cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { cursor }) => {
+    const page = await ctx.db
+      .query("documents")
+      .paginate({ cursor, numItems: DOCUMENT_PAGE_SIZE })
+    return {
+      hashes: [
+        ...referencedAssetIdsOf(
+          page.page.map((document) => document.structure)
+        ),
+      ],
+      cursor: page.isDone ? null : page.continueCursor,
+    }
+  },
+})
+
+export const markedVersionAssetIds = internalQuery({
+  args: { cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { cursor }) => {
+    const page = await ctx.db
+      .query("versions")
+      .paginate({ cursor, numItems: VERSION_PAGE_SIZE })
+    return {
+      hashes: [
+        ...referencedAssetIdsOf(page.page.map((version) => version.structure)),
+      ],
       cursor: page.isDone ? null : page.continueCursor,
     }
   },

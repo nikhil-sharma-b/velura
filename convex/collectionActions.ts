@@ -1,6 +1,11 @@
 "use node"
 
-import { deleteTileObjects, listTileObjects } from "./lib/r2"
+import {
+  deleteAssetObjects,
+  deleteTileObjects,
+  listAssetObjects,
+  listTileObjects,
+} from "./lib/r2"
 import { runSweep } from "./lib/collection"
 import { internalAction } from "./_generated/server"
 import { internal } from "./_generated/api"
@@ -30,6 +35,45 @@ export const sweep = internalAction({
             )),
             ...(await allPages((cursor) =>
               ctx.runQuery(internal.collection.markedVersionHashes, { cursor })
+            )),
+          ]),
+        forgetCollected: async (hashes) => {
+          await ctx.runMutation(internal.collection.forgetCollected, {
+            hashes: [...hashes],
+          })
+        },
+        recordCollected: async ({ collected, scanned, retainedInGrace }) => {
+          await ctx.runMutation(internal.collection.recordCollected, {
+            runId,
+            collected: collected.map((object) => ({
+              hash: object.hash,
+              size: object.size,
+            })),
+            scanned,
+            retainedInGrace,
+          })
+        },
+      }
+    )
+
+    // The originals placed images keep are swept the same way and in the same
+    // run, against their own mark: a photograph no document and no retained
+    // restore point still names is as collectable as a painted-over tile, and
+    // leaving it would grow the bucket in a way nothing ever shrinks.
+    await runSweep(
+      { listPage: listAssetObjects, deleteObjects: deleteAssetObjects },
+      {
+        markedHashes: async () =>
+          new Set([
+            ...(await allPages((cursor) =>
+              ctx.runQuery(internal.collection.markedDocumentAssetIds, {
+                cursor,
+              })
+            )),
+            ...(await allPages((cursor) =>
+              ctx.runQuery(internal.collection.markedVersionAssetIds, {
+                cursor,
+              })
             )),
           ]),
         forgetCollected: async (hashes) => {

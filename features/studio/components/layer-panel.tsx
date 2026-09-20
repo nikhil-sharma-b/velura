@@ -1,6 +1,7 @@
 "use client"
 
 import {
+  ArrowsOutCardinalIcon,
   CaretUpIcon,
   CopyIcon,
   DotsSixVerticalIcon,
@@ -415,6 +416,24 @@ function LayerRow({
           </IconButton>
           {layer.kind === "raster" && (
             <>
+              {/* Moving, scaling and turning the picture (06). Offered only
+                  while the original is still there to re-render from, which
+                  the engine answers by describing the layer as placed. */}
+              {layer.image && layer.placed && (
+                <IconButton
+                  variant="ghost"
+                  size="icon-xs"
+                  label={`Move, scale or rotate ${layer.name}`}
+                  onClick={() =>
+                    void engine.dispatch({
+                      type: "beginImageTransform",
+                      id: layer.id,
+                    })
+                  }
+                >
+                  <ArrowsOutCardinalIcon />
+                </IconButton>
+              )}
               {/* The way through the refusal, for an artist who decides
                   before picking up the brush. It goes once the layer is
                   ordinary paint: there is nothing left to convert. */}

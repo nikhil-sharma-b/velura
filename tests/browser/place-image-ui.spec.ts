@@ -166,3 +166,41 @@ test("the refusal offers the way through, and the panel offers it too", async ({
   await canvas.click({ position: { x: 320, y: 320 } })
   await expect(page.getByText("is a placed photo")).toBeHidden()
 })
+
+test("a placed image can be moved from the panel, and the move cancelled", async ({
+  page,
+}) => {
+  // The way in (06): the panel offers it while the layer is still an image
+  // layer, and the box on the canvas is what the artist then drags.
+  const layers = await openStudio(page)
+  await layers.locator('input[type="file"]').setInputFiles({
+    name: "Reference.png",
+    mimeType: "image/png",
+    buffer: redPng(64),
+  })
+  await expect(layers.getByText("Reference")).toBeVisible()
+
+  await layers
+    .getByRole("button", { name: "Move, scale or rotate Reference" })
+    .click()
+  const box = page.getByTestId("image-transform")
+  await expect(box).toBeVisible()
+  // The honest readout: at the size it was placed, the picture is at its own
+  // resolution and says so.
+  await expect(page.getByTestId("transform-resolution")).toContainText("%")
+
+  // Nudged with the keyboard, which is how a placement is put exactly where
+  // it belongs, then taken back — and taking it back leaves no box behind.
+  await page.keyboard.press("ArrowRight")
+  await page.keyboard.press("Escape")
+  await expect(box).toBeHidden()
+
+  // Offered no more once the picture has been handed to the pen: there is no
+  // original left to re-render from.
+  await layers
+    .getByRole("button", { name: "Paint on Reference (changes the photo)" })
+    .click()
+  await expect(
+    layers.getByRole("button", { name: "Move, scale or rotate Reference" })
+  ).toBeHidden()
+})

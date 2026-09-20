@@ -39,6 +39,16 @@ export function tileKey(hash: string): string {
   return `tiles/${hash}`
 }
 
+/**
+ * An original a placed image keeps (06). Its own prefix rather than the tile
+ * one: these are whole encoded files, and the sweep walks the two separately
+ * because what keeps each alive is different — a tile row for one, a layer
+ * tree for the other.
+ */
+export function assetKey(id: string): string {
+  return `assets/${id}`
+}
+
 export function previewKey(documentId: string): string {
   return `previews/${documentId}.png`
 }
@@ -57,6 +67,22 @@ export async function presignTileGet(hash: string): Promise<string> {
   return await getSignedUrl(
     client(),
     new GetObjectCommand({ Bucket: bucket(), Key: tileKey(hash) }),
+    { expiresIn: PRESIGN_TTL_SECONDS }
+  )
+}
+
+export async function presignAssetPut(id: string): Promise<string> {
+  return await getSignedUrl(
+    client(),
+    new PutObjectCommand({ Bucket: bucket(), Key: assetKey(id) }),
+    { expiresIn: PRESIGN_TTL_SECONDS }
+  )
+}
+
+export async function presignAssetGet(id: string): Promise<string> {
+  return await getSignedUrl(
+    client(),
+    new GetObjectCommand({ Bucket: bucket(), Key: assetKey(id) }),
     { expiresIn: PRESIGN_TTL_SECONDS }
   )
 }
@@ -82,23 +108,25 @@ export async function presignPreviewGet(documentId: string): Promise<string> {
 }
 
 const TILE_PREFIX = "tiles/"
+const ASSET_PREFIX = "assets/"
 // R2 caps a listing page at 1000 keys, which is also the cap on a batched
 // delete — so one page in is one delete call out, and the sweep never has to
 // hold the whole bucket in memory.
 const LIST_PAGE_SIZE = 1000
 
 /**
- * One page of the tile bucket, oldest-known-first only insofar as R2 orders by
- * key; the sweep does not depend on the order, only on seeing every object
- * exactly once per run.
+ * One page of a content-addressed prefix, oldest-known-first only insofar as
+ * R2 orders by key; the sweep does not depend on the order, only on seeing
+ * every object exactly once per run.
  */
-export async function listTileObjects(
+async function listObjects(
+  prefix: string,
   cursor: string | undefined
 ): Promise<TileObjectPage> {
   const response = await client().send(
     new ListObjectsV2Command({
       Bucket: bucket(),
-      Prefix: TILE_PREFIX,
+      Prefix: prefix,
       MaxKeys: LIST_PAGE_SIZE,
       ContinuationToken: cursor,
     })
@@ -106,9 +134,9 @@ export async function listTileObjects(
   const objects: StoredTileObject[] = []
   for (const item of response.Contents ?? []) {
     const key = item.Key
-    if (key === undefined || !key.startsWith(TILE_PREFIX)) continue
-    const hash = key.slice(TILE_PREFIX.length)
-    // A key with a slash after the prefix is not a tile this app wrote;
+    if (key === undefined || !key.startsWith(prefix)) continue
+    const hash = key.slice(prefix.length)
+    // A key with a slash after the prefix is not an object this app wrote;
     // leaving it alone costs nothing and deleting it is unrecoverable.
     if (hash.length === 0 || hash.includes("/")) continue
     objects.push({
@@ -125,12 +153,25 @@ export async function listTileObjects(
   }
 }
 
+export async function listTileObjects(
+  cursor: string | undefined
+): Promise<TileObjectPage> {
+  return await listObjects(TILE_PREFIX, cursor)
+}
+
+export async function listAssetObjects(
+  cursor: string | undefined
+): Promise<TileObjectPage> {
+  return await listObjects(ASSET_PREFIX, cursor)
+}
+
 /**
- * Deletes tile objects by hash. Content addressing makes this idempotent: a
- * key that is already gone deletes cleanly, so an interrupted sweep can be
+ * Deletes objects by hash. Content addressing makes this idempotent: a key
+ * that is already gone deletes cleanly, so an interrupted sweep can be
  * replayed without special-casing what it had already done.
  */
-export async function deleteTileObjects(
+async function deleteObjects(
+  key: (hash: string) => string,
   hashes: readonly string[]
 ): Promise<void> {
   if (hashes.length === 0) return
@@ -138,9 +179,21 @@ export async function deleteTileObjects(
     new DeleteObjectsCommand({
       Bucket: bucket(),
       Delete: {
-        Objects: hashes.map((hash) => ({ Key: tileKey(hash) })),
+        Objects: hashes.map((hash) => ({ Key: key(hash) })),
         Quiet: true,
       },
     })
   )
+}
+
+export async function deleteTileObjects(
+  hashes: readonly string[]
+): Promise<void> {
+  await deleteObjects(tileKey, hashes)
+}
+
+export async function deleteAssetObjects(
+  ids: readonly string[]
+): Promise<void> {
+  await deleteObjects(assetKey, ids)
 }

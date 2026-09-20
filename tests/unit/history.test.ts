@@ -289,6 +289,65 @@ describe("recording layer operations", () => {
     expect(fixture.read(placed, ORIGIN)![0]).toBe(7)
   })
 
+  test("a transformed image leaves nothing behind where it used to be", async () => {
+    // What a move actually is: the picture is rendered afresh at the new
+    // placement, and the tiles it no longer covers have to stop holding it.
+    // A fill would only add, and the picture would be in both places.
+    const fixture = setup()
+    const doc = createDocument({ width: 512, height: 512 })
+    const before = captureStructure(doc)
+    const placed = addLayer(doc)
+    const canvas = { width: 512, height: 512 }
+    const filled = captureStructure(doc)
+    fixture.history.recordOperation(
+      "place image",
+      { before, after: filled },
+      {
+        filled: [
+          {
+            surfaceId: placed,
+            tiles: [
+              { ...ORIGIN, texels: new Uint16Array(TILE_VALUES).fill(7) },
+            ],
+          },
+        ],
+        canvas,
+      }
+    )
+    await fixture.history.settle()
+
+    setLayer(doc, placed, { name: "moved" })
+    fixture.history.recordOperation(
+      "transform image",
+      { before: filled, after: captureStructure(doc) },
+      {
+        replaced: [
+          {
+            surfaceId: placed,
+            tiles: [
+              {
+                x: 1,
+                y: 0,
+                texels: new Uint16Array(TILE_VALUES).fill(7),
+              },
+            ],
+          },
+        ],
+        canvas,
+      }
+    )
+    await fixture.history.settle()
+    expect(fixture.read(placed, ORIGIN)).toBeNull()
+    expect(fixture.read(placed, { x: 1, y: 0 })![0]).toBe(7)
+    expect(fixture.history.occupiedTiles(placed)).toEqual([{ x: 1, y: 0 }])
+
+    // One step back, and the picture is where it was: the pixels came with
+    // the placement rather than being left for a second undo to find.
+    await fixture.history.undo(() => {})
+    expect(fixture.read(placed, ORIGIN)![0]).toBe(7)
+    expect(fixture.read(placed, { x: 1, y: 0 })).toBeNull()
+  })
+
   test("an operation that changed nothing is not a step", async () => {
     const { history } = setup()
     const doc = createDocument({ width: 512, height: 512 })

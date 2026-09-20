@@ -17,6 +17,16 @@ export function createConvexRemoteIndex(
         documentId,
         hashes: [...hashes],
       }),
+    presignAssetUploads: (ids) =>
+      client.action(api.tilesActions.presignAssetUploads, {
+        documentId,
+        ids: [...ids],
+      }),
+    presignAssetDownloads: (ids) =>
+      client.action(api.tilesActions.presignAssetDownloads, {
+        documentId,
+        ids: [...ids],
+      }),
     presignPreviewUpload: () =>
       client.action(api.tilesActions.presignPreviewUpload, { documentId }),
     commitPreview: async () => {

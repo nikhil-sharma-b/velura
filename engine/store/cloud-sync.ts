@@ -14,7 +14,8 @@
  * object store), and the index upsert is idempotent by construction.
  */
 
-import type { DocumentStructure } from "../doc/structure"
+import type { ImageAssetRef } from "../doc/image-source"
+import { structureAssets, type DocumentStructure } from "../doc/structure"
 import type {
   DocumentManifest,
   DocumentStore,
@@ -22,12 +23,14 @@ import type {
   SurfaceTiles,
   TileRef,
 } from "./document-store"
-import type { TileSource } from "./document-store"
+import type { AssetSource, TileSource } from "./document-store"
 import { decodeTile, encodeTile } from "./tile-codec"
 
 export type DocumentSnapshot = {
   structure: DocumentStructure
   surfaces: readonly SurfaceTiles[]
+  /** The originals placed images were made from (06). */
+  assets?: readonly ImageAssetRef[]
 }
 
 /** What cloud sync needs from the backend. Convex in production, a fake in tests. */
@@ -36,6 +39,18 @@ export interface RemoteIndex {
   presignUploads(
     hashes: readonly string[]
   ): Promise<readonly { hash: string; url: string }[]>
+  /**
+   * The same batch mint for the originals placed images keep (06). They are
+   * content-addressed like tiles and share the dedup ledger, but they are
+   * whole files rather than tiles, so they are objects of their own kind —
+   * and an id is not a tile hash, so it is not called one.
+   */
+  presignAssetUploads(
+    ids: readonly string[]
+  ): Promise<readonly { id: string; url: string }[]>
+  presignAssetDownloads(
+    ids: readonly string[]
+  ): Promise<readonly { id: string; url: string }[]>
   /** One mutable object per document; the document row versions its URL. */
   presignPreviewUpload?(): Promise<string>
   /** Publishes a preview only after its object upload has succeeded. */
@@ -106,6 +121,8 @@ export function createCloudSync(options: {
   remote: RemoteIndex
   snapshot: () => DocumentSnapshot
   tiles: TileSource
+  /** An original's file bytes by id, for the assets a snapshot names. */
+  assets?: AssetSource
   /** A flattened, display-transformed PNG. Generated only when a flush runs. */
   preview?: () => Promise<Uint8Array>
   /** Uploads bytes to a presigned URL. Overridable for tests; defaults to fetch PUT. */
@@ -176,18 +193,49 @@ export function createCloudSync(options: {
       const document = options.snapshot()
       const refs = allTiles(document.surfaces)
 
+      const assets = options.assets
+        ? (document.assets ?? structureAssets(document.structure))
+        : []
+
       const hashes = [...new Set(refs.map((tile) => tile.hash))]
-      const missing = await options.remote.missingHashes(hashes)
+      // One dedup check for both kinds: an id is a content hash either way,
+      // and the ledger the answer comes from does not care what the bytes
+      // behind one are.
+      const missing = await options.remote.missingHashes([
+        ...hashes,
+        ...assets.map((asset) => asset.id),
+      ])
+      const wanted = new Set(missing)
 
       const uploaded: { hash: string; size: number }[] = []
-      if (missing.length > 0) {
-        const urls = await options.remote.presignUploads(missing)
+      const missingTiles = hashes.filter((hash) => wanted.has(hash))
+      if (missingTiles.length > 0) {
+        const urls = await options.remote.presignUploads(missingTiles)
         await Promise.all(
           urls.map(async ({ hash, url }) => {
             const bytes = await encodeTile(await options.tiles(hash))
             await upload(url, bytes)
             putCount++
             uploaded.push({ hash, size: bytes.byteLength })
+          })
+        )
+      }
+      const missingAssets = assets.filter((asset) => wanted.has(asset.id))
+      if (missingAssets.length > 0) {
+        const urls = await options.remote.presignAssetUploads(
+          missingAssets.map((asset) => asset.id)
+        )
+        const mimes = new Map(
+          missingAssets.map((asset) => [asset.id, asset.mime])
+        )
+        await Promise.all(
+          urls.map(async ({ id, url }) => {
+            const bytes = await options.assets!(id)
+            await upload(url, bytes, mimes.get(id))
+            putCount++
+            // The dedup ledger is one ledger: an id is confirmed uploaded
+            // the same way a tile hash is.
+            uploaded.push({ hash: id, size: bytes.byteLength })
           })
         )
       }
@@ -368,6 +416,9 @@ export async function hydrateFromRemote(options: {
     tiles,
   }))
 
+  // The originals the tree names (06), so a document opened on a second
+  // machine can be moved and scaled there, not only looked at.
+  const assets = structureAssets(meta.structure)
   const manifest: DocumentManifest = {
     version: 1,
     id: options.documentId,
@@ -376,6 +427,7 @@ export async function hydrateFromRemote(options: {
     height: meta.height,
     structure: meta.structure,
     surfaces,
+    ...(assets.length > 0 ? { assets } : {}),
     updatedAt: Date.now(),
   }
 
@@ -401,11 +453,36 @@ export async function hydrateFromRemote(options: {
       : []
   )
 
-  await options.local.save(manifest, async (hash) => {
-    const url = urlByHash.get(hash)
-    if (!url) throw new Error(`No download URL minted for tile ${hash}`)
-    return decodeTile(await get(url))
-  })
+  // An original this device already holds is not fetched again: same content
+  // addressing, same rule as the tiles above.
+  const neededAssets = (
+    await Promise.all(
+      assets.map(async (asset) =>
+        (await options.local.readAsset(asset.id)) ? null : asset.id
+      )
+    )
+  ).filter((id): id is string => id !== null)
+  const urlByAsset = new Map(
+    neededAssets.length > 0
+      ? (await options.remote.presignAssetDownloads(neededAssets)).map(
+          ({ id, url }) => [id, url]
+        )
+      : []
+  )
+
+  await options.local.save(
+    manifest,
+    async (hash) => {
+      const url = urlByHash.get(hash)
+      if (!url) throw new Error(`No download URL minted for tile ${hash}`)
+      return decodeTile(await get(url))
+    },
+    async (id) => {
+      const url = urlByAsset.get(id)
+      if (!url) throw new Error(`No download URL minted for image ${id}`)
+      return await get(url)
+    }
+  )
 
   return manifest
 }

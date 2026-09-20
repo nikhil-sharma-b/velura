@@ -85,28 +85,3 @@ export function imageTiles(
   }
   return tiles
 }
-
-/**
- * Where an image goes when nothing else is asked for: centred, and scaled down
- * to fit the canvas if it is larger than one. Scaling up is not the same
- * favour — an image smaller than the canvas is placed at its own resolution
- * rather than blown up to fill a document it was never meant to.
- */
-export function fitPlacement(
-  image: { width: number; height: number },
-  canvas: { width: number; height: number }
-): PixelRect {
-  const scale = Math.min(
-    1,
-    canvas.width / image.width,
-    canvas.height / image.height
-  )
-  const width = Math.max(1, Math.round(image.width * scale))
-  const height = Math.max(1, Math.round(image.height * scale))
-  return {
-    x: Math.round((canvas.width - width) / 2),
-    y: Math.round((canvas.height - height) / 2),
-    width,
-    height,
-  }
-}

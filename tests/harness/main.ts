@@ -89,6 +89,8 @@ declare global {
     createFakeCloud(size: { width: number; height: number }): FakeCloud
     /** How many tiles a document's local manifest names, total, for 18's tests. */
     tileCountFor(documentId: string): Promise<number>
+    /** The placement a stored document holds for its first placed image. */
+    storedPlacement(documentId: string): Promise<unknown>
     /**
      * Rewrites a stored manifest so its tree no longer names `layerId` while
      * its tiles stay listed: pixels on disk that no layer will load into.
@@ -97,6 +99,13 @@ declare global {
     encodePreview: typeof encodePreview
     encodeExportImage: typeof encodeExportImage
   }
+}
+
+window.storedPlacement = async (documentId) => {
+  const store = createDocumentStore(createLocalBlobStore())
+  const manifest = await store.load(documentId)
+  const found = manifest?.structure.layers.find((node) => node.placed)
+  return found?.placed?.placement ?? null
 }
 
 window.tileCountFor = async (documentId) => {
@@ -205,6 +214,13 @@ window.createFakeCloud = (size) => {
     },
     async presignDownloads(hashes) {
       return hashes.map((hash) => ({ hash, url: `${FAKE_SCHEME}${hash}` }))
+    },
+    // The originals placed images keep travel the same way their tiles do.
+    async presignAssetUploads(ids) {
+      return ids.map((id) => ({ id, url: `${FAKE_SCHEME}${id}` }))
+    },
+    async presignAssetDownloads(ids) {
+      return ids.map((id) => ({ id, url: `${FAKE_SCHEME}${id}` }))
     },
     async commitFlush(payload) {
       if (failing) throw new Error("Simulated network outage.")

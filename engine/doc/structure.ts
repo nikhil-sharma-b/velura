@@ -5,6 +5,7 @@ import {
   type PaintDocument,
 } from "./document"
 import type { BlendMode } from "../shaders/blend-modes"
+import type { ImageAssetRef, PlacedImage } from "./image-source"
 import { createTiledMask } from "./tiled-mask"
 import { createTiledLayer } from "./tiled-layer"
 
@@ -24,6 +25,13 @@ export type NodeStructure = {
   clip: boolean
   locked?: boolean
   image?: boolean
+  /**
+   * The original a placed image was made from and where it sits (06). Part of
+   * the tree rather than of the pixels, which is what makes a transform one
+   * undo step that puts the previous *placement* back rather than the
+   * previous pixels, and what carries the picture through a save.
+   */
+  placed?: PlacedImage
   mask?: { id: string; enabled: boolean }
   children?: NodeStructure[]
 }
@@ -47,6 +55,7 @@ function captureNode(node: LayerNode): NodeStructure {
     // Only written when set, so structures saved before image layers existed
     // read back unchanged.
     ...(node.kind === "raster" && node.image ? { image: true } : {}),
+    ...(node.kind === "raster" && node.placed ? { placed: node.placed } : {}),
     ...(node.mask
       ? { mask: { id: node.mask.id, enabled: node.mask.enabled } }
       : {}),
@@ -76,6 +85,24 @@ export function structureSurfaceIds(structure: DocumentStructure): Set<string> {
   }
   walk(structure.layers)
   return ids
+}
+
+/**
+ * Every original the tree names, once each (06). A manifest is written from
+ * this, so a document carries exactly the pictures its layers can still be
+ * re-rendered from — a layer converted to paint has let go of its original,
+ * and the blob stops being written with the next save.
+ */
+export function structureAssets(structure: DocumentStructure): ImageAssetRef[] {
+  const found = new Map<string, ImageAssetRef>()
+  const walk = (nodes: readonly NodeStructure[]) => {
+    for (const node of nodes) {
+      if (node.placed) found.set(node.placed.asset.id, node.placed.asset)
+      if (node.children) walk(node.children)
+    }
+  }
+  walk(structure.layers)
+  return [...found.values()]
 }
 
 /** A surface as a save names it: enough to tell whether it holds anything. */
@@ -212,6 +239,7 @@ export function restoreStructure(
       kind: "raster",
       locked: snapshot.locked ?? false,
       image: snapshot.image ?? false,
+      ...(snapshot.placed ? { placed: snapshot.placed } : {}),
       surface:
         found?.kind === "raster"
           ? found.surface

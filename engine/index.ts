@@ -62,23 +62,41 @@ import {
   selectMask,
   setLayer,
   setMaskEnabled,
+  setPlacement,
 } from "./doc/document"
 import {
   createDocumentHistory,
   DEFAULT_HOT_BYTES,
   DEFAULT_WARM_BYTES,
   type DocumentHistory,
+  type OperationPixels,
 } from "./doc/history"
 import { BACKGROUND, WORKSPACE_BACKGROUND } from "./doc/scene"
 import {
   adoptStrandedSurfaces,
   captureStructure,
   type DocumentStructure,
+  type NodeStructure,
   restoreStructure,
   savedStructure,
+  structureAssets,
   structureSurfaceIds,
 } from "./doc/structure"
-import { fitPlacement, imageTiles, type SourceImage } from "./doc/image-tiles"
+import { imageTiles, type SourceImage } from "./doc/image-tiles"
+import {
+  centeredPlacement,
+  type ImagePlacement,
+  resolution,
+  samePlacement,
+  validPlacement,
+} from "./doc/image-placement"
+import { createCanvasImageCodec } from "./doc/image-codec"
+import {
+  assetId,
+  type ImageAsset,
+  type ImageAssetRef,
+  type ImageSourceCodec,
+} from "./doc/image-source"
 import { createOpfsSpill, createTileStore } from "./doc/tile-store"
 import {
   intersectRect,
@@ -147,7 +165,13 @@ import {
   zoomView,
 } from "./view/view-transform"
 
-export { MAX_ZOOM, MIN_ZOOM } from "./view/view-transform"
+export {
+  docToScreen,
+  invertMatrix,
+  MAX_ZOOM,
+  MIN_ZOOM,
+  type ViewMatrix,
+} from "./view/view-transform"
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
 export {
   encodeExportImage,
@@ -192,6 +216,21 @@ const DEFAULT_CLOUD_IDLE_MS = 30_000
 const THUMBNAIL_QUIET_MS = 300
 /** Product canvas ceiling; a device may impose a lower texture limit. */
 const MAX_DOCUMENT_EDGE = 8192
+
+export type { ImagePlacement, PlacementHandle } from "./doc/image-placement"
+export {
+  centeredPlacement,
+  flippedPlacement,
+  handlePoints,
+  movedPlacement,
+  nudgedPlacement,
+  placementCorners,
+  placementRect,
+  resolution,
+  rotatedPlacement,
+  scaledPlacement,
+} from "./doc/image-placement"
+export type { ImageAsset, ImageAssetRef, PlacedImage } from "./doc/image-source"
 
 export type PaintTool = "brush" | "eraser"
 
@@ -304,11 +343,26 @@ export type EngineCommand =
    */
   | {
       type: "placeImage"
-      image: SourceImage
+      /**
+       * The file as it was dropped. Kept with the layer, so every later
+       * adjustment is rendered from it rather than from the last render of
+       * it (06) — and so the document holds a photograph's own compressed
+       * bytes rather than the rgba16float tiles it expands into.
+       */
+      file?: { bytes: Uint8Array; mime: string }
+      /**
+       * Pixels, for a picture that never was a file: the test harness, and a
+       * host with an already-decoded image in hand. They become the layer's
+       * original, encoded once here, so such an image transforms like any
+       * other rather than being the one kind that cannot.
+       */
+      image?: SourceImage
       /** The layer's name; the file's, usually. */
       name?: string
       /** Top-left in document pixels. Centred when absent. */
       origin?: { x: number; y: number }
+      /** Where the picture sits outright. Overrides `origin`. */
+      placement?: ImagePlacement
     }
   | { type: "addGroup"; ids?: string[] }
   /** Copies a layer's pixels and settings above it, then selects the copy. */
@@ -332,6 +386,30 @@ export type EngineCommand =
    * only ever sent because the artist asked for it.
    */
   | { type: "makeLayerPaintable"; id: string }
+  /**
+   * Picks a placed image up to be moved, scaled, turned or mirrored (06).
+   *
+   * What follows is a run of `adjustImageTransform` — each one rendered from
+   * the original, so nothing softens however long the artist takes — ended by
+   * `commitImageTransform`, which makes the whole run one undo step, or by
+   * `cancelImageTransform`, which leaves the picture exactly as it was.
+   *
+   * Only offered for a layer that is still an image layer: a layer handed to
+   * the pen (`makeLayerPaintable`) has no original to re-render from.
+   *
+   * The layer's mask stays where the artist painted it. It is theirs — hand
+   * marks with no original behind them — so moving it with the picture would
+   * mean resampling it, and resampling a mask that has already been
+   * resampled is exactly the softening this whole design exists to avoid.
+   * A mask hides a part of the canvas; the picture moves under it.
+   */
+  | { type: "beginImageTransform"; id: string }
+  /** Where the picture sits as of this moment of the drag. */
+  | { type: "adjustImageTransform"; placement: ImagePlacement }
+  /** Ends the transform, as one step. */
+  | { type: "commitImageTransform" }
+  /** Ends the transform, putting the picture back where it was picked up. */
+  | { type: "cancelImageTransform" }
   /**
    * A layer's own settings. Every field is optional and unnamed ones are left
    * alone, so a control that owns one property need not know the rest.
@@ -419,6 +497,13 @@ export type EngineSnapshot = Readonly<{
    * command here changes a texel, and an export ignores it entirely.
    */
   view: CanvasView
+  /**
+   * The transform in progress, if one is (06): which layer is being moved,
+   * where it sits as of now, and how much of the picture's own detail is
+   * left at that size — above 1 means the artist is being shown pixels the
+   * picture never held, which the box says out loud rather than pretending.
+   */
+  imageTransform: ImageTransformState | null
   /** Whether there is a step to take back, and one to put back (D21). */
   canUndo: boolean
   canRedo: boolean
@@ -438,6 +523,15 @@ export type EngineSnapshot = Readonly<{
    * farther away may still be arriving in the background.
    */
   loading: boolean
+}>
+
+export type ImageTransformState = Readonly<{
+  layerId: string
+  placement: ImagePlacement
+  /** The original's own size, in its own pixels. */
+  source: Readonly<{ width: number; height: number }>
+  /** Drawn pixels per source pixel; 1 is the size the picture was recorded at. */
+  resolution: number
 }>
 
 export type MaskSummary = Readonly<Omit<LayerMask, "surface">>
@@ -482,6 +576,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   activeLayerId: "",
   paintingMask: false,
   view: DEFAULT_VIEW,
+  imageTransform: null,
   canUndo: false,
   canRedo: false,
   error: null,
@@ -666,6 +761,12 @@ export function createEngine(
      * not the picker's own commit — is what a recents list should listen to.
      */
     onStrokeCommitted?: (hex: string) => void
+    /**
+     * How a placed image is decoded and drawn at a placement (06). The
+     * browser's own canvas by default; a test hands over its own so the
+     * engine's half can be exercised without a decoder.
+     */
+    imageCodec?: ImageSourceCodec
   } = {}
 ): Engine {
   let snapshot: EngineSnapshot = INITIAL_SNAPSHOT
@@ -697,6 +798,27 @@ export function createEngine(
    * means, and belongs here rather than in a panel counting steps.
    */
   let restoreDepth: number | undefined
+  /**
+   * The originals placed images were made from, by content hash (06). One
+   * copy per distinct file however many layers show it, held here so a
+   * transform never has to go back to disk mid-drag.
+   */
+  const assets = new Map<string, ImageAsset>()
+  let codec: ImageSourceCodec | undefined
+  /** The picture being moved, if one is; see `beginImageTransform`. */
+  let imageTransform:
+    | {
+        layerId: string
+        /** Where it was picked up: what a cancel puts back. */
+        start: ImagePlacement
+        placement: ImagePlacement
+        asset: ImageAsset
+        /** The tree before the transform, which is the step's "before". */
+        structure: DocumentStructure
+        /** Tiles the last preview wrote, so the next one can clear them. */
+        shown: TileCoord[]
+      }
+    | undefined
   let flushScheduler: FlushScheduler | undefined
   /**
    * Whether this session may write to local storage. False until the stored
@@ -1111,6 +1233,268 @@ export function createEngine(
     if (snapshot.status === "ready") render()
   }
 
+  /**
+   * The decoder and scaler placed images are rendered through. Made on first
+   * use rather than at construction: an engine that never sees an image never
+   * touches a canvas, and a test can hand over one with no browser behind it.
+   */
+  function imageCodec(): ImageSourceCodec {
+    codec ??= options.imageCodec ?? createCanvasImageCodec()
+    return codec
+  }
+
+  /**
+   * The original a layer was made from. Held in memory for the session; a
+   * reopened document reads it back off disk before the layer can be moved,
+   * so this answering nothing means the picture is not here to re-render.
+   */
+  function assetFor(id: string): ImageAsset {
+    const held = assets.get(id)
+    if (!held)
+      throw new Error("The picture this layer was made from is not loaded yet.")
+    return held
+  }
+
+  /**
+   * One rendering of an original at a placement, as document tiles. Always
+   * from the original — this is the whole of why a picture may be adjusted
+   * any number of times without softening (06).
+   */
+  async function renderPlacement(
+    asset: ImageAsset,
+    placement: ImagePlacement,
+    canvas: { width: number; height: number }
+  ): Promise<(TileCoord & { texels: Uint16Array })[]> {
+    const raster = await imageCodec().render(asset, placement)
+    return imageTiles(raster.image, raster.origin, canvas)
+  }
+
+  /**
+   * Shows a transform in progress without recording it. Mid-drag there is no
+   * step to take back yet — the step is the whole drag — so these pixels go
+   * to the GPU and history's index is left describing the picture as it was,
+   * which is exactly the "before" the commit then records against.
+   */
+  function showTransform(
+    layerId: string,
+    tiles: readonly (TileCoord & { texels: Uint16Array })[],
+    clearing: readonly TileCoord[]
+  ) {
+    if (!renderer) return
+    const shown = new Set(tiles.map((tile) => `${tile.x},${tile.y}`))
+    const writes = [
+      ...tiles.map((tile) => ({ x: tile.x, y: tile.y, texels: tile.texels })),
+      // Where the picture was and no longer is. Without this a move would
+      // smear it across everywhere it had been.
+      ...clearing
+        .filter((coord) => !shown.has(`${coord.x},${coord.y}`))
+        .map((coord) => ({ x: coord.x, y: coord.y, texels: null })),
+    ]
+    renderer.writeTiles(layerId, writes)
+    contentBounds.growTiles(layerId, writes)
+    invalidateThumbnailsOf(layerId)
+    if (snapshot.status === "ready") render()
+  }
+
+  /** What the host needs to draw the box and to say how much detail is left. */
+  function describeTransform(): ImageTransformState | null {
+    if (!imageTransform) return null
+    const { layerId, placement, asset } = imageTransform
+    return Object.freeze({
+      layerId,
+      placement,
+      source: Object.freeze({ width: asset.width, height: asset.height }),
+      resolution: resolution(placement, asset),
+    })
+  }
+
+  /**
+   * The tree as a save should write it.
+   *
+   * Mid-drag the document carries the placement the artist is looking at,
+   * while the tiles on disk are still the ones the picture was picked up
+   * with — the drag is deliberately not recorded until it is committed. A
+   * save landing in that window must not write the new placement against the
+   * old pixels, or reopening would show the picture where it used to be
+   * while claiming it is somewhere else. So the in-flight layer is written
+   * as it was picked up, and the commit saves the pair together.
+   */
+  function structureForSave(): DocumentStructure {
+    const document = requireDocument()
+    const surfaces = history?.tileIndex() ?? []
+    const structure = savedStructure(captureStructure(document), surfaces)
+    const session = imageTransform
+    if (!session) return structure
+    const settle = (nodes: readonly NodeStructure[]): NodeStructure[] =>
+      nodes.map((node) =>
+        node.id === session.layerId && node.placed
+          ? { ...node, placed: { ...node.placed, placement: session.start } }
+          : node.children
+            ? { ...node, children: settle(node.children) }
+            : node
+      )
+    return { ...structure, layers: settle(structure.layers) }
+  }
+
+  /**
+   * The originals a save can actually write: the ones the tree names that
+   * this session is holding.
+   *
+   * A device that has lost an original — a cache cleared under a document
+   * whose blob was never fetched back — still has the picture, because the
+   * pixels are the document's tiles. Naming a file the save cannot produce
+   * would fail the save, and a lost original must not cost the artist the
+   * stroke they just painted. The tree keeps naming it either way, so the
+   * machine that does hold it is unaffected.
+   */
+  function writableAssets(structure: DocumentStructure): ImageAssetRef[] {
+    return structureAssets(structure).filter((ref) => assets.has(ref.id))
+  }
+
+  /** A placed image's asset, without the bytes: what the tree carries. */
+  function assetRef(asset: ImageAsset): ImageAssetRef {
+    return Object.freeze({
+      id: asset.id,
+      mime: asset.mime,
+      width: asset.width,
+      height: asset.height,
+    })
+  }
+
+  /** Pixels handed straight over, as a file they can be re-rendered from. */
+  async function encodeGivenPixels(
+    image: SourceImage | undefined
+  ): Promise<{ bytes: Uint8Array; mime: string }> {
+    if (!image) throw new Error("Placing an image needs a picture to place.")
+    if (
+      !Number.isInteger(image.width) ||
+      !Number.isInteger(image.height) ||
+      image.width < 1 ||
+      image.height < 1
+    )
+      throw new Error("An image needs a whole width and height.")
+    if (image.pixels.length < image.width * image.height * 4)
+      throw new Error("That image has fewer pixels than it claims.")
+    return await imageCodec().encode(image)
+  }
+
+  /**
+   * Takes an original into the session, by content: the same photo placed
+   * twice, or placed and then duplicated, is one asset and one blob on disk.
+   */
+  async function rememberAsset(file: {
+    bytes: Uint8Array
+    mime: string
+  }): Promise<ImageAsset> {
+    if (file.bytes.length === 0) throw new Error("That image file is empty.")
+    const id = assetId(file.bytes)
+    const held = assets.get(id)
+    if (held) return held
+    const size = await imageCodec().measure(file.bytes, file.mime)
+    if (
+      !Number.isInteger(size.width) ||
+      !Number.isInteger(size.height) ||
+      size.width < 1 ||
+      size.height < 1
+    )
+      throw new Error("That image could not be read.")
+    const asset: ImageAsset = Object.freeze({
+      id,
+      mime: file.mime,
+      bytes: file.bytes,
+      width: size.width,
+      height: size.height,
+    })
+    assets.set(id, asset)
+    return asset
+  }
+
+  /** Where a `placeImage` asked for its picture to go. */
+  function placementFor(
+    command: { placement?: ImagePlacement; origin?: { x: number; y: number } },
+    asset: ImageAsset,
+    canvas: { width: number; height: number }
+  ): ImagePlacement {
+    if (command.placement) return command.placement
+    const centred = centeredPlacement(asset, canvas)
+    // An origin names a top-left, which is how placing an image was asked for
+    // before a placement was a thing; the size it lands at is unchanged.
+    if (!command.origin) return centred
+    return {
+      ...centred,
+      x: command.origin.x + centred.width / 2,
+      y: command.origin.y + centred.height / 2,
+    }
+  }
+
+  /**
+   * Ends a transform as one step: the tree with the new placement in it, and
+   * the surface's pixels replaced outright — replaced, not added to, because
+   * a picture that moved has to stop being where it was.
+   *
+   * Undoing this puts the previous placement back and the previous pixels
+   * with it, which is what makes a transform feel like one act rather than
+   * like however many adjustments the artist made getting there.
+   */
+  async function commitTransform(): Promise<void> {
+    const session = imageTransform
+    if (!session) return
+    imageTransform = undefined
+    const document = requireDocument()
+    const canvas = { width: document.width, height: document.height }
+    if (samePlacement(session.placement, session.start)) {
+      // Picked up and put down: not a step, and nothing to re-render.
+      publish({ imageTransform: null })
+      return
+    }
+    recordOperation("transform image", session.structure, {
+      replaced: [
+        {
+          surfaceId: session.layerId,
+          tiles: await renderPlacement(
+            session.asset,
+            session.placement,
+            canvas
+          ),
+        },
+      ],
+      canvas,
+    })
+    await history?.settle()
+    publish({ imageTransform: null })
+    applyLayerChange()
+  }
+
+  /**
+   * Ends a transform having changed nothing. The picture is rendered once
+   * more at the placement it was picked up from rather than the preview being
+   * "undone": there is no step to undo, and re-rendering from the original is
+   * how every other placement this picture has ever had was produced.
+   */
+  async function cancelTransform(): Promise<void> {
+    const session = imageTransform
+    if (!session) return
+    imageTransform = undefined
+    const document = requireDocument()
+    setPlacement(document, session.layerId, session.start)
+    if (!samePlacement(session.placement, session.start)) {
+      const canvas = { width: document.width, height: document.height }
+      showTransform(
+        session.layerId,
+        await renderPlacement(session.asset, session.start, canvas),
+        session.shown
+      )
+    }
+    publish({ imageTransform: null })
+    applyLayerChange()
+  }
+
+  /** The transform in force, or the failure of asking for one out of turn. */
+  function requireTransform() {
+    if (!imageTransform) throw new Error("No image is being transformed.")
+    return imageTransform
+  }
+
   /** Hands the renderer whatever pixels each layer's surface has gained. */
   function uploadLayers() {
     if (!renderer || !doc) return
@@ -1164,7 +1548,19 @@ export function createEngine(
         })
       }
       const { surface: _surface, mask: _mask, ...settings } = node
-      return Object.freeze({ ...settings, ...(mask ? { mask } : {}) })
+      // A placed image is described as movable only while the original it
+      // would be re-rendered from is actually here. The tree keeps naming
+      // that original either way — a machine that holds it is unaffected —
+      // but a panel must not offer a control that can only fail.
+      const placed =
+        settings.placed && assets.has(settings.placed.asset.id)
+          ? settings.placed
+          : undefined
+      return Object.freeze({
+        ...settings,
+        ...(placed ? { placed } : { placed: undefined }),
+        ...(mask ? { mask } : {}),
+      })
     }
     return {
       layers: Object.freeze(document.layers.map(describe)),
@@ -1205,16 +1601,7 @@ export function createEngine(
   function recordOperation(
     label: string,
     before: DocumentStructure,
-    operation?: {
-      removed?: readonly string[]
-      copied?: readonly { from: string; to: string }[]
-      filled?: readonly {
-        surfaceId: string
-        tiles: readonly (TileCoord & { texels: Uint16Array })[]
-      }[]
-      canvas?: { width: number; height: number }
-      coalesceAs?: string
-    }
+    operation?: OperationPixels
   ) {
     history?.recordOperation(
       label,
@@ -1441,6 +1828,19 @@ export function createEngine(
     const structure = adoptStrandedSurfaces(stored.structure, stored.surfaces)
     reserveIds(structureSurfaceIds(structure))
     restoreStructure(document, structure)
+    // The originals before the pixels: they are small beside a document's
+    // tiles, and a picture that opened without its original would be one the
+    // artist could see and not move (06). One missing from the device is a
+    // picture that can still be shown — the tiles are the document — and not
+    // moved until it is fetched again.
+    await Promise.all(
+      structureAssets(structure).map(async (ref) => {
+        if (assets.has(ref.id)) return
+        const bytes = await store.readAsset(ref.id)
+        if (bytes) assets.set(ref.id, Object.freeze({ ...ref, bytes }))
+      })
+    )
+    if (disposed) return true
     const canvas = { width: document.width, height: document.height }
 
     // A tile is a file read and an inflate, so a batch is asked for together
@@ -1818,16 +2218,17 @@ export function createEngine(
           // The texels come out of the store history is already holding them
           // in, so undo and the local cache share one copy of every tile (D21).
           tiles: (hash) => past.store.get(hash),
+          // The originals placed images are re-rendered from, held for the
+          // session and written beside the tiles (06).
+          assets: async (id) => assetFor(id).bytes,
           snapshot: () => {
-            const surfaces = past.tileIndex()
+            const structure = structureForSave()
             return {
               width: snapshot.width,
               height: snapshot.height,
-              structure: savedStructure(
-                captureStructure(requireDocument()),
-                surfaces
-              ),
-              surfaces,
+              structure,
+              surfaces: past.tileIndex(),
+              assets: writableAssets(structure),
             }
           },
           onError: (error) => {
@@ -1843,14 +2244,13 @@ export function createEngine(
             // Same tile source and tile index as local persistence: the
             // upload set is exactly what disk already holds (D14).
             tiles: (hash) => past.store.get(hash),
+            assets: async (id) => assetFor(id).bytes,
             snapshot: () => {
-              const surfaces = past.tileIndex()
+              const structure = structureForSave()
               return {
-                structure: savedStructure(
-                  captureStructure(requireDocument()),
-                  surfaces
-                ),
-                surfaces,
+                structure,
+                surfaces: past.tileIndex(),
+                assets: writableAssets(structure),
               }
             },
             // readPixels presents through the renderer's one display-transform
@@ -2210,25 +2610,28 @@ export function createEngine(
         }
         case "placeImage": {
           const document = requireDocument()
-          const image = command.image
-          if (
-            !Number.isInteger(image.width) ||
-            !Number.isInteger(image.height) ||
-            image.width < 1 ||
-            image.height < 1
-          )
-            throw new Error("An image needs a whole width and height.")
-          if (image.pixels.length < image.width * image.height * 4)
-            throw new Error("That image has fewer pixels than it claims.")
           const canvas = { width: document.width, height: document.height }
+          // A file keeps its own bytes; loose pixels are encoded into some, so
+          // that either way the layer ends up holding an original it can be
+          // re-rendered from.
+          const file = command.file ?? (await encodeGivenPixels(command.image))
+          const asset = await rememberAsset(file)
           const before = captureStructure(document)
           const id = addLayer(document)
           if (command.name) setLayer(document, id, { name: command.name })
-          findLayer(document, id).image = true
-          const origin = command.origin ?? fitPlacement(image, canvas)
-          const tiles = imageTiles(image, origin, canvas)
+          const layer = findLayer(document, id)
+          layer.image = true
+          const placement = placementFor(command, asset, canvas)
+          if (!validPlacement(placement, canvas))
+            throw new Error("That is not a placement an image can be put at.")
+          layer.placed = { asset: assetRef(asset), placement }
           recordOperation("place image", before, {
-            filled: [{ surfaceId: id, tiles }],
+            filled: [
+              {
+                surfaceId: id,
+                tiles: await renderPlacement(asset, placement, canvas),
+              },
+            ],
             canvas,
           })
           // Recording is what puts these tiles on the GPU, and it is queued
@@ -2238,6 +2641,59 @@ export function createEngine(
           applyLayerChange()
           break
         }
+        case "beginImageTransform": {
+          const document = requireDocument()
+          const layer = findLayer(document, command.id)
+          if (layer.kind !== "raster" || !layer.image || !layer.placed)
+            throw new Error(
+              "Only a placed image can be moved, scaled or turned."
+            )
+          // A transform in flight on another layer is finished rather than
+          // abandoned: the artist moved on, they did not undo.
+          if (imageTransform && imageTransform.layerId !== command.id)
+            await commitTransform()
+          imageTransform = {
+            layerId: command.id,
+            start: layer.placed.placement,
+            placement: layer.placed.placement,
+            asset: assetFor(layer.placed.asset.id),
+            structure: captureStructure(document),
+            shown: history?.occupiedTiles(command.id) ?? [],
+          }
+          publish({ imageTransform: describeTransform() })
+          break
+        }
+        case "adjustImageTransform": {
+          const document = requireDocument()
+          const session = requireTransform()
+          const canvas = { width: document.width, height: document.height }
+          if (!validPlacement(command.placement, canvas))
+            throw new Error("That is not a placement an image can be put at.")
+          if (samePlacement(command.placement, session.placement)) break
+          session.placement = command.placement
+          setPlacement(document, session.layerId, command.placement)
+          const tiles = await renderPlacement(
+            session.asset,
+            command.placement,
+            canvas
+          )
+          // Still the drag this adjustment belongs to? Rendering is a wait,
+          // and a commit or a cancel may have landed during it.
+          if (imageTransform !== session) break
+          showTransform(session.layerId, tiles, session.shown)
+          session.shown = tiles.map((tile) => ({ x: tile.x, y: tile.y }))
+          publish({
+            imageTransform: describeTransform(),
+            ...describeLayers(document),
+          })
+          break
+        }
+        case "commitImageTransform":
+          await commitTransform()
+          break
+        case "cancelImageTransform":
+          await cancelTransform()
+          break
         case "addGroup": {
           const before = captureStructure(requireDocument())
           addGroup(requireDocument(), command.ids)
@@ -2271,6 +2727,12 @@ export function createEngine(
           break
         case "removeLayer":
           {
+            // A picture being moved that is then thrown away: the transform
+            // has nowhere to land, and a commit would put the pixels back.
+            if (imageTransform?.layerId === command.id) {
+              imageTransform = undefined
+              publish({ imageTransform: null })
+            }
             const document = requireDocument()
             const before = captureStructure(document)
             const removed = removeLayer(document, command.id)
@@ -2283,6 +2745,8 @@ export function createEngine(
           applyLayerChange()
           break
         case "clearDocument": {
+          imageTransform = undefined
+          publish({ imageTransform: null })
           const previous = requireDocument()
           for (const id of structureSurfaceIds(captureStructure(previous)))
             renderer?.releaseLayer(id)
@@ -2343,6 +2807,11 @@ export function createEngine(
           break
         }
         case "makeLayerPaintable": {
+          // Converting mid-transform keeps what the artist was looking at:
+          // the adjustment lands as its own step, and the conversion follows
+          // it. The other way round would hand the pen the picture as it was
+          // before the move and lose the move with no way back to it.
+          if (imageTransform?.layerId === command.id) await commitTransform()
           const document = requireDocument()
           const before = captureStructure(document)
           makeLayerPaintable(document, command.id)
@@ -2374,6 +2843,13 @@ export function createEngine(
         case "undo":
         case "redo": {
           if (!history) break
+          // Undo during a drag means the adjustment being made, not the step
+          // underneath it: the picture goes back to where it was picked up
+          // and the stack is left alone.
+          if (imageTransform) {
+            await cancelTransform()
+            break
+          }
           const document = requireDocument()
           const previous = structureSurfaceIds(captureStructure(document))
           const applied = await history[command.type]((structure) => {
@@ -2663,20 +3139,26 @@ export function createEngine(
         throw new Error("The graphics device is not ready.")
       await history.settle()
       const surfaces = history.tileIndex()
+      const exported = savedStructure(
+        captureStructure(requireDocument()),
+        surfaces
+      )
       const manifest = {
         version: 1 as const,
         id: options.persistence?.documentId ?? "exported-document",
         name: "Untitled artwork",
         width: snapshot.width,
         height: snapshot.height,
-        structure: savedStructure(
-          captureStructure(requireDocument()),
-          surfaces
-        ),
+        structure: exported,
         surfaces,
+        assets: structureAssets(exported),
         updatedAt: Date.now(),
       }
-      return encodeVeluraFile(manifest, (hash) => history!.store.get(hash))
+      return encodeVeluraFile(
+        manifest,
+        (hash) => history!.store.get(hash),
+        async (id) => assetFor(id).bytes
+      )
     },
     async importDocument(bytes) {
       if (snapshot.status !== "ready" || !renderer || !history)
@@ -2701,6 +3183,12 @@ export function createEngine(
       )
       reserveIds(structureSurfaceIds(structure))
       restoreStructure(doc, structure)
+      // The originals travel in the backup, so an imported document's
+      // pictures can be moved exactly as they could in the one exported.
+      for (const ref of structureAssets(structure)) {
+        const bytes = imported.assets.get(ref.id)
+        if (bytes) assets.set(ref.id, Object.freeze({ ...ref, bytes }))
+      }
       renderer.resize(imported.manifest.width, imported.manifest.height)
       const size = {
         width: imported.manifest.width,

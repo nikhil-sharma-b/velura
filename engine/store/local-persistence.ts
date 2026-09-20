@@ -13,8 +13,10 @@
  * decide whether a cached tile is stale (D14).
  */
 
+import type { ImageAssetRef } from "../doc/image-source"
 import type { DocumentStructure } from "../doc/structure"
 import type {
+  AssetSource,
   DocumentManifest,
   DocumentStore,
   TileSource,
@@ -28,6 +30,8 @@ export type DocumentSnapshot = {
   name?: string
   structure: DocumentStructure
   surfaces: readonly SurfaceTiles[]
+  /** The originals placed images were made from (06). */
+  assets?: readonly ImageAssetRef[]
 }
 
 export interface DocumentPersistence {
@@ -48,6 +52,8 @@ export function createDocumentPersistence(options: {
   snapshot: () => DocumentSnapshot
   /** Texels by hash — the live tile store, so undo and disk share one copy. */
   tiles: TileSource
+  /** An original's file bytes by id, for the assets the snapshot names. */
+  assets?: AssetSource
   /** Told when a save fails. Losing durability is not a silent condition. */
   onError?: (error: unknown) => void
 }): DocumentPersistence {
@@ -65,6 +71,9 @@ export function createDocumentPersistence(options: {
       height: document.height,
       structure: document.structure,
       surfaces: document.surfaces,
+      ...(document.assets && document.assets.length > 0
+        ? { assets: document.assets }
+        : {}),
       updatedAt: Date.now(),
     }
   }
@@ -72,7 +81,7 @@ export function createDocumentPersistence(options: {
   async function write() {
     do {
       queued = false
-      await options.store.save(manifest(), options.tiles)
+      await options.store.save(manifest(), options.tiles, options.assets)
       // A commit that landed mid-save is not covered by the manifest just
       // written, so the loop goes round rather than leaving it unsaved.
     } while (queued)

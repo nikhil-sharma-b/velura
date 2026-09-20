@@ -1,6 +1,9 @@
 import type { BlendMode } from "../shaders/blend-modes"
 export type { BlendMode } from "../shaders/blend-modes"
 
+import type { ImagePlacement } from "./image-placement"
+import type { PlacedImage } from "./image-source"
+export type { PlacedImage } from "./image-source"
 import { seedScene } from "./scene"
 import { cloneTiledMask, createTiledMask, type TiledMask } from "./tiled-mask"
 import {
@@ -34,6 +37,14 @@ export type Layer = NodeSettings & {
    * here as it is on a locked layer; a mask still takes paint.
    */
   image: boolean
+  /**
+   * The picture this layer was made from, and where it sits (06). Kept so a
+   * move, a scale or a turn re-renders from the original rather than from the
+   * last render of it, which is what stops a photograph softening as it is
+   * adjusted. Gone the moment the layer is handed to the pen: from then on
+   * the pixels are the artist's and there is no original to go back to.
+   */
+  placed?: PlacedImage
   surface: TiledLayer
 }
 
@@ -348,17 +359,39 @@ export function setLayer(
 }
 
 /**
- * Hands a placed image over to the pen. Only the flag changes: the pixels, the
- * name, the mask and the layer's place in the tree are the artist's picture,
- * and this is the moment they said it is theirs to mark. Destructive from
- * here on — erasing takes the photograph's own pixels away — which is why it
- * is asked for rather than assumed.
+ * Hands a placed image over to the pen. The pixels, the name, the mask and the
+ * layer's place in the tree are the artist's picture, and this is the moment
+ * they said it is theirs to mark. Destructive from here on — erasing takes the
+ * photograph's own pixels away — which is why it is asked for rather than
+ * assumed, and why the original is let go of with it: a layer that can be
+ * painted on cannot also be re-rendered from a file.
  */
 export function makeLayerPaintable(doc: PaintDocument, id: string): void {
   const node = findNode(doc, id)
   if (node.kind !== "raster" || !node.image)
     throw new Error(`${node.name} is not a placed image.`)
   node.image = false
+  // The original goes with the flag. There is nothing left to re-render from
+  // — the pixels below the artist's first mark would no longer be the photo —
+  // and keeping the file would be keeping weight in the document that nothing
+  // can ever use again.
+  delete node.placed
+}
+
+/**
+ * Moves a placed image to a placement (06). The original and everything else
+ * about the layer are untouched: a transform says where the picture sits, and
+ * the pixels are made from that wherever they are made.
+ */
+export function setPlacement(
+  doc: PaintDocument,
+  id: string,
+  placement: ImagePlacement
+): void {
+  const node = findNode(doc, id)
+  if (node.kind !== "raster" || !node.placed)
+    throw new Error(`${node.name} is not a placed image.`)
+  node.placed = { ...node.placed, placement }
 }
 
 export function addMask(doc: PaintDocument, id: string): string {

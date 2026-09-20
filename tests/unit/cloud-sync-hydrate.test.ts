@@ -50,6 +50,12 @@ function createFakeCloud() {
     async presignDownloads(hashes) {
       return hashes.map((hash) => ({ hash, url: `get:${hash}` }))
     },
+    async presignAssetUploads(ids) {
+      return ids.map((id) => ({ id, url: `put:${id}` }))
+    },
+    async presignAssetDownloads(ids) {
+      return ids.map((id) => ({ id, url: `get:${id}` }))
+    },
     async commitFlush(payload) {
       for (const tile of payload.tiles) {
         const existing = tiles.find(
@@ -193,4 +199,68 @@ test("encodeTile/decodeTile still round-trip through the network bytes hydrate p
   const encoded = await encodeTile(texels)
   const decoded = await decodeTile(encoded)
   expect(decoded).toEqual(texels)
+})
+
+describe("a placed image on a second machine", () => {
+  test("arrives with the original it was made from, not only its pixels", async () => {
+    // Criterion: the placement survives sync. Pixels alone would give the
+    // other machine a picture it could see and not move (06).
+    const cloud = createFakeCloud()
+    const placed: DocumentStructure = {
+      layers: [
+        {
+          ...STRUCTURE.layers[0],
+          image: true,
+          placed: {
+            asset: {
+              id: "asset-1",
+              mime: "image/jpeg",
+              width: 100,
+              height: 50,
+            },
+            placement: {
+              x: 30,
+              y: 20,
+              width: 100,
+              height: 50,
+              rotation: 0.25,
+              flipX: true,
+              flipY: false,
+            },
+          },
+        },
+      ],
+      activeLayerId: "layer-1",
+      paintingMask: false,
+    }
+    const doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])
+    const file = new Uint8Array([255, 216, 255, 224])
+    const sync = createCloudSync({
+      remote: cloud.remote,
+      snapshot: () => ({
+        structure: placed,
+        surfaces: doc,
+        assets: [{ id: "asset-1", mime: "image/jpeg", width: 100, height: 50 }],
+      }),
+      tiles: async (hash) => texelsFor(hash),
+      assets: async () => file,
+      put: cloud.put,
+    })
+    await sync.flush()
+
+    const local = createDocumentStore(createMemoryBlobStore())
+    const manifest = await hydrateFromRemote({
+      documentId: "doc-1",
+      remote: cloud.remote,
+      local,
+      get: cloud.get,
+    })
+
+    expect(manifest?.assets).toEqual([
+      { id: "asset-1", mime: "image/jpeg", width: 100, height: 50 },
+    ])
+    expect(await local.readAsset("asset-1")).toEqual(file)
+    const reopened = await local.load("doc-1")
+    expect(reopened?.structure.layers[0].placed?.placement.rotation).toBe(0.25)
+  })
 })

@@ -52,6 +52,12 @@ function createFakeRemote() {
     async presignDownloads(hashes) {
       return hashes.map((hash) => ({ hash, url: `https://r2.test/${hash}` }))
     },
+    async presignAssetUploads(ids) {
+      return ids.map((id) => ({ id, url: `https://r2.test/assets/${id}` }))
+    },
+    async presignAssetDownloads(ids) {
+      return ids.map((id) => ({ id, url: `https://r2.test/assets/${id}` }))
+    },
   }
 
   return { remote, knownHashes, puts, commits, uploaded }
@@ -373,5 +379,244 @@ describe("restore points", () => {
     expect(downloads).toEqual(["https://r2.test/hash-absent"])
     expect(texels.get("hash-absent")).toEqual(new Uint16Array(4).fill(9))
     expect(texels.size).toBe(2)
+  })
+})
+
+describe("the originals placed images keep", () => {
+  test("go up once and are not sent again", async () => {
+    // Content-addressed like a tile, and sharing the tile ledger, so a
+    // photograph uploads on the flush that placed it and never after — which
+    // is what keeps a document that carries its originals cheap to sync.
+    const { remote, puts, commits } = createFakeRemote()
+    const asset = {
+      id: "asset-1",
+      mime: "image/jpeg",
+      width: 100,
+      height: 50,
+    }
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({
+        structure: STRUCTURE,
+        surfaces: [],
+        assets: [asset],
+      }),
+      tiles: async (hash) => texelsFor(hash),
+      assets: async () => new Uint8Array([255, 216, 255]),
+      put: fakePut(puts, new Map()),
+    })
+
+    await sync.flush()
+    expect(puts).toEqual(["https://r2.test/assets/asset-1"])
+    expect(commits[0].uploaded).toEqual([{ hash: "asset-1", size: 3 }])
+
+    await sync.flush()
+    expect(puts).toHaveLength(1)
+  })
+})
+
+describe("status", () => {
+  test("failed uploads retry with exponential backoff before reporting success", async () => {
+    const { remote } = createFakeRemote()
+    const doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])
+    const delays: number[] = []
+    let attempts = 0
+    const errors: unknown[] = []
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: doc }),
+      tiles: async (hash) => texelsFor(hash),
+      put: async () => {
+        attempts++
+        if (attempts < 3) throw new Error("temporary outage")
+      },
+      retry: {
+        attempts: 3,
+        baseDelayMs: 25,
+        sleep: async (delay) => void delays.push(delay),
+      },
+      onError: (error) => errors.push(error),
+    })
+
+    await sync.flush()
+
+    expect(attempts).toBe(3)
+    expect(delays).toEqual([25, 50])
+    expect(errors).toEqual([])
+    expect(sync.status()).toBe("fully-synced")
+  })
+
+  test("an upload that exhausts automatic retries is reported once", async () => {
+    const { remote } = createFakeRemote()
+    const doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])
+    let attempts = 0
+    const errors: unknown[] = []
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: doc }),
+      tiles: async (hash) => texelsFor(hash),
+      put: async () => {
+        attempts++
+        throw new Error("offline")
+      },
+      retry: { attempts: 3, baseDelayMs: 0, sleep: async () => {} },
+      onError: (error) => errors.push(error),
+    })
+
+    await sync.flush()
+
+    expect(attempts).toBe(3)
+    expect(errors).toHaveLength(1)
+    expect(String(errors[0])).toContain("3 attempts")
+    expect(sync.status()).toBe("saved-locally")
+  })
+
+  test("is saved-locally until a flush actually commits, syncing while one is in flight, then fully-synced", async () => {
+    const { remote } = createFakeRemote()
+    let doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])
+    const originalCommit = remote.commitFlush.bind(remote)
+    let releaseCommit = () => {}
+    const gate = new Promise<void>((resolve) => {
+      releaseCommit = resolve
+    })
+    remote.commitFlush = async (payload) => {
+      await gate
+      await originalCommit(payload)
+    }
+
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: doc }),
+      tiles: async (hash) => texelsFor(hash),
+      put: fakePut([], new Map()),
+    })
+
+    expect(sync.status()).toBe("saved-locally")
+    const flushed = sync.flush()
+    // Let the queued microtasks (missingHashes, presignUploads, the PUT) run
+    // up to the point where commitFlush is blocked on the gate.
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(sync.status()).toBe("syncing")
+    releaseCommit()
+    await flushed
+    expect(sync.status()).toBe("fully-synced")
+
+    // A fresh stroke changes what the last flush uploaded, so the indicator
+    // must not keep claiming everything is synced.
+    doc = surfaces([
+      { surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" },
+      { surfaceId: "layer-1", x: 1, y: 0, hash: "hash-b" },
+    ])
+    expect(sync.status()).toBe("saved-locally")
+  })
+
+  test("a flush that fails leaves the indicator at saved-locally, never an optimistic fully-synced", async () => {
+    const { remote } = createFakeRemote()
+    const doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])
+    remote.commitFlush = async () => {
+      throw new Error("network outage")
+    }
+
+    const errors: unknown[] = []
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: doc }),
+      tiles: async (hash) => texelsFor(hash),
+      put: fakePut([], new Map()),
+      onError: (error) => errors.push(error),
+    })
+
+    await sync.flush()
+    expect(errors).toHaveLength(1)
+    expect(sync.status()).toBe("saved-locally")
+  })
+})
+
+describe("restore points", () => {
+  /** Two tiles: one this device already holds, one it has to fetch. */
+  function versionTiles() {
+    const held = new Map([["hash-local", new Uint16Array(4).fill(7)]])
+    const local = {
+      async readTile(hash: string) {
+        return held.get(hash) ?? null
+      },
+    }
+    return { held, local }
+  }
+
+  test("a tile the device already holds is never downloaded", async () => {
+    const { remote } = createFakeRemote()
+    const { local } = versionTiles()
+    const downloads: string[] = []
+
+    const texels = await loadVersionTiles({
+      remote,
+      local,
+      hashes: ["hash-local"],
+      get: async (url) => {
+        downloads.push(url)
+        return new Uint8Array()
+      },
+    })
+
+    expect(downloads).toEqual([])
+    expect(texels.get("hash-local")).toEqual(new Uint16Array(4).fill(7))
+  })
+
+  test("only the tiles the device lacks are fetched, each once", async () => {
+    const { remote } = createFakeRemote()
+    const { local } = versionTiles()
+    const downloads: string[] = []
+    const absent = await encodeTile(new Uint16Array(4).fill(9))
+
+    const texels = await loadVersionTiles({
+      remote,
+      local,
+      // The same absent tile named twice, as a wash across two coordinates is.
+      hashes: ["hash-local", "hash-absent", "hash-absent"],
+      get: async (url) => {
+        downloads.push(url)
+        return absent
+      },
+    })
+
+    expect(downloads).toEqual(["https://r2.test/hash-absent"])
+    expect(texels.get("hash-absent")).toEqual(new Uint16Array(4).fill(9))
+    expect(texels.size).toBe(2)
+  })
+})
+
+describe("the originals placed images keep", () => {
+  test("go up once and are not sent again", async () => {
+    // Content-addressed like a tile, and sharing the tile ledger, so a
+    // photograph uploads on the flush that placed it and never after — which
+    // is what keeps a document that carries its originals cheap to sync.
+    const { remote, puts, commits } = createFakeRemote()
+    const asset = {
+      id: "asset-1",
+      mime: "image/jpeg",
+      width: 100,
+      height: 50,
+    }
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({
+        structure: STRUCTURE,
+        surfaces: [],
+        assets: [asset],
+      }),
+      tiles: async (hash) => texelsFor(hash),
+      assets: async () => new Uint8Array([255, 216, 255]),
+      put: fakePut(puts, new Map()),
+    })
+
+    await sync.flush()
+    expect(puts).toEqual(["https://r2.test/assets/asset-1"])
+    expect(commits[0].uploaded).toEqual([{ hash: "asset-1", size: 3 }])
+
+    await sync.flush()
+    expect(puts).toHaveLength(1)
   })
 })

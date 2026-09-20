@@ -30,6 +30,42 @@ export type SurfaceTileIndex = {
   tiles: { x: number; y: number; hash: string }[]
 }
 
+/** Tiles an operation hands over for one surface. */
+export type SurfaceFill = {
+  surfaceId: string
+  tiles: readonly (TileCoord & { texels: Uint16Array })[]
+}
+
+/** What one discrete layer operation did to the pixels, if anything. */
+export type OperationPixels = {
+  /** Surfaces the operation destroyed; their pixels are kept to restore. */
+  removed?: readonly string[]
+  /** Surfaces the operation filled by copying another's pixels. */
+  copied?: readonly { from: string; to: string }[]
+  /**
+   * Surfaces the operation filled with pixels of its own — a placed image
+   * arrives this way. The tiles go on the GPU as part of the step, so taking
+   * the step back takes the pixels with it.
+   */
+  filled?: readonly SurfaceFill[]
+  /**
+   * Surfaces whose contents the operation decided outright: after this the
+   * surface holds exactly these tiles and nothing else. A transformed image
+   * needs this and `filled` will not do — a picture moved to the right has to
+   * stop being on the left, and a fill only ever adds.
+   */
+  replaced?: readonly SurfaceFill[]
+  /** Canvas the filled or replaced tiles were made for; they are clipped to it. */
+  canvas?: { width: number; height: number }
+  /**
+   * Names a run of adjustments that is one act to the artist. A dragged
+   * opacity slider dispatches a command per tick, and thirty steps to undo
+   * one drag would bury the stroke underneath it: consecutive operations
+   * sharing a key extend the step already on the stack.
+   */
+  coalesceAs?: string
+}
+
 /** Texels for one tile, or null where the tile holds nothing at all. */
 export type TileWrite = TileCoord & { texels: Uint16Array | null }
 
@@ -64,30 +100,7 @@ export interface DocumentHistory {
   recordOperation(
     label: string,
     structure: { before: DocumentStructure; after: DocumentStructure },
-    options?: {
-      /** Surfaces the operation destroyed; their pixels are kept to restore. */
-      removed?: readonly string[]
-      /** Surfaces the operation filled by copying another's pixels. */
-      copied?: readonly { from: string; to: string }[]
-      /**
-       * Surfaces the operation filled with pixels of its own — a placed image
-       * arrives this way. The tiles go on the GPU as part of the step, so
-       * taking the step back takes the pixels with it.
-       */
-      filled?: readonly {
-        surfaceId: string
-        tiles: readonly (TileCoord & { texels: Uint16Array })[]
-      }[]
-      /** Canvas the filled tiles were made for; they are clipped to it. */
-      canvas?: { width: number; height: number }
-      /**
-       * Names a run of adjustments that is one act to the artist. A dragged
-       * opacity slider dispatches a command per tick, and thirty steps to undo
-       * one drag would bury the stroke underneath it: consecutive operations
-       * sharing a key extend the step already on the stack.
-       */
-      coalesceAs?: string
-    }
+    options?: OperationPixels
   ): void
   /**
    * Puts a whole stored state back as one step: every surface named becomes
@@ -328,6 +341,45 @@ export function createDocumentHistory(options: {
   }
 
   /**
+   * A surface becoming exactly the tiles given: the ones named are written,
+   * and every tile it held that they do not name is emptied. Content
+   * addressing does the diffing, so a picture nudged one pixel costs the
+   * tiles that actually changed rather than the whole picture.
+   */
+  function captureReplace(
+    surfaceId: string,
+    replacement: readonly (TileCoord & { texels: Uint16Array })[],
+    canvas: { width: number; height: number }
+  ): SurfaceChange {
+    const current = index.get(surfaceId)
+    const tiles: SurfaceChange["tiles"] = []
+    const wanted = new Set<string>()
+    for (const tile of replacement) {
+      const key = tileKey(tile.x, tile.y)
+      wanted.add(key)
+      const clipped = clipTile(tile.texels, tile, canvas)
+      const before = current?.get(key)
+      const after = isBlank(clipped) ? undefined : store.put(clipped)
+      if (before === after) {
+        if (after) store.release(after)
+        continue
+      }
+      if (before) store.retain(before)
+      setTile(surfaceId, key, after)
+      tiles.push({ x: tile.x, y: tile.y, before, after })
+    }
+    // What the surface holds that the replacement does not name is what the
+    // operation took away: the pixels a picture left behind when it moved.
+    for (const [key, hash] of [...(current ?? [])]) {
+      if (wanted.has(key)) continue
+      store.retain(hash)
+      tiles.push({ ...tileCoordFromKey(key), before: hash })
+      setTile(surfaceId, key, undefined)
+    }
+    return { surfaceId, tiles }
+  }
+
+  /**
    * Puts an entry's pixels on the GPU, leaving the index alone. A surface's
    * tiles are asked for together rather than one after another: at the
    * deepest tier each is a file read and an inflate, and a wash across the
@@ -408,40 +460,8 @@ export function createDocumentHistory(options: {
           .filter((surfaceId) => !named.has(surfaceId))
           .map(captureRemoval)
 
-        for (const surface of surfaces) {
-          const current = index.get(surface.surfaceId)
-          const tiles: SurfaceChange["tiles"] = []
-          const wanted = new Set<string>()
-
-          for (const tile of surface.tiles) {
-            const key = tileKey(tile.x, tile.y)
-            wanted.add(key)
-            const clipped = clipTile(tile.texels, tile, canvas)
-            const before = current?.get(key)
-            const after = isBlank(clipped) ? undefined : store.put(clipped)
-            // Content addressing does the diffing: a tile the stored state
-            // shares with the document as it stands is not part of the step,
-            // so restoring after one stroke costs one tile, not a canvas.
-            if (before === after) {
-              if (after) store.release(after)
-              continue
-            }
-            if (before) store.retain(before)
-            setTile(surface.surfaceId, key, after)
-            tiles.push({ x: tile.x, y: tile.y, before, after })
-          }
-
-          // Tiles the surface holds now that the stored state never named:
-          // painted after the restore point, so the restore takes them away.
-          for (const [key, hash] of [...(current ?? [])]) {
-            if (wanted.has(key)) continue
-            store.retain(hash)
-            tiles.push({ ...tileCoordFromKey(key), before: hash })
-            setTile(surface.surfaceId, key, undefined)
-          }
-
-          changes.push({ surfaceId: surface.surfaceId, tiles })
-        }
+        for (const surface of surfaces)
+          changes.push(captureReplace(surface.surfaceId, surface.tiles, canvas))
 
         const entry: UndoEntry = { label, surfaces: changes, structure }
         // The index is already where the entry says it should be, so only the
@@ -453,21 +473,30 @@ export function createDocumentHistory(options: {
     recordOperation(label, structure, operation) {
       enqueue(async () => {
         const canvas = operation?.canvas
-        const filled = (operation?.filled ?? []).map((surface) => {
-          if (!canvas)
-            throw new Error("Filled surfaces need the canvas they belong to.")
-          return captureFill(surface.surfaceId, surface.tiles, canvas)
-        })
+        const written = [
+          ...(operation?.filled ?? []).map((surface) => {
+            if (!canvas)
+              throw new Error("Filled surfaces need the canvas they belong to.")
+            return captureFill(surface.surfaceId, surface.tiles, canvas)
+          }),
+          ...(operation?.replaced ?? []).map((surface) => {
+            if (!canvas)
+              throw new Error(
+                "Replaced surfaces need the canvas they belong to."
+              )
+            return captureReplace(surface.surfaceId, surface.tiles, canvas)
+          }),
+        ]
         const surfaces = [
           ...(operation?.removed ?? []).map(captureRemoval),
           ...(operation?.copied ?? []).map(({ from, to }) =>
             captureCopy(from, to)
           ),
-          ...filled,
+          ...written,
         ]
         // The index already names these pixels; only the GPU needs telling.
-        if (filled.length > 0)
-          await writePixels({ label, surfaces: filled }, "after")
+        if (written.length > 0)
+          await writePixels({ label, surfaces: written }, "after")
         const key = operation?.coalesceAs
         // Extending the step in place keeps the state it started from, which
         // is where undoing the whole run has to land.

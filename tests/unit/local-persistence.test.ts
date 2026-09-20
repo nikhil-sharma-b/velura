@@ -10,8 +10,8 @@ import {
   tileKey,
 } from "../../engine/doc/tile-grid"
 import { createTileStore } from "../../engine/doc/tile-store"
-import { captureStructure } from "../../engine/doc/structure"
-import { addLayer, createDocument } from "../../engine/doc/document"
+import { captureStructure, structureAssets } from "../../engine/doc/structure"
+import { addLayer, createDocument, findLayer } from "../../engine/doc/document"
 import {
   type BlobStore,
   createMemoryBlobStore,
@@ -79,6 +79,8 @@ function createFakeSurfaces() {
  */
 function session(blobs: BlobStore, documentId = "doc-1") {
   const surfaces = createFakeSurfaces()
+  /** The originals placed images were made from, as the engine holds them. */
+  const assets = new Map<string, Uint8Array>()
   const doc = createDocument(CANVAS)
   const store = createTileStore({ hotBytes: 1 << 30, warmBytes: 1 << 30 })
   // The two know about each other: history commits drive the save, and the
@@ -95,11 +97,16 @@ function session(blobs: BlobStore, documentId = "doc-1") {
     // The tiles come from the store history is already holding them in: one
     // copy of the pixels serves undo and the disk cache both.
     tiles: (hash) => store.get(hash),
-    snapshot: () => ({
-      ...CANVAS,
-      structure: captureStructure(doc),
-      surfaces: history.tileIndex(),
-    }),
+    assets: async (id) => assets.get(id) ?? new Uint8Array(),
+    snapshot: () => {
+      const structure = captureStructure(doc)
+      return {
+        ...CANVAS,
+        structure,
+        surfaces: history.tileIndex(),
+        assets: structureAssets(structure),
+      }
+    },
     onError: (error) => {
       throw error
     },
@@ -111,6 +118,7 @@ function session(blobs: BlobStore, documentId = "doc-1") {
     surfaces,
     history,
     persistence,
+    assets,
     /** Paints a whole tile and lets the stroke land as one recorded step. */
     async stroke(surfaceId: string, coord: TileCoord, value: number) {
       surfaces.paint(surfaceId, coord, value)
@@ -357,5 +365,75 @@ describe("a device that has lost part of what it held", () => {
       new TextEncoder().encode('{"version":99,"id":"doc-1"}')
     )
     expect(await createDocumentStore(blobs).load("doc-1")).toBeNull()
+  })
+})
+
+describe("the original a placed image was made from", () => {
+  test("is written beside the tiles and read back with the document", async () => {
+    // What survives a reopen is what makes a photograph still movable
+    // tomorrow: the tiles are only the last rendering of it (06).
+    const blobs = createMemoryBlobStore()
+    const live = session(blobs)
+    const file = new Uint8Array([137, 80, 78, 71, 1, 2, 3])
+    live.assets.set("asset-1", file)
+    const id = addLayer(live.doc)
+    const layer = findLayer(live.doc, id)
+    if (layer.kind !== "raster") throw new Error("expected a raster layer")
+    layer.image = true
+    layer.placed = {
+      asset: { id: "asset-1", mime: "image/png", width: 4, height: 2 },
+      placement: {
+        x: 10,
+        y: 10,
+        width: 4,
+        height: 2,
+        rotation: 0,
+        flipX: false,
+        flipY: false,
+      },
+    }
+    await live.stroke(id, ORIGIN, 3)
+
+    const store = createDocumentStore(blobs)
+    const manifest = await store.load("doc-1")
+    expect(manifest!.assets).toEqual([
+      { id: "asset-1", mime: "image/png", width: 4, height: 2 },
+    ])
+    expect(await store.readAsset("asset-1")).toEqual(file)
+    // And the placement came back with the tree, so the picture reopens
+    // where it was left rather than where it was first dropped.
+    const reopened = manifest!.structure.layers.find((node) => node.id === id)!
+    expect(reopened.placed!.placement.x).toBe(10)
+  })
+
+  test("costs one blob however many layers place the same picture", async () => {
+    const blobs = createMemoryBlobStore()
+    const live = session(blobs, "doc-2")
+    live.assets.set("asset-1", new Uint8Array([1, 2, 3]))
+    const placed = {
+      asset: { id: "asset-1", mime: "image/png", width: 4, height: 2 },
+      placement: {
+        x: 10,
+        y: 10,
+        width: 4,
+        height: 2,
+        rotation: 0,
+        flipX: false,
+        flipY: false,
+      },
+    }
+    for (const _ of [0, 1]) {
+      const id = addLayer(live.doc)
+      const layer = findLayer(live.doc, id)
+      if (layer.kind !== "raster") throw new Error("expected a raster layer")
+      layer.image = true
+      layer.placed = placed
+      await live.stroke(id, ORIGIN, 3)
+    }
+    const manifest = await createDocumentStore(blobs).load("doc-2")
+    expect(manifest!.assets).toHaveLength(1)
+    expect(
+      (await blobs.keys()).filter((key) => key.startsWith("assets/"))
+    ).toHaveLength(1)
   })
 })

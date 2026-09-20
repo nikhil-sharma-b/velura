@@ -14,8 +14,10 @@ import {
   restoreStructure,
   sameStructure,
   savedStructure,
+  structureAssets,
   structureSurfaceIds,
 } from "../../engine/doc/structure"
+import { makeLayerPaintable } from "../../engine/doc/document"
 
 const document = () => createDocument({ width: 512, height: 512 })
 
@@ -168,5 +170,76 @@ describe("image layers", () => {
     restoreStructure(restored, structure)
     expect(findLayer(restored, id).image).toBe(true)
     expect(findLayer(restored, structure.layers[0].id).image).toBe(false)
+  })
+})
+
+describe("a placed image in the tree", () => {
+  const placed = (id: string, x: number) => ({
+    asset: { id, mime: "image/png", width: 8, height: 4 },
+    placement: {
+      x,
+      y: 10,
+      width: 8,
+      height: 4,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+    },
+  })
+
+  /** A document with one image layer holding `asset`, placed at `x`. */
+  function withImage(assetId = "asset-1", x = 10) {
+    const doc = document()
+    const id = addLayer(doc)
+    const layer = findLayer(doc, id)
+    if (layer.kind !== "raster") throw new Error("expected a raster layer")
+    layer.image = true
+    layer.placed = placed(assetId, x)
+    return { doc, id }
+  }
+
+  test("takes its placement into the snapshot and back out again", async () => {
+    // This is what makes a transform one undo step that restores the previous
+    // placement rather than the previous pixels (06).
+    const { doc, id } = withImage()
+    const before = captureStructure(doc)
+    const layer = findLayer(doc, id)
+    if (layer.kind !== "raster") throw new Error("expected a raster layer")
+    layer.placed = placed("asset-1", 300)
+
+    restoreStructure(doc, before)
+    const restored = findLayer(doc, id)
+    if (restored.kind !== "raster") throw new Error("expected a raster layer")
+    expect(restored.placed?.placement.x).toBe(10)
+    expect(restored.image).toBe(true)
+  })
+
+  test("names the originals a save has to keep, once each", () => {
+    const { doc } = withImage()
+    const second = addLayer(doc)
+    const layer = findLayer(doc, second)
+    if (layer.kind !== "raster") throw new Error("expected a raster layer")
+    layer.image = true
+    // The same photograph placed twice is one original to keep.
+    layer.placed = placed("asset-1", 90)
+    expect(structureAssets(captureStructure(doc))).toEqual([
+      { id: "asset-1", mime: "image/png", width: 8, height: 4 },
+    ])
+  })
+
+  test("lets go of its original once the layer is handed to the pen", () => {
+    // There is nothing left to re-render from, so keeping the file would be
+    // weight in the document that nothing can ever use again.
+    const { doc, id } = withImage()
+    makeLayerPaintable(doc, id)
+    const structure = captureStructure(doc)
+    expect(structureAssets(structure)).toEqual([])
+    expect(structure.layers.at(-1)?.placed).toBeUndefined()
+  })
+
+  test("is absent from a tree with no placed image, as it was before", () => {
+    // Structures saved before images kept their originals read back unchanged.
+    const doc = document()
+    expect(captureStructure(doc).layers[0].placed).toBeUndefined()
   })
 })

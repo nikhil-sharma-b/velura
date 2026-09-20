@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test"
 import {
   GRACE_WINDOW_MS,
   planPage,
+  referencedAssetIdsOf,
   referencedHashesOf,
   runSweep,
   type StoredTileObject,
@@ -203,5 +204,62 @@ describe("a sweep", () => {
     await runSweep(store.store, ledger.ledger, { now: at })
 
     expect(order).toEqual(["forget", "delete"])
+  })
+})
+
+describe("what keeps the original of a placed image alive", () => {
+  test("is a layer tree naming it, in a document or in a restore point", async () => {
+    // Nothing writes an index row per original: the tree that names it is the
+    // reference, so the mark reads the trees (06).
+    const tree = (assetIds: readonly string[]) => ({
+      layers: assetIds.map((id, index) => ({
+        id: `layer-${index}`,
+        kind: "raster",
+        placed: { asset: { id }, placement: {} },
+      })),
+    })
+    expect(
+      [
+        ...referencedAssetIdsOf([tree(["live"]), tree(["kept-by-version"])]),
+      ].sort()
+    ).toEqual(["kept-by-version", "live"])
+  })
+
+  test("finds one inside a group, however deep it is nested", () => {
+    const nested = {
+      layers: [
+        {
+          id: "group-1",
+          kind: "group",
+          children: [
+            {
+              id: "group-2",
+              kind: "group",
+              children: [
+                {
+                  id: "layer-1",
+                  kind: "raster",
+                  placed: { asset: { id: "deep" }, placement: {} },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    expect([...referencedAssetIdsOf([nested])]).toEqual(["deep"])
+  })
+
+  test("reads a tree defensively: it is opaque data on this side", () => {
+    // Structures come from clients and from older builds, so a sweep that
+    // threw on an unexpected shape would be a sweep that reclaims nothing.
+    expect(
+      referencedAssetIdsOf([
+        null,
+        {},
+        { layers: "not a list" },
+        { layers: [null, { placed: null }, { placed: { asset: {} } }] },
+      ]).size
+    ).toBe(0)
   })
 })

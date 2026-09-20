@@ -3,6 +3,8 @@
 import { v } from "convex/values"
 
 import {
+  presignAssetGet,
+  presignAssetPut,
   presignPreviewGet,
   presignPreviewPut,
   presignTileGet,
@@ -36,6 +38,32 @@ export const presignDownloads = action({
     await ctx.runQuery(api.documents.get, { documentId })
     return await Promise.all(
       hashes.map(async (hash) => ({ hash, url: await presignTileGet(hash) }))
+    )
+  },
+})
+
+/**
+ * The same batch mint for the originals placed images keep (06). Separate
+ * from the tile mint because the objects live under their own prefix and are
+ * whole encoded files, not tiles — everything else about them, the dedup
+ * ledger included, is the tile story unchanged.
+ */
+export const presignAssetUploads = action({
+  args: { documentId: v.id("documents"), ids: v.array(v.string()) },
+  handler: async (ctx, { documentId, ids }) => {
+    await ctx.runQuery(api.documents.get, { documentId })
+    return await Promise.all(
+      ids.map(async (id) => ({ id, url: await presignAssetPut(id) }))
+    )
+  },
+})
+
+export const presignAssetDownloads = action({
+  args: { documentId: v.id("documents"), ids: v.array(v.string()) },
+  handler: async (ctx, { documentId, ids }) => {
+    await ctx.runQuery(api.documents.get, { documentId })
+    return await Promise.all(
+      ids.map(async (id) => ({ id, url: await presignAssetGet(id) }))
     )
   },
 })

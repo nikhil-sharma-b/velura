@@ -37,6 +37,12 @@ function remoteThat(records: {
         async presignUploads(hashes) {
           return hashes.map((hash) => ({ hash, url: `put:${hash}` }))
         },
+        async presignAssetUploads(ids) {
+          return ids.map((id) => ({ id, url: `put:${id}` }))
+        },
+        async presignAssetDownloads(ids) {
+          return ids.map((id) => ({ id, url: `get:${id}` }))
+        },
         async commitFlush(payload) {
           records.commits.push({
             id: documentId,
