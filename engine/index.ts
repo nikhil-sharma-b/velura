@@ -96,6 +96,7 @@ import {
   type ImageAsset,
   type ImageAssetRef,
   type ImageSourceCodec,
+  type OpenImage,
 } from "./doc/image-source"
 import { createOpfsSpill, createTileStore } from "./doc/tile-store"
 import {
@@ -813,6 +814,8 @@ export function createEngine(
         start: ImagePlacement
         placement: ImagePlacement
         asset: ImageAsset
+        /** The original, decoded once for the whole drag (06). */
+        open: OpenImage
         /** The tree before the transform, which is the step's "before". */
         structure: DocumentStructure
         /** Tiles the last preview wrote, so the next one can clear them. */
@@ -1256,17 +1259,31 @@ export function createEngine(
   }
 
   /**
-   * One rendering of an original at a placement, as document tiles. Always
-   * from the original — this is the whole of why a picture may be adjusted
-   * any number of times without softening (06).
+   * One drawing of an open original at a placement, as document tiles.
+   * Always from the original — this is the whole of why a picture may be
+   * adjusted any number of times without softening (06).
    */
-  async function renderPlacement(
+  function renderPlacement(
+    open: OpenImage,
+    placement: ImagePlacement,
+    canvas: { width: number; height: number }
+  ): (TileCoord & { texels: Uint16Array })[] {
+    const raster = open.render(placement)
+    return imageTiles(raster.image, raster.origin, canvas)
+  }
+
+  /** One drawing from an original that is not already open: a placement. */
+  async function renderOnce(
     asset: ImageAsset,
     placement: ImagePlacement,
     canvas: { width: number; height: number }
   ): Promise<(TileCoord & { texels: Uint16Array })[]> {
-    const raster = await imageCodec().render(asset, placement)
-    return imageTiles(raster.image, raster.origin, canvas)
+    const open = await imageCodec().open(asset)
+    try {
+      return renderPlacement(open, placement, canvas)
+    } finally {
+      open.close()
+    }
   }
 
   /**
@@ -1444,6 +1461,7 @@ export function createEngine(
     const canvas = { width: document.width, height: document.height }
     if (samePlacement(session.placement, session.start)) {
       // Picked up and put down: not a step, and nothing to re-render.
+      session.open.close()
       publish({ imageTransform: null })
       return
     }
@@ -1451,15 +1469,12 @@ export function createEngine(
       replaced: [
         {
           surfaceId: session.layerId,
-          tiles: await renderPlacement(
-            session.asset,
-            session.placement,
-            canvas
-          ),
+          tiles: renderPlacement(session.open, session.placement, canvas),
         },
       ],
       canvas,
     })
+    session.open.close()
     await history?.settle()
     publish({ imageTransform: null })
     applyLayerChange()
@@ -1481,10 +1496,11 @@ export function createEngine(
       const canvas = { width: document.width, height: document.height }
       showTransform(
         session.layerId,
-        await renderPlacement(session.asset, session.start, canvas),
+        renderPlacement(session.open, session.start, canvas),
         session.shown
       )
     }
+    session.open.close()
     publish({ imageTransform: null })
     applyLayerChange()
   }
@@ -2629,7 +2645,7 @@ export function createEngine(
             filled: [
               {
                 surfaceId: id,
-                tiles: await renderPlacement(asset, placement, canvas),
+                tiles: await renderOnce(asset, placement, canvas),
               },
             ],
             canvas,
@@ -2652,11 +2668,15 @@ export function createEngine(
           // abandoned: the artist moved on, they did not undo.
           if (imageTransform && imageTransform.layerId !== command.id)
             await commitTransform()
+          const asset = assetFor(layer.placed.asset.id)
           imageTransform = {
             layerId: command.id,
             start: layer.placed.placement,
             placement: layer.placed.placement,
-            asset: assetFor(layer.placed.asset.id),
+            asset,
+            // Decoded here, once: a drag that decoded the file per pointer
+            // sample would leave the picture trailing the hand moving it.
+            open: await imageCodec().open(asset),
             structure: captureStructure(document),
             shown: history?.occupiedTiles(command.id) ?? [],
           }
@@ -2672,14 +2692,7 @@ export function createEngine(
           if (samePlacement(command.placement, session.placement)) break
           session.placement = command.placement
           setPlacement(document, session.layerId, command.placement)
-          const tiles = await renderPlacement(
-            session.asset,
-            command.placement,
-            canvas
-          )
-          // Still the drag this adjustment belongs to? Rendering is a wait,
-          // and a commit or a cancel may have landed during it.
-          if (imageTransform !== session) break
+          const tiles = renderPlacement(session.open, command.placement, canvas)
           showTransform(session.layerId, tiles, session.shown)
           session.shown = tiles.map((tile) => ({ x: tile.x, y: tile.y }))
           publish({
@@ -2730,6 +2743,7 @@ export function createEngine(
             // A picture being moved that is then thrown away: the transform
             // has nowhere to land, and a commit would put the pixels back.
             if (imageTransform?.layerId === command.id) {
+              imageTransform.open.close()
               imageTransform = undefined
               publish({ imageTransform: null })
             }
@@ -2745,6 +2759,7 @@ export function createEngine(
           applyLayerChange()
           break
         case "clearDocument": {
+          imageTransform?.open.close()
           imageTransform = undefined
           publish({ imageTransform: null })
           const previous = requireDocument()
@@ -3243,6 +3258,9 @@ export function createEngine(
       disposed = true
       thumbnails.dispose()
       thumbnailViews.clear()
+      // A picture still held open by a transform that was never finished.
+      imageTransform?.open.close()
+      imageTransform = undefined
       detachSampler?.()
       detachSampler = undefined
       detachGestures?.()

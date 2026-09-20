@@ -41,9 +41,9 @@ function surface(width: number, height: number): Canvas2D {
 }
 
 /**
- * The browser's own decoder and scaler. `imageSmoothingQuality` is left at the
- * default: the resampling that matters is the one from the original, and it
- * happens exactly once per commit however many adjustments preceded it.
+ * The browser's own decoder and scaler. `imageSmoothingQuality` is left at
+ * the default: what matters is that every drawing is made from the original,
+ * which the open-once shape below is what guarantees.
  */
 export function createCanvasImageCodec(): ImageSourceCodec {
   async function decode(bytes: Uint8Array, mime: string) {
@@ -62,37 +62,46 @@ export function createCanvasImageCodec(): ImageSourceCodec {
         bitmap.close()
       }
     },
-    async render(asset, placement) {
-      const plan = drawPlan(placement)
+    async open(asset) {
+      // Decoded once and held: every adjustment of a drag draws from this
+      // bitmap rather than decoding the file again (06).
       const bitmap = await decode(asset.bytes, asset.mime)
-      try {
-        const { canvas, context } = surface(
-          Math.max(1, plan.box.width),
-          Math.max(1, plan.box.height)
-        )
-        context.save()
-        context.translate(plan.centre.x, plan.centre.y)
-        context.rotate(plan.rotation)
-        context.scale(plan.scaleX, plan.scaleY)
-        context.drawImage(
-          bitmap,
-          -plan.drawWidth / 2,
-          -plan.drawHeight / 2,
-          plan.drawWidth,
-          plan.drawHeight
-        )
-        context.restore()
-        const pixels = context.getImageData(0, 0, canvas.width, canvas.height)
-        return {
-          origin: { x: plan.box.x, y: plan.box.y },
-          image: {
-            width: canvas.width,
-            height: canvas.height,
-            pixels: pixels.data,
-          },
-        }
-      } finally {
-        bitmap.close()
+      let open = true
+      return {
+        render(placement) {
+          if (!open) throw new Error("That picture has already been let go of.")
+          const plan = drawPlan(placement)
+          const { canvas, context } = surface(
+            Math.max(1, plan.box.width),
+            Math.max(1, plan.box.height)
+          )
+          context.save()
+          context.translate(plan.centre.x, plan.centre.y)
+          context.rotate(plan.rotation)
+          context.scale(plan.scaleX, plan.scaleY)
+          context.drawImage(
+            bitmap,
+            -plan.drawWidth / 2,
+            -plan.drawHeight / 2,
+            plan.drawWidth,
+            plan.drawHeight
+          )
+          context.restore()
+          const pixels = context.getImageData(0, 0, canvas.width, canvas.height)
+          return {
+            origin: { x: plan.box.x, y: plan.box.y },
+            image: {
+              width: canvas.width,
+              height: canvas.height,
+              pixels: pixels.data,
+            },
+          }
+        },
+        close() {
+          if (!open) return
+          open = false
+          bitmap.close()
+        },
       }
     },
     async encode(image) {

@@ -139,6 +139,36 @@ test("a placed image can be moved after it has been placed", async ({
   expect(pixel(moved, centre)).toEqual(pixel(scene, centre))
 })
 
+test("the canvas shows the picture moving while it is still being dragged", async ({
+  page,
+}) => {
+  // The artist has to see what they are doing. Mid-drag there is no undo step
+  // yet — the step is the whole drag — but the pixels on screen must already
+  // be the picture at the placement under their hand.
+  await openCanvas(page)
+  const scene = await painted(page)
+  const id = await placeGradient(page, { width: 40, height: 40 })
+  const centre = { x: WIDTH / 2, y: HEIGHT / 2 }
+  const left = { x: 30, y: HEIGHT / 2 }
+
+  await page.evaluate(async (layerId) => {
+    await window.engine.dispatch({ type: "beginImageTransform", id: layerId })
+    const from = window.engine.getSnapshot().imageTransform!.placement
+    await window.engine.dispatch({
+      type: "adjustImageTransform",
+      placement: { ...from, x: 30 },
+    })
+  }, id)
+
+  const dragging = await painted(page)
+  const pixel = (image: Image, at: { x: number; y: number }) =>
+    [0, 1, 2, 3].map((index) => channel(image, at, index))
+  expect(
+    channel(dragging, left, 0) + channel(dragging, left, 1)
+  ).toBeGreaterThan(200)
+  expect(pixel(dragging, centre)).toEqual(pixel(scene, centre))
+})
+
 test("adjusting a picture over and over does not soften it", async ({
   page,
 }) => {
@@ -190,6 +220,30 @@ test("adjusting a picture over and over does not soften it", async ({
   const once = await painted(page)
 
   expect(worked.data).toEqual(once.data)
+})
+
+test("a whole drag decodes the original once, not once per adjustment", async ({
+  page,
+}) => {
+  // A drag is a run of adjustments. Decoding the file for each one would
+  // mean a full decode per pointer sample, and the picture would trail the
+  // hand dragging it — so the original is opened once and drawn from.
+  await openCanvas(page)
+  const id = await placeGradient(page, { width: 40, height: 40 })
+  const placing = await page.evaluate(() => window.imageDecodes)
+
+  await page.evaluate(async (layerId) => {
+    await window.engine.dispatch({ type: "beginImageTransform", id: layerId })
+    const start = window.engine.getSnapshot().imageTransform!.placement
+    for (let step = 1; step <= 20; step++)
+      await window.engine.dispatch({
+        type: "adjustImageTransform",
+        placement: { ...start, x: start.x + step },
+      })
+    await window.engine.dispatch({ type: "commitImageTransform" })
+  }, id)
+
+  expect(await page.evaluate(() => window.imageDecodes)).toBe(placing + 1)
 })
 
 test("a transform is one step of undo, and undo restores the placement", async ({

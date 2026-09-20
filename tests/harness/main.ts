@@ -19,6 +19,7 @@ import type { DocumentStructure } from "../../engine/doc/structure"
 import { prunableVersions } from "../../convex/lib/retention"
 import { createLocalBlobStore } from "../../engine/store/blob-store"
 import { createDocumentStore } from "../../engine/store/document-store"
+import { createCanvasImageCodec } from "../../engine/doc/image-codec"
 import { encodePreview } from "../../engine/store/preview"
 import { encodeExportImage } from "../../engine/store/export-image"
 import { encodeTile } from "../../engine/store/tile-codec"
@@ -88,6 +89,8 @@ declare global {
     /** A `RemoteIndex` backed by memory instead of Convex/R2, for 17/18 tests. */
     createFakeCloud(size: { width: number; height: number }): FakeCloud
     /** How many tiles a document's local manifest names, total, for 18's tests. */
+    /** How many times a placed image's original has been decoded. */
+    imageDecodes: number
     tileCountFor(documentId: string): Promise<number>
     /** The placement a stored document holds for its first placed image. */
     storedPlacement(documentId: string): Promise<unknown>
@@ -290,7 +293,20 @@ window.engine = createEngine(canvas)
 
 window.remountEngine = (options) => {
   window.engine.dispose()
-  window.engine = createEngine(canvas, options)
+  // How many times a placed image's file has been decoded. A drag decodes
+  // once however many adjustments it takes (06), and this is what says so.
+  window.imageDecodes = 0
+  const codec = createCanvasImageCodec()
+  window.engine = createEngine(canvas, {
+    ...options,
+    imageCodec: {
+      ...codec,
+      async open(asset) {
+        window.imageDecodes++
+        return await codec.open(asset)
+      },
+    },
+  })
 }
 
 window.runBenchmark = (options) => runBenchmark(window.engine, canvas, options)

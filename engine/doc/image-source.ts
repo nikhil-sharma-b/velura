@@ -47,6 +47,23 @@ export type PlacedRaster = Readonly<{
   image: SourceImage
 }>
 
+/**
+ * An original, decoded and held open.
+ *
+ * A drag is a run of adjustments, and decoding the file again for each one
+ * would mean a full JPEG decode per pointer sample: the picture would trail
+ * the hand dragging it. The decode happens once when the picture is picked
+ * up, every adjustment draws from it, and it is let go of at the end — which
+ * costs nothing in fidelity, since each drawing is still made from the
+ * original rather than from the drawing before it.
+ */
+export interface OpenImage {
+  /** The original drawn at a placement. */
+  render(placement: ImagePlacement): PlacedRaster
+  /** Lets go of the decoded picture. Rendering after this is not allowed. */
+  close(): void
+}
+
 export interface ImageSourceCodec {
   /** The size an encoded picture decodes to. */
   measure(
@@ -57,10 +74,12 @@ export interface ImageSourceCodec {
     height: number
   }>
   /**
-   * The original drawn at a placement: one resampling, from the original,
-   * whatever the placement has been through.
+   * Decodes an original and holds it open. Every drawing taken from it is a
+   * single resampling of the original, whatever the placement has been
+   * through — which is the whole of why a picture does not soften as it is
+   * adjusted (06).
    */
-  render(asset: ImageAsset, placement: ImagePlacement): Promise<PlacedRaster>
+  open(asset: ImageAsset): Promise<OpenImage>
   /**
    * Raw pixels as an encoded file. The way in for a picture that never was
    * one — pixels handed straight to `placeImage` — so that such an image has
