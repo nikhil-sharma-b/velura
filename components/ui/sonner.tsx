@@ -34,6 +34,10 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--normal-text": "var(--foreground)",
           "--normal-border": "var(--studio-edge)",
           "--border-radius": "var(--radius)",
+          // Wider than sonner's 356px default: a sentence that wraps four
+          // times reads as a paragraph to be studied, and a toast is glanced
+          // at. Sonner still goes full width on narrow screens.
+          "--width": "34rem",
         } as React.CSSProperties
       }
       toastOptions={{
