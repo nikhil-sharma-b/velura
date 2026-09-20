@@ -790,12 +790,31 @@ export function CanvasHost({
               { id: "locked-layer" }
             )
           else if (selected.image && !(snapshot.paintingMask && selected.mask))
+            // The refusal is where most artists meet this, so it carries the
+            // way through rather than only naming the wall. The mask is named
+            // too: it is the undoable way to hide part of a picture, and the
+            // conversion is not.
             toast.info(
               <>
                 <strong className="font-semibold">{selected.name}</strong> is an
-                image layer. Add a new layer to paint over it.
+                image layer. Paint on it to mark the picture itself — erasing
+                then takes its pixels away. A mask hides part of a picture
+                without destroying it.
               </>,
-              { id: "image-layer" }
+              {
+                id: "image-layer",
+                // Long enough to be read and acted on: the door closing
+                // before the artist reaches it is the wall again.
+                duration: 12000,
+                action: {
+                  label: "Paint on it",
+                  onClick: () =>
+                    void engine?.dispatch({
+                      type: "makeLayerPaintable",
+                      id: selected.id,
+                    }),
+                },
+              }
             )
         }}
         // Touch and pen gestures belong to the stroke, not to the scroller.

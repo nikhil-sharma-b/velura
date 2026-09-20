@@ -347,6 +347,20 @@ export function setLayer(
   }
 }
 
+/**
+ * Hands a placed image over to the pen. Only the flag changes: the pixels, the
+ * name, the mask and the layer's place in the tree are the artist's picture,
+ * and this is the moment they said it is theirs to mark. Destructive from
+ * here on — erasing takes the photograph's own pixels away — which is why it
+ * is asked for rather than assumed.
+ */
+export function makeLayerPaintable(doc: PaintDocument, id: string): void {
+  const node = findNode(doc, id)
+  if (node.kind !== "raster" || !node.image)
+    throw new Error(`${node.name} is not a placed image.`)
+  node.image = false
+}
+
 export function addMask(doc: PaintDocument, id: string): string {
   const node = findNode(doc, id)
   if (node.mask) throw new Error(`${node.name} already has a mask.`)

@@ -10,6 +10,7 @@ import {
   findLayer,
   findNode,
   HIGHLIGHT_DIM,
+  makeLayerPaintable,
   moveLayer,
   planComposite,
   removeLayer,
@@ -363,5 +364,42 @@ describe("resizing", () => {
       findLayer(doc, doc.layers[0].id).surface.tileCount()
     ).toBeGreaterThan(0)
     expect(doc.activeLayerId).toBe(top)
+  })
+})
+
+describe("painting on a placed image", () => {
+  test("clears the image flag and leaves every other setting alone", () => {
+    const doc = document()
+    const id = addLayer(doc)
+    const layer = findLayer(doc, id)
+    layer.image = true
+    setLayer(doc, id, { name: "Reference", opacity: 0.4, blend: "multiply" })
+    addMask(doc, id)
+    const mask = layer.mask
+
+    makeLayerPaintable(doc, id)
+
+    expect(layer.image).toBe(false)
+    expect(layer).toMatchObject({
+      name: "Reference",
+      opacity: 0.4,
+      blend: "multiply",
+    })
+    expect(layer.mask).toBe(mask)
+  })
+
+  test("refuses a layer that is not a placed image", () => {
+    const doc = document()
+    const id = addLayer(doc)
+    expect(() => makeLayerPaintable(doc, id)).toThrow()
+    const group = addGroup(doc, [id])
+    expect(() => makeLayerPaintable(doc, group)).toThrow()
+  })
+
+  test("a copy of an unconverted image layer is still an image layer", () => {
+    const doc = document()
+    const id = addLayer(doc)
+    findLayer(doc, id).image = true
+    expect(findLayer(doc, duplicateLayer(doc, id)).image).toBe(true)
   })
 })

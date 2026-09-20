@@ -13,6 +13,7 @@ import {
   LockIcon,
   LockOpenIcon,
   MaskHappyIcon,
+  PaintBrushIcon,
   PlusIcon,
   TrashIcon,
 } from "@phosphor-icons/react"
@@ -413,20 +414,40 @@ function LayerRow({
             {layer.visible ? <EyeIcon /> : <EyeSlashIcon />}
           </IconButton>
           {layer.kind === "raster" && (
-            <IconButton
-              variant="ghost"
-              size="icon-xs"
-              label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
-              onClick={() =>
-                void engine.dispatch({
-                  type: "setLayer",
-                  id: layer.id,
-                  locked: !layer.locked,
-                })
-              }
-            >
-              {layer.locked ? <LockIcon /> : <LockOpenIcon />}
-            </IconButton>
+            <>
+              {/* The way through the refusal, for an artist who decides
+                  before picking up the brush. It goes once the layer is
+                  ordinary paint: there is nothing left to convert. */}
+              {layer.image && (
+                <IconButton
+                  variant="ghost"
+                  size="icon-xs"
+                  label={`Paint on ${layer.name} — marks the picture itself; a mask hides part of it instead`}
+                  onClick={() =>
+                    void engine.dispatch({
+                      type: "makeLayerPaintable",
+                      id: layer.id,
+                    })
+                  }
+                >
+                  <PaintBrushIcon />
+                </IconButton>
+              )}
+              <IconButton
+                variant="ghost"
+                size="icon-xs"
+                label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
+                onClick={() =>
+                  void engine.dispatch({
+                    type: "setLayer",
+                    id: layer.id,
+                    locked: !layer.locked,
+                  })
+                }
+              >
+                {layer.locked ? <LockIcon /> : <LockOpenIcon />}
+              </IconButton>
+            </>
           )}
           {(selected || layer.id === activeLayerId) && (
             <>

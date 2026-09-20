@@ -130,3 +130,39 @@ test("pasting into a field being typed in is left to the field", async ({
   }, transfer)
   await expect(layers.getByText("Ignored")).toBeHidden()
 })
+
+test("the refusal offers the way through, and the panel offers it too", async ({
+  page,
+}) => {
+  const layers = await openStudio(page)
+  await layers.locator('input[type="file"]').setInputFiles({
+    name: "Reference.png",
+    mimeType: "image/png",
+    buffer: redPng(),
+  })
+  await expect(layers.getByText("Reference")).toBeVisible()
+
+  // Both doors are open before the artist has chosen: the panel's action, and
+  // the refusal's, for whoever meets the wall with the pen already down.
+  await expect(
+    layers.getByRole("button", { name: /^Paint on Reference/ })
+  ).toBeVisible()
+
+  const canvas = page.getByRole("img", { name: "Drawing canvas" })
+  await canvas.click({ position: { x: 300, y: 300 } })
+  await expect(page.getByText("is an image layer")).toBeVisible()
+  // The mask is named, so the non-destructive answer is not a secret.
+  await expect(
+    page.getByText("A mask hides part of a picture without destroying it.")
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Paint on it" }).click()
+
+  // Converted: the action is gone from the panel, and the pen is never
+  // refused on this layer again.
+  await expect(
+    layers.getByRole("button", { name: /^Paint on Reference/ })
+  ).toBeHidden()
+  await expect(page.getByText("is an image layer")).toBeHidden()
+  await canvas.click({ position: { x: 320, y: 320 } })
+  await expect(page.getByText("is an image layer")).toBeHidden()
+})

@@ -52,6 +52,7 @@ import {
   findNodeIn,
   groupContents,
   rasterLayers,
+  makeLayerPaintable,
   type PaintDocument,
   planComposite,
   removeLayer,
@@ -324,6 +325,13 @@ export type EngineCommand =
   | { type: "selectMask"; id: string }
   | { type: "setMaskEnabled"; id: string; enabled: boolean }
   | { type: "removeMask"; id: string }
+  /**
+   * Hands a placed image to the pen: after this the layer paints, erases and
+   * refuses nothing, like a layer the artist drew themselves. Destructive by
+   * nature — a mask is the undoable way to hide part of a picture — so it is
+   * only ever sent because the artist asked for it.
+   */
+  | { type: "makeLayerPaintable"; id: string }
   /**
    * A layer's own settings. Every field is optional and unnamed ones are left
    * alone, so a control that owns one property need not know the rest.
@@ -2331,6 +2339,14 @@ export function createEngine(
           const mask = removeMask(document, command.id)
           recordOperation("remove mask", before, { removed: [mask.id] })
           renderer?.releaseLayer(mask.id)
+          applyLayerChange()
+          break
+        }
+        case "makeLayerPaintable": {
+          const document = requireDocument()
+          const before = captureStructure(document)
+          makeLayerPaintable(document, command.id)
+          recordOperation("make image paintable", before)
           applyLayerChange()
           break
         }
