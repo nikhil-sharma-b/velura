@@ -153,7 +153,7 @@ test("the refusal offers the way through, and the panel offers it too", async ({
   await expect(page.getByText("is an image layer")).toBeVisible()
   // The mask is named, so the non-destructive answer is not a secret.
   await expect(
-    page.getByText("A mask hides part of a picture without destroying it.")
+    page.getByText("A mask hides part of it without erasing.")
   ).toBeVisible()
   await page.getByRole("button", { name: "Paint on it" }).click()
 

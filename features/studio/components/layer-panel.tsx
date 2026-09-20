@@ -422,7 +422,7 @@ function LayerRow({
                 <IconButton
                   variant="ghost"
                   size="icon-xs"
-                  label={`Paint on ${layer.name} — marks the picture itself; a mask hides part of it instead`}
+                  label={`Paint on ${layer.name}. A mask hides instead.`}
                   onClick={() =>
                     void engine.dispatch({
                       type: "makeLayerPaintable",

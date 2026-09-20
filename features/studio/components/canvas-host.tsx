@@ -793,13 +793,13 @@ export function CanvasHost({
             // The refusal is where most artists meet this, so it carries the
             // way through rather than only naming the wall. The mask is named
             // too: it is the undoable way to hide part of a picture, and the
-            // conversion is not.
+            // conversion is not. Two short lines, because a toast that has to
+            // be studied is one the artist dismisses unread.
             toast.info(
               <>
                 <strong className="font-semibold">{selected.name}</strong> is an
-                image layer. Paint on it to mark the picture itself — erasing
-                then takes its pixels away. A mask hides part of a picture
-                without destroying it.
+                image layer. Painting marks the picture itself. A mask hides
+                part of it without erasing.
               </>,
               {
                 id: "image-layer",
