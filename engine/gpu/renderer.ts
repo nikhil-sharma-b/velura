@@ -26,6 +26,7 @@ import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
 import { stampShader } from "../shaders/stamp"
 import { surfaceCompositeShader } from "../shaders/surface-composite"
+import { placedImageShader } from "../shaders/placed-image"
 import { thumbnailShader } from "../shaders/thumbnail"
 import {
   IDENTITY_MATRIX,
@@ -174,6 +175,28 @@ export interface Renderer {
    * not one the artist asked for.
    */
   cancelStroke(): void
+  /**
+   * Takes a placed image's original onto the GPU, so that moving it is a
+   * textured quad rather than a canvas-sized conversion in JavaScript (06).
+   * Held until `closePlacedImage`; uploading the same id again replaces it.
+   */
+  openPlacedImage(
+    id: string,
+    image: ImageBitmap | HTMLCanvasElement | OffscreenCanvas
+  ): void
+  /**
+   * Draws an opened original into a layer at a placement. The layer becomes
+   * exactly this picture: whatever it held before, including the picture's
+   * own previous position, is gone.
+   */
+  drawPlacedImage(options: {
+    surfaceId: string
+    imageId: string
+    /** The quad's corners in document pixels, clockwise from its top left. */
+    corners: readonly { x: number; y: number }[]
+  }): void
+  /** Lets go of an original's texture. */
+  closePlacedImage(id: string): void
   /**
    * Reads whole tiles back off a surface, zero-filled where they hang past the
    * canvas and where the surface holds nothing. Asynchronous and off the
@@ -468,6 +491,55 @@ export function createRenderer(
     },
     primitive: { topology: "triangle-list" },
   })
+
+  /**
+   * One textured quad per adjustment of a placed image (06). The original is
+   * held in an sRGB texture, so the transfer function is the hardware's and
+   * the sampler does the resampling: what used to be a canvas-sized loop in
+   * JavaScript is a draw call.
+   */
+  const placedImageModule = device.createShaderModule({
+    code: placedImageShader,
+  })
+  const placedImagePipeline = device.createRenderPipeline({
+    label: "placed image",
+    layout: "auto",
+    vertex: { module: placedImageModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: placedImageModule,
+      entryPoint: "fragmentMain",
+      // No blending: the draw decides what the layer holds there, because a
+      // placed image is the layer's whole content rather than a mark on it.
+      targets: [{ format: LAYER_FORMAT }],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  /**
+   * Four corners then the surface size. A `vec2` in a uniform array takes a
+   * whole 16-byte slot, so the corners occupy 64 bytes and the size follows
+   * them rather than sharing one.
+   */
+  const PLACED_IMAGE_UNIFORM_FLOATS = 20
+  const placedImageUniform = device.createBuffer({
+    size: PLACED_IMAGE_UNIFORM_FLOATS * 4,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
+  const placedImageValues = new Float32Array(PLACED_IMAGE_UNIFORM_FLOATS)
+  /**
+   * Linear on both, and clamped: a reference is commonly shown larger than
+   * its own resolution, and the edge must not wrap into the other side.
+   */
+  const placedImageSampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+    addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
+  })
+  /** Originals on the GPU, by asset id, while a transform holds them open. */
+  const placedImages = new Map<
+    string,
+    { texture: GPUTexture; bindGroup: GPUBindGroup }
+  >()
 
   const thumbnailModule = device.createShaderModule({ code: thumbnailShader })
   const thumbnailPipeline = device.createRenderPipeline({
@@ -1481,6 +1553,82 @@ export function createRenderer(
       writeStrokeOpacity(1)
       writeStrokeMode("paint")
       return region
+    },
+    openPlacedImage(id, image) {
+      this.closePlacedImage(id)
+      const texture = device.createTexture({
+        size: { width: image.width, height: image.height },
+        // sRGB-encoded: sampling it returns linear light, which is the
+        // per-pixel transfer function the CPU route spends a `pow` on.
+        format: "rgba8unorm-srgb",
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+      })
+      // Straight from the decoded picture into the texture: the pixels never
+      // come back to the CPU, which is the whole point of this path.
+      device.queue.copyExternalImageToTexture(
+        { source: image },
+        { texture },
+        { width: image.width, height: image.height }
+      )
+      placedImages.set(id, {
+        texture,
+        bindGroup: device.createBindGroup({
+          layout: placedImagePipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: placedImageUniform } },
+            { binding: 1, resource: texture.createView() },
+            { binding: 2, resource: placedImageSampler },
+          ],
+        }),
+      })
+    },
+    drawPlacedImage({ surfaceId, imageId, corners }) {
+      const image = placedImages.get(imageId)
+      if (!image) throw new Error(`No placed image is open as ${imageId}.`)
+      const surface = ensureSurface(surfaceId)
+      // A vec2 in a uniform array is padded to 16 bytes, so each corner takes
+      // a slot of four floats and the surface size follows them.
+      for (let index = 0; index < 4; index++) {
+        placedImageValues[index * 4] = corners[index].x
+        placedImageValues[index * 4 + 1] = corners[index].y
+      }
+      placedImageValues[16] = width
+      placedImageValues[17] = height
+      device.queue.writeBuffer(placedImageUniform, 0, placedImageValues)
+      const encoder = device.createCommandEncoder()
+      // Cleared and drawn in one pass. The clear is the whole surface rather
+      // than the region the picture covers, and it can be: a layer holding a
+      // placed image holds that picture and nothing else, so wherever the
+      // picture is not, the layer is empty — which is also what makes a move
+      // leave nothing behind where it used to be.
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: surface.view,
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+      })
+      pass.setPipeline(placedImagePipeline)
+      pass.setBindGroup(0, image.bindGroup)
+      pass.draw(6)
+      pass.end()
+      device.queue.submit([encoder.finish()])
+      surface.empty = false
+      // These pixels may sit inside a cache that was flattened before them.
+      composition = undefined
+      cachedFrom = undefined
+    },
+    closePlacedImage(id) {
+      const held = placedImages.get(id)
+      if (!held) return
+      held.texture.destroy()
+      placedImages.delete(id)
     },
     async readTiles(id, coords) {
       const surface = surfaces.get(id)

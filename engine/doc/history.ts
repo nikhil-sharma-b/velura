@@ -55,6 +55,13 @@ export type OperationPixels = {
    * stop being on the left, and a fill only ever adds.
    */
   replaced?: readonly SurfaceFill[]
+  /**
+   * Surfaces the operation changed on the GPU, to be read back and recorded
+   * as they now are. A transformed image arrives this way: the drag drew it
+   * with the renderer, so the pixels the step has to remember are the ones on
+   * the GPU rather than any the caller is holding (06).
+   */
+  readback?: readonly { surfaceId: string; region: PixelRect }[]
   /** Canvas the filled or replaced tiles were made for; they are clipped to it. */
   canvas?: { width: number; height: number }
   /**
@@ -341,6 +348,41 @@ export function createDocumentHistory(options: {
   }
 
   /**
+   * What a region of a surface holds now, as the step that put it there.
+   *
+   * The pixels are read back off the GPU rather than handed over, which is
+   * what a stroke needs — the mark was drawn there, not computed here — and
+   * what a committed image transform needs for the same reason. Answers
+   * nothing where the document was replaced during the readback.
+   */
+  async function captureReadback(
+    surfaceId: string,
+    region: PixelRect,
+    stillCurrent: () => boolean
+  ): Promise<SurfaceChange | undefined> {
+    const coords = tilesCoveringRect(region)
+    if (coords.length === 0) return undefined
+    const texels = await bridge.readTiles(surfaceId, coords)
+    // The readback is a wait, and the document may have been replaced
+    // during it.
+    if (!stillCurrent()) return undefined
+    const tiles = coords.flatMap((coord, position) => {
+      const key = tileKey(coord.x, coord.y)
+      const before = index.get(surfaceId)?.get(key)
+      const painted = texels[position]
+      const after = isBlank(painted) ? undefined : store.put(painted)
+      if (before === after) {
+        if (after) store.release(after)
+        return []
+      }
+      if (before) store.retain(before)
+      setTile(surfaceId, key, after)
+      return [{ x: coord.x, y: coord.y, before, after }]
+    })
+    return { surfaceId, tiles }
+  }
+
+  /**
    * A surface becoming exactly the tiles given: the ones named are written,
    * and every tile it held that they do not name is emptied. Content
    * addressing does the diffing, so a picture nudged one pixel costs the
@@ -428,26 +470,9 @@ export function createDocumentHistory(options: {
     },
     recordStroke(surfaceId, region) {
       enqueue(async (stillCurrent) => {
-        const coords = tilesCoveringRect(region)
-        if (coords.length === 0) return
-        const texels = await bridge.readTiles(surfaceId, coords)
-        // The readback is a wait, and the document may have been replaced
-        // during it.
-        if (!stillCurrent()) return
-        const tiles = coords.flatMap((coord, position) => {
-          const key = tileKey(coord.x, coord.y)
-          const before = index.get(surfaceId)?.get(key)
-          const painted = texels[position]
-          const after = isBlank(painted) ? undefined : store.put(painted)
-          if (before === after) {
-            if (after) store.release(after)
-            return []
-          }
-          if (before) store.retain(before)
-          setTile(surfaceId, key, after)
-          return [{ x: coord.x, y: coord.y, before, after }]
-        })
-        pushEntry({ label: "stroke", surfaces: [{ surfaceId, tiles }] })
+        const change = await captureReadback(surfaceId, region, stillCurrent)
+        if (!change) return
+        pushEntry({ label: "stroke", surfaces: [change] })
       })
     },
     recordReplacement(label, structure, surfaces, canvas) {
@@ -471,7 +496,7 @@ export function createDocumentHistory(options: {
       })
     },
     recordOperation(label, structure, operation) {
-      enqueue(async () => {
+      enqueue(async (stillCurrent) => {
         const canvas = operation?.canvas
         const written = [
           ...(operation?.filled ?? []).map((surface) => {
@@ -487,12 +512,26 @@ export function createDocumentHistory(options: {
             return captureReplace(surface.surfaceId, surface.tiles, canvas)
           }),
         ]
+        // Read back before the index moves under it: these pixels are already
+        // on the GPU, so the step is what they now are against what the index
+        // still says they were.
+        const read: SurfaceChange[] = []
+        for (const surface of operation?.readback ?? []) {
+          const change = await captureReadback(
+            surface.surfaceId,
+            surface.region,
+            stillCurrent
+          )
+          if (!change) return
+          read.push(change)
+        }
         const surfaces = [
           ...(operation?.removed ?? []).map(captureRemoval),
           ...(operation?.copied ?? []).map(({ from, to }) =>
             captureCopy(from, to)
           ),
           ...written,
+          ...read,
         ]
         // The index already names these pixels; only the GPU needs telling.
         if (written.length > 0)

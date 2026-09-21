@@ -118,6 +118,73 @@ async function transform(page: Page, id: string, to: Partial<Placement>) {
   )
 }
 
+test("a placed picture keeps its colour through the shader that draws it", async ({
+  page,
+}) => {
+  // The conversion a placed image goes through — sRGB transfer, the lift into
+  // the linear P3 working space, premultiplication — is the renderer's now
+  // rather than a loop in JavaScript, so this is what pins it: a colour put
+  // in comes back out, through the display transform, as the colour it was.
+  await openCanvas(page)
+  await page.evaluate(async () => {
+    const width = 40
+    const height = 40
+    const pixels = new Uint8ClampedArray(width * height * 4)
+    for (let at = 0; at < pixels.length; at += 4) {
+      // Mid grey: the value that is 21.6% of the light, not 50% of it, so a
+      // missing transfer function shows up immediately.
+      pixels[at] = 128
+      pixels[at + 1] = 128
+      pixels[at + 2] = 128
+      pixels[at + 3] = 255
+    }
+    await window.engine.dispatch({
+      type: "placeImage",
+      name: "Grey",
+      image: { width, height, pixels },
+    })
+  })
+  const grey = await painted(page)
+  const centre = { x: WIDTH / 2, y: HEIGHT / 2 }
+  for (const index of [0, 1, 2])
+    // Back through the display transform, a round trip to within a code
+    // value: the encode and decode are inverses, whatever space sits between.
+    expect(Math.abs(channel(grey, centre, index) - 128)).toBeLessThanOrEqual(1)
+  expect(channel(grey, centre, 3)).toBe(255)
+})
+
+test("a half-transparent picture is premultiplied like every other surface", async ({
+  page,
+}) => {
+  await openCanvas(page)
+  const scene = await painted(page)
+  await page.evaluate(
+    async ([width, height]) => {
+      const pixels = new Uint8ClampedArray(width * height * 4)
+      for (let at = 0; at < pixels.length; at += 4) {
+        pixels[at + 2] = 255
+        pixels[at + 3] = 128
+      }
+      await window.engine.dispatch({
+        type: "placeImage",
+        name: "Half",
+        image: { width, height, pixels },
+      })
+    },
+    [WIDTH, HEIGHT]
+  )
+  const half = await painted(page)
+  // Over the seeded scene's opaque green, where a change in either direction
+  // is visible.
+  const centre = { x: 20, y: 10 }
+  // Half-covered blue over the scene: blue has risen and what is under it
+  // still shows through, which is only true if the alpha was carried rather
+  // than dropped — a picture that lost it would hide the scene completely.
+  expect(channel(half, centre, 2)).toBeGreaterThan(channel(scene, centre, 2))
+  expect(channel(half, centre, 1)).toBeLessThan(channel(scene, centre, 1))
+  expect(channel(half, centre, 1)).toBeGreaterThan(20)
+})
+
 test("a placed image can be moved after it has been placed", async ({
   page,
 }) => {

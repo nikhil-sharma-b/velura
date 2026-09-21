@@ -82,10 +82,11 @@ import {
   structureAssets,
   structureSurfaceIds,
 } from "./doc/structure"
-import { imageTiles, type SourceImage } from "./doc/image-tiles"
 import {
   centeredPlacement,
   type ImagePlacement,
+  placementBounds,
+  placementCorners,
   resolution,
   samePlacement,
   validPlacement,
@@ -93,6 +94,7 @@ import {
 import { createCanvasImageCodec } from "./doc/image-codec"
 import {
   assetId,
+  type SourceImage,
   type ImageAsset,
   type ImageAssetRef,
   type ImageSourceCodec,
@@ -104,6 +106,7 @@ import {
   type PixelRect,
   type TileCoord,
   tileIndexForPixel,
+  unionRect,
 } from "./doc/tile-grid"
 import type { SurfaceTiles, TileRef } from "./store/document-store"
 import { type BlobStore, createLocalBlobStore } from "./store/blob-store"
@@ -818,8 +821,12 @@ export function createEngine(
         open: OpenImage
         /** The tree before the transform, which is the step's "before". */
         structure: DocumentStructure
-        /** Tiles the last preview wrote, so the next one can clear them. */
-        shown: TileCoord[]
+        /**
+         * Everything the picture has covered since it was picked up, which is
+         * the region the commit reads back: where it now is, and everywhere
+         * it has been and left.
+         */
+        touched: PixelRect
       }
     | undefined
   let flushScheduler: FlushScheduler | undefined
@@ -1259,30 +1266,22 @@ export function createEngine(
   }
 
   /**
-   * One drawing of an open original at a placement, as document tiles.
-   * Always from the original — this is the whole of why a picture may be
-   * adjusted any number of times without softening (06).
+   * Draws a picture that is not already open at a placement, and lets it go
+   * again: what placing an image is, as against the run of drawings a drag
+   * makes from one that stays open.
    */
-  function renderPlacement(
-    open: OpenImage,
-    placement: ImagePlacement,
-    canvas: { width: number; height: number }
-  ): (TileCoord & { texels: Uint16Array })[] {
-    const raster = open.render(placement)
-    return imageTiles(raster.image, raster.origin, canvas)
-  }
-
-  /** One drawing from an original that is not already open: a placement. */
-  async function renderOnce(
+  async function drawPlacement(
+    layerId: string,
     asset: ImageAsset,
-    placement: ImagePlacement,
-    canvas: { width: number; height: number }
-  ): Promise<(TileCoord & { texels: Uint16Array })[]> {
+    placement: ImagePlacement
+  ): Promise<void> {
     const open = await imageCodec().open(asset)
     try {
-      return renderPlacement(open, placement, canvas)
+      renderer?.openPlacedImage(layerId, open.source)
+      showTransform(layerId, placement)
     } finally {
       open.close()
+      renderer?.closePlacedImage(layerId)
     }
   }
 
@@ -1292,23 +1291,23 @@ export function createEngine(
    * to the GPU and history's index is left describing the picture as it was,
    * which is exactly the "before" the commit then records against.
    */
-  function showTransform(
-    layerId: string,
-    tiles: readonly (TileCoord & { texels: Uint16Array })[],
-    clearing: readonly TileCoord[]
-  ) {
+  /**
+   * Shows a transform in progress without recording it.
+   *
+   * One textured quad, drawn by the renderer from the original it is holding
+   * (06). Mid-drag there is no step to take back yet — the step is the whole
+   * drag — so the GPU is told and history's index is left describing the
+   * picture as it was, which is exactly the "before" the commit records
+   * against.
+   */
+  function showTransform(layerId: string, placement: ImagePlacement) {
     if (!renderer) return
-    const shown = new Set(tiles.map((tile) => `${tile.x},${tile.y}`))
-    const writes = [
-      ...tiles.map((tile) => ({ x: tile.x, y: tile.y, texels: tile.texels })),
-      // Where the picture was and no longer is. Without this a move would
-      // smear it across everywhere it had been.
-      ...clearing
-        .filter((coord) => !shown.has(`${coord.x},${coord.y}`))
-        .map((coord) => ({ x: coord.x, y: coord.y, texels: null })),
-    ]
-    renderer.writeTiles(layerId, writes)
-    contentBounds.growTiles(layerId, writes)
+    renderer.drawPlacedImage({
+      surfaceId: layerId,
+      imageId: layerId,
+      corners: placementCorners(placement),
+    })
+    contentBounds.grow(layerId, placementBounds(placement))
     invalidateThumbnailsOf(layerId)
     if (snapshot.status === "ready") render()
   }
@@ -1461,21 +1460,27 @@ export function createEngine(
     const canvas = { width: document.width, height: document.height }
     if (samePlacement(session.placement, session.start)) {
       // Picked up and put down: not a step, and nothing to re-render.
-      session.open.close()
+      closeTransform(session)
       publish({ imageTransform: null })
       return
     }
+    // The drag drew the picture with the renderer, so the pixels this step
+    // has to remember are the ones on the GPU. The region is everywhere the
+    // picture has been since it was picked up, so the tiles it left behind
+    // are recorded as the empty ones they now are.
     recordOperation("transform image", session.structure, {
-      replaced: [
+      readback: [
         {
           surfaceId: session.layerId,
-          tiles: renderPlacement(session.open, session.placement, canvas),
+          region: unionRect(
+            session.touched,
+            placementBounds(session.placement)
+          ),
         },
       ],
       canvas,
     })
-    session.open.close()
-    await history?.settle()
+    closeTransform(session)
     publish({ imageTransform: null })
     applyLayerChange()
   }
@@ -1492,17 +1497,17 @@ export function createEngine(
     imageTransform = undefined
     const document = requireDocument()
     setPlacement(document, session.layerId, session.start)
-    if (!samePlacement(session.placement, session.start)) {
-      const canvas = { width: document.width, height: document.height }
-      showTransform(
-        session.layerId,
-        renderPlacement(session.open, session.start, canvas),
-        session.shown
-      )
-    }
-    session.open.close()
+    if (!samePlacement(session.placement, session.start))
+      showTransform(session.layerId, session.start)
+    closeTransform(session)
     publish({ imageTransform: null })
     applyLayerChange()
+  }
+
+  /** Lets go of an original a transform was holding, on the GPU and off it. */
+  function closeTransform(session: { layerId: string; open: OpenImage }) {
+    session.open.close()
+    renderer?.closePlacedImage(session.layerId)
   }
 
   /** The transform in force, or the failure of asking for one out of turn. */
@@ -2641,19 +2646,21 @@ export function createEngine(
           if (!validPlacement(placement, canvas))
             throw new Error("That is not a placement an image can be put at.")
           layer.placed = { asset: assetRef(asset), placement }
+          // Drawn by the renderer, exactly as every later adjustment of it
+          // will be. One renderer of placements rather than two: a second one
+          // here would resample differently, and cancelling a transform —
+          // which redraws the placement the picture was picked up at — would
+          // not give back the pixels it started with.
+          await drawPlacement(id, asset, placement)
+          // Recording reads back what was just drawn and is not waited for:
+          // the picture is already on screen, and the step, the thumbnail and
+          // the save all follow from the recording in their own time. Undo
+          // settles history before it acts, so a step still being recorded
+          // cannot be stepped past.
           recordOperation("place image", before, {
-            filled: [
-              {
-                surfaceId: id,
-                tiles: await renderOnce(asset, placement, canvas),
-              },
-            ],
+            readback: [{ surfaceId: id, region: placementBounds(placement) }],
             canvas,
           })
-          // Recording is what puts these tiles on the GPU, and it is queued
-          // behind whatever else history is doing: the frame has to wait for
-          // them or the image would appear only on the next unrelated redraw.
-          await history?.settle()
           applyLayerChange()
           break
         }
@@ -2669,16 +2676,26 @@ export function createEngine(
           if (imageTransform && imageTransform.layerId !== command.id)
             await commitTransform()
           const asset = assetFor(layer.placed.asset.id)
+          // Decoded and uploaded here, once. Every adjustment after this is a
+          // textured quad: no decode, no canvas-sized conversion in
+          // JavaScript, no tile upload — which is the difference between
+          // dragging a six-megapixel photograph at three frames a second and
+          // dragging it at the frame rate (06).
+          const open = await imageCodec().open(asset)
+          try {
+            renderer?.openPlacedImage(command.id, open.source)
+          } catch (error) {
+            open.close()
+            throw error
+          }
           imageTransform = {
             layerId: command.id,
             start: layer.placed.placement,
             placement: layer.placed.placement,
             asset,
-            // Decoded here, once: a drag that decoded the file per pointer
-            // sample would leave the picture trailing the hand moving it.
-            open: await imageCodec().open(asset),
+            open,
             structure: captureStructure(document),
-            shown: history?.occupiedTiles(command.id) ?? [],
+            touched: placementBounds(layer.placed.placement),
           }
           publish({ imageTransform: describeTransform() })
           break
@@ -2692,9 +2709,11 @@ export function createEngine(
           if (samePlacement(command.placement, session.placement)) break
           session.placement = command.placement
           setPlacement(document, session.layerId, command.placement)
-          const tiles = renderPlacement(session.open, command.placement, canvas)
-          showTransform(session.layerId, tiles, session.shown)
-          session.shown = tiles.map((tile) => ({ x: tile.x, y: tile.y }))
+          showTransform(session.layerId, command.placement)
+          session.touched = unionRect(
+            session.touched,
+            placementBounds(command.placement)
+          )
           publish({
             imageTransform: describeTransform(),
             ...describeLayers(document),
@@ -2743,7 +2762,7 @@ export function createEngine(
             // A picture being moved that is then thrown away: the transform
             // has nowhere to land, and a commit would put the pixels back.
             if (imageTransform?.layerId === command.id) {
-              imageTransform.open.close()
+              closeTransform(imageTransform)
               imageTransform = undefined
               publish({ imageTransform: null })
             }
@@ -2759,7 +2778,7 @@ export function createEngine(
           applyLayerChange()
           break
         case "clearDocument": {
-          imageTransform?.open.close()
+          if (imageTransform) closeTransform(imageTransform)
           imageTransform = undefined
           publish({ imageTransform: null })
           const previous = requireDocument()
@@ -3259,7 +3278,7 @@ export function createEngine(
       thumbnails.dispose()
       thumbnailViews.clear()
       // A picture still held open by a transform that was never finished.
-      imageTransform?.open.close()
+      if (imageTransform) closeTransform(imageTransform)
       imageTransform = undefined
       detachSampler?.()
       detachSampler = undefined

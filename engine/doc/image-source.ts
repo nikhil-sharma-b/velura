@@ -10,17 +10,20 @@
  * size of the rgba16float tiles it produces, which is what keeps a document
  * that holds its originals a defensible size on disk.
  *
- * The decoding and the scaler are the platform's, as they were when placing
- * an image was a one-shot import; every decision around them is here and
- * testable, and the codec is an interface so a test can hand the engine a
- * resampler with no browser behind it.
+ * The decoding is the platform's, behind the interface below; the drawing is
+ * the renderer's, from the texture this hands it. Nothing between them turns
+ * a picture into pixels on the CPU, which is what makes dragging a large
+ * photograph interactive rather than a slideshow.
  */
 
-import { placementBounds, type ImagePlacement } from "./image-placement"
-import type { SourceImage } from "./image-tiles"
-import type { PixelRect } from "./tile-grid"
-
-export type { SourceImage } from "./image-tiles"
+import type { ImagePlacement } from "./image-placement"
+/** An image as a browser hands one over: non-premultiplied sRGB, 8 bits. */
+export type SourceImage = {
+  readonly width: number
+  readonly height: number
+  /** Row-major RGBA, four bytes a pixel — an `ImageData.data`. */
+  readonly pixels: Uint8ClampedArray | Uint8Array
+}
 
 /**
  * An original picture as the document keeps one: the encoded file, its id
@@ -41,12 +44,6 @@ export type ImageAsset = Readonly<{
 /** An asset without its bytes: what a manifest and a layer tree carry. */
 export type ImageAssetRef = Readonly<Omit<ImageAsset, "bytes">>
 
-/** A rendered placement: the pixels, and where their top-left lands. */
-export type PlacedRaster = Readonly<{
-  origin: Readonly<{ x: number; y: number }>
-  image: SourceImage
-}>
-
 /**
  * An original, decoded and held open.
  *
@@ -58,8 +55,12 @@ export type PlacedRaster = Readonly<{
  * original rather than from the drawing before it.
  */
 export interface OpenImage {
-  /** The original drawn at a placement. */
-  render(placement: ImagePlacement): PlacedRaster
+  /**
+   * The decoded picture itself, for a caller that can draw it without going
+   * through pixels — the renderer uploads this straight into a texture, so a
+   * drag never converts a pixel on the CPU at all (06).
+   */
+  readonly source: ImageBitmap | HTMLCanvasElement | OffscreenCanvas
   /** Lets go of the decoded picture. Rendering after this is not allowed. */
   close(): void
 }
@@ -100,41 +101,6 @@ export function assetId(bytes: Uint8Array): string {
     b = Math.imul(b + bytes[i] + i, 0x85ebca6b) >>> 0
   }
   return `${a.toString(16).padStart(8, "0")}${b.toString(16).padStart(8, "0")}${bytes.length.toString(16)}`
-}
-
-/**
- * How to draw the original into the box a placement covers, in the terms a
- * 2D context takes: translate to the picture's centre within the box, turn,
- * mirror, then draw the picture centred on the origin at its drawn size.
- *
- * Separated from the drawing so the geometry can be checked without a canvas,
- * and so mirroring stays a negative scale — exact, costing no detail — rather
- * than becoming a second resampling pass.
- */
-export type DrawPlan = Readonly<{
-  /** The whole-pixel box in document space the pixels are produced for. */
-  box: PixelRect
-  /** Where the picture's centre sits inside the box. */
-  centre: Readonly<{ x: number; y: number }>
-  rotation: number
-  scaleX: number
-  scaleY: number
-  /** The size to draw the picture at, before rotation and mirroring. */
-  drawWidth: number
-  drawHeight: number
-}>
-
-export function drawPlan(placement: ImagePlacement): DrawPlan {
-  const box = placementBounds(placement)
-  return {
-    box,
-    centre: { x: placement.x - box.x, y: placement.y - box.y },
-    rotation: placement.rotation,
-    scaleX: placement.flipX ? -1 : 1,
-    scaleY: placement.flipY ? -1 : 1,
-    drawWidth: placement.width,
-    drawHeight: placement.height,
-  }
 }
 
 /**

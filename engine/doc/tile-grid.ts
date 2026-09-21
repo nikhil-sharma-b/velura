@@ -59,6 +59,15 @@ export function intersectRect(a: PixelRect, b: PixelRect): PixelRect | null {
 }
 
 /** Row-major order, so callers upload and composite tiles predictably. */
+/** The smallest rectangle holding both: what a drag has covered altogether. */
+export function unionRect(a: PixelRect, b: PixelRect): PixelRect {
+  const x = Math.min(a.x, b.x)
+  const y = Math.min(a.y, b.y)
+  const right = Math.max(a.x + a.width, b.x + b.width)
+  const bottom = Math.max(a.y + a.height, b.y + b.height)
+  return { x, y, width: right - x, height: bottom - y }
+}
+
 export function tilesCoveringRect(rect: PixelRect): TileCoord[] {
   if (isEmptyRect(rect)) return []
   const minX = tileIndexForPixel(rect.x)

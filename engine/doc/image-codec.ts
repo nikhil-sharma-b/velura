@@ -7,7 +7,7 @@
  * touches one.
  */
 
-import { drawPlan, type ImageSourceCodec } from "./image-source"
+import type { ImageSourceCodec } from "./image-source"
 
 type Canvas2D = {
   canvas: { width: number; height: number }
@@ -68,35 +68,7 @@ export function createCanvasImageCodec(): ImageSourceCodec {
       const bitmap = await decode(asset.bytes, asset.mime)
       let open = true
       return {
-        render(placement) {
-          if (!open) throw new Error("That picture has already been let go of.")
-          const plan = drawPlan(placement)
-          const { canvas, context } = surface(
-            Math.max(1, plan.box.width),
-            Math.max(1, plan.box.height)
-          )
-          context.save()
-          context.translate(plan.centre.x, plan.centre.y)
-          context.rotate(plan.rotation)
-          context.scale(plan.scaleX, plan.scaleY)
-          context.drawImage(
-            bitmap,
-            -plan.drawWidth / 2,
-            -plan.drawHeight / 2,
-            plan.drawWidth,
-            plan.drawHeight
-          )
-          context.restore()
-          const pixels = context.getImageData(0, 0, canvas.width, canvas.height)
-          return {
-            origin: { x: plan.box.x, y: plan.box.y },
-            image: {
-              width: canvas.width,
-              height: canvas.height,
-              pixels: pixels.data,
-            },
-          }
-        },
+        source: bitmap,
         close() {
           if (!open) return
           open = false
