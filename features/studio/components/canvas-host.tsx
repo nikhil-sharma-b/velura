@@ -912,13 +912,6 @@ export function CanvasHost({
             </div>
           )}
 
-          {engine && remote && historyOpen && (
-            <VersionPanel
-              engine={engine}
-              onClose={() => setHistoryOpen(false)}
-            />
-          )}
-
           <div className="absolute top-3 left-3 flex gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl">
             {libraryHref && (
               <>
@@ -965,6 +958,34 @@ export function CanvasHost({
             >
               <ArrowUUpRightIcon />
             </IconButton>
+            {/* Beside undo and redo because it is the same kind of control —
+                a way through the document's past — and the panel hangs from
+                the button that opened it. Restore points only exist for a
+                document with a cloud copy behind it (§9.4), so an anonymous
+                local document is not shown a door to them. */}
+            {remote && (
+              <div className="relative">
+                <IconButton
+                  variant={historyOpen ? "default" : "ghost"}
+                  size="icon"
+                  label="Version history"
+                  side="bottom"
+                  aria-pressed={historyOpen}
+                  aria-expanded={historyOpen}
+                  onClick={() => setHistoryOpen((open) => !open)}
+                  className="rounded-lg"
+                >
+                  <ClockCounterClockwiseIcon />
+                </IconButton>
+                {engine && historyOpen && (
+                  <VersionPanel
+                    engine={engine}
+                    onClose={() => setHistoryOpen(false)}
+                    className="absolute top-full left-0 mt-3.5"
+                  />
+                )}
+              </div>
+            )}
           </div>
 
           <TooltipProvider delayDuration={350}>
@@ -1298,21 +1319,6 @@ export function CanvasHost({
                 >
                   <SlidersIcon />
                 </RailAction>
-                {/* Restore points only exist for a document with a cloud copy
-                behind it (§9.4), so an anonymous local document has no ladder
-                to offer and is not shown a door to one. */}
-                {remote && (
-                  <RailAction
-                    variant={historyOpen ? "default" : "ghost"}
-                    size="icon"
-                    label="Version history"
-                    aria-pressed={historyOpen}
-                    onClick={() => setHistoryOpen((open) => !open)}
-                    className="rounded-lg"
-                  >
-                    <ClockCounterClockwiseIcon />
-                  </RailAction>
-                )}
               </div>
             </div>
           </TooltipProvider>

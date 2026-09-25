@@ -1,7 +1,7 @@
 "use client"
 
 import { XIcon } from "@phosphor-icons/react"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
@@ -30,12 +30,38 @@ import { IconButton } from "./icon-button"
 export function VersionPanel({
   engine,
   onClose,
+  className,
 }: {
   engine: Engine
   onClose: () => void
+  /** Where the host places it; the panel draws its own pointer at top left. */
+  className?: string
 }) {
   const [points, setPoints] = useState<readonly RestorePoint[] | null>(null)
-  const [previewing, setPreviewing] = useState<RestorePoint | null>(null)
+  const [previewing, setPreviewingState] = useState<RestorePoint | null>(null)
+  // Mirrored for the unmount below, which runs after the last render and so
+  // cannot read state; written in the same call as the state so a restore
+  // that is kept and then closed is never mistaken for one still on trial.
+  const previewingRef = useRef<RestorePoint | null>(null)
+  const setPreviewing = useCallback((point: RestorePoint | null) => {
+    previewingRef.current = point
+    setPreviewingState(point)
+  }, [])
+
+  // However the panel goes — its close button, Escape, the toolbar button
+  // that opened it, leaving the canvas — closing the history is leaving the
+  // past: a preview still one step away goes back with it, so the canvas the
+  // artist returns to is the one they opened the panel on. One painted over
+  // is already their work, and stays.
+  useEffect(
+    () => () => {
+      if (previewingRef.current === null || !engine.canRevertRestore()) return
+      void engine.revertRestore().catch(() => {
+        // The engine is already gone with the canvas; nothing to revert.
+      })
+    },
+    [engine]
+  )
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
   // Read once when the panel opens: labels are relative to "now", and a
@@ -77,7 +103,7 @@ export function VersionPanel({
         setBusy(false)
       }
     },
-    [engine, previewing]
+    [engine, previewing, setPreviewing]
   )
 
   // Painting during a preview buries the restore under the artist's own
@@ -95,7 +121,7 @@ export function VersionPanel({
     } finally {
       setBusy(false)
     }
-  }, [engine])
+  }, [engine, setPreviewing])
 
   const restore = useCallback(async () => {
     setBusy(true)
@@ -108,15 +134,9 @@ export function VersionPanel({
     } finally {
       setBusy(false)
     }
-  }, [engine, onClose])
+  }, [engine, onClose, setPreviewing])
 
-  // Closing the history is leaving the past: a preview still one step away
-  // goes back with it, so the canvas the artist returns to is the one they
-  // opened the panel on. One painted over is already their work, and stays.
-  const close = useCallback(async () => {
-    if (canGoBack) await backToNow()
-    onClose()
-  }, [backToNow, canGoBack, onClose])
+  const close = onClose
 
   const groups = points ? groupRestorePointsByDay(points, now) : []
 
@@ -127,10 +147,19 @@ export function VersionPanel({
       onKeyDown={(event) => {
         if (event.key !== "Escape" || busy) return
         event.stopPropagation()
-        void close()
+        close()
       }}
-      className="absolute top-16 left-16 z-10 flex max-h-[calc(100dvh-5rem)] w-72 max-w-[calc(100vw-5rem)] flex-col rounded-xl border border-studio-edge bg-studio-surface/95 shadow-xl backdrop-blur-xl"
+      className={cn(
+        "z-10 flex max-h-[calc(100dvh-6rem)] w-72 max-w-[calc(100vw-11rem)] flex-col rounded-xl border border-studio-edge bg-studio-surface shadow-xl",
+        className
+      )}
     >
+      {/* Points up at the toolbar button, so the panel reads as opened by it
+          rather than as something that appeared elsewhere. */}
+      <span
+        aria-hidden
+        className="absolute -top-1.5 left-3 size-3 rotate-45 border-t border-l border-studio-edge bg-studio-surface"
+      />
       <header className="flex items-center justify-between border-b border-studio-edge/70 py-2 pr-2 pl-3">
         <h2 className="text-sm font-medium">Version history</h2>
         <IconButton
@@ -138,7 +167,7 @@ export function VersionPanel({
           size="icon"
           label="Close version history"
           disabled={busy}
-          onClick={() => void close()}
+          onClick={close}
           className="size-7 rounded-md"
         >
           <XIcon className="size-3.5" />
