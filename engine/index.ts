@@ -675,6 +675,12 @@ export interface Engine {
    */
   canRevertRestore(): boolean
   /**
+   * Keeps the restore in hand: until this is called it is only on trial,
+   * saved neither to this device nor to the cloud, so a tab that closes
+   * mid-preview reopens on the document as it was. Saves at once.
+   */
+  keepRestore(): Promise<void>
+  /**
    * Takes back the last restore, where it is still the top step. This is what
    * makes looking at an old state safe: the caller does not have to know how
    * many entries a restore costs, or whether history has moved since.
@@ -809,6 +815,21 @@ export function createEngine(
    * means, and belongs here rather than in a panel counting steps.
    */
   let restoreDepth: number | undefined
+  /** True from the moment a restore starts writing until it is on trial. */
+  let applyingRestore = false
+  /**
+   * A restore applied but not kept, and still the step one undo takes back.
+   * Nothing saves while one is — not the commit hook, not an idle flush, not
+   * a tab going hidden, not leaving the canvas — because what is on screen is
+   * a look at the past, not the document. Painting over it ends the trial:
+   * from then on it is the artist's work and saves like any other.
+   */
+  function restoreOnTrial(): boolean {
+    return (
+      applyingRestore ||
+      (restoreDepth !== undefined && history?.stepsBack() === restoreDepth)
+    )
+  }
   /**
    * The originals placed images were made from, by content hash (06). One
    * copy per distinct file however many layers show it, held here so a
@@ -2246,6 +2267,10 @@ export function createEngine(
           // a layer is first known to hold something — or, erased, nothing.
           invalidateChangedHoldings()
           if (!restored) return
+          if (restoreOnTrial()) {
+            publishSyncStatus()
+            return
+          }
           void persistence?.save()
           // Scheduling is a timer reset, not a network call, so this never
           // costs a stroke a frame (§9.2's "off the interactive path").
@@ -2321,7 +2346,10 @@ export function createEngine(
             },
           })
           flushScheduler = createFlushScheduler({
-            flush: () => void cloudSync?.flush(),
+            // An idle timer set by earlier strokes can come due mid-preview.
+            flush: () => {
+              if (!restoreOnTrial()) void cloudSync?.flush()
+            },
             idleMs: cloud.idleMs ?? DEFAULT_CLOUD_IDLE_MS,
           })
         }
@@ -3117,7 +3145,8 @@ export function createEngine(
     async save() {
       // The same gate the commit hook uses: a session that could not read the
       // stored document does not get to write over it, however it is asked.
-      if (!restored) return
+      // Nor does a preview that has not been kept.
+      if (!restored || restoreOnTrial()) return
       await history?.settle()
       await persistence?.save()
       if (cloudSync) {
@@ -3178,13 +3207,18 @@ export function createEngine(
       // overwritten by the sparse surface it was seeded from.
       uploadLayers()
 
+      applyingRestore = true
       past.recordReplacement(
         "restore",
         { before, after: structure },
         replacement,
         { width: snapshot.width, height: snapshot.height }
       )
-      await past.settle()
+      try {
+        await past.settle()
+      } finally {
+        applyingRestore = false
+      }
       if (disposed) return false
 
       const remaining = structureSurfaceIds(captureStructure(document))
@@ -3196,6 +3230,10 @@ export function createEngine(
     },
     canRevertRestore: () =>
       restoreDepth !== undefined && history?.stepsBack() === restoreDepth,
+    async keepRestore() {
+      restoreDepth = undefined
+      await this.save()
+    },
     async revertRestore() {
       if (!this.canRevertRestore()) return false
       await this.dispatch({ type: "undo" })
@@ -3344,7 +3382,7 @@ export function createEngine(
         sync &&
         (sync.status() === "syncing" ||
           (committedSinceOpen && sync.status() !== "fully-synced"))
-      if (restored && sync && unsent) {
+      if (restored && sync && unsent && !restoreOnTrial()) {
         if (frame !== undefined) cancelAnimationFrame(frame)
         frame = undefined
         context?.unconfigure()

@@ -304,3 +304,98 @@ test("previewing a second point leaves one step over the artist's work, not two"
   expect(await revert(page)).toBe(true)
   expect(await painted(page, 30, 90)).toBe(true)
 })
+
+/** Opens the same document again against the same fake cloud, as a reload would. */
+async function reopen(page: Page, documentId: string) {
+  await page.evaluate(
+    async ([width, height, id]) => {
+      window.remountEngine({
+        persistence: { documentId: id as string },
+        cloud: { remote: window.fakeCloud.remote, idleMs: 60_000 },
+      })
+      await window.engine.dispatch({
+        type: "resize",
+        width: width as number,
+        height: height as number,
+        devicePixelRatio: 1,
+      })
+      await window.engine.dispatch({ type: "initialize" })
+    },
+    [WIDTH, HEIGHT, documentId] as const
+  )
+}
+
+test("a preview that is never kept is not saved, so a reload comes back to now", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 30)
+  await page.evaluate(() => window.engine.save())
+  const [earlier] = await restorePoints(page)
+  await paint(page, origin, 90)
+  await page.evaluate(() => window.engine.save())
+  const versionsBefore = (await restorePoints(page)).length
+
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    earlier!.id
+  )
+  expect(await painted(page, 30, 90)).toBe(false)
+  // What a hidden or closing tab asks for — and what an idle flush would do.
+  await page.evaluate(() => window.engine.save())
+
+  // The tab goes without the preview being taken back: nothing reverts it.
+  await reopen(page, documentId)
+
+  expect(await painted(page, 30, 90)).toBe(true)
+  expect((await restorePoints(page)).length).toBe(versionsBefore)
+})
+
+test("keeping a preview saves it, locally and to the cloud", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 30)
+  await page.evaluate(() => window.engine.save())
+  const [earlier] = await restorePoints(page)
+  await paint(page, origin, 90)
+  await page.evaluate(() => window.engine.save())
+
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    earlier!.id
+  )
+  await page.evaluate(() => window.engine.keepRestore())
+  expect(await page.evaluate(() => window.engine.canRevertRestore())).toBe(
+    false
+  )
+
+  await reopen(page, documentId)
+  expect(await painted(page, 30, 90)).toBe(false)
+  expect(await painted(page, 30, 30)).toBe(true)
+})
+
+test("painting over a preview makes it the artist's work, saved like any other", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 30)
+  await page.evaluate(() => window.engine.save())
+  const [earlier] = await restorePoints(page)
+  await paint(page, origin, 90)
+  await page.evaluate(() => window.engine.save())
+
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    earlier!.id
+  )
+  await paint(page, origin, 60)
+  await page.evaluate(() => window.engine.save())
+
+  await reopen(page, documentId)
+  expect(await painted(page, 30, 60)).toBe(true)
+  expect(await painted(page, 30, 90)).toBe(false)
+})

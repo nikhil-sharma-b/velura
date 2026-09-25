@@ -144,14 +144,17 @@ export function VersionPanel({
   const restore = useCallback(async () => {
     setBusy(true)
     try {
-      // Nothing to apply — the pixels are already in the document. This is
-      // only about getting them to the cloud without waiting for an idle.
-      await engine.save()
+      // Nothing to apply — the pixels are already on the canvas. Until now
+      // they were only on trial and saved nowhere; keeping them saves them,
+      // here and to the cloud, without waiting for an idle.
+      await engine.keepRestore()
       setPreviewing(null)
-      onClose()
     } finally {
       setBusy(false)
     }
+    // After the panel stops reporting itself busy: the host will not close a
+    // panel that is still mid-step, and this one no longer is.
+    onClose()
   }, [engine, onClose, setBusy, setPreviewing])
 
   const groups = points ? groupRestorePointsByDay(points, now) : []
