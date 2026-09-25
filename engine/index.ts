@@ -86,7 +86,7 @@ import {
   centeredPlacement,
   type ImagePlacement,
   placementBounds,
-  placementCorners,
+  placementQuad,
   resolution,
   samePlacement,
   validPlacement,
@@ -1305,7 +1305,9 @@ export function createEngine(
     renderer.drawPlacedImage({
       surfaceId: layerId,
       imageId: layerId,
-      corners: placementCorners(placement),
+      // The quad, not the box: which way round the picture is drawn inside
+      // its corners is what a flip changes.
+      corners: placementQuad(placement),
     })
     contentBounds.grow(layerId, placementBounds(placement))
     invalidateThumbnailsOf(layerId)

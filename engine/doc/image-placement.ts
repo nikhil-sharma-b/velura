@@ -131,6 +131,32 @@ export function placementCorners(
 }
 
 /**
+ * The same four corners, in the order the picture's own corners map onto
+ * them: its top left first, then clockwise round the picture.
+ *
+ * Mirroring lives here rather than in the geometry. `placementCorners` is the
+ * box on screen, which a flip does not move — the box is the same box — while
+ * this is which way round the picture is drawn inside it, which is the whole
+ * of what a flip changes. Whoever draws the picture reads this; whoever draws
+ * the handles reads the other.
+ */
+export function placementQuad(
+  placement: ImagePlacement
+): readonly [Point, Point, Point, Point] {
+  const [topLeft, topRight, bottomRight, bottomLeft] =
+    placementCorners(placement)
+  // Mirrored horizontally, the picture's left edge is drawn down the box's
+  // right; vertically, its top edge along the box's bottom. Both together is
+  // a half turn, which is the two swaps applied in either order.
+  const corners: [Point, Point, Point, Point] = placement.flipX
+    ? [topRight, topLeft, bottomLeft, bottomRight]
+    : [topLeft, topRight, bottomRight, bottomLeft]
+  return placement.flipY
+    ? [corners[3], corners[2], corners[1], corners[0]]
+    : corners
+}
+
+/**
  * The whole-pixel box the drawn picture fits inside. Outwards, always: the
  * resampler renders into this box, and a box that cut a pixel in half would
  * leave the resampler guessing where the picture's edge was.

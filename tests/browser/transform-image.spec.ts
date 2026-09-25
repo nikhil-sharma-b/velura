@@ -236,6 +236,101 @@ test("the canvas shows the picture moving while it is still being dragged", asyn
   expect(pixel(dragging, centre)).toEqual(pixel(scene, centre))
 })
 
+test("a flipped picture is mirrored, and flipping back restores it", async ({
+  page,
+}) => {
+  // A flip is a flag on the placement rather than pixels moved, so it costs
+  // no detail — but it has to reach the draw, or it changes nothing at all.
+  await openCanvas(page)
+  const id = await page.evaluate(async () => {
+    const width = 40
+    const height = 40
+    const pixels = new Uint8ClampedArray(width * height * 4)
+    for (let y = 0; y < height; y++)
+      for (let x = 0; x < width; x++) {
+        const at = (y * width + x) * 4
+        // Red down the left half, blue down the right: a picture that says
+        // which way round it is.
+        pixels[at] = x < width / 2 ? 255 : 0
+        pixels[at + 2] = x < width / 2 ? 0 : 255
+        pixels[at + 3] = 255
+      }
+    await window.engine.dispatch({
+      type: "placeImage",
+      name: "Sided",
+      image: { width, height, pixels },
+    })
+    return window.engine.getSnapshot().activeLayerId
+  })
+
+  const left = { x: WIDTH / 2 - 15, y: HEIGHT / 2 }
+  const right = { x: WIDTH / 2 + 15, y: HEIGHT / 2 }
+  const placed = await painted(page)
+  expect(channel(placed, left, 0)).toBeGreaterThan(200)
+  expect(channel(placed, right, 2)).toBeGreaterThan(200)
+
+  await page.evaluate(async (layerId) => {
+    await window.engine.dispatch({ type: "beginImageTransform", id: layerId })
+    const from = window.engine.getSnapshot().imageTransform!.placement
+    await window.engine.dispatch({
+      type: "adjustImageTransform",
+      placement: { ...from, flipX: true },
+    })
+    await window.engine.dispatch({ type: "commitImageTransform" })
+  }, id)
+
+  const flipped = await painted(page)
+  // The sides have swapped: blue is now on the left and red on the right.
+  expect(channel(flipped, left, 2)).toBeGreaterThan(200)
+  expect(channel(flipped, right, 0)).toBeGreaterThan(200)
+
+  await page.evaluate(async (layerId) => {
+    await window.engine.dispatch({ type: "beginImageTransform", id: layerId })
+    const from = window.engine.getSnapshot().imageTransform!.placement
+    await window.engine.dispatch({
+      type: "adjustImageTransform",
+      placement: { ...from, flipX: false },
+    })
+    await window.engine.dispatch({ type: "commitImageTransform" })
+  }, id)
+  // And flipping back is exactly the picture that was placed: mirroring is
+  // its own inverse and costs nothing on the way.
+  expect((await painted(page)).data).toEqual(placed.data)
+})
+
+test("a flipped picture is mirrored the other way too", async ({ page }) => {
+  await openCanvas(page)
+  const id = await page.evaluate(async () => {
+    const width = 40
+    const height = 40
+    const pixels = new Uint8ClampedArray(width * height * 4)
+    for (let y = 0; y < height; y++)
+      for (let x = 0; x < width; x++) {
+        const at = (y * width + x) * 4
+        pixels[at] = y < height / 2 ? 255 : 0
+        pixels[at + 2] = y < height / 2 ? 0 : 255
+        pixels[at + 3] = 255
+      }
+    await window.engine.dispatch({
+      type: "placeImage",
+      name: "Stacked",
+      image: { width, height, pixels },
+    })
+    return window.engine.getSnapshot().activeLayerId
+  })
+  const top = { x: WIDTH / 2, y: HEIGHT / 2 - 15 }
+  await page.evaluate(async (layerId) => {
+    await window.engine.dispatch({ type: "beginImageTransform", id: layerId })
+    const from = window.engine.getSnapshot().imageTransform!.placement
+    await window.engine.dispatch({
+      type: "adjustImageTransform",
+      placement: { ...from, flipY: true },
+    })
+    await window.engine.dispatch({ type: "commitImageTransform" })
+  }, id)
+  expect(channel(await painted(page), top, 2)).toBeGreaterThan(200)
+})
+
 test("adjusting a picture over and over does not soften it", async ({
   page,
 }) => {
@@ -443,6 +538,59 @@ test("the layer's own settings behave as before while a transform is in flight",
   expect(
     (await page.evaluate(() => window.engine.getSnapshot())).layers[1].opacity
   ).toBe(0.5)
+})
+
+test("blend mode and clipping hold through a transform", async ({ page }) => {
+  // The rest of what a layer is, while it is being moved and after: a
+  // transform changes where the picture sits, not how the layer combines.
+  await openCanvas(page)
+  const id = await placeGradient(page, { width: 40, height: 40 })
+  await page.evaluate(async (layerId) => {
+    await window.engine.dispatch({
+      type: "setLayer",
+      id: layerId,
+      blend: "multiply",
+      clip: true,
+    })
+    await window.engine.dispatch({ type: "beginImageTransform", id: layerId })
+  }, id)
+
+  // In flight, the layer still says what it is.
+  const during = await page.evaluate(
+    (layerId) =>
+      window.engine.getSnapshot().layers.find((node) => node.id === layerId)!,
+    id
+  )
+  expect(during.blend).toBe("multiply")
+  expect(during.clip).toBe(true)
+
+  await page.evaluate(async (layerId) => {
+    const from = window.engine.getSnapshot().imageTransform!.placement
+    await window.engine.dispatch({
+      type: "adjustImageTransform",
+      placement: { ...from, x: 60, y: 50 },
+    })
+    await window.engine.dispatch({ type: "commitImageTransform" })
+    return layerId
+  }, id)
+
+  const after = await page.evaluate(
+    (layerId) =>
+      window.engine.getSnapshot().layers.find((node) => node.id === layerId)!,
+    id
+  )
+  expect(after.blend).toBe("multiply")
+  expect(after.clip).toBe(true)
+  // And taking the transform back leaves them alone too: they were never
+  // part of the step.
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  const undone = await page.evaluate(
+    (layerId) =>
+      window.engine.getSnapshot().layers.find((node) => node.id === layerId)!,
+    id
+  )
+  expect(undone.blend).toBe("multiply")
+  expect(undone.clip).toBe(true)
 })
 
 test("a mask on a placed image survives the transform and still applies", async ({

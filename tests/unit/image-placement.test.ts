@@ -8,6 +8,7 @@ import {
   nudgedPlacement,
   placementBounds,
   placementCorners,
+  placementQuad,
   placementRect,
   resolution,
   rotatedPlacement,
@@ -181,6 +182,50 @@ describe("turning and mirroring a placement", () => {
     expect(flipped.width).toBe(plain.width)
     expect(flippedPlacement(flipped, "horizontal").flipX).toBe(false)
     expect(flippedPlacement(plain, "vertical").flipY).toBe(true)
+  })
+})
+
+describe("which way round the picture is drawn in its box", () => {
+  test("is its own corners, clockwise, while nothing is mirrored", () => {
+    expect(placementQuad(plain)).toEqual(placementCorners(plain))
+  })
+
+  test("puts the picture's left edge down the box's right when mirrored", () => {
+    const [topLeft, topRight, bottomRight, bottomLeft] = placementCorners(plain)
+    expect(placementQuad({ ...plain, flipX: true })).toEqual([
+      topRight,
+      topLeft,
+      bottomLeft,
+      bottomRight,
+    ])
+  })
+
+  test("puts its top edge along the box's bottom when mirrored the other way", () => {
+    const [topLeft, topRight, bottomRight, bottomLeft] = placementCorners(plain)
+    expect(placementQuad({ ...plain, flipY: true })).toEqual([
+      bottomLeft,
+      bottomRight,
+      topRight,
+      topLeft,
+    ])
+  })
+
+  test("both together is a half turn", () => {
+    const [topLeft, topRight, bottomRight, bottomLeft] = placementCorners(plain)
+    expect(placementQuad({ ...plain, flipX: true, flipY: true })).toEqual([
+      bottomRight,
+      bottomLeft,
+      topLeft,
+      topRight,
+    ])
+  })
+
+  test("leaves the box itself alone: a flip moves nothing on screen", () => {
+    // The handles are drawn from the corners, and a mirrored picture is still
+    // in the same place at the same size.
+    expect(placementCorners({ ...plain, flipX: true })).toEqual(
+      placementCorners(plain)
+    )
   })
 })
 
