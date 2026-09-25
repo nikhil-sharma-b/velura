@@ -39,6 +39,7 @@ export function VersionPanel({
   engine,
   onClose,
   onPreviewStateChange,
+  locked = false,
   className,
 }: {
   engine: Engine
@@ -54,6 +55,11 @@ export function VersionPanel({
    * then closes — never reads the state from before it.
    */
   onPreviewStateChange?: (state: VersionPreviewState) => void
+  /**
+   * The host is busy with the preview itself — taking one back as it closes
+   * — so nothing here may start another step until it has landed.
+   */
+  locked?: boolean
   /** Where the host places it; the panel draws its own pointer at top left. */
   className?: string
 }) {
@@ -149,13 +155,14 @@ export function VersionPanel({
   }, [engine, onClose, setBusy, setPreviewing])
 
   const groups = points ? groupRestorePointsByDay(points, now) : []
+  const inert = busy || locked
 
   return (
     <aside
       aria-label="Version history"
       data-testid="version-panel"
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || busy) return
+        if (event.key !== "Escape" || inert) return
         event.stopPropagation()
         onClose()
       }}
@@ -176,7 +183,7 @@ export function VersionPanel({
           variant="ghost"
           size="icon"
           label="Close version history"
-          disabled={busy}
+          disabled={inert}
           onClick={onClose}
           className="size-7 rounded-md"
         >
@@ -197,7 +204,7 @@ export function VersionPanel({
           <li>
             <button
               type="button"
-              disabled={!canGoBack || busy}
+              disabled={!canGoBack || inert}
               onClick={() => void backToNow()}
               className="group relative flex w-full items-start gap-3 rounded-lg px-2 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring enabled:hover:bg-foreground/5 disabled:cursor-default"
             >
@@ -247,7 +254,7 @@ export function VersionPanel({
                       <li key={point.id}>
                         <button
                           type="button"
-                          disabled={busy}
+                          disabled={inert}
                           aria-pressed={active}
                           aria-label={`Preview ${restorePointLabel(point.createdAt, now)}`}
                           onClick={() => void preview(point)}
@@ -282,7 +289,7 @@ export function VersionPanel({
                             <div className="flex gap-1.5">
                               <Button
                                 size="sm"
-                                disabled={busy}
+                                disabled={inert}
                                 onClick={() => void restore()}
                                 className="rounded-lg"
                               >
@@ -292,7 +299,7 @@ export function VersionPanel({
                                 <Button
                                   size="sm"
                                   variant="ghost"
-                                  disabled={busy}
+                                  disabled={inert}
                                   onClick={() => void backToNow()}
                                   className="rounded-lg"
                                 >

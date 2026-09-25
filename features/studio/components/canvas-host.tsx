@@ -311,26 +311,46 @@ export function CanvasHost({
     onTrial: false,
   })
   const [historyBusy, setHistoryBusy] = useState(false)
+  // The ref is what the teardown and the keyboard read, the state is what
+  // renders; they only ever change together.
+  function setVersionPreview(state: VersionPreviewState) {
+    versionPreview.current = state
+    setHistoryBusy(state.busy)
+  }
+  /** The revert under way, so a second request joins it instead of undoing again. */
+  const revertInFlight = useRef<Promise<void> | null>(null)
   /**
-   * Closes the history, taking a version on trial back first. The panel stays
-   * up and everything that could race the revert stays disabled until it has
-   * landed: leaving the canvas mid-revert would sync the trial, and opening
-   * another version would stack on a step still being taken back.
+   * Takes a version on trial back — the one place that does, for closing the
+   * history and for leaving the canvas alike. Everything that could race it
+   * (the panel, undo, leaving) reads `busy` and holds off until it lands.
    */
-  async function closeHistory() {
-    // A second close while the first is still taking the trial back would
-    // undo again — and take back the artist's own last step with it.
-    if (versionPreview.current.busy) return
-    if (versionPreview.current.onTrial && engine?.canRevertRestore()) {
-      versionPreview.current = { busy: true, onTrial: true }
-      setHistoryBusy(true)
-      await engine.revertRestore().catch(() => {
-        // Only a canvas already torn down fails here, and it took the
-        // trial with it.
+  function takeTrialBack(target: Engine): Promise<void> {
+    if (revertInFlight.current) return revertInFlight.current
+    if (!versionPreview.current.onTrial || !target.canRevertRestore())
+      return Promise.resolve()
+    setVersionPreview({ busy: true, onTrial: true })
+    revertInFlight.current = target
+      .revertRestore()
+      .then(
+        () => undefined,
+        () => {
+          // Only a canvas already torn down fails here, and it took the
+          // trial with it.
+        }
+      )
+      .finally(() => {
+        revertInFlight.current = null
+        setVersionPreview({ busy: false, onTrial: false })
       })
-    }
-    versionPreview.current = { busy: false, onTrial: false }
-    setHistoryBusy(false)
+    return revertInFlight.current
+  }
+  /** Closes the history; closing it is leaving the past (see `versionPreview`). */
+  async function closeHistory() {
+    // Not while a version is being opened or taken back: the first would land
+    // after the panel had gone with nothing left to take it back, and the
+    // second is already closing.
+    if (versionPreview.current.busy) return
+    if (engine) await takeTrialBack(engine)
     setHistoryOpen(false)
   }
   const [colorOpen, setColorOpen] = useState(false)
@@ -452,15 +472,16 @@ export function CanvasHost({
       return () => {
         observer.disconnect()
         cancelAnimationFrame(frame)
-        if (versionPreview.current.onTrial && attached.canRevertRestore()) {
-          versionPreview.current = { busy: false, onTrial: false }
-          void attached
-            .revertRestore()
-            .catch(() => {
-              // Disposed regardless: the canvas is going either way.
-            })
-            .finally(() => attached.dispose())
-        } else attached.dispose()
+        // A trial left on the canvas goes back before the engine goes, or the
+        // last sync would send it as the document; a revert already under
+        // way is joined rather than repeated.
+        const pending =
+          revertInFlight.current ??
+          (versionPreview.current.onTrial && attached.canRevertRestore()
+            ? takeTrialBack(attached)
+            : null)
+        if (pending) void pending.finally(() => attached.dispose())
+        else attached.dispose()
       }
     },
     [documentHeight, documentId, documentWidth, remote]
@@ -592,6 +613,9 @@ export function CanvasHost({
       const accelerated = event.metaKey || event.ctrlKey
       if ((key === "z" || key === "y") && accelerated && !event.altKey) {
         event.preventDefault()
+        // A version being opened or taken back is itself an undo step in
+        // flight; another on top would race it.
+        if (versionPreview.current.busy) return
         const redo = key === "y" || event.shiftKey
         void engine.dispatch({ type: redo ? "redo" : "undo" })
         return
@@ -995,7 +1019,7 @@ export function CanvasHost({
               size="icon"
               label="Undo"
               side="bottom"
-              disabled={!snapshot.canUndo}
+              disabled={!snapshot.canUndo || historyBusy}
               onClick={() => void engine?.dispatch({ type: "undo" })}
               className="rounded-lg"
             >
@@ -1006,7 +1030,7 @@ export function CanvasHost({
               size="icon"
               label="Redo"
               side="bottom"
-              disabled={!snapshot.canRedo}
+              disabled={!snapshot.canRedo || historyBusy}
               onClick={() => void engine?.dispatch({ type: "redo" })}
               className="rounded-lg"
             >
@@ -1046,10 +1070,8 @@ export function CanvasHost({
                   <VersionPanel
                     engine={engine}
                     onClose={() => void closeHistory()}
-                    onPreviewStateChange={(state) => {
-                      versionPreview.current = state
-                      setHistoryBusy(state.busy)
-                    }}
+                    onPreviewStateChange={setVersionPreview}
+                    locked={historyBusy}
                     className="absolute top-full left-0 mt-3.5"
                   />
                 )}
@@ -1376,7 +1398,10 @@ export function CanvasHost({
                       // Not while a version is being opened; see the history
                       // button for why closing then would lose track of it.
                       if (historyBusy) return
-                      void closeHistory()
+                      // Opened once the history has gone, not beside it while
+                      // a trial is still being taken back.
+                      void closeHistory().then(() => setColorOpen(true))
+                      return
                     }
                     setColorOpen((open) => !open)
                   }}
