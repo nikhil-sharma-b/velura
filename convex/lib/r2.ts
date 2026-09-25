@@ -9,6 +9,7 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
 import type { StoredTileObject, TileObjectPage } from "./collection"
+import { PREVIEW_OBJECT_PREFIX } from "./preview-key"
 
 // R2's S3-compatible endpoint is derived from the account id — no separate
 // endpoint or public-domain env var to keep in sync. Reads go through
@@ -54,6 +55,11 @@ export function previewKey(documentId: string): string {
   return `previews/${documentId}.png`
 }
 
+/** Every newly uploaded preview gets its own key; documents may share it. */
+export function newPreviewKey(): string {
+  return `${PREVIEW_OBJECT_PREFIX}${crypto.randomUUID()}.png`
+}
+
 const PRESIGN_TTL_SECONDS = 15 * 60
 
 export async function presignTilePut(hash: string): Promise<string> {
@@ -88,33 +94,36 @@ export async function presignAssetGet(id: string): Promise<string> {
   )
 }
 
-export async function presignPreviewPut(documentId: string): Promise<string> {
+export async function presignPreviewPut(key: string): Promise<string> {
   return await getSignedUrl(
     client(),
     new PutObjectCommand({
       Bucket: bucket(),
-      Key: previewKey(documentId),
+      Key: key,
       ContentType: "image/png",
     }),
     { expiresIn: PRESIGN_TTL_SECONDS }
   )
 }
 
-export async function presignPreviewGet(documentId: string): Promise<string> {
+export async function presignPreviewGet(key: string): Promise<string> {
   return await getSignedUrl(
     client(),
-    new GetObjectCommand({ Bucket: bucket(), Key: previewKey(documentId) }),
+    new GetObjectCommand({ Bucket: bucket(), Key: key }),
     { expiresIn: PRESIGN_TTL_SECONDS }
   )
 }
 
-/** A duplicate's picture, copied server-side without passing through Convex. */
-export async function copyPreview(from: string, to: string): Promise<void> {
+/** Copies a legacy preview into an immutable object for its duplicate. */
+export async function copyPreview(
+  fromKey: string,
+  toKey: string
+): Promise<void> {
   await client().send(
     new CopyObjectCommand({
       Bucket: bucket(),
-      CopySource: `${bucket()}/${previewKey(from)}`,
-      Key: previewKey(to),
+      CopySource: `${bucket()}/${fromKey}`,
+      Key: toKey,
       ContentType: "image/png",
       MetadataDirective: "REPLACE",
     })
@@ -179,6 +188,12 @@ export async function listAssetObjects(
   return await listObjects(ASSET_PREFIX, cursor)
 }
 
+export async function listPreviewObjects(
+  cursor: string | undefined
+): Promise<TileObjectPage> {
+  return await listObjects(PREVIEW_OBJECT_PREFIX, cursor)
+}
+
 /**
  * Deletes objects by hash. Content addressing makes this idempotent: a key
  * that is already gone deletes cleanly, so an interrupted sweep can be
@@ -210,4 +225,10 @@ export async function deleteAssetObjects(
   ids: readonly string[]
 ): Promise<void> {
   await deleteObjects(assetKey, ids)
+}
+
+export async function deletePreviewObjects(
+  ids: readonly string[]
+): Promise<void> {
+  await deleteObjects((id) => `${PREVIEW_OBJECT_PREFIX}${id}`, ids)
 }

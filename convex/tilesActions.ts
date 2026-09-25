@@ -4,10 +4,12 @@ import { v } from "convex/values"
 
 import {
   copyPreview as copyPreviewObject,
+  newPreviewKey,
   presignAssetGet,
   presignAssetPut,
   presignPreviewGet,
   presignPreviewPut,
+  previewKey,
   presignTileGet,
   presignTilePut,
 } from "./lib/r2"
@@ -73,15 +75,27 @@ export const presignPreviewUpload = action({
   args: { documentId: v.id("documents") },
   handler: async (ctx, { documentId }) => {
     await ctx.runQuery(api.documents.get, { documentId })
-    return await presignPreviewPut(documentId)
+    return await presignPreviewPut(previewKey(documentId))
+  },
+})
+
+/** New clients upload to a unique object and publish its key after the PUT. */
+export const presignImmutablePreviewUpload = action({
+  args: { documentId: v.id("documents") },
+  handler: async (ctx, { documentId }) => {
+    await ctx.runQuery(api.documents.get, { documentId })
+    const key = newPreviewKey()
+    return { key, url: await presignPreviewPut(key) }
   },
 })
 
 export const presignPreviewDownload = action({
   args: { documentId: v.id("documents") },
-  handler: async (ctx, { documentId }) => {
-    await ctx.runQuery(api.documents.get, { documentId })
-    return await presignPreviewGet(documentId)
+  handler: async (ctx, { documentId }): Promise<string> => {
+    const document = await ctx.runQuery(api.documents.get, { documentId })
+    return await presignPreviewGet(
+      document.previewObjectKey ?? previewKey(documentId)
+    )
   },
 })
 
@@ -93,12 +107,12 @@ export const presignPreviewDownload = action({
 export const presignSharedPreviewDownload = action({
   args: { token: v.string() },
   handler: async (ctx, { token }): Promise<string | null> => {
-    const documentId: Id<"documents"> | null = await ctx.runQuery(
-      internal.shareLinks.resolveDocumentId,
-      { token }
+    const preview: { documentId: Id<"documents">; key?: string } | null =
+      await ctx.runQuery(internal.shareLinks.resolveDocumentId, { token })
+    if (preview === null) return null
+    return await presignPreviewGet(
+      preview.key ?? previewKey(preview.documentId)
     )
-    if (documentId === null) return null
-    return await presignPreviewGet(documentId)
   },
 })
 
@@ -107,11 +121,21 @@ export const presignSharedPreviewDownload = action({
  * makes it visible to the library the way a flush's own preview is.
  */
 export const copyPreview = internalAction({
-  args: { from: v.id("documents"), to: v.id("documents") },
-  handler: async (ctx, { from, to }) => {
-    await copyPreviewObject(from, to)
+  args: {
+    from: v.id("documents"),
+    to: v.id("documents"),
+    sourceVersion: v.number(),
+    sourceUpdatedAt: v.number(),
+  },
+  handler: async (ctx, { from, to, sourceVersion, sourceUpdatedAt }) => {
+    const key = newPreviewKey()
+    await copyPreviewObject(previewKey(from), key)
     await ctx.runMutation(internal.tiles.commitCopiedPreview, {
+      from,
       documentId: to,
+      sourceVersion,
+      sourceUpdatedAt,
+      key,
     })
   },
 })

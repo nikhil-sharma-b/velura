@@ -58,11 +58,11 @@ export interface RemoteIndex {
   presignAssetDownloads(
     ids: readonly string[]
   ): Promise<readonly { id: string; url: string }[]>
-  /** One mutable object per document; the document row versions its URL. */
-  presignPreviewUpload?(): Promise<string>
+  /** A fresh immutable object key for this preview upload. */
+  presignPreviewUpload?(): Promise<{ url: string; key: string }>
   /** Publishes a preview only after its object upload has succeeded. */
   /** Resolves with the preview's new version, where the backend reports one. */
-  commitPreview?(): Promise<number | void>
+  commitPreview?(key: string, flushUpdatedAt?: number): Promise<number | void>
   commitFlush(payload: {
     tiles: readonly { surfaceId: string; x: number; y: number; hash: string }[]
     /** Slots this device held and no longer does: an erase, undo or restore. */
@@ -70,7 +70,7 @@ export interface RemoteIndex {
     uploaded: readonly { hash: string; size: number }[]
     structure: DocumentStructure
     metrics: { putCount: number; mutationCount: number }
-  }): Promise<void>
+  }): Promise<number | void>
   /** The document's size, name and layer tree — everything but pixels (§9.3). */
   documentMeta(): Promise<{
     width: number
@@ -301,7 +301,7 @@ export function createCloudSync(options: {
 
       try {
         const sent = slotsOf(document.surfaces)
-        await options.remote.commitFlush({
+        const flushUpdatedAt = await options.remote.commitFlush({
           tiles: document.surfaces.flatMap((surface) =>
             surface.tiles.map((tile) => ({
               surfaceId: surface.surfaceId,
@@ -323,10 +323,13 @@ export function createCloudSync(options: {
         // The index mutation lands before the preview upload (§9.2). Generation
         // starts alongside tile work, but none of it runs in a drawing frame.
         if (preview) {
-          const [bytes, url] = await preview
+          const [bytes, { url, key }] = await preview
           await upload(url, bytes, "image/png")
           putCount++
-          const version = await options.remote.commitPreview!()
+          const version = await options.remote.commitPreview!(
+            key,
+            flushUpdatedAt ?? undefined
+          )
           mutationCount++
           settlePreview?.resolve(version ?? undefined)
         }

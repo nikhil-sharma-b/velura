@@ -315,7 +315,7 @@ is kilobytes and is read by every session that paints with the brush — the R2 
 4. Convex action mints **one batch** of presigned PUTs for the missing hashes.
 5. Client uploads to R2 in parallel with bounded concurrency; retries are safe because content-addressed PUTs are idempotent.
 6. Client calls one Convex mutation to upsert the changed `tiles` rows, delete the rows for slots this device held and no longer does (an erase, undo or restore — named explicitly, never inferred from a slot's absence, per §9.5), and bump the document version.
-7. Client uploads a flattened, display-transformed preview PNG (D38).
+7. Client uploads a flattened, display-transformed preview PNG (D38) under a new immutable R2 key, then commits that key on the document row. A duplicate shares the captured key, so later source uploads cannot change its preview. The orphan sweep collects unreferenced preview objects after the usual grace window.
 
 ### 9.3 Read path
 

@@ -7,6 +7,7 @@ import {
   referencedAssetIdsOf,
   referencedHashesOf,
 } from "./lib/collection"
+import { PREVIEW_OBJECT_PREFIX } from "./lib/preview-key"
 
 /**
  * The database half of orphan collection (D17, §9.4): the mark, the ledger
@@ -80,6 +81,24 @@ export const markedDocumentAssetIds = internalQuery({
           page.page.map((document) => document.structure)
         ),
       ],
+      cursor: page.isDone ? null : page.continueCursor,
+    }
+  },
+})
+
+/** Immutable preview objects may be shared by duplicates. */
+export const markedPreviewObjectIds = internalQuery({
+  args: { cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { cursor }) => {
+    const page = await ctx.db
+      .query("documents")
+      .paginate({ cursor, numItems: DOCUMENT_PAGE_SIZE })
+    return {
+      hashes: page.page.flatMap((document) =>
+        document.previewObjectKey?.startsWith(PREVIEW_OBJECT_PREFIX)
+          ? [document.previewObjectKey.slice(PREVIEW_OBJECT_PREFIX.length)]
+          : []
+      ),
       cursor: page.isDone ? null : page.continueCursor,
     }
   },

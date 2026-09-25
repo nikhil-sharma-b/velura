@@ -92,6 +92,8 @@ declare global {
     /** How many times a placed image's original has been decoded. */
     imageDecodes: number
     tileCountFor(documentId: string): Promise<number>
+    /** Simulates one locally lost tile while leaving its manifest and cloud row intact. */
+    forgetFirstLocalTile(documentId: string): Promise<void>
     /** Top-level layers in the document this device has stored. */
     layerCountFor(documentId: string): Promise<number>
     /** The placement a stored document holds for its first placed image. */
@@ -121,6 +123,21 @@ window.tileCountFor = async (documentId) => {
       (sum, surface) => sum + surface.tiles.length,
       0
     ) ?? 0
+  )
+}
+
+window.forgetFirstLocalTile = async (documentId) => {
+  const blobs = createLocalBlobStore()
+  const manifest = await createDocumentStore(blobs).load(documentId)
+  const hash = manifest?.surfaces.flatMap((surface) => surface.tiles)[0]?.hash
+  if (!hash) throw new Error(`No tile in ${documentId}`)
+  await blobs.remove(`tiles/${hash}`)
+  // Stand in for an offline local edit after the last successful cloud flush.
+  await blobs.put(
+    `documents/${documentId}`,
+    new TextEncoder().encode(
+      JSON.stringify({ ...manifest, updatedAt: Date.now() + 10_000 })
+    )
   )
 }
 
@@ -268,7 +285,7 @@ window.createFakeCloud = (size) => {
     },
     // The library's preview, uploaded after the flush that it pictures.
     async presignPreviewUpload() {
-      return `${FAKE_SCHEME}preview`
+      return { url: `${FAKE_SCHEME}preview`, key: "preview" }
     },
     async commitPreview() {
       previewVersion = (previewVersion ?? 0) + 1

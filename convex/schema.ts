@@ -38,9 +38,16 @@ export default defineSchema({
     // session reopening on a cleared cache reads this plus the `tiles` rows
     // to rebuild the document (§9.3).
     structure: v.optional(v.any()),
-    // Incremented after a flush replaces previews/<document>.png.
-    // The value refreshes signed library URLs without storing expiring URLs.
+    // Incremented after a preview upload lands. The value refreshes signed
+    // library URLs without storing expiring URLs.
     previewVersion: v.optional(v.number()),
+    // New previews use immutable object keys. A duplicate can then reference
+    // the exact picture captured with its tiles, even if the source changes.
+    // Older documents without this field still read previews/<id>.png.
+    previewObjectKey: v.optional(v.string()),
+    // The document timestamp from the flush this preview depicts. During a
+    // newer flush, the old preview must not be copied with newer tiles.
+    previewForUpdatedAt: v.optional(v.number()),
   })
     // The library lists one owner's documents newest-first; the index carries
     // `updatedAt` so that ordering is the index order, not a post-sort.

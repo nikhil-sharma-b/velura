@@ -30,7 +30,7 @@ function createFakeRemote() {
       return hashes.map((hash) => ({ hash, url: `https://r2.test/${hash}` }))
     },
     async presignPreviewUpload() {
-      return "https://r2.test/preview.png"
+      return { url: "https://r2.test/preview.png", key: "preview-key" }
     },
     async commitPreview() {},
     async commitFlush(payload) {

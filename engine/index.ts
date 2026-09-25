@@ -1933,9 +1933,14 @@ export function createEngine(
       stored = await persistence?.load()
     }
     if (!stored || disposed) return true
-    // Every tile the document had as this device opened it, loaded yet or
-    // not: the slots a later flush may name as removed once they are gone.
-    cloudSync?.seedKnown(stored.surfaces)
+    // Only tiles successfully read from this device are ours to name as
+    // removed later. A manifest can outlive one of its blobs; treating that
+    // missing blob as an erase would delete its still-valid cloud row.
+    const loadedOnOpen = new Map<string, TileRef[]>()
+    const seedLoadedTiles = () =>
+      cloudSync?.seedKnown(
+        [...loadedOnOpen].map(([surfaceId, tiles]) => ({ surfaceId, tiles }))
+      )
     if (stored.width !== document.width || stored.height !== document.height) {
       validateDocumentSize(stored)
       for (const id of structureSurfaceIds(captureStructure(document)))
@@ -1981,6 +1986,12 @@ export function createEngine(
       if (disposed) return
       // A tile the manifest names but the device has lost is a hole in the
       // document rather than the end of the restore.
+      const loaded = refs.filter((_, position) => texels[position] !== null)
+      if (loaded.length > 0)
+        loadedOnOpen.set(surface.surfaceId, [
+          ...(loadedOnOpen.get(surface.surfaceId) ?? []),
+          ...loaded,
+        ])
       const tiles = refs.flatMap((tile, position) =>
         texels[position]
           ? [{ x: tile.x, y: tile.y, texels: texels[position]! }]
@@ -2051,6 +2062,7 @@ export function createEngine(
           }
         }
         if (disposed) return
+        seedLoadedTiles()
         publish({ loading: false })
         if (unsyncedWhileLoading) {
           unsyncedWhileLoading = false
@@ -2058,7 +2070,7 @@ export function createEngine(
           publishSyncStatus()
         }
       })()
-    }
+    } else seedLoadedTiles()
 
     return true
   }

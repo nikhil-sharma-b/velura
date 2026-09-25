@@ -169,6 +169,33 @@ test("reopening picks up a change flushed from elsewhere, without a manual refre
   expect(pixel[1]).toBeLessThan(50)
 })
 
+test("a missing local tile does not delete its cloud row after an unrelated edit", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 40)
+  await page.evaluate(() => window.engine.save())
+  const before = await page.evaluate(() => window.fakeCloud.remote.tileIndex())
+  expect(before).toHaveLength(1)
+
+  await page.evaluate(async (id) => {
+    window.engine.dispose()
+    await window.forgetFirstLocalTile(id)
+    window.remountEngine({
+      persistence: { documentId: id },
+      cloud: { remote: window.fakeCloud.remote, idleMs: 60_000 },
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    await window.engine.dispatch({ type: "addLayer" })
+    await window.engine.save()
+  }, documentId)
+
+  expect(
+    await page.evaluate(() => window.fakeCloud.remote.tileIndex())
+  ).toEqual(before)
+})
+
 test("the canvas is usable, and the centre resolves, before every tile has loaded", async ({
   page,
 }) => {

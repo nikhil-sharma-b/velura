@@ -28,11 +28,17 @@ export function createConvexRemoteIndex(
         ids: [...ids],
       }),
     presignPreviewUpload: () =>
-      client.action(api.tilesActions.presignPreviewUpload, { documentId }),
-    commitPreview: () =>
-      client.mutation(api.tiles.commitPreview, { documentId }),
+      client.action(api.tilesActions.presignImmutablePreviewUpload, {
+        documentId,
+      }),
+    commitPreview: (key, flushUpdatedAt) =>
+      client.mutation(api.tiles.commitPreview, {
+        documentId,
+        key,
+        flushUpdatedAt,
+      }),
     commitFlush: async (payload) => {
-      await client.mutation(api.tiles.commitFlush, {
+      return await client.mutation(api.tiles.commitFlush, {
         documentId,
         tiles: [...payload.tiles],
         removed: [...payload.removed],

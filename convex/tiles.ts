@@ -104,9 +104,10 @@ export const commitFlush = mutation({
       await recordBlob(ctx, blob.hash, blob.size)
     }
 
+    const updatedAt = Math.max(Date.now(), document.updatedAt + 1)
     await ctx.db.patch(documentId, {
       structure,
-      updatedAt: Math.max(Date.now(), document.updatedAt + 1),
+      updatedAt,
     })
 
     // The flush payload is the whole document, not a delta, so the restore
@@ -120,29 +121,60 @@ export const commitFlush = mutation({
       mutationCount: metrics.mutationCount,
       createdAt: Date.now(),
     })
+    return updatedAt
   },
 })
 
 /** Makes a successfully uploaded preview visible to reactive library clients. */
 export const commitPreview = mutation({
-  args: { documentId: v.id("documents") },
-  handler: async (ctx, { documentId }) => {
+  args: {
+    documentId: v.id("documents"),
+    key: v.optional(v.string()),
+    flushUpdatedAt: v.optional(v.number()),
+  },
+  handler: async (ctx, { documentId, key, flushUpdatedAt }) => {
     const document = await requireOwnDocument(ctx, documentId)
     const previewVersion = (document.previewVersion ?? 0) + 1
-    await ctx.db.patch(documentId, { previewVersion })
+    await ctx.db.patch(documentId, {
+      previewVersion,
+      // An old client still uploads to previews/<id>.png. Clear a previous
+      // immutable pointer in that case so readers use its legacy object.
+      previewObjectKey: key,
+      previewForUpdatedAt: key ? flushUpdatedAt : undefined,
+    })
     return previewVersion
   },
 })
 
 /** `commitPreview` for a preview copied by the backend, with no caller to own it. */
 export const commitCopiedPreview = internalMutation({
-  args: { documentId: v.id("documents") },
-  handler: async (ctx, { documentId }) => {
+  args: {
+    from: v.id("documents"),
+    documentId: v.id("documents"),
+    sourceVersion: v.number(),
+    sourceUpdatedAt: v.number(),
+    key: v.string(),
+  },
+  handler: async (
+    ctx,
+    { from, documentId, sourceVersion, sourceUpdatedAt, key }
+  ) => {
+    const source = await ctx.db.get(from)
     const document = await ctx.db.get(documentId)
-    // Deleted between the copy being scheduled and landing.
-    if (!document) return
+    // The source or duplicate may have changed while the R2 copy ran. In
+    // either case this image no longer belongs to the duplicate's snapshot.
+    if (
+      !source ||
+      !document ||
+      source.previewVersion !== sourceVersion ||
+      source.updatedAt !== sourceUpdatedAt ||
+      source.previewObjectKey !== undefined ||
+      document.previewVersion !== undefined
+    )
+      return
     await ctx.db.patch(documentId, {
-      previewVersion: (document.previewVersion ?? 0) + 1,
+      previewVersion: 1,
+      previewObjectKey: key,
     })
   },
 })

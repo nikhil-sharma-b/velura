@@ -136,9 +136,13 @@ export const rename = mutation({
     const next = normaliseDocumentName(name)
     // A rename that changes nothing must not reorder the library.
     if (next === document.name) return
+    const updatedAt = nextUpdatedAt(document.updatedAt)
     await ctx.db.patch(documentId, {
       name: next,
-      updatedAt: nextUpdatedAt(document.updatedAt),
+      updatedAt,
+      ...(document.previewForUpdatedAt === document.updatedAt
+        ? { previewForUpdatedAt: updatedAt }
+        : {}),
     })
   },
 })
@@ -168,6 +172,18 @@ export const duplicate = mutation({
       ...(source.structure !== undefined
         ? { structure: source.structure }
         : {}),
+      // New previews are immutable objects, so the copy can name the exact
+      // image that accompanied this structure and tile snapshot. A later
+      // source flush cannot change what the duplicate shows.
+      ...(source.previewObjectKey &&
+      source.previewVersion !== undefined &&
+      source.previewForUpdatedAt === source.updatedAt
+        ? {
+            previewObjectKey: source.previewObjectKey,
+            previewVersion: source.previewVersion,
+            previewForUpdatedAt: now,
+          }
+        : {}),
     })
     // Tiles are content-addressed and shared between documents, so the copy
     // names the same R2 objects rather than duplicating any pixels — and,
@@ -186,13 +202,15 @@ export const duplicate = mutation({
         hash,
         updatedAt: now,
       })
-    // The preview is the one object keyed by document rather than content, so
-    // it is copied in R2, which a mutation cannot reach. Until it lands the
+    // Older previews still use the source's mutable document key. Copy that
+    // legacy object to a new immutable key in an action; until it lands the
     // copy shows as blank, and the first open repairs it if it never does.
-    if (source.previewVersion !== undefined)
+    if (source.previewVersion !== undefined && !source.previewObjectKey)
       await ctx.scheduler.runAfter(0, internal.tilesActions.copyPreview, {
         from: documentId,
         to: copyId,
+        sourceVersion: source.previewVersion,
+        sourceUpdatedAt: source.updatedAt,
       })
     return copyId
   },
