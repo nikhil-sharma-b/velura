@@ -17,6 +17,7 @@ describe("pan buttons", () => {
   test("includes mouse navigation buttons and the pen barrel only", () => {
     expect(isViewPanButton({ pointerType: "mouse", button: 1 })).toBe(true)
     expect(isViewPanButton({ pointerType: "mouse", button: 2 })).toBe(true)
+    expect(isViewPanButton({ pointerType: "pen", button: 1 })).toBe(true)
     expect(isViewPanButton({ pointerType: "pen", button: 2 })).toBe(true)
     expect(isViewPanButton({ pointerType: "pen", button: 0 })).toBe(false)
     expect(isViewPanButton({ pointerType: "pen", button: 5 })).toBe(false)
