@@ -311,9 +311,24 @@ export function CanvasHost({
     onTrial: false,
   })
   const [historyBusy, setHistoryBusy] = useState(false)
-  function closeHistory() {
-    if (versionPreview.current.onTrial && engine?.canRevertRestore())
-      void engine.revertRestore()
+  /**
+   * Closes the history, taking a version on trial back first. The panel stays
+   * up and everything that could race the revert stays disabled until it has
+   * landed: leaving the canvas mid-revert would sync the trial, and opening
+   * another version would stack on a step still being taken back.
+   */
+  async function closeHistory() {
+    // A second close while the first is still taking the trial back would
+    // undo again — and take back the artist's own last step with it.
+    if (versionPreview.current.busy) return
+    if (versionPreview.current.onTrial && engine?.canRevertRestore()) {
+      versionPreview.current = { busy: true, onTrial: true }
+      setHistoryBusy(true)
+      await engine.revertRestore().catch(() => {
+        // Only a canvas already torn down fails here, and it took the
+        // trial with it.
+      })
+    }
     versionPreview.current = { busy: false, onTrial: false }
     setHistoryBusy(false)
     setHistoryOpen(false)
@@ -439,7 +454,12 @@ export function CanvasHost({
         cancelAnimationFrame(frame)
         if (versionPreview.current.onTrial && attached.canRevertRestore()) {
           versionPreview.current = { busy: false, onTrial: false }
-          void attached.revertRestore().finally(() => attached.dispose())
+          void attached
+            .revertRestore()
+            .catch(() => {
+              // Disposed regardless: the canvas is going either way.
+            })
+            .finally(() => attached.dispose())
         } else attached.dispose()
       }
     },
@@ -945,10 +965,21 @@ export function CanvasHost({
                   size="icon"
                   label="Back to documents"
                   side="bottom"
-                  className="rounded-lg"
+                  className="rounded-lg aria-disabled:pointer-events-none aria-disabled:opacity-50"
                   asChild
                 >
-                  <Link href={libraryHref}>
+                  {/* Not while a version is being opened or taken back:
+                      leaving mid-way would sync that half-finished state as
+                      the document. A link cannot be disabled, so it refuses
+                      the click instead. */}
+                  <Link
+                    href={libraryHref}
+                    aria-disabled={historyBusy || undefined}
+                    tabIndex={historyBusy ? -1 : undefined}
+                    onClick={(event) => {
+                      if (historyBusy) event.preventDefault()
+                    }}
+                  >
                     <ArrowLeftIcon />
                   </Link>
                 </IconButton>
@@ -1001,7 +1032,7 @@ export function CanvasHost({
                   // waits.
                   disabled={historyBusy}
                   onClick={() => {
-                    if (historyOpen) closeHistory()
+                    if (historyOpen) void closeHistory()
                     else {
                       setColorOpen(false)
                       setHistoryOpen(true)
@@ -1014,7 +1045,7 @@ export function CanvasHost({
                 {engine && historyOpen && (
                   <VersionPanel
                     engine={engine}
-                    onClose={closeHistory}
+                    onClose={() => void closeHistory()}
                     onPreviewStateChange={(state) => {
                       versionPreview.current = state
                       setHistoryBusy(state.busy)
@@ -1345,7 +1376,7 @@ export function CanvasHost({
                       // Not while a version is being opened; see the history
                       // button for why closing then would lose track of it.
                       if (historyBusy) return
-                      closeHistory()
+                      void closeHistory()
                     }
                     setColorOpen((open) => !open)
                   }}

@@ -16,6 +16,14 @@ import {
 } from "../lib/restore-point-label"
 import { IconButton } from "./icon-button"
 
+/** What the host needs to know to close the panel safely. */
+export type VersionPreviewState = {
+  /** A version is being opened or taken back; closing now would race it. */
+  busy: boolean
+  /** A version is on the canvas on trial, not yet restored. */
+  onTrial: boolean
+}
+
 /**
  * The way back into the document's own past (§9.4), drawn as the timeline it
  * is: the canvas as it is now at the top, then every restore point under the
@@ -27,14 +35,6 @@ import { IconButton } from "./icon-button"
  * here is destructive and why restoring only has to save — the restore has
  * already happened, and undo is still holding everything it covered.
  */
-/** What the host needs to know to close the panel safely. */
-export type VersionPreviewState = {
-  /** A version is being opened or taken back; closing now would race it. */
-  busy: boolean
-  /** A version is on the canvas on trial, not yet restored. */
-  onTrial: boolean
-}
-
 export function VersionPanel({
   engine,
   onClose,
