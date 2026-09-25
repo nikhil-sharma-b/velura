@@ -466,7 +466,10 @@ export async function hydrateFromRemote(options: {
     structure: meta.structure,
     surfaces,
     ...(assets.length > 0 ? { assets } : {}),
-    updatedAt: Date.now(),
+    // The server's time, not this device's: the copy is exactly what the
+    // cloud holds, and reopening compares the two stamps to decide which side
+    // is ahead. A local clock stamped here would read as unsynced work.
+    updatedAt: meta.updatedAt,
   }
 
   // Only mint GETs for hashes this device does not already hold — the same

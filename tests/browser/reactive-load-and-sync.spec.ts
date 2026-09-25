@@ -432,3 +432,41 @@ test("leaving while a reopen's repair is in flight still finishes it", async ({
       "syncing"
   )
 })
+
+test("reopening an untouched, synced document uploads nothing", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 40)
+  await page.evaluate(() => window.engine.save())
+  const versionsAfterSave = await page.evaluate(
+    async () => (await window.fakeCloud.remote.listVersions()).length
+  )
+
+  // The first reopen finds the cloud's flush newer than the local save and
+  // reads it back; the second must then see the two as in step.
+  for (let open = 0; open < 2; open++) {
+    await page.evaluate(async (id) => {
+      window.remountEngine({
+        persistence: { documentId: id },
+        cloud: { remote: window.fakeCloud.remote, idleMs: 60_000 },
+      })
+      await window.engine.dispatch({
+        type: "resize",
+        width: 200,
+        height: 120,
+        devicePixelRatio: 1,
+      })
+      await window.engine.dispatch({ type: "initialize" })
+      // Long enough for a repair flush to have landed, were one started.
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }, documentId)
+  }
+
+  expect(
+    await page.evaluate(
+      async () => (await window.fakeCloud.remote.listVersions()).length
+    )
+  ).toBe(versionsAfterSave)
+})
