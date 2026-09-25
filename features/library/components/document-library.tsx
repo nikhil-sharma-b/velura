@@ -419,8 +419,10 @@ function useDocumentPreview(document: Doc<"documents">): {
     url,
     stale:
       previewIsStale(device, shown?.version, version) ||
-      // The browser keeps the previous picture up until the new one decodes.
-      (url !== null && url !== loaded),
+      // Swapping one picture for another, the browser keeps the old one up
+      // until the new one decodes. A card's first picture has nothing older
+      // on screen to be mistaken for current, so it is not "updating".
+      (loaded !== null && url !== null && url !== loaded),
     onLoad: () => setLoaded(url),
     onError,
   }
