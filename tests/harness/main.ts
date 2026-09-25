@@ -92,6 +92,8 @@ declare global {
     /** How many times a placed image's original has been decoded. */
     imageDecodes: number
     tileCountFor(documentId: string): Promise<number>
+    /** Top-level layers in the document this device has stored. */
+    layerCountFor(documentId: string): Promise<number>
     /** The placement a stored document holds for its first placed image. */
     storedPlacement(documentId: string): Promise<unknown>
     /**
@@ -120,6 +122,12 @@ window.tileCountFor = async (documentId) => {
       0
     ) ?? 0
   )
+}
+
+window.layerCountFor = async (documentId) => {
+  const store = createDocumentStore(createLocalBlobStore())
+  const manifest = await store.load(documentId)
+  return manifest?.structure.layers.length ?? 0
 }
 
 window.strandLayer = async (documentId, layerId) => {
@@ -235,13 +243,16 @@ window.createFakeCloud = (size) => {
       if (commitDelayMs > 0)
         await new Promise((resolve) => setTimeout(resolve, commitDelayMs))
       if (failing) throw new Error("Simulated network outage.")
-      // As `convex/tiles.ts` does: the payload is the whole document, so a
-      // slot it no longer names is gone.
-      tiles.splice(
-        0,
-        tiles.length,
-        ...payload.tiles.map((tile) => ({ ...tile }))
-      )
+      for (const tile of payload.tiles) {
+        const existing = findRow(tile.surfaceId, tile.x, tile.y)
+        if (existing) existing.hash = tile.hash
+        else tiles.push({ ...tile })
+      }
+      // As `convex/tiles.ts` does: only the slots the flush names as removed.
+      for (const slot of payload.removed) {
+        const row = findRow(slot.surfaceId, slot.x, slot.y)
+        if (row) tiles.splice(tiles.indexOf(row), 1)
+      }
       for (const blob of payload.uploaded) knownHashes.add(blob.hash)
       structure = payload.structure
       updatedAt = Date.now()

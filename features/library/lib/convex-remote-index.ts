@@ -35,6 +35,7 @@ export function createConvexRemoteIndex(
       await client.mutation(api.tiles.commitFlush, {
         documentId,
         tiles: [...payload.tiles],
+        removed: [...payload.removed],
         uploaded: [...payload.uploaded],
         structure: payload.structure,
         metrics: payload.metrics,

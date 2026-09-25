@@ -259,7 +259,7 @@ test("the canvas is usable, and the centre resolves, before every tile has loade
   expect(await page.evaluate(() => window.sawReadyWhileLoading)).toBe(true)
 })
 
-test("a change made while tiles are still loading never saves the document without them", async ({
+test("a change made while tiles are still loading is saved, with every tile it has not loaded yet", async ({
   page,
 }) => {
   const size = { width: 1600, height: 1000 }
@@ -299,10 +299,14 @@ test("a change made while tiles are still loading never saves the document witho
   await page.evaluate(() => window.engine.save())
   const saved = await page.evaluate((id) => window.tileCountFor(id), documentId)
   expect(saved).toBeGreaterThan(25)
+  const layers = await page.evaluate(
+    (id) => window.layerCountFor(id),
+    documentId
+  )
 
   // Reopen, and the moment the canvas is usable with tiles still arriving,
-  // change the document and leave: the commit's save must not write a
-  // manifest naming only the tiles loaded so far.
+  // change the document and leave: the change is kept, and the save names
+  // the tiles still on their way as well as the ones already in.
   await page.evaluate(
     ([width, height, id]) =>
       new Promise<void>((resolve) => {
@@ -332,6 +336,9 @@ test("a change made while tiles are still loading never saves the document witho
   expect(await page.evaluate((id) => window.tileCountFor(id), documentId)).toBe(
     saved
   )
+  expect(
+    await page.evaluate((id) => window.layerCountFor(id), documentId)
+  ).toBe(layers + 1)
 })
 
 test("leaving the canvas before the idle flush still uploads the work and its preview", async ({

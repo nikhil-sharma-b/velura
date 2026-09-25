@@ -399,3 +399,33 @@ test("painting over a preview makes it the artist's work, saved like any other",
   expect(await painted(page, 30, 60)).toBe(true)
   expect(await painted(page, 30, 90)).toBe(false)
 })
+
+test("once painted over, a preview stays the artist's even after undoing that paint", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 30)
+  await page.evaluate(() => window.engine.save())
+  const [earlier] = await restorePoints(page)
+  await paint(page, origin, 90)
+  await page.evaluate(() => window.engine.save())
+
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    earlier!.id
+  )
+  await paint(page, origin, 60)
+  // The paint ends the trial for good: undoing it lands on a restore the
+  // artist has already made theirs, which nothing may now take back.
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await page.evaluate(() => window.engine.canRevertRestore())).toBe(
+    false
+  )
+  await page.evaluate(() => window.engine.save())
+
+  await reopen(page, documentId)
+  expect(await painted(page, 30, 30)).toBe(true)
+  expect(await painted(page, 30, 60)).toBe(false)
+  expect(await painted(page, 30, 90)).toBe(false)
+})

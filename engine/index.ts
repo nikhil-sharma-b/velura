@@ -70,6 +70,7 @@ import {
   DEFAULT_WARM_BYTES,
   type DocumentHistory,
   type OperationPixels,
+  type SurfaceTileIndex,
 } from "./doc/history"
 import { BACKGROUND, WORKSPACE_BACKGROUND } from "./doc/scene"
 import {
@@ -821,21 +822,50 @@ export function createEngine(
    * A restore applied but not kept, and still the step one undo takes back.
    * Nothing saves while one is — not the commit hook, not an idle flush, not
    * a tab going hidden, not leaving the canvas — because what is on screen is
-   * a look at the past, not the document. Painting over it ends the trial:
-   * from then on it is the artist's work and saves like any other.
+   * a look at the past, not the document. Painting over it ends the trial for
+   * good (see the commit hook): from then on it is the artist's work and
+   * saves like any other, however far undo later walks back.
    */
-  /**
-   * A change made while tiles are still arriving in the background. History's
-   * tile index only names the tiles loaded so far, so a save then — local or
-   * cloud — would write the document without the rest of them. The change is
-   * saved once they are all in.
-   */
-  let unsavedWhileLoading = false
   function restoreOnTrial(): boolean {
-    return (
-      applyingRestore ||
-      (restoreDepth !== undefined && history?.stepsBack() === restoreDepth)
+    return applyingRestore || restoreRevertible()
+  }
+  function restoreRevertible(): boolean {
+    return restoreDepth !== undefined && history?.stepsBack() === restoreDepth
+  }
+  /**
+   * Stored tiles still arriving in the background, by surface and slot.
+   * History's tile index only names the tiles loaded so far, so a local save
+   * names these too (they are already on disk) rather than writing the
+   * document without them. A cloud sync cannot — it would send a document
+   * missing them — so it waits, and `unsyncedWhileLoading` says one is owed.
+   */
+  const pendingTiles = new Map<string, Map<string, TileRef>>()
+  let unsyncedWhileLoading = false
+  function withPendingTiles(
+    surfaces: readonly SurfaceTileIndex[],
+    structure: DocumentStructure
+  ): SurfaceTileIndex[] {
+    if (pendingTiles.size === 0) return [...surfaces]
+    // A layer deleted before its tiles arrived is gone, not stranded.
+    const present = structureSurfaceIds(structure)
+    const merged = new Map(
+      surfaces.map((surface) => [
+        surface.surfaceId,
+        new Map(surface.tiles.map((tile) => [`${tile.x},${tile.y}`, tile])),
+      ])
     )
+    for (const [surfaceId, pending] of pendingTiles) {
+      if (!present.has(surfaceId)) continue
+      const surface = merged.get(surfaceId) ?? new Map<string, TileRef>()
+      // What history holds for a slot is newer than what disk held for it.
+      for (const [slot, tile] of pending)
+        if (!surface.has(slot)) surface.set(slot, tile)
+      merged.set(surfaceId, surface)
+    }
+    return [...merged].map(([surfaceId, tiles]) => ({
+      surfaceId,
+      tiles: [...tiles.values()],
+    }))
   }
   /**
    * The originals placed images were made from, by content hash (06). One
@@ -1835,6 +1865,8 @@ export function createEngine(
     if (!target || !past || !document || !store) return true
     cloudBehind = false
     fullyLoaded = Promise.resolve()
+    pendingTiles.clear()
+    unsyncedWhileLoading = false
     // Bound once, here, so the batch loader below reads a hash and writes a
     // tile without repeating a non-null assertion at every call: TypeScript's
     // narrowing above does not reach into a closure defined further down.
@@ -1882,6 +1914,9 @@ export function createEngine(
       stored = await persistence?.load()
     }
     if (!stored || disposed) return true
+    // Every tile the document had as this device opened it, loaded yet or
+    // not: the slots a later flush may name as removed once they are gone.
+    cloudSync?.seedKnown(stored.surfaces)
     if (stored.width !== document.width || stored.height !== document.height) {
       validateDocumentSize(stored)
       for (const id of structureSurfaceIds(captureStructure(document)))
@@ -1967,7 +2002,13 @@ export function createEngine(
       await loadTiles(surface, ordered.slice(0, IMMEDIATE_TILES))
       if (disposed) return true
       const rest = ordered.slice(IMMEDIATE_TILES)
-      if (rest.length > 0) background.push({ surface, tiles: rest })
+      if (rest.length > 0) {
+        background.push({ surface, tiles: rest })
+        pendingTiles.set(
+          surface.surfaceId,
+          new Map(rest.map((tile) => [`${tile.x},${tile.y}`, tile]))
+        )
+      }
     }
     await past.settle()
     syncComposition()
@@ -1978,11 +2019,12 @@ export function createEngine(
         for (const { surface, tiles } of background) {
           for (let index = 0; index < tiles.length; index += BACKGROUND_BATCH) {
             if (disposed) return
-            await loadTiles(
-              surface,
-              tiles.slice(index, index + BACKGROUND_BATCH)
-            )
+            const batch = tiles.slice(index, index + BACKGROUND_BATCH)
+            await loadTiles(surface, batch)
             if (disposed) return
+            const pending = pendingTiles.get(surface.surfaceId)
+            for (const tile of batch) pending?.delete(`${tile.x},${tile.y}`)
+            if (pending?.size === 0) pendingTiles.delete(surface.surfaceId)
             await past.settle()
             syncComposition()
             publish(describeLayers(document))
@@ -1991,10 +2033,8 @@ export function createEngine(
         }
         if (disposed) return
         publish({ loading: false })
-        if (unsavedWhileLoading) {
-          unsavedWhileLoading = false
-          void persistence?.save()
-          committedSinceOpen = true
+        if (unsyncedWhileLoading) {
+          unsyncedWhileLoading = false
           flushScheduler?.touch()
           publishSyncStatus()
         }
@@ -2282,15 +2322,20 @@ export function createEngine(
           // a layer is first known to hold something — or, erased, nothing.
           invalidateChangedHoldings()
           if (!restored) return
+          // A step landing on top of a restore on trial is the artist painting
+          // over it: the trial is over, and undoing that step later lands on
+          // a restore they have made theirs, not on a preview.
+          if (
+            restoreDepth !== undefined &&
+            !applyingRestore &&
+            (history?.stepsBack() ?? 0) > restoreDepth
+          )
+            restoreDepth = undefined
           if (restoreOnTrial()) {
             publishSyncStatus()
             return
           }
-          if (snapshot.loading) {
-            unsavedWhileLoading = true
-            publishSyncStatus()
-            return
-          }
+          if (snapshot.loading) unsyncedWhileLoading = true
           void persistence?.save()
           // Scheduling is a timer reset, not a network call, so this never
           // costs a stroke a frame (§9.2's "off the interactive path").
@@ -2318,7 +2363,9 @@ export function createEngine(
               width: snapshot.width,
               height: snapshot.height,
               structure,
-              surfaces: past.tileIndex(),
+              // Tiles still loading are on disk already and belong to the
+              // document; history just has not been handed them yet.
+              surfaces: withPendingTiles(past.tileIndex(), structure),
               assets: writableAssets(structure),
             }
           },
@@ -3168,12 +3215,15 @@ export function createEngine(
       // stored document does not get to write over it, however it is asked.
       // Nor does a preview that has not been kept.
       if (!restored || restoreOnTrial()) return
-      // Nor a document still loading, which history only partly names; the
-      // save lands once it has all arrived.
-      await fullyLoaded
-      if (disposed) return
+
       await history?.settle()
       await persistence?.save()
+      // A document still loading would sync without its unloaded tiles; the
+      // sync is owed instead, and sent once they are all in.
+      if (snapshot.loading) {
+        unsyncedWhileLoading = true
+        return
+      }
       if (cloudSync) {
         flushScheduler?.flushNow()
         await cloudSync.settle()
@@ -3253,11 +3303,18 @@ export function createEngine(
       restoreDepth = past.stepsBack()
       return true
     },
-    canRevertRestore: () =>
-      restoreDepth !== undefined && history?.stepsBack() === restoreDepth,
+    canRevertRestore: () => restoreRevertible(),
     async keepRestore() {
+      // Ended first, because a save refuses while one is on trial; put back
+      // if the save fails, so the preview is still one to keep or take back.
+      const depth = restoreDepth
       restoreDepth = undefined
-      await this.save()
+      try {
+        await this.save()
+      } catch (error) {
+        restoreDepth = depth
+        throw error
+      }
     },
     async revertRestore() {
       if (!this.canRevertRestore()) return false

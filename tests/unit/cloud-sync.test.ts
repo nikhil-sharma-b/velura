@@ -158,6 +158,38 @@ describe("flush", () => {
     expect(seen.at(-1)).toBe("fully-synced")
   })
 
+  test("names as removed only the tiles this device knew the document had", async () => {
+    const { remote, puts, commits } = createFakeRemote()
+    let doc = surfaces([
+      { surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" },
+      { surfaceId: "layer-1", x: 1, y: 0, hash: "hash-b" },
+    ])
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: doc }),
+      tiles: async (hash) => texelsFor(hash),
+      put: fakePut(puts, new Map()),
+    })
+    // What this device opened: its own two tiles. A tile another device
+    // wrote that this one never saw is not in here, and must never be
+    // named as removed by it.
+    sync.seedKnown(doc)
+
+    await sync.flush()
+    expect(commits.at(-1)!.removed).toEqual([])
+
+    // An erase back to nothing, or a restore to an earlier state.
+    doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])
+    await sync.flush()
+    expect(commits.at(-1)!.removed).toEqual([
+      { surfaceId: "layer-1", x: 1, y: 0 },
+    ])
+
+    // Once said, not said again.
+    await sync.flush()
+    expect(commits.at(-1)!.removed).toEqual([])
+  })
+
   test("uploads a new hash once, then never again once the server knows it", async () => {
     const { remote, puts, commits } = createFakeRemote()
     const uploaded = new Map<string, Uint8Array>()

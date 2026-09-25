@@ -7,11 +7,18 @@
  *   1. ask which of the changed hashes the server has never seen (a Convex
  *      query, not an R2 HeadObject — R2 ops are the metered resource)
  *   2. mint one batch of presigned PUTs for the missing hashes
- *   3. one mutation to upsert the tile index rows and log the flush
+ *   3. one mutation to upsert the tile index rows, drop the rows this device
+ *      has seen the document lose, and log the flush
  *
  * Retrying a flush after a dropped response costs nothing extra: PUTs are
  * keyed by content hash (uploading the same bytes twice is a no-op at the
- * object store), and the index upsert is idempotent by construction.
+ * object store), and both the index upsert and the removals are idempotent
+ * by construction.
+ *
+ * Removals are named, never inferred from absence: a tile row is only dropped
+ * when this device held that slot and no longer does. A slot another device
+ * filled that this one never saw is not this device's to remove (§9.5), and
+ * neither is one its own local storage happened to lose.
  */
 
 import type { ImageAssetRef } from "../doc/image-source"
@@ -58,6 +65,8 @@ export interface RemoteIndex {
   commitPreview?(): Promise<number | void>
   commitFlush(payload: {
     tiles: readonly { surfaceId: string; x: number; y: number; hash: string }[]
+    /** Slots this device held and no longer does: an erase, undo or restore. */
+    removed: readonly { surfaceId: string; x: number; y: number }[]
     uploaded: readonly { hash: string; size: number }[]
     structure: DocumentStructure
     metrics: { putCount: number; mutationCount: number }
@@ -112,6 +121,12 @@ export interface CloudSync {
   settle(): Promise<void>
   metrics(): SyncMetrics
   status(): SyncStatus
+  /**
+   * The tiles the document had when this device opened it — what a later
+   * flush may name as removed once they are gone. Anything never seeded or
+   * sent from here is left alone.
+   */
+  seedKnown(surfaces: readonly SurfaceTiles[]): void
 }
 
 export type UploadRetryOptions = {
@@ -162,6 +177,9 @@ export function createCloudSync(options: {
   // an observation rather than a guess: it only holds while nothing painted
   // since has changed what a flush would upload.
   let syncedKey: string | undefined
+  // Slots the server has from this device, or had when it opened: what a
+  // flush may name as removed. See the header on why never anything else.
+  let known = new Map<string, Slot>()
 
   async function upload(
     url: string,
@@ -282,12 +300,16 @@ export function createCloudSync(options: {
       }
 
       try {
+        const sent = slotsOf(document.surfaces)
         await options.remote.commitFlush({
           tiles: document.surfaces.flatMap((surface) =>
             surface.tiles.map((tile) => ({
               surfaceId: surface.surfaceId,
               ...tile,
             }))
+          ),
+          removed: [...known.values()].filter(
+            (slot) => !sent.has(slotKey(slot))
           ),
           uploaded,
           structure: document.structure,
@@ -296,6 +318,7 @@ export function createCloudSync(options: {
             mutationCount: mutationCount + (preview ? 2 : 1),
           },
         })
+        known = sent
         mutationCount++
         // The index mutation lands before the preview upload (§9.2). Generation
         // starts alongside tile work, but none of it runs in a drawing frame.
@@ -342,6 +365,9 @@ export function createCloudSync(options: {
       while (running) await running
     },
     metrics: () => ({ putCount, mutationCount }),
+    seedKnown(surfaces) {
+      known = slotsOf(surfaces)
+    },
     status() {
       if (running) return "syncing"
       return keyOf(options.snapshot()) === syncedKey
@@ -349,6 +375,22 @@ export function createCloudSync(options: {
         : "saved-locally"
     },
   }
+}
+
+type Slot = { surfaceId: string; x: number; y: number }
+
+function slotKey(slot: Slot): string {
+  return `${slot.surfaceId}:${slot.x},${slot.y}`
+}
+
+function slotsOf(surfaces: readonly SurfaceTiles[]): Map<string, Slot> {
+  const slots = new Map<string, Slot>()
+  for (const surface of surfaces)
+    for (const tile of surface.tiles) {
+      const slot = { surfaceId: surface.surfaceId, x: tile.x, y: tile.y }
+      slots.set(slotKey(slot), slot)
+    }
+  return slots
 }
 
 async function fetchPut(

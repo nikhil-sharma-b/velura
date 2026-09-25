@@ -310,11 +310,11 @@ is kilobytes and is read by every session that paints with the brush — the R2 
 ### 9.2 Write path
 
 1. Stroke completes → tiles marked dirty → **written to OPFS immediately** (this is the durability guarantee).
-2. Flush trigger: 30 s idle, `visibilitychange` to hidden, `beforeunload`, or explicit save.
+2. Flush trigger: 30 s idle, `visibilitychange` to hidden, `beforeunload`, explicit save, leaving the canvas in-app (the engine finishes the flush before its GPU device goes), or reopening a document whose cloud copy is behind this device's or has no preview. Nothing flushes while a version preview is on trial (not yet kept) or while a reopened document's tiles are still loading in the background — both would send something that is not the document; the flush is owed and sent once they end.
 3. Client hashes dirty tiles, asks Convex "which of these hashes do you not have?" (dedup — unchanged and duplicate tiles cost nothing).
 4. Convex action mints **one batch** of presigned PUTs for the missing hashes.
 5. Client uploads to R2 in parallel with bounded concurrency; retries are safe because content-addressed PUTs are idempotent.
-6. Client calls one Convex mutation to upsert the changed `tiles` rows and bump the document version.
+6. Client calls one Convex mutation to upsert the changed `tiles` rows, delete the rows for slots this device held and no longer does (an erase, undo or restore — named explicitly, never inferred from a slot's absence, per §9.5), and bump the document version.
 7. Client uploads a flattened, display-transformed preview PNG (D38).
 
 ### 9.3 Read path
@@ -332,7 +332,7 @@ Because hashes are content-addressed, the cache is never stale and never needs i
 
 ### 9.5 Multi-device conflict
 
-v1 is single-user, multi-device, last-writer-wins at tile granularity, with a soft "this document is open on another device" indicator driven by Convex presence. The per-tile row model means the eventual upgrade to real merge (D7) is a change to the write path, not to the storage model.
+v1 is single-user, multi-device, last-writer-wins at tile granularity, with a soft "this document is open on another device" indicator driven by Convex presence. Removals follow the same rule: a device only deletes the tile row for a slot it held itself and has since emptied. The per-tile row model means the eventual upgrade to real merge (D7) is a change to the write path, not to the storage model.
 
 ### 9.6 Free-tier budget
 

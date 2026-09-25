@@ -149,6 +149,11 @@ export function VersionPanel({
       // here and to the cloud, without waiting for an idle.
       await engine.keepRestore()
       setPreviewing(null)
+    } catch {
+      // Still on the canvas and still on trial, so nothing is lost: say so
+      // and leave the choice with the artist rather than closing on it.
+      setProblem("That version could not be saved. Try restoring it again.")
+      return
     } finally {
       setBusy(false)
     }

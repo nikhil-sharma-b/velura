@@ -1054,7 +1054,10 @@ export function CanvasHost({
                   // it land after the panel had gone, with nothing left to
                   // take it back — the same reason the panel's own close
                   // waits.
-                  disabled={historyBusy}
+                  // Nor while tiles are still loading: they would land on top
+                  // of a version previewed now, and restoring it would keep
+                  // that mix.
+                  disabled={historyBusy || (snapshot.loading && !historyOpen)}
                   onClick={() => {
                     if (historyOpen) void closeHistory()
                     else {

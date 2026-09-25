@@ -121,7 +121,7 @@ describe("flush", () => {
     expect(rows[0].hash).toBe("hash-b")
   })
 
-  test("a flush that no longer names a tile drops it, since the flush is the whole document", async () => {
+  test("a flush drops the slots it names as removed, and only those", async () => {
     const t = setup()
     const artist = asUser(t, await createUser(t, "artist@example.com"))
     const documentId = await createDocument(t, artist)
@@ -134,26 +134,29 @@ describe("flush", () => {
         { surfaceId: "layer-1", x: 1, y: 0, hash: "hash-b" },
         { surfaceId: "layer-2", x: 0, y: 0, hash: "hash-c" },
       ],
+      removed: [],
       uploaded: [],
       structure,
       metrics: { putCount: 0, mutationCount: 1 },
     })
-    // A restore, an undo or an erase back to nothing: fewer tiles than before.
+    // This device erased layer-1's second tile. layer-2's it does not
+    // mention at all — as a device that never saw it would not.
     await artist.mutation(api.tiles.commitFlush, {
       documentId,
       tiles: [{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }],
+      removed: [{ surfaceId: "layer-1", x: 1, y: 0 }],
       uploaded: [],
       structure,
       metrics: { putCount: 0, mutationCount: 1 },
     })
 
     const rows = await artist.query(api.tiles.forDocument, { documentId })
-    expect(rows.map(({ surfaceId, x, y }) => `${surfaceId}:${x},${y}`)).toEqual(
-      ["layer-1:0,0"]
-    )
+    expect(
+      rows.map(({ surfaceId, x, y }) => `${surfaceId}:${x},${y}`).sort()
+    ).toEqual(["layer-1:0,0", "layer-2:0,0"])
   })
 
-  test("dropping one document's tiles leaves another's that share them alone", async () => {
+  test("removing a slot from one document leaves another that shares its tile alone", async () => {
     const t = setup()
     const artist = asUser(t, await createUser(t, "artist@example.com"))
     const first = await createDocument(t, artist)
@@ -165,6 +168,7 @@ describe("flush", () => {
       await artist.mutation(api.tiles.commitFlush, {
         documentId,
         tiles: [tile],
+        removed: [],
         uploaded: [],
         structure,
         metrics: { putCount: 0, mutationCount: 1 },
@@ -172,6 +176,7 @@ describe("flush", () => {
     await artist.mutation(api.tiles.commitFlush, {
       documentId: first,
       tiles: [],
+      removed: [{ surfaceId: "layer-1", x: 0, y: 0 }],
       uploaded: [],
       structure,
       metrics: { putCount: 0, mutationCount: 1 },
