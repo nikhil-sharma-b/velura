@@ -16,6 +16,10 @@ import { Spinner } from "@/components/ui/spinner"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import { createConvexRemoteIndex } from "@/features/library/lib/convex-remote-index"
+import {
+  recordLocalPreview,
+  recordSyncStatus,
+} from "@/features/library/lib/preview-cache"
 import { tabSessionId } from "@/features/library/lib/tab-session"
 import { useConvexPaletteStore } from "@/features/color/lib/convex-palette-store"
 import { useConvexBrushStore } from "@/features/studio/lib/convex-brush-store"
@@ -93,6 +97,8 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
       documentName={document.name}
       documentSize={documentSize}
       remote={remote}
+      onPreview={(preview) => recordLocalPreview(documentId, preview)}
+      onSyncStatus={(status) => recordSyncStatus(documentId, status)}
       palettes={palettes}
       brushes={brushes}
       openElsewhere={openElsewhere ?? false}

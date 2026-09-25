@@ -18,7 +18,7 @@ import {
 } from "convex/react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
 import { toast } from "sonner"
 
 import {
@@ -46,7 +46,17 @@ import { api } from "@/convex/_generated/api"
 import type { Doc } from "@/convex/_generated/dataModel"
 import { NewDocumentDialog } from "@/features/library/components/new-document-dialog"
 import { AnonymousMigration } from "@/features/library/components/anonymous-migration"
+import {
+  cachedSignedUrl,
+  forgetSignedUrl,
+  deviceState,
+  localPreviewIsCurrent,
+  previewIsStale,
+  rememberSignedUrl,
+  subscribeDeviceState,
+} from "@/features/library/lib/preview-cache"
 import { APP_NAME } from "@/lib/constants"
+import { cn } from "@/lib/utils"
 
 export function DocumentLibrary() {
   return (
@@ -140,7 +150,7 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
   const [shareToken, setShareToken] = useState<string | null>(null)
   const createShare = useMutation(api.shareLinks.create)
   const revokeShare = useMutation(api.shareLinks.revoke)
-  const [previewUrl, retryPreview] = useDocumentPreview(document)
+  const preview = useDocumentPreview(document)
 
   const commitRename = async (name: string) => {
     setEditing(false)
@@ -153,23 +163,35 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
       <Link
         href={`/d/${document._id}`}
         aria-label={`Open ${document.name}`}
-        className="flex aspect-[4/3] items-center justify-center overflow-hidden bg-muted"
+        className="relative flex aspect-[4/3] items-center justify-center overflow-hidden bg-muted"
       >
-        {previewUrl ? (
+        {preview.url ? (
           // The URL is a short-lived, authenticated R2 signature. Sending it
           // through Next's server-side image optimiser would leak that
           // capability outside this signed-in browser session.
           // oxlint-disable-next-line next/no-img-element
           <img
-            src={previewUrl}
+            src={preview.url}
             alt=""
-            className="h-full w-full object-contain"
-            onError={retryPreview}
+            className={cn(
+              "h-full w-full object-contain transition-opacity duration-300",
+              preview.stale && "opacity-60"
+            )}
+            onLoad={preview.onLoad}
+            onError={preview.onError}
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,var(--muted),var(--background))] text-sm text-muted-foreground">
-            Blank canvas
+            {preview.stale ? "" : "Blank canvas"}
           </div>
+        )}
+        {preview.stale && (
+          // Subtle on purpose: the picture is still worth looking at, it is
+          // only not the newest one yet.
+          <span className="absolute top-2 right-2 flex items-center gap-1.5 rounded-full bg-background/80 px-2 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur">
+            <Spinner className="size-3" aria-label="Updating preview" />
+            Updating
+          </span>
         )}
       </Link>
       <div className="flex items-center gap-1 p-3">
@@ -320,26 +342,51 @@ function ShareDialog({
   )
 }
 
-function useDocumentPreview(
-  document: Doc<"documents">
-): readonly [string | null, () => void] {
+function useDocumentPreview(document: Doc<"documents">): {
+  url: string | null
+  /** The picture shown is behind the document, and a newer one is coming. */
+  stale: boolean
+  onLoad: () => void
+  onError: () => void
+} {
   const previewDownload = useAction(api.tilesActions.presignPreviewDownload)
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const documentId = document._id
+  const version = document.previewVersion
+  const device = useSyncExternalStore(
+    subscribeDeviceState,
+    () => deviceState(documentId),
+    () => undefined
+  )
+  const showLocal = localPreviewIsCurrent(device?.local, version)
+  // Read on every render, so a card coming back into view shows its picture
+  // on the first frame, from a URL the browser has already loaded.
+  const cached =
+    version === undefined ? undefined : cachedSignedUrl(documentId, version)
+  const [signed, setSigned] = useState<{
+    version: number
+    url: string
+  } | null>(null)
+  const [loaded, setLoaded] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
-  const retry = useCallback(() => {
-    setPreviewUrl(null)
+  const onError = useCallback(() => {
+    forgetSignedUrl(documentId)
+    setSigned(null)
     setAttempt((value) => value + 1)
-  }, [])
+  }, [documentId])
 
   useEffect(() => {
-    if (document.previewVersion === undefined) return
+    // Nothing to fetch: no preview yet, this device's own picture is the
+    // newer one, or a signed URL for this version is still good.
+    if (version === undefined || showLocal || cached) return
     let current = true
     let timer: ReturnType<typeof setTimeout> | undefined
     let retryMs = 1_000
     const load = () => {
-      void previewDownload({ documentId: document._id }).then(
+      void previewDownload({ documentId }).then(
         (url) => {
-          if (current) setPreviewUrl(url)
+          if (!current) return
+          rememberSignedUrl(documentId, version, url)
+          setSigned({ version, url })
         },
         () => {
           if (!current) return
@@ -353,9 +400,25 @@ function useDocumentPreview(
       current = false
       if (timer) clearTimeout(timer)
     }
-  }, [attempt, document._id, document.previewVersion, previewDownload])
+  }, [attempt, cached, documentId, version, showLocal, previewDownload])
 
-  return [previewUrl, retry]
+  // A signature for an older version is still a picture of the document, and
+  // better than a blank card while the newer one is fetched.
+  const shown = showLocal
+    ? { url: device!.local!.url, version }
+    : cached
+      ? { url: cached, version }
+      : signed
+  const url = shown?.url ?? null
+  return {
+    url,
+    stale:
+      previewIsStale(device, shown?.version, version) ||
+      // The browser keeps the previous picture up until the new one decodes.
+      (url !== null && url !== loaded),
+    onLoad: () => setLoaded(url),
+    onError,
+  }
 }
 
 function DeleteDialog({

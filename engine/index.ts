@@ -748,6 +748,13 @@ export type CloudOptions = {
   /** Idle time after a commit before an unforced flush fires. Default 30s. */
   idleMs?: number
   onError?: (error: unknown) => void
+  /** Each change of sync status, including those after the engine is disposed. */
+  onSyncStatus?: (status: SyncStatus) => void
+  /** Each library preview as soon as it is encoded (see `createCloudSync`). */
+  onPreview?: (preview: {
+    bytes: Uint8Array
+    committed: Promise<number | undefined>
+  }) => void
 }
 
 /** Canvas attachment is a lifecycle operation; commands contain only values. */
@@ -2296,6 +2303,7 @@ export function createEngine(
             // pass. PNG encoding and scaling happen after the GPU readback,
             // off the stroke frame and only when the flush scheduler fires.
             preview: async () => encodePreview(await capturePixels()),
+            onPreview: cloud.onPreview,
             // A flush that fails — an outage, a dropped response — is not the
             // document failing: the stroke is already safe on disk, and
             // `status()` staying "saved-locally" already says truthfully that
@@ -2305,7 +2313,12 @@ export function createEngine(
               cloud.onError?.(error)
               publish({ problem: explainFailure(error, "upload") })
             },
-            onStatusChange: () => publishSyncStatus(),
+            onStatusChange: () => {
+              publishSyncStatus()
+              // Also told after dispose, while a last flush finishes, which
+              // is when a host no longer subscribed to the snapshot needs it.
+              if (cloudSync) cloud.onSyncStatus?.(cloudSync.status())
+            },
           })
           flushScheduler = createFlushScheduler({
             flush: () => void cloudSync?.flush(),

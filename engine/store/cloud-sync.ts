@@ -54,7 +54,8 @@ export interface RemoteIndex {
   /** One mutable object per document; the document row versions its URL. */
   presignPreviewUpload?(): Promise<string>
   /** Publishes a preview only after its object upload has succeeded. */
-  commitPreview?(): Promise<void>
+  /** Resolves with the preview's new version, where the backend reports one. */
+  commitPreview?(): Promise<number | void>
   commitFlush(payload: {
     tiles: readonly { surfaceId: string; x: number; y: number; hash: string }[]
     uploaded: readonly { hash: string; size: number }[]
@@ -127,6 +128,16 @@ export function createCloudSync(options: {
   assets?: AssetSource
   /** A flattened, display-transformed PNG. Generated only when a flush runs. */
   preview?: () => Promise<Uint8Array>
+  /**
+   * Told of each preview the moment it is encoded, before it has been
+   * uploaded, so a host can show it without waiting on the network.
+   * `committed` resolves with the version it became on the server, or
+   * rejects if the flush carrying it did not land.
+   */
+  onPreview?: (preview: {
+    bytes: Uint8Array
+    committed: Promise<number | undefined>
+  }) => void
   /** Uploads bytes to a presigned URL. Overridable for tests; defaults to fetch PUT. */
   put?: (url: string, bytes: Uint8Array, contentType?: string) => Promise<void>
   onError?: (error: unknown) => void
@@ -251,30 +262,54 @@ export function createCloudSync(options: {
               options.remote.presignPreviewUpload(),
             ] as const)
           : undefined
+      let settlePreview:
+        | {
+            resolve: (version: number | undefined) => void
+            reject: (error: unknown) => void
+          }
+        | undefined
+      if (preview && options.onPreview) {
+        const committed = new Promise<number | undefined>(
+          (resolve, reject) => (settlePreview = { resolve, reject })
+        )
+        // A host that only wants the bytes need not handle a failed flush.
+        committed.catch(() => {})
+        const report = options.onPreview
+        void preview.then(
+          ([bytes]) => report({ bytes, committed }),
+          () => {}
+        )
+      }
 
-      await options.remote.commitFlush({
-        tiles: document.surfaces.flatMap((surface) =>
-          surface.tiles.map((tile) => ({
-            surfaceId: surface.surfaceId,
-            ...tile,
-          }))
-        ),
-        uploaded,
-        structure: document.structure,
-        metrics: {
-          putCount: putCount + (preview ? 1 : 0),
-          mutationCount: mutationCount + (preview ? 2 : 1),
-        },
-      })
-      mutationCount++
-      // The index mutation lands before the preview upload (§9.2). Generation
-      // starts alongside tile work, but none of it runs in a drawing frame.
-      if (preview) {
-        const [bytes, url] = await preview
-        await upload(url, bytes, "image/png")
-        putCount++
-        await options.remote.commitPreview!()
+      try {
+        await options.remote.commitFlush({
+          tiles: document.surfaces.flatMap((surface) =>
+            surface.tiles.map((tile) => ({
+              surfaceId: surface.surfaceId,
+              ...tile,
+            }))
+          ),
+          uploaded,
+          structure: document.structure,
+          metrics: {
+            putCount: putCount + (preview ? 1 : 0),
+            mutationCount: mutationCount + (preview ? 2 : 1),
+          },
+        })
         mutationCount++
+        // The index mutation lands before the preview upload (§9.2). Generation
+        // starts alongside tile work, but none of it runs in a drawing frame.
+        if (preview) {
+          const [bytes, url] = await preview
+          await upload(url, bytes, "image/png")
+          putCount++
+          const version = await options.remote.commitPreview!()
+          mutationCount++
+          settlePreview?.resolve(version ?? undefined)
+        }
+      } catch (error) {
+        settlePreview?.reject(error)
+        throw error
       }
       // This exact snapshot, including its preview where configured, is now
       // on the server whether or not a later loop round moves past it.
@@ -290,13 +325,14 @@ export function createCloudSync(options: {
       queued = true
       return running
     }
-    options.onStatusChange?.()
     running = write()
       .catch((error) => options.onError?.(error))
       .finally(() => {
         running = undefined
         options.onStatusChange?.()
       })
+    // After `running` is set, so the host reading `status()` sees "syncing".
+    options.onStatusChange?.()
     return running
   }
 

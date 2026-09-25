@@ -44,6 +44,7 @@ import {
 import type { ComponentProps } from "react"
 import type { Brush } from "@/engine/brush/brush"
 import {
+  type CloudOptions,
   createEngine,
   type Engine,
   type EngineCommand,
@@ -256,6 +257,8 @@ export function CanvasHost({
   documentName,
   documentSize,
   remote,
+  onPreview,
+  onSyncStatus,
   palettes,
   brushes,
   openElsewhere = false,
@@ -280,6 +283,10 @@ export function CanvasHost({
   brushes?: BrushStore
   /** The cloud-sync backend, when this document has an owned Convex row to sync to. */
   remote?: RemoteIndex
+  /** Each preview the engine encodes for the library, before it is uploaded. */
+  onPreview?: CloudOptions["onPreview"]
+  /** The sync status, including a last flush that outlives this canvas. */
+  onSyncStatus?: CloudOptions["onSyncStatus"]
   /** Whether another tab or device currently has this same document open. */
   openElsewhere?: boolean
 }) {
@@ -328,6 +335,12 @@ export function CanvasHost({
   // the document with it.
   const paletteRef = useRef(paletteStore)
   paletteRef.current = paletteStore
+  // Read through a ref, like the palette, so a host passing a fresh callback
+  // each render does not tear the engine down and rebuild it.
+  const previewRef = useRef(onPreview)
+  previewRef.current = onPreview
+  const syncStatusRef = useRef(onSyncStatus)
+  syncStatusRef.current = onSyncStatus
   const localBrushes = useMemo(() => createLocalBrushStore(), [])
   const brushStore = brushes ?? localBrushes
   const penStore = useMemo(() => createLocalPenSettingsStore(), [])
@@ -351,7 +364,15 @@ export function CanvasHost({
           ? { documentSize: { width: documentWidth, height: documentHeight } }
           : {}),
         ...(documentId ? { persistence: { documentId } } : {}),
-        ...(remote ? { cloud: { remote } } : {}),
+        ...(remote
+          ? {
+              cloud: {
+                remote,
+                onPreview: (preview) => previewRef.current?.(preview),
+                onSyncStatus: (status) => syncStatusRef.current?.(status),
+              },
+            }
+          : {}),
         // What "recent" means: a colour that reached the canvas. A recents
         // list fed by the picker instead records colours dialled past and
         // never used, and misses every colour actually painted with.

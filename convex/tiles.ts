@@ -96,9 +96,9 @@ export const commitPreview = mutation({
   args: { documentId: v.id("documents") },
   handler: async (ctx, { documentId }) => {
     const document = await requireOwnDocument(ctx, documentId)
-    await ctx.db.patch(documentId, {
-      previewVersion: (document.previewVersion ?? 0) + 1,
-    })
+    const previewVersion = (document.previewVersion ?? 0) + 1
+    await ctx.db.patch(documentId, { previewVersion })
+    return previewVersion
   },
 })
 
