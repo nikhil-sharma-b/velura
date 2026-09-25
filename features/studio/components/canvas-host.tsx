@@ -252,6 +252,7 @@ function findLayer(
  */
 export function CanvasHost({
   documentId,
+  documentName,
   documentSize,
   remote,
   palettes,
@@ -259,6 +260,8 @@ export function CanvasHost({
   openElsewhere = false,
 }: {
   documentId?: string
+  /** The title shown above the canvas; a document with none is untitled. */
+  documentName?: string
   /** Fixed authored size supplied by the document created in the library. */
   documentSize?: { width: number; height: number }
   /**
@@ -833,7 +836,7 @@ export function CanvasHost({
       {snapshot.status === "ready" && (
         <>
           <div className="pointer-events-none absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-studio-edge bg-studio-surface/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
-            <span>Untitled artwork</span>
+            <span>{documentName || "Untitled artwork"}</span>
             {snapshot.loading && (
               <span className="text-muted-foreground" data-testid="load-status">
                 Loading…

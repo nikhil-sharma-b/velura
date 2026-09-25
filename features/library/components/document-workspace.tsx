@@ -89,6 +89,7 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
   return (
     <CanvasHost
       documentId={documentId}
+      documentName={document.name}
       documentSize={documentSize}
       remote={remote}
       palettes={palettes}
