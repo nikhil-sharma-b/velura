@@ -64,6 +64,7 @@ import { createLocalBrushStore } from "../lib/local-brush-store"
 import { createLocalPenSettingsStore } from "../lib/local-pen-settings"
 import type { BrushStore } from "../lib/brush-store"
 import { resolveLibraryBrush, setForNewBrush } from "../lib/brush-shelf"
+import { DEFAULT_DOCUMENT_NAME } from "@/convex/lib/documents"
 import { DEFAULT_LIBRARY_BRUSH_ID } from "@/engine/brush/presets"
 import {
   dragCarriesFile,
@@ -260,7 +261,7 @@ export function CanvasHost({
   openElsewhere = false,
 }: {
   documentId?: string
-  /** The title shown above the canvas; a document with none is untitled. */
+  /** The title shown above the canvas; a document with none is called `DEFAULT_DOCUMENT_NAME`. */
   documentName?: string
   /** Fixed authored size supplied by the document created in the library. */
   documentSize?: { width: number; height: number }
@@ -836,7 +837,7 @@ export function CanvasHost({
       {snapshot.status === "ready" && (
         <>
           <div className="pointer-events-none absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-studio-edge bg-studio-surface/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
-            <span>{documentName || "Untitled artwork"}</span>
+            <span>{documentName || DEFAULT_DOCUMENT_NAME}</span>
             {snapshot.loading && (
               <span className="text-muted-foreground" data-testid="load-status">
                 Loading…

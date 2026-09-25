@@ -3182,7 +3182,7 @@ export function createEngine(
       const manifest = {
         version: 1 as const,
         id: options.persistence?.documentId ?? "exported-document",
-        name: "Untitled artwork",
+        name: "Untitled",
         width: snapshot.width,
         height: snapshot.height,
         structure: exported,
