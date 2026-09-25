@@ -46,6 +46,7 @@ import { api } from "@/convex/_generated/api"
 import type { Doc } from "@/convex/_generated/dataModel"
 import { NewDocumentDialog } from "@/features/library/components/new-document-dialog"
 import { AnonymousMigration } from "@/features/library/components/anonymous-migration"
+import { IconButton } from "@/features/studio/components/icon-button"
 import {
   cachedSignedUrl,
   forgetSignedUrl,
@@ -220,9 +221,10 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
             {document.width}×{document.height}
           </span>
         </div>
-        <Button
+        <IconButton
           variant="ghost"
           size="sm"
+          label="Share"
           aria-label={`Share ${document.name}`}
           onClick={async () => {
             if (document.previewVersion === undefined) {
@@ -235,18 +237,20 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
           }}
         >
           <ShareNetworkIcon />
-        </Button>
-        <Button
+        </IconButton>
+        <IconButton
           variant="ghost"
           size="sm"
+          label="Rename"
           aria-label={`Rename ${document.name}`}
           onClick={() => setEditing(true)}
         >
           <PencilSimpleIcon />
-        </Button>
-        <Button
+        </IconButton>
+        <IconButton
           variant="ghost"
           size="sm"
+          label="Duplicate"
           aria-label={`Duplicate ${document.name}`}
           onClick={async () => {
             await duplicate({ documentId: document._id })
@@ -254,15 +258,16 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
           }}
         >
           <CopyIcon />
-        </Button>
-        <Button
+        </IconButton>
+        <IconButton
           variant="ghost"
           size="sm"
+          label="Delete"
           aria-label={`Delete ${document.name}`}
           onClick={() => setConfirmingDelete(true)}
         >
           <TrashIcon />
-        </Button>
+        </IconButton>
         <DeleteDialog
           open={confirmingDelete}
           onOpenChange={setConfirmingDelete}
