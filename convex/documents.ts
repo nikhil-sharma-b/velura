@@ -1,6 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server"
 import { ConvexError, v } from "convex/values"
 
+import { internal } from "./_generated/api"
 import type { Doc, Id } from "./_generated/dataModel"
 import {
   type MutationCtx,
@@ -154,8 +155,6 @@ export const duplicate = mutation({
       .collect()
 
     const now = Date.now()
-    // Pixels are not copied because there are none yet (ticket 16 owns tiles);
-    // what is copied is the document's identity: owner, size and name lineage.
     const copyId = await ctx.db.insert("documents", {
       ownerId: source.ownerId,
       name: duplicateName(
@@ -166,7 +165,35 @@ export const duplicate = mutation({
       height: source.height,
       createdAt: now,
       updatedAt: now,
+      ...(source.structure !== undefined
+        ? { structure: source.structure }
+        : {}),
     })
+    // Tiles are content-addressed and shared between documents, so the copy
+    // names the same R2 objects rather than duplicating any pixels — and,
+    // naming them, keeps them alive through orphan collection just as its
+    // source does. Its history starts empty: the copy is a new document.
+    const tiles = await ctx.db
+      .query("tiles")
+      .withIndex("by_document", (q) => q.eq("documentId", documentId))
+      .collect()
+    for (const { surfaceId, x, y, hash } of tiles)
+      await ctx.db.insert("tiles", {
+        documentId: copyId,
+        surfaceId,
+        x,
+        y,
+        hash,
+        updatedAt: now,
+      })
+    // The preview is the one object keyed by document rather than content, so
+    // it is copied in R2, which a mutation cannot reach. Until it lands the
+    // copy shows as blank, and the first open repairs it if it never does.
+    if (source.previewVersion !== undefined)
+      await ctx.scheduler.runAfter(0, internal.tilesActions.copyPreview, {
+        from: documentId,
+        to: copyId,
+      })
     return copyId
   },
 })

@@ -3,7 +3,12 @@ import { v } from "convex/values"
 import { requireOwnDocument } from "./documents"
 import { recordVersion } from "./versions"
 import type { Id } from "./_generated/dataModel"
-import { type MutationCtx, mutation, query } from "./_generated/server"
+import {
+  internalMutation,
+  type MutationCtx,
+  mutation,
+  query,
+} from "./_generated/server"
 
 /**
  * Which of these hashes has never been confirmed uploaded, across any
@@ -99,6 +104,19 @@ export const commitPreview = mutation({
     const previewVersion = (document.previewVersion ?? 0) + 1
     await ctx.db.patch(documentId, { previewVersion })
     return previewVersion
+  },
+})
+
+/** `commitPreview` for a preview copied by the backend, with no caller to own it. */
+export const commitCopiedPreview = internalMutation({
+  args: { documentId: v.id("documents") },
+  handler: async (ctx, { documentId }) => {
+    const document = await ctx.db.get(documentId)
+    // Deleted between the copy being scheduled and landing.
+    if (!document) return
+    await ctx.db.patch(documentId, {
+      previewVersion: (document.previewVersion ?? 0) + 1,
+    })
   },
 })
 

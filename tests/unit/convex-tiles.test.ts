@@ -141,3 +141,42 @@ describe("flush", () => {
     ).rejects.toThrow(/does not exist/)
   })
 })
+
+describe("duplicate", () => {
+  test("a copy names the same pixels and layer tree as its source", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await createDocument(t, artist)
+    const structure = {
+      layers: [{ id: "layer-1", name: "Ink" }],
+      activeLayerId: "layer-1",
+      paintingMask: false,
+    }
+    await artist.mutation(api.tiles.commitFlush, {
+      documentId,
+      tiles: [
+        { surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" },
+        { surfaceId: "layer-1", x: 1, y: 0, hash: "hash-b" },
+      ],
+      uploaded: [
+        { hash: "hash-a", size: 100 },
+        { hash: "hash-b", size: 100 },
+      ],
+      structure,
+      metrics: { putCount: 2, mutationCount: 1 },
+    })
+
+    const copyId = await artist.mutation(api.documents.duplicate, {
+      documentId,
+    })
+
+    const tilesOf = async (id: Id<"documents">) =>
+      (await artist.query(api.tiles.forDocument, { documentId: id }))
+        .map(({ surfaceId, x, y, hash }) => ({ surfaceId, x, y, hash }))
+        .sort((a, b) => a.x - b.x)
+    expect(await tilesOf(copyId)).toEqual(await tilesOf(documentId))
+    expect(
+      (await artist.query(api.documents.get, { documentId: copyId })).structure
+    ).toEqual(structure)
+  })
+})

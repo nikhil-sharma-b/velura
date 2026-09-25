@@ -3,6 +3,7 @@
 import { v } from "convex/values"
 
 import {
+  copyPreview as copyPreviewObject,
   presignAssetGet,
   presignAssetPut,
   presignPreviewGet,
@@ -10,7 +11,7 @@ import {
   presignTileGet,
   presignTilePut,
 } from "./lib/r2"
-import { action } from "./_generated/server"
+import { action, internalAction } from "./_generated/server"
 import { api } from "./_generated/api"
 import { internal } from "./_generated/api"
 import type { Id } from "./_generated/dataModel"
@@ -98,5 +99,19 @@ export const presignSharedPreviewDownload = action({
     )
     if (documentId === null) return null
     return await presignPreviewGet(documentId)
+  },
+})
+
+/**
+ * Gives a duplicate its source's preview (see `documents.duplicate`), then
+ * makes it visible to the library the way a flush's own preview is.
+ */
+export const copyPreview = internalAction({
+  args: { from: v.id("documents"), to: v.id("documents") },
+  handler: async (ctx, { from, to }) => {
+    await copyPreviewObject(from, to)
+    await ctx.runMutation(internal.tiles.commitCopiedPreview, {
+      documentId: to,
+    })
   },
 })

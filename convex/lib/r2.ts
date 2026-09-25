@@ -1,4 +1,5 @@
 import {
+  CopyObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   ListObjectsV2Command,
@@ -104,6 +105,19 @@ export async function presignPreviewGet(documentId: string): Promise<string> {
     client(),
     new GetObjectCommand({ Bucket: bucket(), Key: previewKey(documentId) }),
     { expiresIn: PRESIGN_TTL_SECONDS }
+  )
+}
+
+/** A duplicate's picture, copied server-side without passing through Convex. */
+export async function copyPreview(from: string, to: string): Promise<void> {
+  await client().send(
+    new CopyObjectCommand({
+      Bucket: bucket(),
+      CopySource: `${bucket()}/${previewKey(from)}`,
+      Key: previewKey(to),
+      ContentType: "image/png",
+      MetadataDirective: "REPLACE",
+    })
   )
 }
 
