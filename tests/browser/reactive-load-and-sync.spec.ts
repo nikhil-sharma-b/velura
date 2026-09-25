@@ -259,6 +259,81 @@ test("the canvas is usable, and the centre resolves, before every tile has loade
   expect(await page.evaluate(() => window.sawReadyWhileLoading)).toBe(true)
 })
 
+test("a change made while tiles are still loading never saves the document without them", async ({
+  page,
+}) => {
+  const size = { width: 1600, height: 1000 }
+  await page.setViewportSize(size)
+  const documentId = newId()
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.engine)
+  await page.evaluate(
+    async ([width, height, id]) => {
+      window.remountEngine({ persistence: { documentId: id as string } })
+      await window.engine.dispatch({
+        type: "resize",
+        width: width as number,
+        height: height as number,
+        devicePixelRatio: 1,
+      })
+      await window.engine.dispatch({ type: "initialize" })
+      await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+      await window.engine.dispatch({ type: "setBrush", radius: 6 })
+    },
+    [size.width, size.height, documentId] as const
+  )
+  const box = (await page.locator("canvas").boundingBox())!
+  for (const fraction of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) {
+    const before = await page.evaluate(() => window.engine.historyUsage().steps)
+    const y = box.y + size.height * fraction
+    await page.mouse.move(box.x + 10, y)
+    await page.mouse.down()
+    await page.mouse.move(box.x + size.width - 10, y, { steps: 12 })
+    await page.mouse.up()
+    await page.waitForFunction(
+      (steps) => window.engine.historyUsage().steps > steps,
+      before,
+      { timeout: 20_000 }
+    )
+  }
+  await page.evaluate(() => window.engine.save())
+  const saved = await page.evaluate((id) => window.tileCountFor(id), documentId)
+  expect(saved).toBeGreaterThan(25)
+
+  // Reopen, and the moment the canvas is usable with tiles still arriving,
+  // change the document and leave: the commit's save must not write a
+  // manifest naming only the tiles loaded so far.
+  await page.evaluate(
+    ([width, height, id]) =>
+      new Promise<void>((resolve) => {
+        window.remountEngine({ persistence: { documentId: id as string } })
+        let acted = false
+        window.engine.subscribe(() => {
+          const snapshot = window.engine.getSnapshot()
+          if (acted || snapshot.status !== "ready" || !snapshot.loading) return
+          acted = true
+          void window.engine.dispatch({ type: "addLayer" }).then(() => {
+            window.engine.dispose()
+            setTimeout(resolve, 500)
+          })
+        })
+        void window.engine
+          .dispatch({
+            type: "resize",
+            width: width as number,
+            height: height as number,
+            devicePixelRatio: 1,
+          })
+          .then(() => window.engine.dispatch({ type: "initialize" }))
+      }),
+    [size.width, size.height, documentId] as const
+  )
+
+  expect(await page.evaluate((id) => window.tileCountFor(id), documentId)).toBe(
+    saved
+  )
+})
+
 test("leaving the canvas before the idle flush still uploads the work and its preview", async ({
   page,
 }) => {

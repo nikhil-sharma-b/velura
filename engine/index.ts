@@ -824,6 +824,13 @@ export function createEngine(
    * a look at the past, not the document. Painting over it ends the trial:
    * from then on it is the artist's work and saves like any other.
    */
+  /**
+   * A change made while tiles are still arriving in the background. History's
+   * tile index only names the tiles loaded so far, so a save then — local or
+   * cloud — would write the document without the rest of them. The change is
+   * saved once they are all in.
+   */
+  let unsavedWhileLoading = false
   function restoreOnTrial(): boolean {
     return (
       applyingRestore ||
@@ -1982,7 +1989,15 @@ export function createEngine(
             if (snapshot.status === "ready") render()
           }
         }
-        if (!disposed) publish({ loading: false })
+        if (disposed) return
+        publish({ loading: false })
+        if (unsavedWhileLoading) {
+          unsavedWhileLoading = false
+          void persistence?.save()
+          committedSinceOpen = true
+          flushScheduler?.touch()
+          publishSyncStatus()
+        }
       })()
     }
 
@@ -2271,6 +2286,11 @@ export function createEngine(
             publishSyncStatus()
             return
           }
+          if (snapshot.loading) {
+            unsavedWhileLoading = true
+            publishSyncStatus()
+            return
+          }
           void persistence?.save()
           // Scheduling is a timer reset, not a network call, so this never
           // costs a stroke a frame (§9.2's "off the interactive path").
@@ -2348,7 +2368,8 @@ export function createEngine(
           flushScheduler = createFlushScheduler({
             // An idle timer set by earlier strokes can come due mid-preview.
             flush: () => {
-              if (!restoreOnTrial()) void cloudSync?.flush()
+              if (!restoreOnTrial() && !snapshot.loading)
+                void cloudSync?.flush()
             },
             idleMs: cloud.idleMs ?? DEFAULT_CLOUD_IDLE_MS,
           })
@@ -3147,6 +3168,10 @@ export function createEngine(
       // stored document does not get to write over it, however it is asked.
       // Nor does a preview that has not been kept.
       if (!restored || restoreOnTrial()) return
+      // Nor a document still loading, which history only partly names; the
+      // save lands once it has all arrived.
+      await fullyLoaded
+      if (disposed) return
       await history?.settle()
       await persistence?.save()
       if (cloudSync) {
@@ -3382,7 +3407,13 @@ export function createEngine(
         sync &&
         (sync.status() === "syncing" ||
           (committedSinceOpen && sync.status() !== "fully-synced"))
-      if (restored && sync && unsent && !restoreOnTrial()) {
+      if (
+        restored &&
+        sync &&
+        unsent &&
+        !restoreOnTrial() &&
+        !snapshot.loading
+      ) {
         if (frame !== undefined) cancelAnimationFrame(frame)
         frame = undefined
         context?.unconfigure()
