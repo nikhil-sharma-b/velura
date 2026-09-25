@@ -223,7 +223,7 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
         </div>
         <IconButton
           variant="ghost"
-          size="sm"
+          size="icon-sm"
           label="Share"
           aria-label={`Share ${document.name}`}
           onClick={async () => {
@@ -240,7 +240,7 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
         </IconButton>
         <IconButton
           variant="ghost"
-          size="sm"
+          size="icon-sm"
           label="Rename"
           aria-label={`Rename ${document.name}`}
           onClick={() => setEditing(true)}
@@ -249,7 +249,7 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
         </IconButton>
         <IconButton
           variant="ghost"
-          size="sm"
+          size="icon-sm"
           label="Duplicate"
           aria-label={`Duplicate ${document.name}`}
           onClick={async () => {
@@ -261,7 +261,7 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
         </IconButton>
         <IconButton
           variant="ghost"
-          size="sm"
+          size="icon-sm"
           label="Delete"
           aria-label={`Delete ${document.name}`}
           onClick={() => setConfirmingDelete(true)}
