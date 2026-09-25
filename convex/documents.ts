@@ -1,6 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server"
 import { ConvexError, v } from "convex/values"
 
+import { internal } from "./_generated/api"
 import type { Doc, Id } from "./_generated/dataModel"
 import {
   type MutationCtx,
@@ -135,9 +136,13 @@ export const rename = mutation({
     const next = normaliseDocumentName(name)
     // A rename that changes nothing must not reorder the library.
     if (next === document.name) return
+    const updatedAt = nextUpdatedAt(document.updatedAt)
     await ctx.db.patch(documentId, {
       name: next,
-      updatedAt: nextUpdatedAt(document.updatedAt),
+      updatedAt,
+      ...(document.previewForUpdatedAt === document.updatedAt
+        ? { previewForUpdatedAt: updatedAt }
+        : {}),
     })
   },
 })
@@ -154,8 +159,6 @@ export const duplicate = mutation({
       .collect()
 
     const now = Date.now()
-    // Pixels are not copied because there are none yet (ticket 16 owns tiles);
-    // what is copied is the document's identity: owner, size and name lineage.
     const copyId = await ctx.db.insert("documents", {
       ownerId: source.ownerId,
       name: duplicateName(
@@ -166,7 +169,49 @@ export const duplicate = mutation({
       height: source.height,
       createdAt: now,
       updatedAt: now,
+      ...(source.structure !== undefined
+        ? { structure: source.structure }
+        : {}),
+      // New previews are immutable objects, so the copy can name the exact
+      // image that accompanied this structure and tile snapshot. A later
+      // source flush cannot change what the duplicate shows.
+      ...(source.previewObjectKey &&
+      source.previewVersion !== undefined &&
+      source.previewForUpdatedAt === source.updatedAt
+        ? {
+            previewObjectKey: source.previewObjectKey,
+            previewVersion: source.previewVersion,
+            previewForUpdatedAt: now,
+          }
+        : {}),
     })
+    // Tiles are content-addressed and shared between documents, so the copy
+    // names the same R2 objects rather than duplicating any pixels — and,
+    // naming them, keeps them alive through orphan collection just as its
+    // source does. Its history starts empty: the copy is a new document.
+    const tiles = await ctx.db
+      .query("tiles")
+      .withIndex("by_document", (q) => q.eq("documentId", documentId))
+      .collect()
+    for (const { surfaceId, x, y, hash } of tiles)
+      await ctx.db.insert("tiles", {
+        documentId: copyId,
+        surfaceId,
+        x,
+        y,
+        hash,
+        updatedAt: now,
+      })
+    // Older previews still use the source's mutable document key. Copy that
+    // legacy object to a new immutable key in an action; until it lands the
+    // copy shows as blank, and the first open repairs it if it never does.
+    if (source.previewVersion !== undefined && !source.previewObjectKey)
+      await ctx.scheduler.runAfter(0, internal.tilesActions.copyPreview, {
+        from: documentId,
+        to: copyId,
+        sourceVersion: source.previewVersion,
+        sourceUpdatedAt: source.updatedAt,
+      })
     return copyId
   },
 })

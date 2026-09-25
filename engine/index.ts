@@ -70,6 +70,7 @@ import {
   DEFAULT_WARM_BYTES,
   type DocumentHistory,
   type OperationPixels,
+  type SurfaceTileIndex,
 } from "./doc/history"
 import { BACKGROUND, WORKSPACE_BACKGROUND } from "./doc/scene"
 import {
@@ -106,6 +107,7 @@ import {
   type PixelRect,
   type TileCoord,
   tileIndexForPixel,
+  tileKey,
   unionRect,
 } from "./doc/tile-grid"
 import type { SurfaceTiles, TileRef } from "./store/document-store"
@@ -652,7 +654,10 @@ export interface Engine {
    * Writes the document to local storage now, and — where `cloud` is
    * configured — flushes it to R2 too, and waits for both. Strokes already
    * save themselves; this is for a host that wants the tab-hide or explicit
-   * save to be a promise it can await. A no-op with no persistence configured.
+   * save to be a promise it can await. A no-op with no persistence configured,
+   * and with a version preview on trial (see `keepRestore`). While tiles are
+   * still loading it saves locally only and owes the flush, sent once they
+   * are all in: a flush then would send a document missing them.
    */
   save(): Promise<void>
   /**
@@ -674,6 +679,13 @@ export interface Engine {
    * state is part of their work, unpicked with undo like anything else.
    */
   canRevertRestore(): boolean
+  /**
+   * Keeps the restore in hand: until this is called it is only on trial,
+   * saved neither to this device nor to the cloud, so a tab that closes
+   * mid-preview reopens on the document as it was. Saves at once, and says
+   * whether that save reached the cloud as well as this device.
+   */
+  keepRestore(): Promise<{ synced: boolean }>
   /**
    * Takes back the last restore, where it is still the top step. This is what
    * makes looking at an old state safe: the caller does not have to know how
@@ -748,6 +760,13 @@ export type CloudOptions = {
   /** Idle time after a commit before an unforced flush fires. Default 30s. */
   idleMs?: number
   onError?: (error: unknown) => void
+  /** Each change of sync status, including those after the engine is disposed. */
+  onSyncStatus?: (status: SyncStatus) => void
+  /** Each library preview as soon as it is encoded (see `createCloudSync`). */
+  onPreview?: (preview: {
+    bytes: Uint8Array
+    committed: Promise<number | undefined>
+  }) => void
 }
 
 /** Canvas attachment is a lifecycle operation; commands contain only values. */
@@ -796,12 +815,77 @@ export function createEngine(
   let documents: DocumentStore | undefined
   let cloudSync: CloudSync | undefined
   /**
-   * How deep history stood right after the last restore. Compared with the
-   * depth now, it answers whether that restore is still the step undo would
-   * reach — which is the whole of what "this preview is still reversible"
-   * means, and belongs here rather than in a panel counting steps.
+   * The history step the last restore made, by identity. Whether it is still
+   * the step undo would reach is the whole of what "this preview is still
+   * reversible" means — and asked by identity rather than by depth, because
+   * a depth is fooled by old steps trimmed from the bottom of the stack.
    */
-  let restoreDepth: number | undefined
+  let restoreStep: object | undefined
+  /** Set while `revertRestore` takes the trial back through undo. */
+  let revertingRestore = false
+  /** True from the moment a restore starts writing until it is on trial. */
+  let applyingRestore = false
+  /**
+   * A restore applied but not kept, and still the step one undo takes back.
+   * Nothing saves while one is — not the commit hook, not an idle flush, not
+   * a tab going hidden, not leaving the canvas — because what is on screen is
+   * a look at the past, not the document. Painting over it ends the trial for
+   * good (see the commit hook): from then on it is the artist's work and
+   * saves like any other, however far undo later walks back.
+   */
+  /**
+   * Undo and redo are closed while a preview is on trial: "Back to now" is
+   * the way out of one, and an undo that slipped past it would leave the
+   * next stroke landing where the preview stood, mistaken for it.
+   */
+  function publishHistory() {
+    const trial = restoreRevertible()
+    publish({
+      canUndo: !trial && (history?.canUndo() ?? false),
+      canRedo: !trial && (history?.canRedo() ?? false),
+    })
+  }
+  function restoreOnTrial(): boolean {
+    return applyingRestore || restoreRevertible()
+  }
+  function restoreRevertible(): boolean {
+    return restoreStep !== undefined && history?.topStep() === restoreStep
+  }
+  /**
+   * Stored tiles still arriving in the background, by surface and slot.
+   * History's tile index only names the tiles loaded so far, so a local save
+   * names these too (they are already on disk) rather than writing the
+   * document without them. A cloud sync cannot — it would send a document
+   * missing them — so it waits, and `unsyncedWhileLoading` says one is owed.
+   */
+  const pendingTiles = new Map<string, Map<string, TileRef>>()
+  let unsyncedWhileLoading = false
+  function withPendingTiles(
+    surfaces: readonly SurfaceTileIndex[],
+    structure: DocumentStructure
+  ): SurfaceTileIndex[] {
+    if (pendingTiles.size === 0) return [...surfaces]
+    // A layer deleted before its tiles arrived is gone, not stranded.
+    const present = structureSurfaceIds(structure)
+    const merged = new Map(
+      surfaces.map((surface) => [
+        surface.surfaceId,
+        new Map(surface.tiles.map((tile) => [tileKey(tile.x, tile.y), tile])),
+      ])
+    )
+    for (const [surfaceId, pending] of pendingTiles) {
+      if (!present.has(surfaceId)) continue
+      const surface = merged.get(surfaceId) ?? new Map<string, TileRef>()
+      // What history holds for a slot is newer than what disk held for it.
+      for (const [slot, tile] of pending)
+        if (!surface.has(slot)) surface.set(slot, tile)
+      merged.set(surfaceId, surface)
+    }
+    return [...merged].map(([surfaceId, tiles]) => ({
+      surfaceId,
+      tiles: [...tiles.values()],
+    }))
+  }
   /**
    * The originals placed images were made from, by content hash (06). One
    * copy per distinct file however many layers show it, held here so a
@@ -837,6 +921,12 @@ export function createEngine(
    * that document came back but could not be taken on whole.
    */
   let restored = !options.persistence
+  /** Whether the reopened document found the cloud missing work or a preview. */
+  let cloudBehind = false
+  /** Whether this session has changed the document at all. */
+  let committedSinceOpen = false
+  /** Settles once every stored tile is back on the GPU, background ones too. */
+  let fullyLoaded: Promise<void> = Promise.resolve()
   let disposed = false
 
   // The stroke path. Every buffer here is allocated once, at construction:
@@ -950,7 +1040,7 @@ export function createEngine(
         node.kind === "group" ? rasterLayers(node.children) : [node]
       const held = layers
         .flatMap((layer) =>
-          past.occupiedTiles(layer.id).map((tile) => `${tile.x},${tile.y}`)
+          past.occupiedTiles(layer.id).map((tile) => tileKey(tile.x, tile.y))
         )
         .sort()
         .join(";")
@@ -1792,6 +1882,10 @@ export function createEngine(
     let document = doc
     const store = documents
     if (!target || !past || !document || !store) return true
+    cloudBehind = false
+    fullyLoaded = Promise.resolve()
+    pendingTiles.clear()
+    unsyncedWhileLoading = false
     // Bound once, here, so the batch loader below reads a hash and writes a
     // tile without repeating a non-null assertion at every call: TypeScript's
     // narrowing above does not reach into a closure defined further down.
@@ -1811,17 +1905,23 @@ export function createEngine(
       // still shown and still safe to paint on and save (§9.2/18 — an outage
       // must not stop work, only the replication of it).
       const onCloudError = options.cloud.onError ?? (() => {})
-      const newerElsewhere = await remote
-        .documentMeta()
-        .then(
-          (meta) =>
-            meta.structure !== null &&
-            meta.updatedAt > (stored?.updatedAt ?? -Infinity)
-        )
-        .catch((error) => {
-          onCloudError(error)
-          return false
-        })
+      const meta = await remote.documentMeta().catch((error) => {
+        onCloudError(error)
+        return null
+      })
+      const newerElsewhere =
+        meta !== null &&
+        meta.structure !== null &&
+        meta.updatedAt > (stored?.updatedAt ?? -Infinity)
+      // The other way round: this device holds strokes a flush never
+      // delivered, or the cloud has the strokes but never got their preview —
+      // both what a session torn down mid-sync leaves behind. Nothing else
+      // would send them until the next stroke, so this session does, once
+      // the document is fully back.
+      cloudBehind =
+        meta !== null &&
+        ((!!stored && meta.updatedAt < stored.updatedAt) ||
+          (meta.structure !== null && meta.previewVersion === undefined))
       if (disposed) return true
       if (!stored || newerElsewhere)
         await hydrateFromRemote({
@@ -1833,6 +1933,14 @@ export function createEngine(
       stored = await persistence?.load()
     }
     if (!stored || disposed) return true
+    // Only tiles successfully read from this device are ours to name as
+    // removed later. A manifest can outlive one of its blobs; treating that
+    // missing blob as an erase would delete its still-valid cloud row.
+    const loadedOnOpen = new Map<string, TileRef[]>()
+    const seedLoadedTiles = () =>
+      cloudSync?.seedKnown(
+        [...loadedOnOpen].map(([surfaceId, tiles]) => ({ surfaceId, tiles }))
+      )
     if (stored.width !== document.width || stored.height !== document.height) {
       validateDocumentSize(stored)
       for (const id of structureSurfaceIds(captureStructure(document)))
@@ -1878,6 +1986,12 @@ export function createEngine(
       if (disposed) return
       // A tile the manifest names but the device has lost is a hole in the
       // document rather than the end of the restore.
+      const loaded = refs.filter((_, position) => texels[position] !== null)
+      if (loaded.length > 0)
+        loadedOnOpen.set(surface.surfaceId, [
+          ...(loadedOnOpen.get(surface.surfaceId) ?? []),
+          ...loaded,
+        ])
       const tiles = refs.flatMap((tile, position) =>
         texels[position]
           ? [{ x: tile.x, y: tile.y, texels: texels[position]! }]
@@ -1918,31 +2032,45 @@ export function createEngine(
       await loadTiles(surface, ordered.slice(0, IMMEDIATE_TILES))
       if (disposed) return true
       const rest = ordered.slice(IMMEDIATE_TILES)
-      if (rest.length > 0) background.push({ surface, tiles: rest })
+      if (rest.length > 0) {
+        background.push({ surface, tiles: rest })
+        pendingTiles.set(
+          surface.surfaceId,
+          new Map(rest.map((tile) => [tileKey(tile.x, tile.y), tile]))
+        )
+      }
     }
     await past.settle()
     syncComposition()
     publish(describeLayers(document))
     if (background.length > 0) {
       publish({ loading: true })
-      void (async () => {
+      fullyLoaded = (async () => {
         for (const { surface, tiles } of background) {
           for (let index = 0; index < tiles.length; index += BACKGROUND_BATCH) {
             if (disposed) return
-            await loadTiles(
-              surface,
-              tiles.slice(index, index + BACKGROUND_BATCH)
-            )
+            const batch = tiles.slice(index, index + BACKGROUND_BATCH)
+            await loadTiles(surface, batch)
             if (disposed) return
+            const pending = pendingTiles.get(surface.surfaceId)
+            for (const tile of batch) pending?.delete(tileKey(tile.x, tile.y))
+            if (pending?.size === 0) pendingTiles.delete(surface.surfaceId)
             await past.settle()
             syncComposition()
             publish(describeLayers(document))
             if (snapshot.status === "ready") render()
           }
         }
-        if (!disposed) publish({ loading: false })
+        if (disposed) return
+        seedLoadedTiles()
+        publish({ loading: false })
+        if (unsyncedWhileLoading) {
+          unsyncedWhileLoading = false
+          flushScheduler?.touch()
+          publishSyncStatus()
+        }
       })()
-    }
+    } else seedLoadedTiles()
 
     return true
   }
@@ -2015,7 +2143,8 @@ export function createEngine(
   }
 
   function scheduleFrame() {
-    if (frame === undefined) frame = requestAnimationFrame(drawFrame)
+    if (frame === undefined && !disposed)
+      frame = requestAnimationFrame(drawFrame)
   }
 
   function beginStroke(
@@ -2210,11 +2339,7 @@ export function createEngine(
           warmBytes: options.history?.warmBytes ?? DEFAULT_WARM_BYTES,
           spill: createOpfsSpill(),
         }),
-        onChange: () =>
-          publish({
-            canUndo: history?.canUndo() ?? false,
-            canRedo: history?.canRedo() ?? false,
-          }),
+        onChange: () => publishHistory(),
         onError: fail,
         // Every route a pixel takes into the document — a stroke, a layer
         // operation, an undo — ends here, which is why the write to disk hangs
@@ -2224,9 +2349,27 @@ export function createEngine(
           // a layer is first known to hold something — or, erased, nothing.
           invalidateChangedHoldings()
           if (!restored) return
+          // A step landing on top of a restore on trial is the artist painting
+          // over it: the trial is over, and undoing that step later lands on
+          // a restore they have made theirs, not on a preview.
+          if (
+            restoreStep !== undefined &&
+            !applyingRestore &&
+            !revertingRestore &&
+            history?.topStep() !== restoreStep
+          ) {
+            restoreStep = undefined
+            publishHistory()
+          }
+          if (restoreOnTrial()) {
+            publishSyncStatus()
+            return
+          }
+          if (snapshot.loading) unsyncedWhileLoading = true
           void persistence?.save()
           // Scheduling is a timer reset, not a network call, so this never
           // costs a stroke a frame (§9.2's "off the interactive path").
+          committedSinceOpen = true
           flushScheduler?.touch()
           // A fresh commit changes what a flush would upload, so whatever
           // "fully-synced" meant a moment ago no longer applies.
@@ -2250,7 +2393,9 @@ export function createEngine(
               width: snapshot.width,
               height: snapshot.height,
               structure,
-              surfaces: past.tileIndex(),
+              // Tiles still loading are on disk already and belong to the
+              // document; history just has not been handed them yet.
+              surfaces: withPendingTiles(past.tileIndex(), structure),
               assets: writableAssets(structure),
             }
           },
@@ -2276,10 +2421,11 @@ export function createEngine(
                 assets: writableAssets(structure),
               }
             },
-            // readPixels presents through the renderer's one display-transform
+            // capturePixels presents through the renderer's one display-transform
             // pass. PNG encoding and scaling happen after the GPU readback,
             // off the stroke frame and only when the flush scheduler fires.
-            preview: async () => encodePreview(await engine.readPixels()),
+            preview: async () => encodePreview(await capturePixels()),
+            onPreview: cloud.onPreview,
             // A flush that fails — an outage, a dropped response — is not the
             // document failing: the stroke is already safe on disk, and
             // `status()` staying "saved-locally" already says truthfully that
@@ -2289,10 +2435,19 @@ export function createEngine(
               cloud.onError?.(error)
               publish({ problem: explainFailure(error, "upload") })
             },
-            onStatusChange: () => publishSyncStatus(),
+            onStatusChange: () => {
+              publishSyncStatus()
+              // Also told after dispose, while a last flush finishes, which
+              // is when a host no longer subscribed to the snapshot needs it.
+              if (cloudSync) cloud.onSyncStatus?.(cloudSync.status())
+            },
           })
           flushScheduler = createFlushScheduler({
-            flush: () => void cloudSync?.flush(),
+            // An idle timer set by earlier strokes can come due mid-preview.
+            flush: () => {
+              if (!restoreOnTrial() && !snapshot.loading)
+                void cloudSync?.flush()
+            },
             idleMs: cloud.idleMs ?? DEFAULT_CLOUD_IDLE_MS,
           })
         }
@@ -2327,6 +2482,10 @@ export function createEngine(
       // The host may have resized the canvas while validation was pending.
       render()
       publish({ status: "ready" })
+      if (cloudBehind && restored)
+        void fullyLoaded.then(() => {
+          if (!disposed && device === acquired) flushScheduler?.flushNow()
+        })
       // Input is attached only once there is something to draw into.
       if (!detachSampler && canvas instanceof HTMLCanvasElement) {
         detachSampler = attachPointerSampler(
@@ -2477,6 +2636,74 @@ export function createEngine(
       const invalid = await acquired.popErrorScope()
       if (invalid && !disposed && device === acquired)
         throw new Error(invalid.message)
+    }
+  }
+
+  /**
+   * The artwork as pixels, rendered into a target of its own. Not gated on
+   * the engine being ready, because a disposed engine still captures the
+   * preview of its last flush before its device goes (see `dispose`).
+   */
+  async function capturePixels(): Promise<RenderedPixels> {
+    if (!device) throw new Error("The graphics device is not ready.")
+    const { width, height } = snapshot
+    const acquired = device
+    const bytesPerRow = Math.ceil((width * 4) / 256) * 256
+    const buffer = acquired.createBuffer({
+      size: bytesPerRow * height,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    })
+    const output = acquired.createTexture({
+      size: { width, height },
+      format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    })
+    try {
+      // The artwork is what was painted, not how it is being looked at, so
+      // the export presents through the identity rather than the view (D28).
+      renderer?.setView(IDENTITY_MATRIX)
+      // A layer picked out in the list is how it is being looked at too.
+      if (highlight && doc) renderer?.setComposition(planComposite(doc))
+      // Preview/export rendering has its own target. It never replaces the
+      // visible swap-chain frame while its asynchronous readback completes.
+      renderer?.render(output.createView())
+      const encoder = acquired.createCommandEncoder()
+      encoder.copyTextureToBuffer(
+        { texture: output },
+        { buffer, bytesPerRow },
+        { width, height }
+      )
+      acquired.queue.submit([encoder.finish()])
+      // Restore the interactive uniform before yielding to the browser. The
+      // submitted export work is ordered before this queue write.
+      applyView()
+      await buffer.mapAsync(GPUMapMode.READ)
+      const mapped = new Uint8Array(buffer.getMappedRange())
+      const data = new Uint8Array(width * height * 4)
+      for (let y = 0; y < height; y++) {
+        data.set(
+          mapped.subarray(y * bytesPerRow, y * bytesPerRow + width * 4),
+          y * width * 4
+        )
+        if (y % 32 === 31)
+          await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      }
+      if (format === "bgra8unorm") {
+        for (let y = 0; y < height; y++) {
+          const end = (y + 1) * width * 4
+          for (let i = y * width * 4; i < end; i += 4)
+            [data[i], data[i + 2]] = [data[i + 2], data[i]]
+          if (y % 32 === 31)
+            await new Promise<void>((resolve) => setTimeout(resolve, 0))
+        }
+      }
+      return { width, height, data, colorSpace: snapshot.outputColorSpace }
+    } finally {
+      buffer.destroy()
+      output.destroy()
+      // Also restore after an early failure before the normal restoration.
+      applyView()
+      syncComposition()
     }
   }
 
@@ -2796,6 +3023,7 @@ export function createEngine(
           applyLayerChange()
           restored = true
           void persistence?.save()
+          committedSinceOpen = true
           flushScheduler?.touch()
           break
         }
@@ -2879,6 +3107,8 @@ export function createEngine(
         case "undo":
         case "redo": {
           if (!history) break
+          // See `publishHistory`: only the revert itself may undo a trial.
+          if (restoreRevertible() && !revertingRestore) break
           // Undo during a drag means the adjustment being made, not the step
           // underneath it: the picture goes back to where it was picked up
           // and the stack is left alone.
@@ -3015,9 +3245,17 @@ export function createEngine(
     async save() {
       // The same gate the commit hook uses: a session that could not read the
       // stored document does not get to write over it, however it is asked.
-      if (!restored) return
+      // Nor does a preview that has not been kept.
+      if (!restored || restoreOnTrial()) return
+
       await history?.settle()
       await persistence?.save()
+      // A document still loading would sync without its unloaded tiles; the
+      // sync is owed instead, and sent once they are all in.
+      if (snapshot.loading) {
+        unsyncedWhileLoading = true
+        return
+      }
       if (cloudSync) {
         flushScheduler?.flushNow()
         await cloudSync.settle()
@@ -3076,28 +3314,56 @@ export function createEngine(
       // overwritten by the sparse surface it was seeded from.
       uploadLayers()
 
+      applyingRestore = true
       past.recordReplacement(
         "restore",
         { before, after: structure },
         replacement,
         { width: snapshot.width, height: snapshot.height }
       )
-      await past.settle()
+      try {
+        await past.settle()
+      } finally {
+        applyingRestore = false
+      }
       if (disposed) return false
 
       const remaining = structureSurfaceIds(captureStructure(document))
       for (const id of previous)
         if (!remaining.has(id)) renderer?.releaseLayer(id)
       applyLayerChange()
-      restoreDepth = past.stepsBack()
+      restoreStep = past.topStep()
+      publishHistory()
       return true
     },
-    canRevertRestore: () =>
-      restoreDepth !== undefined && history?.stepsBack() === restoreDepth,
+    canRevertRestore: restoreRevertible,
+    async keepRestore() {
+      // Ended first, because a save refuses while one is on trial; put back
+      // if the save throws, so the preview is still one to keep or take back.
+      const step = restoreStep
+      restoreStep = undefined
+      publishHistory()
+      try {
+        await this.save()
+      } catch (error) {
+        restoreStep = step
+        publishHistory()
+        throw error
+      }
+      // A failed upload does not throw — it is reported, and retried by the
+      // next flush — so whether this reached the cloud is read back instead.
+      return { synced: !cloudSync || cloudSync.status() === "fully-synced" }
+    },
     async revertRestore() {
       if (!this.canRevertRestore()) return false
-      await this.dispatch({ type: "undo" })
-      restoreDepth = undefined
+      revertingRestore = true
+      try {
+        await this.dispatch({ type: "undo" })
+      } finally {
+        revertingRestore = false
+      }
+      restoreStep = undefined
+      publishHistory()
       return true
     },
     cloudMetrics: () => cloudSync?.metrics() ?? null,
@@ -3108,67 +3374,9 @@ export function createEngine(
       spilledBytes: history?.spilledBytes() ?? 0,
     }),
     async readPixels() {
-      if (snapshot.status !== "ready" || !device)
+      if (snapshot.status !== "ready")
         throw new Error("The graphics device is not ready.")
-      const { width, height } = snapshot
-      const acquired = device
-      const bytesPerRow = Math.ceil((width * 4) / 256) * 256
-      const buffer = acquired.createBuffer({
-        size: bytesPerRow * height,
-        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-      })
-      const output = acquired.createTexture({
-        size: { width, height },
-        format,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-      })
-      try {
-        // The artwork is what was painted, not how it is being looked at, so
-        // the export presents through the identity rather than the view (D28).
-        renderer?.setView(IDENTITY_MATRIX)
-        // A layer picked out in the list is how it is being looked at too.
-        if (highlight && doc) renderer?.setComposition(planComposite(doc))
-        // Preview/export rendering has its own target. It never replaces the
-        // visible swap-chain frame while its asynchronous readback completes.
-        renderer?.render(output.createView())
-        const encoder = acquired.createCommandEncoder()
-        encoder.copyTextureToBuffer(
-          { texture: output },
-          { buffer, bytesPerRow },
-          { width, height }
-        )
-        acquired.queue.submit([encoder.finish()])
-        // Restore the interactive uniform before yielding to the browser. The
-        // submitted export work is ordered before this queue write.
-        applyView()
-        await buffer.mapAsync(GPUMapMode.READ)
-        const mapped = new Uint8Array(buffer.getMappedRange())
-        const data = new Uint8Array(width * height * 4)
-        for (let y = 0; y < height; y++) {
-          data.set(
-            mapped.subarray(y * bytesPerRow, y * bytesPerRow + width * 4),
-            y * width * 4
-          )
-          if (y % 32 === 31)
-            await new Promise<void>((resolve) => setTimeout(resolve, 0))
-        }
-        if (format === "bgra8unorm") {
-          for (let y = 0; y < height; y++) {
-            const end = (y + 1) * width * 4
-            for (let i = y * width * 4; i < end; i += 4)
-              [data[i], data[i + 2]] = [data[i + 2], data[i]]
-            if (y % 32 === 31)
-              await new Promise<void>((resolve) => setTimeout(resolve, 0))
-          }
-        }
-        return { width, height, data, colorSpace: snapshot.outputColorSpace }
-      } finally {
-        buffer.destroy()
-        output.destroy()
-        // Also restore after an early failure before the normal restoration.
-        applyView()
-        syncComposition()
-      }
+      return await capturePixels()
     },
     async exportDocument() {
       if (snapshot.status !== "ready" || !history)
@@ -3182,7 +3390,7 @@ export function createEngine(
       const manifest = {
         version: 1 as const,
         id: options.persistence?.documentId ?? "exported-document",
-        name: "Untitled artwork",
+        name: "Untitled",
         width: snapshot.width,
         height: snapshot.height,
         structure: exported,
@@ -3289,7 +3497,34 @@ export function createEngine(
       // A disposed engine has no frames to report, and holding the observer
       // would keep whatever it closes over alive with it.
       frameObserver = null
-      release()
+      // Leaving the canvas through the app is an unmount, not a pagehide: it
+      // would otherwise cancel the idle flush that had not fired yet, or tear
+      // the device out from under one mid-preview, leaving the cloud without
+      // the latest strokes and the library without a picture of them. The
+      // runtime is kept just long enough to finish that flush; nothing is
+      // shown from it meanwhile, and the canvas is free for another engine.
+      const sync = cloudSync
+      const unsent =
+        sync &&
+        (sync.status() === "syncing" ||
+          (committedSinceOpen && sync.status() !== "fully-synced"))
+      if (
+        restored &&
+        sync &&
+        unsent &&
+        !restoreOnTrial() &&
+        !snapshot.loading
+      ) {
+        if (frame !== undefined) cancelAnimationFrame(frame)
+        frame = undefined
+        context?.unconfigure()
+        context = null
+        void (async () => {
+          await history?.settle()
+          flushScheduler?.flushNow()
+          await sync.settle()
+        })().finally(release)
+      } else release()
       publish({ status: "disposed" })
       listeners.clear()
     },

@@ -128,6 +128,40 @@ describe("hydrate", () => {
     expect(await freshLocal.readTile("hash-b")).toEqual(texelsFor("hash-b"))
   })
 
+  test("a hydrated copy is dated by the server's clock, so it reads as in step with it", async () => {
+    const cloud = createFakeCloud()
+    cloud.remote.documentMeta = async () => ({
+      width: 512,
+      height: 256,
+      structure: STRUCTURE,
+      updatedAt: 1_000,
+    })
+    await createCloudSync({
+      remote: cloud.remote,
+      snapshot: () => ({
+        structure: STRUCTURE,
+        surfaces: surfaces([
+          { surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" },
+        ]),
+      }),
+      tiles: async (hash) => texelsFor(hash),
+      put: cloud.put,
+    }).flush()
+
+    const local = createDocumentStore(createMemoryBlobStore())
+    await hydrateFromRemote({
+      documentId: "doc-1",
+      remote: cloud.remote,
+      local,
+      get: cloud.get,
+    })
+
+    // Neither "newer here" nor "newer elsewhere" on the next open: a device
+    // clock that runs ahead of the server's must not make an untouched copy
+    // look like unsynced work.
+    expect((await local.load("doc-1"))?.updatedAt).toBe(1_000)
+  })
+
   test("a tile the local store already holds is not downloaded again", async () => {
     const cloud = createFakeCloud()
     const doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])

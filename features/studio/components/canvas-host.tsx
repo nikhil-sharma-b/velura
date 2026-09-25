@@ -3,6 +3,7 @@
 import {
   CaretDownIcon,
   ArrowClockwiseIcon,
+  ArrowLeftIcon,
   ArrowsClockwiseIcon,
   ClockCounterClockwiseIcon,
   ArrowCounterClockwiseIcon,
@@ -41,9 +42,11 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import Link from "next/link"
 import type { ComponentProps } from "react"
 import type { Brush } from "@/engine/brush/brush"
 import {
+  type CloudOptions,
   createEngine,
   type Engine,
   type EngineCommand,
@@ -64,6 +67,7 @@ import { createLocalBrushStore } from "../lib/local-brush-store"
 import { createLocalPenSettingsStore } from "../lib/local-pen-settings"
 import type { BrushStore } from "../lib/brush-store"
 import { resolveLibraryBrush, setForNewBrush } from "../lib/brush-shelf"
+import { DEFAULT_DOCUMENT_NAME } from "@/convex/lib/documents"
 import { DEFAULT_LIBRARY_BRUSH_ID } from "@/engine/brush/presets"
 import {
   dragCarriesFile,
@@ -80,7 +84,7 @@ import { TiltToggle } from "./tilt-toggle"
 import { IconButton } from "./icon-button"
 import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
-import { VersionPanel } from "./version-panel"
+import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
 
 /** One press of a zoom key or button, which is a comfortable step by eye. */
@@ -252,13 +256,21 @@ function findLayer(
  */
 export function CanvasHost({
   documentId,
+  documentName,
+  libraryHref,
   documentSize,
   remote,
+  onPreview,
+  onSyncStatus,
   palettes,
   brushes,
   openElsewhere = false,
 }: {
   documentId?: string
+  /** The title shown above the canvas; a document with none is called `DEFAULT_DOCUMENT_NAME`. */
+  documentName?: string
+  /** Where "Back to documents" goes; a host with no library passes none. */
+  libraryHref?: string
   /** Fixed authored size supplied by the document created in the library. */
   documentSize?: { width: number; height: number }
   /**
@@ -276,12 +288,71 @@ export function CanvasHost({
   brushes?: BrushStore
   /** The cloud-sync backend, when this document has an owned Convex row to sync to. */
   remote?: RemoteIndex
+  /** Each preview the engine encodes for the library, before it is uploaded. */
+  onPreview?: CloudOptions["onPreview"]
+  /** The sync status, including a last flush that outlives this canvas. */
+  onSyncStatus?: CloudOptions["onSyncStatus"]
   /** Whether another tab or device currently has this same document open. */
   openElsewhere?: boolean
 }) {
   const [engine, setEngine] = useState<Engine | null>(null)
   const [panelsOpen, setPanelsOpen] = useState(true)
   const [historyOpen, setHistoryOpen] = useState(false)
+  /**
+   * What the version panel has on the canvas. Kept here rather than in the
+   * panel because closing the history is leaving the past — a version still
+   * on trial goes back with it — and the host is present for every way the
+   * panel goes: its own close, the toolbar button, and leaving the canvas,
+   * where the revert has to land before the engine is disposed or the
+   * trial would be what the last sync sends.
+   */
+  const versionPreview = useRef<VersionPreviewState>({
+    busy: false,
+    onTrial: false,
+  })
+  const [historyBusy, setHistoryBusy] = useState(false)
+  // The ref is what the teardown and the keyboard read, the state is what
+  // renders; they only ever change together.
+  function setVersionPreview(state: VersionPreviewState) {
+    versionPreview.current = state
+    setHistoryBusy(state.busy)
+  }
+  /** The revert under way, so a second request joins it instead of undoing again. */
+  const revertInFlight = useRef<Promise<void> | null>(null)
+  /**
+   * Takes a version on trial back — the one place that does, for closing the
+   * history and for leaving the canvas alike. Everything that could race it
+   * (the panel, undo, leaving) reads `busy` and holds off until it lands.
+   */
+  function takeTrialBack(target: Engine): Promise<void> {
+    if (revertInFlight.current) return revertInFlight.current
+    if (!versionPreview.current.onTrial || !target.canRevertRestore())
+      return Promise.resolve()
+    setVersionPreview({ busy: true, onTrial: true })
+    revertInFlight.current = target
+      .revertRestore()
+      .then(
+        () => undefined,
+        () => {
+          // Only a canvas already torn down fails here, and it took the
+          // trial with it.
+        }
+      )
+      .finally(() => {
+        revertInFlight.current = null
+        setVersionPreview({ busy: false, onTrial: false })
+      })
+    return revertInFlight.current
+  }
+  /** Closes the history; closing it is leaving the past (see `versionPreview`). */
+  async function closeHistory() {
+    // Not while a version is being opened or taken back: the first would land
+    // after the panel had gone with nothing left to take it back, and the
+    // second is already closing.
+    if (versionPreview.current.busy) return
+    if (engine) await takeTrialBack(engine)
+    setHistoryOpen(false)
+  }
   const [colorOpen, setColorOpen] = useState(false)
   const [brushOpen, setBrushOpen] = useState(false)
   const brushButton = useRef<HTMLButtonElement>(null)
@@ -324,6 +395,12 @@ export function CanvasHost({
   // the document with it.
   const paletteRef = useRef(paletteStore)
   paletteRef.current = paletteStore
+  // Read through a ref, like the palette, so a host passing a fresh callback
+  // each render does not tear the engine down and rebuild it.
+  const previewRef = useRef(onPreview)
+  previewRef.current = onPreview
+  const syncStatusRef = useRef(onSyncStatus)
+  syncStatusRef.current = onSyncStatus
   const localBrushes = useMemo(() => createLocalBrushStore(), [])
   const brushStore = brushes ?? localBrushes
   const penStore = useMemo(() => createLocalPenSettingsStore(), [])
@@ -347,7 +424,15 @@ export function CanvasHost({
           ? { documentSize: { width: documentWidth, height: documentHeight } }
           : {}),
         ...(documentId ? { persistence: { documentId } } : {}),
-        ...(remote ? { cloud: { remote } } : {}),
+        ...(remote
+          ? {
+              cloud: {
+                remote,
+                onPreview: (preview) => previewRef.current?.(preview),
+                onSyncStatus: (status) => syncStatusRef.current?.(status),
+              },
+            }
+          : {}),
         // What "recent" means: a colour that reached the canvas. A recents
         // list fed by the picker instead records colours dialled past and
         // never used, and misses every colour actually painted with.
@@ -387,7 +472,16 @@ export function CanvasHost({
       return () => {
         observer.disconnect()
         cancelAnimationFrame(frame)
-        attached.dispose()
+        // A trial left on the canvas goes back before the engine goes, or the
+        // last sync would send it as the document; a revert already under
+        // way is joined rather than repeated.
+        const pending =
+          revertInFlight.current ??
+          (versionPreview.current.onTrial && attached.canRevertRestore()
+            ? takeTrialBack(attached)
+            : null)
+        if (pending) void pending.finally(() => attached.dispose())
+        else attached.dispose()
       }
     },
     [documentHeight, documentId, documentWidth, remote]
@@ -519,6 +613,9 @@ export function CanvasHost({
       const accelerated = event.metaKey || event.ctrlKey
       if ((key === "z" || key === "y") && accelerated && !event.altKey) {
         event.preventDefault()
+        // A version being opened or taken back is itself an undo step in
+        // flight; another on top would race it.
+        if (versionPreview.current.busy) return
         const redo = key === "y" || event.shiftKey
         void engine.dispatch({ type: redo ? "redo" : "undo" })
         return
@@ -833,7 +930,7 @@ export function CanvasHost({
       {snapshot.status === "ready" && (
         <>
           <div className="pointer-events-none absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-studio-edge bg-studio-surface/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
-            <span>Untitled artwork</span>
+            <span>{documentName || DEFAULT_DOCUMENT_NAME}</span>
             {snapshot.loading && (
               <span className="text-muted-foreground" data-testid="load-status">
                 Loading…
@@ -882,21 +979,47 @@ export function CanvasHost({
             </div>
           )}
 
-          {engine && remote && historyOpen && (
-            <VersionPanel
-              engine={engine}
-              onClose={() => setHistoryOpen(false)}
-            />
-          )}
-
           <div className="absolute top-3 left-3 flex gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl">
+            {libraryHref && (
+              <>
+                {/* An in-app navigation: unmounting the canvas sends what has
+                    not synced yet, so leaving this way loses nothing. */}
+                <IconButton
+                  variant="ghost"
+                  size="icon"
+                  label="Back to documents"
+                  side="bottom"
+                  className="rounded-lg aria-disabled:pointer-events-none aria-disabled:opacity-50"
+                  asChild
+                >
+                  {/* Not while a version is being opened or taken back:
+                      leaving mid-way would sync that half-finished state as
+                      the document. A link cannot be disabled, so it refuses
+                      the click instead. */}
+                  <Link
+                    href={libraryHref}
+                    aria-disabled={historyBusy || undefined}
+                    tabIndex={historyBusy ? -1 : undefined}
+                    onClick={(event) => {
+                      if (historyBusy) event.preventDefault()
+                    }}
+                  >
+                    <ArrowLeftIcon />
+                  </Link>
+                </IconButton>
+                <span
+                  aria-hidden
+                  className="mx-0.5 w-px self-stretch bg-studio-edge"
+                />
+              </>
+            )}
             {engine && <ExportDialog engine={engine} />}
             <IconButton
               variant="ghost"
               size="icon"
               label="Undo"
               side="bottom"
-              disabled={!snapshot.canUndo}
+              disabled={!snapshot.canUndo || historyBusy}
               onClick={() => void engine?.dispatch({ type: "undo" })}
               className="rounded-lg"
             >
@@ -907,12 +1030,56 @@ export function CanvasHost({
               size="icon"
               label="Redo"
               side="bottom"
-              disabled={!snapshot.canRedo}
+              disabled={!snapshot.canRedo || historyBusy}
               onClick={() => void engine?.dispatch({ type: "redo" })}
               className="rounded-lg"
             >
               <ArrowUUpRightIcon />
             </IconButton>
+            {/* Beside undo and redo because it is the same kind of control —
+                a way through the document's past — and the panel hangs from
+                the button that opened it. Restore points only exist for a
+                document with a cloud copy behind it (§9.4), so an anonymous
+                local document is not shown a door to them. */}
+            {remote && (
+              <div className="relative">
+                <IconButton
+                  variant={historyOpen ? "default" : "ghost"}
+                  size="icon"
+                  label="Version history"
+                  side="bottom"
+                  aria-pressed={historyOpen}
+                  aria-expanded={historyOpen}
+                  // Closing while a version is still being opened would let
+                  // it land after the panel had gone, with nothing left to
+                  // take it back — the same reason the panel's own close
+                  // waits.
+                  // Nor while tiles are still loading: they would land on top
+                  // of a version previewed now, and restoring it would keep
+                  // that mix.
+                  disabled={historyBusy || (snapshot.loading && !historyOpen)}
+                  onClick={() => {
+                    if (historyOpen) void closeHistory()
+                    else {
+                      setColorOpen(false)
+                      setHistoryOpen(true)
+                    }
+                  }}
+                  className="rounded-lg"
+                >
+                  <ClockCounterClockwiseIcon />
+                </IconButton>
+                {engine && historyOpen && (
+                  <VersionPanel
+                    engine={engine}
+                    onClose={() => void closeHistory()}
+                    onPreviewStateChange={setVersionPreview}
+                    locked={historyBusy}
+                    className="absolute top-full left-0 mt-3.5"
+                  />
+                )}
+              </div>
+            )}
           </div>
 
           <TooltipProvider delayDuration={350}>
@@ -1228,6 +1395,17 @@ export function CanvasHost({
                   size="icon"
                   aria-pressed={colorOpen}
                   onClick={() => {
+                    // The two panels open into the same corner, so one gives
+                    // way to the other rather than drawing over it.
+                    if (!colorOpen && historyOpen) {
+                      // Not while a version is being opened; see the history
+                      // button for why closing then would lose track of it.
+                      if (historyBusy) return
+                      // Opened once the history has gone, not beside it while
+                      // a trial is still being taken back.
+                      void closeHistory().then(() => setColorOpen(true))
+                      return
+                    }
                     setColorOpen((open) => !open)
                   }}
                   className="rounded-lg"
@@ -1246,21 +1424,6 @@ export function CanvasHost({
                 >
                   <SlidersIcon />
                 </RailAction>
-                {/* Restore points only exist for a document with a cloud copy
-                behind it (§9.4), so an anonymous local document has no ladder
-                to offer and is not shown a door to one. */}
-                {remote && (
-                  <RailAction
-                    variant={historyOpen ? "default" : "ghost"}
-                    size="icon"
-                    label="Version history"
-                    aria-pressed={historyOpen}
-                    onClick={() => setHistoryOpen((open) => !open)}
-                    className="rounded-lg"
-                  >
-                    <ClockCounterClockwiseIcon />
-                  </RailAction>
-                )}
               </div>
             </div>
           </TooltipProvider>

@@ -2,8 +2,10 @@
 
 import {
   deleteAssetObjects,
+  deletePreviewObjects,
   deleteTileObjects,
   listAssetObjects,
+  listPreviewObjects,
   listTileObjects,
 } from "./lib/r2"
 import { runSweep } from "./lib/collection"
@@ -81,6 +83,34 @@ export const sweep = internalAction({
             hashes: [...hashes],
           })
         },
+        recordCollected: async ({ collected, scanned, retainedInGrace }) => {
+          await ctx.runMutation(internal.collection.recordCollected, {
+            runId,
+            collected: collected.map((object) => ({
+              hash: object.hash,
+              size: object.size,
+            })),
+            scanned,
+            retainedInGrace,
+          })
+        },
+      }
+    )
+
+    // Preview keys are immutable and can be shared by duplicates. Only an
+    // unreferenced object older than the usual grace window may go.
+    await runSweep(
+      { listPage: listPreviewObjects, deleteObjects: deletePreviewObjects },
+      {
+        markedHashes: async () =>
+          new Set(
+            await allPages((cursor) =>
+              ctx.runQuery(internal.collection.markedPreviewObjectIds, {
+                cursor,
+              })
+            )
+          ),
+        forgetCollected: async () => {},
         recordCollected: async ({ collected, scanned, retainedInGrace }) => {
           await ctx.runMutation(internal.collection.recordCollected, {
             runId,

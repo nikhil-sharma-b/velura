@@ -62,6 +62,9 @@ export const resolveDocumentId = internalQuery({
       .withIndex("by_token", (q) => q.eq("token", token))
       .unique()
     if (link === null) return null
-    return (await ctx.db.get(link.documentId)) === null ? null : link.documentId
+    const document = await ctx.db.get(link.documentId)
+    return document === null
+      ? null
+      : { documentId: link.documentId, key: document.previewObjectKey }
   },
 })

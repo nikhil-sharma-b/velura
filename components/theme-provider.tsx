@@ -3,6 +3,22 @@
 import * as React from "react"
 import { ThemeProvider as NextThemesProvider, useTheme } from "next-themes"
 
+/**
+ * next-themes renders an inline script that sets the theme before first
+ * paint. It only means anything in server-rendered HTML: a script React
+ * renders in the browser never runs, and React says so in the console. That
+ * happens whenever Next rebuilds the whole page on the client, as it does for
+ * every page that calls `notFound()` (a revoked share link, say). Typing the
+ * browser's copy as data keeps React quiet; the server's copy stays a real
+ * script, and the attribute that differs between them is not a mismatch.
+ */
+const CLIENT_SCRIPT_PROPS: React.ComponentProps<
+  typeof NextThemesProvider
+>["scriptProps"] =
+  typeof window === "undefined"
+    ? undefined
+    : { type: "application/json", suppressHydrationWarning: true }
+
 function ThemeProvider({
   children,
   ...props
@@ -13,6 +29,7 @@ function ThemeProvider({
       defaultTheme="system"
       enableSystem
       disableTransitionOnChange
+      scriptProps={CLIENT_SCRIPT_PROPS}
       {...props}
     >
       <ThemeHotkey />
@@ -47,7 +64,9 @@ function ThemeHotkey() {
         return
       }
 
-      if (event.key.toLowerCase() !== "d") {
+      // Chrome's autofill dispatches a keydown with no `key` at all when a
+      // saved entry is picked, whatever the type says.
+      if (typeof event.key !== "string" || event.key.toLowerCase() !== "d") {
         return
       }
 

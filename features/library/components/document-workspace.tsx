@@ -16,6 +16,11 @@ import { Spinner } from "@/components/ui/spinner"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import { createConvexRemoteIndex } from "@/features/library/lib/convex-remote-index"
+import {
+  recordLocalPreview,
+  recordSyncStatus,
+} from "@/features/library/lib/preview-cache"
+import { tabSessionId } from "@/features/library/lib/tab-session"
 import { useConvexPaletteStore } from "@/features/color/lib/convex-palette-store"
 import { useConvexBrushStore } from "@/features/studio/lib/convex-brush-store"
 import { CanvasHost } from "@/features/studio/components/canvas-host"
@@ -43,9 +48,9 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
   )
 }
 
-/** One id per tab, for the life of the tab: what a heartbeat is filed under. */
+/** One id per tab, kept across reloads: what a heartbeat is filed under. */
 function useSessionId(): string {
-  return useMemo(() => crypto.randomUUID(), [])
+  return useMemo(() => tabSessionId(), [])
 }
 
 /** Keeps this tab's presence row alive while the document stays open (18). */
@@ -89,8 +94,12 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
   return (
     <CanvasHost
       documentId={documentId}
+      documentName={document.name}
+      libraryHref="/library"
       documentSize={documentSize}
       remote={remote}
+      onPreview={(preview) => recordLocalPreview(documentId, preview)}
+      onSyncStatus={(status) => recordSyncStatus(documentId, status)}
       palettes={palettes}
       brushes={brushes}
       openElsewhere={openElsewhere ?? false}

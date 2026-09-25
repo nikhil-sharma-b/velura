@@ -92,6 +92,10 @@ declare global {
     /** How many times a placed image's original has been decoded. */
     imageDecodes: number
     tileCountFor(documentId: string): Promise<number>
+    /** Simulates one locally lost tile while leaving its manifest and cloud row intact. */
+    forgetFirstLocalTile(documentId: string): Promise<void>
+    /** Top-level layers in the document this device has stored. */
+    layerCountFor(documentId: string): Promise<number>
     /** The placement a stored document holds for its first placed image. */
     storedPlacement(documentId: string): Promise<unknown>
     /**
@@ -122,6 +126,27 @@ window.tileCountFor = async (documentId) => {
   )
 }
 
+window.forgetFirstLocalTile = async (documentId) => {
+  const blobs = createLocalBlobStore()
+  const manifest = await createDocumentStore(blobs).load(documentId)
+  const hash = manifest?.surfaces.flatMap((surface) => surface.tiles)[0]?.hash
+  if (!hash) throw new Error(`No tile in ${documentId}`)
+  await blobs.remove(`tiles/${hash}`)
+  // Stand in for an offline local edit after the last successful cloud flush.
+  await blobs.put(
+    `documents/${documentId}`,
+    new TextEncoder().encode(
+      JSON.stringify({ ...manifest, updatedAt: Date.now() + 10_000 })
+    )
+  )
+}
+
+window.layerCountFor = async (documentId) => {
+  const store = createDocumentStore(createLocalBlobStore())
+  const manifest = await store.load(documentId)
+  return manifest?.structure.layers.length ?? 0
+}
+
 window.strandLayer = async (documentId, layerId) => {
   const store = createDocumentStore(createLocalBlobStore())
   const manifest = await store.load(documentId)
@@ -148,6 +173,8 @@ type FakeCloud = {
   remote: RemoteIndex
   /** A flush after this throws, as a brief network outage would. */
   setFailing(failing: boolean): void
+  /** Holds every flush's index commit this long, as a slow network would. */
+  setCommitDelay(ms: number): void
   /**
    * Lands a tile straight in the cloud, bypassing this engine entirely — the
    * shape of a flush a different device made while this one was closed.
@@ -160,6 +187,8 @@ type FakeCloud = {
   ): Promise<void>
   /** Backdates every restore point, standing in for a passing day or week. */
   ageVersions(byMs: number): void
+  /** How many previews have been committed, as `previewVersion` counts them. */
+  previewVersion(): number | undefined
 }
 
 // Presigned uploads and downloads are real `fetch` PUTs and GETs in
@@ -192,8 +221,10 @@ window.fetch = (async (
 
 window.createFakeCloud = (size) => {
   let failing = false
+  let commitDelayMs = 0
   let structure: DocumentStructure | null = null
   let updatedAt = 0
+  let previewVersion: number | undefined
   const tiles: FakeTileRow[] = []
   const knownHashes = new Set<string>()
   // Restore points, as `convex/versions.ts` keeps them: the flush's own tile
@@ -226,11 +257,18 @@ window.createFakeCloud = (size) => {
       return ids.map((id) => ({ id, url: `${FAKE_SCHEME}${id}` }))
     },
     async commitFlush(payload) {
+      if (commitDelayMs > 0)
+        await new Promise((resolve) => setTimeout(resolve, commitDelayMs))
       if (failing) throw new Error("Simulated network outage.")
       for (const tile of payload.tiles) {
         const existing = findRow(tile.surfaceId, tile.x, tile.y)
         if (existing) existing.hash = tile.hash
         else tiles.push({ ...tile })
+      }
+      // As `convex/tiles.ts` does: only the slots the flush names as removed.
+      for (const slot of payload.removed) {
+        const row = findRow(slot.surfaceId, slot.x, slot.y)
+        if (row) tiles.splice(tiles.indexOf(row), 1)
       }
       for (const blob of payload.uploaded) knownHashes.add(blob.hash)
       structure = payload.structure
@@ -245,8 +283,15 @@ window.createFakeCloud = (size) => {
       for (const stale of prunableVersions(versions, now))
         versions.splice(versions.indexOf(stale), 1)
     },
+    // The library's preview, uploaded after the flush that it pictures.
+    async presignPreviewUpload() {
+      return { url: `${FAKE_SCHEME}preview`, key: "preview" }
+    },
+    async commitPreview() {
+      previewVersion = (previewVersion ?? 0) + 1
+    },
     async documentMeta() {
-      return { ...size, structure, updatedAt }
+      return { ...size, structure, updatedAt, previewVersion }
     },
     async tileIndex() {
       return tiles.map((tile) => ({ ...tile }))
@@ -268,6 +313,10 @@ window.createFakeCloud = (size) => {
     setFailing: (value) => {
       failing = value
     },
+    setCommitDelay: (ms) => {
+      commitDelayMs = ms
+    },
+    previewVersion: () => previewVersion,
     ageVersions(byMs: number) {
       for (const version of versions) version.createdAt -= byMs
     },

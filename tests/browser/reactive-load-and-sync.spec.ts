@@ -169,6 +169,33 @@ test("reopening picks up a change flushed from elsewhere, without a manual refre
   expect(pixel[1]).toBeLessThan(50)
 })
 
+test("a missing local tile does not delete its cloud row after an unrelated edit", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 40)
+  await page.evaluate(() => window.engine.save())
+  const before = await page.evaluate(() => window.fakeCloud.remote.tileIndex())
+  expect(before).toHaveLength(1)
+
+  await page.evaluate(async (id) => {
+    window.engine.dispose()
+    await window.forgetFirstLocalTile(id)
+    window.remountEngine({
+      persistence: { documentId: id },
+      cloud: { remote: window.fakeCloud.remote, idleMs: 60_000 },
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    await window.engine.dispatch({ type: "addLayer" })
+    await window.engine.save()
+  }, documentId)
+
+  expect(
+    await page.evaluate(() => window.fakeCloud.remote.tileIndex())
+  ).toEqual(before)
+})
+
 test("the canvas is usable, and the centre resolves, before every tile has loaded", async ({
   page,
 }) => {
@@ -257,4 +284,298 @@ test("the canvas is usable, and the centre resolves, before every tile has loade
   // The canvas was usable — status "ready" — while tiles outside the
   // immediate viewport batch were still arriving in the background.
   expect(await page.evaluate(() => window.sawReadyWhileLoading)).toBe(true)
+})
+
+test("a change made while tiles are still loading is saved, with every tile it has not loaded yet", async ({
+  page,
+}) => {
+  const size = { width: 1600, height: 1000 }
+  await page.setViewportSize(size)
+  const documentId = newId()
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.engine)
+  await page.evaluate(
+    async ([width, height, id]) => {
+      window.remountEngine({ persistence: { documentId: id as string } })
+      await window.engine.dispatch({
+        type: "resize",
+        width: width as number,
+        height: height as number,
+        devicePixelRatio: 1,
+      })
+      await window.engine.dispatch({ type: "initialize" })
+      await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+      await window.engine.dispatch({ type: "setBrush", radius: 6 })
+    },
+    [size.width, size.height, documentId] as const
+  )
+  const box = (await page.locator("canvas").boundingBox())!
+  for (const fraction of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) {
+    const before = await page.evaluate(() => window.engine.historyUsage().steps)
+    const y = box.y + size.height * fraction
+    await page.mouse.move(box.x + 10, y)
+    await page.mouse.down()
+    await page.mouse.move(box.x + size.width - 10, y, { steps: 12 })
+    await page.mouse.up()
+    await page.waitForFunction(
+      (steps) => window.engine.historyUsage().steps > steps,
+      before,
+      { timeout: 20_000 }
+    )
+  }
+  await page.evaluate(() => window.engine.save())
+  const saved = await page.evaluate((id) => window.tileCountFor(id), documentId)
+  expect(saved).toBeGreaterThan(25)
+  const layers = await page.evaluate(
+    (id) => window.layerCountFor(id),
+    documentId
+  )
+
+  // Reopen, and the moment the canvas is usable with tiles still arriving,
+  // change the document and leave: the change is kept, and the save names
+  // the tiles still on their way as well as the ones already in.
+  await page.evaluate(
+    ([width, height, id]) =>
+      new Promise<void>((resolve) => {
+        window.remountEngine({ persistence: { documentId: id as string } })
+        let acted = false
+        window.engine.subscribe(() => {
+          const snapshot = window.engine.getSnapshot()
+          if (acted || snapshot.status !== "ready" || !snapshot.loading) return
+          acted = true
+          void window.engine.dispatch({ type: "addLayer" }).then(() => {
+            window.engine.dispose()
+            setTimeout(resolve, 500)
+          })
+        })
+        void window.engine
+          .dispatch({
+            type: "resize",
+            width: width as number,
+            height: height as number,
+            devicePixelRatio: 1,
+          })
+          .then(() => window.engine.dispatch({ type: "initialize" }))
+      }),
+    [size.width, size.height, documentId] as const
+  )
+
+  expect(await page.evaluate((id) => window.tileCountFor(id), documentId)).toBe(
+    saved
+  )
+  expect(
+    await page.evaluate((id) => window.layerCountFor(id), documentId)
+  ).toBe(layers + 1)
+})
+
+test("leaving the canvas before the idle flush still uploads the work and its preview", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 40)
+
+  // The library link is an in-app navigation: no pagehide, no
+  // visibilitychange, only the host unmounting the canvas.
+  await page.evaluate(() => window.engine.dispose())
+
+  await page.waitForFunction(() => window.fakeCloud.previewVersion() === 1)
+  const meta = await page.evaluate(() => window.fakeCloud.remote.documentMeta())
+  expect(meta.structure).not.toBeNull()
+})
+
+test("reopening a document the cloud has no preview of uploads one", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  // A flush whose preview never landed, as when the canvas was torn down
+  // while one was in flight: the tiles are in the cloud, the picture is not.
+  await page.evaluate((id) => {
+    const { presignPreviewUpload, commitPreview, ...remote } =
+      window.fakeCloud.remote
+    void presignPreviewUpload
+    void commitPreview
+    window.remountEngine({
+      persistence: { documentId: id },
+      cloud: { remote, idleMs: 60_000 },
+    })
+  }, documentId)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "resize",
+      width: 200,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+  })
+  await paint(page, origin, 40)
+  await page.evaluate(() => window.engine.save())
+  expect(await page.evaluate(() => window.fakeCloud.previewVersion())).toBe(
+    undefined
+  )
+
+  await page.evaluate(async (id) => {
+    window.remountEngine({
+      persistence: { documentId: id },
+      cloud: { remote: window.fakeCloud.remote, idleMs: 60_000 },
+    })
+    await window.engine.dispatch({
+      type: "resize",
+      width: 200,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+  }, documentId)
+
+  await page.waitForFunction(() => window.fakeCloud.previewVersion() === 1)
+})
+
+test("leaving mid-flush still lands its preview and reports the sync as over", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await page.evaluate((id) => {
+    const statuses: string[] = []
+    ;(window as unknown as { statuses: string[] }).statuses = statuses
+    window.remountEngine({
+      persistence: { documentId: id },
+      cloud: {
+        remote: window.fakeCloud.remote,
+        idleMs: 60_000,
+        onSyncStatus: (status) => statuses.push(status),
+      },
+    })
+  }, documentId)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "resize",
+      width: 200,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+  })
+  await paint(page, origin, 40)
+
+  await page.evaluate(async () => {
+    window.fakeCloud.setCommitDelay(300)
+    // A flush already under way — the idle one, or a reopen's repair — when
+    // the artist heads back to the library.
+    void window.engine.save()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    window.engine.dispose()
+  })
+
+  await page.waitForFunction(() => window.fakeCloud.previewVersion() === 1)
+  await page.waitForFunction(
+    () =>
+      (window as unknown as { statuses: string[] }).statuses.at(-1) !==
+      "syncing"
+  )
+})
+
+test("leaving while a reopen's repair is in flight still finishes it", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await page.evaluate((id) => {
+    const { presignPreviewUpload, commitPreview, ...remote } =
+      window.fakeCloud.remote
+    void presignPreviewUpload
+    void commitPreview
+    window.remountEngine({
+      persistence: { documentId: id },
+      cloud: { remote, idleMs: 60_000 },
+    })
+  }, documentId)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "resize",
+      width: 200,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+  })
+  await paint(page, origin, 40)
+  await page.evaluate(() => window.engine.save())
+
+  await page.evaluate(async (id) => {
+    const statuses: string[] = []
+    ;(window as unknown as { statuses: string[] }).statuses = statuses
+    window.fakeCloud.setCommitDelay(300)
+    window.remountEngine({
+      persistence: { documentId: id },
+      cloud: {
+        remote: window.fakeCloud.remote,
+        idleMs: 60_000,
+        onSyncStatus: (status) => statuses.push(status),
+      },
+    })
+    await window.engine.dispatch({
+      type: "resize",
+      width: 200,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    // The repair starts once everything has loaded; leave while it runs.
+    const deadline = Date.now() + 2_000
+    while (!statuses.includes("syncing") && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    window.engine.dispose()
+  }, documentId)
+
+  await page.waitForFunction(() => window.fakeCloud.previewVersion() === 1)
+  await page.waitForFunction(
+    () =>
+      (window as unknown as { statuses: string[] }).statuses.at(-1) !==
+      "syncing"
+  )
+})
+
+test("reopening an untouched, synced document uploads nothing", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 40)
+  await page.evaluate(() => window.engine.save())
+  const versionsAfterSave = await page.evaluate(
+    async () => (await window.fakeCloud.remote.listVersions()).length
+  )
+
+  // The first reopen finds the cloud's flush newer than the local save and
+  // reads it back; the second must then see the two as in step.
+  for (let open = 0; open < 2; open++) {
+    await page.evaluate(async (id) => {
+      window.remountEngine({
+        persistence: { documentId: id },
+        cloud: { remote: window.fakeCloud.remote, idleMs: 60_000 },
+      })
+      await window.engine.dispatch({
+        type: "resize",
+        width: 200,
+        height: 120,
+        devicePixelRatio: 1,
+      })
+      await window.engine.dispatch({ type: "initialize" })
+      // Long enough for a repair flush to have landed, were one started.
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }, documentId)
+  }
+
+  expect(
+    await page.evaluate(
+      async () => (await window.fakeCloud.remote.listVersions()).length
+    )
+  ).toBe(versionsAfterSave)
 })

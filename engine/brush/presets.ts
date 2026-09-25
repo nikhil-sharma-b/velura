@@ -155,11 +155,11 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
 ])
 
 /**
- * What a session with no remembered brush opens in the hand: a mid-sized round
- * brush that responds to pressure, which is the least surprising thing to find
- * on the end of the pen (`features/studio/components/canvas-host.tsx`).
+ * What a session with no remembered brush opens in the hand: a fine pencil
+ * that responds to pressure and tilt, which is the least surprising thing to
+ * find on the end of the pen (`features/studio/components/canvas-host.tsx`).
  */
-export const DEFAULT_LIBRARY_BRUSH_ID = `${BUILTIN_BRUSH_PREFIX}round`
+export const DEFAULT_LIBRARY_BRUSH_ID = `${BUILTIN_BRUSH_PREFIX}pencil`
 
 export function builtinBrush(id: string): Brush | undefined {
   return BUILTIN_BRUSHES.find((brush) => brush.id === id)

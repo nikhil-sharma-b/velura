@@ -135,6 +135,42 @@ function stored(hash: string, age = GRACE_WINDOW_MS + DAY, size = 100) {
 }
 
 describe("marking", () => {
+  test("a duplicate keeps an immutable preview alive after its source advances", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const sourceId = await createDocument(t, artist)
+    const source = await artist.query(api.documents.get, {
+      documentId: sourceId,
+    })
+    await t.run(async (ctx) => {
+      await ctx.db.patch(sourceId, {
+        previewVersion: 1,
+        previewObjectKey: "previews/objects/old.png",
+        previewForUpdatedAt: source.updatedAt,
+      })
+    })
+    const copyId = await artist.mutation(api.documents.duplicate, {
+      documentId: sourceId,
+    })
+    await t.run(async (ctx) => {
+      await ctx.db.patch(sourceId, {
+        previewVersion: 2,
+        previewObjectKey: "previews/objects/new.png",
+      })
+    })
+
+    const marked = await t.query(internal.collection.markedPreviewObjectIds, {
+      cursor: null,
+    })
+    expect(marked.hashes.sort()).toEqual(["new.png", "old.png"])
+    await artist.mutation(api.documents.remove, { documentId: copyId })
+    const afterRemove = await t.query(
+      internal.collection.markedPreviewObjectIds,
+      { cursor: null }
+    )
+    expect(afterRemove.hashes).toEqual(["new.png"])
+  })
+
   test("a tile a live document still points at is marked", async () => {
     const t = setup()
     const artist = asUser(t, await createUser(t, "artist@example.com"))

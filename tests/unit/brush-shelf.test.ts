@@ -93,7 +93,7 @@ describe("resolving a brush by id", () => {
   test("finds built-ins and saved brushes, and nothing else", () => {
     const saved = stored()
     expect(resolveLibraryBrush(DEFAULT_LIBRARY_BRUSH_ID, [saved])?.name).toBe(
-      "Round brush"
+      "Pencil"
     )
     expect(resolveLibraryBrush("s1", [saved])?.name).toBe("Mine")
     expect(resolveLibraryBrush("gone", [saved])).toBeUndefined()

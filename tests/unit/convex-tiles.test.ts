@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { convexTest } from "convex-test"
 
-import { api } from "@/convex/_generated/api"
+import { api, internal } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import schema from "@/convex/schema"
 
@@ -121,6 +121,75 @@ describe("flush", () => {
     expect(rows[0].hash).toBe("hash-b")
   })
 
+  test("a flush drops the slots it names as removed, and only those", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await createDocument(t, artist)
+    const structure = { layers: [], activeLayerId: "", paintingMask: false }
+
+    await artist.mutation(api.tiles.commitFlush, {
+      documentId,
+      tiles: [
+        { surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" },
+        { surfaceId: "layer-1", x: 1, y: 0, hash: "hash-b" },
+        { surfaceId: "layer-2", x: 0, y: 0, hash: "hash-c" },
+      ],
+      removed: [],
+      uploaded: [],
+      structure,
+      metrics: { putCount: 0, mutationCount: 1 },
+    })
+    // This device erased layer-1's second tile. layer-2's it does not
+    // mention at all — as a device that never saw it would not.
+    await artist.mutation(api.tiles.commitFlush, {
+      documentId,
+      tiles: [{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }],
+      removed: [{ surfaceId: "layer-1", x: 1, y: 0 }],
+      uploaded: [],
+      structure,
+      metrics: { putCount: 0, mutationCount: 1 },
+    })
+
+    const rows = await artist.query(api.tiles.forDocument, { documentId })
+    expect(
+      rows.map(({ surfaceId, x, y }) => `${surfaceId}:${x},${y}`).sort()
+    ).toEqual(["layer-1:0,0", "layer-2:0,0"])
+  })
+
+  test("removing a slot from one document leaves another that shares its tile alone", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const first = await createDocument(t, artist)
+    const second = await createDocument(t, artist)
+    const structure = { layers: [], activeLayerId: "", paintingMask: false }
+    const tile = { surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }
+
+    for (const documentId of [first, second])
+      await artist.mutation(api.tiles.commitFlush, {
+        documentId,
+        tiles: [tile],
+        removed: [],
+        uploaded: [],
+        structure,
+        metrics: { putCount: 0, mutationCount: 1 },
+      })
+    await artist.mutation(api.tiles.commitFlush, {
+      documentId: first,
+      tiles: [],
+      removed: [{ surfaceId: "layer-1", x: 0, y: 0 }],
+      uploaded: [],
+      structure,
+      metrics: { putCount: 0, mutationCount: 1 },
+    })
+
+    expect(
+      await artist.query(api.tiles.forDocument, { documentId: first })
+    ).toHaveLength(0)
+    expect(
+      await artist.query(api.tiles.forDocument, { documentId: second })
+    ).toHaveLength(1)
+  })
+
   test("a stranger cannot flush or read another artist's tile index", async () => {
     const t = setup()
     const owner = asUser(t, await createUser(t, "owner@example.com"))
@@ -139,5 +208,166 @@ describe("flush", () => {
     await expect(
       stranger.query(api.tiles.forDocument, { documentId })
     ).rejects.toThrow(/does not exist/)
+  })
+})
+
+describe("duplicate", () => {
+  test("a committed preview is tied to the flush that made its tiles", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await createDocument(t, artist)
+    const updatedAt = await artist.mutation(api.tiles.commitFlush, {
+      documentId,
+      tiles: [],
+      removed: [],
+      uploaded: [],
+      structure: { layers: [], activeLayerId: "", paintingMask: false },
+      metrics: { putCount: 0, mutationCount: 1 },
+    })
+    await artist.mutation(api.tiles.commitPreview, {
+      documentId,
+      key: "previews/objects/captured.png",
+      flushUpdatedAt: updatedAt,
+    })
+
+    const copyId = await artist.mutation(api.documents.duplicate, {
+      documentId,
+    })
+    const copy = await artist.query(api.documents.get, { documentId: copyId })
+    expect(copy.previewObjectKey).toBe("previews/objects/captured.png")
+  })
+
+  test("a legacy client switches the document back to its legacy preview key", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await createDocument(t, artist)
+    await artist.mutation(api.tiles.commitPreview, {
+      documentId,
+      key: "previews/objects/immutable.png",
+    })
+    await artist.mutation(api.tiles.commitPreview, { documentId })
+
+    const document = await artist.query(api.documents.get, { documentId })
+    expect(document.previewVersion).toBe(2)
+    expect(document.previewObjectKey).toBeUndefined()
+  })
+
+  test("a copy pins the source preview object even if the source later changes", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await createDocument(t, artist)
+    const originalKey = "previews/objects/original.png"
+    const source = await artist.query(api.documents.get, { documentId })
+    await t.run(async (ctx) => {
+      await ctx.db.patch(documentId, {
+        previewVersion: 1,
+        previewObjectKey: originalKey,
+        previewForUpdatedAt: source.updatedAt,
+      })
+    })
+
+    const copyId = await artist.mutation(api.documents.duplicate, {
+      documentId,
+    })
+    await t.run(async (ctx) => {
+      await ctx.db.patch(documentId, {
+        previewVersion: 2,
+        previewObjectKey: "previews/objects/newer.png",
+      })
+    })
+
+    const copy = await artist.query(api.documents.get, { documentId: copyId })
+    expect(copy.previewVersion).toBe(1)
+    expect(copy.previewObjectKey).toBe(originalKey)
+  })
+
+  test("a copy does not pair a previous preview with tiles from a newer flush", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await createDocument(t, artist)
+    const source = await artist.query(api.documents.get, { documentId })
+    await t.run(async (ctx) => {
+      await ctx.db.patch(documentId, {
+        previewVersion: 1,
+        previewObjectKey: "previews/objects/old.png",
+        previewForUpdatedAt: source.updatedAt,
+      })
+    })
+    await artist.mutation(api.tiles.commitFlush, {
+      documentId,
+      tiles: [],
+      removed: [],
+      uploaded: [],
+      structure: { layers: [], activeLayerId: "", paintingMask: false },
+      metrics: { putCount: 0, mutationCount: 1 },
+    })
+
+    const copyId = await artist.mutation(api.documents.duplicate, {
+      documentId,
+    })
+    const copy = await artist.query(api.documents.get, { documentId: copyId })
+    expect(copy.previewObjectKey).toBeUndefined()
+    expect(copy.previewVersion).toBeUndefined()
+  })
+
+  test("a delayed legacy preview copy is ignored after the source changes", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await createDocument(t, artist)
+    const copyId = await artist.mutation(api.documents.duplicate, {
+      documentId,
+    })
+    await artist.mutation(api.tiles.commitPreview, { documentId })
+    const source = await artist.query(api.documents.get, { documentId })
+    await artist.mutation(api.tiles.commitPreview, { documentId })
+
+    await t.mutation(internal.tiles.commitCopiedPreview, {
+      from: documentId,
+      documentId: copyId,
+      sourceVersion: source.previewVersion!,
+      sourceUpdatedAt: source.updatedAt,
+      key: "previews/objects/stale.png",
+    })
+
+    const copy = await artist.query(api.documents.get, { documentId: copyId })
+    expect(copy.previewVersion).toBeUndefined()
+    expect(copy.previewObjectKey).toBeUndefined()
+  })
+
+  test("a copy names the same pixels and layer tree as its source", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await createDocument(t, artist)
+    const structure = {
+      layers: [{ id: "layer-1", name: "Ink" }],
+      activeLayerId: "layer-1",
+      paintingMask: false,
+    }
+    await artist.mutation(api.tiles.commitFlush, {
+      documentId,
+      tiles: [
+        { surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" },
+        { surfaceId: "layer-1", x: 1, y: 0, hash: "hash-b" },
+      ],
+      uploaded: [
+        { hash: "hash-a", size: 100 },
+        { hash: "hash-b", size: 100 },
+      ],
+      structure,
+      metrics: { putCount: 2, mutationCount: 1 },
+    })
+
+    const copyId = await artist.mutation(api.documents.duplicate, {
+      documentId,
+    })
+
+    const tilesOf = async (id: Id<"documents">) =>
+      (await artist.query(api.tiles.forDocument, { documentId: id }))
+        .map(({ surfaceId, x, y, hash }) => ({ surfaceId, x, y, hash }))
+        .sort((a, b) => a.x - b.x)
+    expect(await tilesOf(copyId)).toEqual(await tilesOf(documentId))
+    expect(
+      (await artist.query(api.documents.get, { documentId: copyId })).structure
+    ).toEqual(structure)
   })
 })

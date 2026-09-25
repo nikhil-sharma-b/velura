@@ -14,6 +14,10 @@ import {
  * A button whose only content is an icon, and so whose only name is its
  * tooltip. One label serves both the pointer and the screen reader, because a
  * control the eye cannot read is a control that must say the same thing twice.
+ *
+ * An `aria-label` overrides the spoken name only, for a control whose context
+ * the eye gets from where it sits — a card's "Share" — and the ear does not.
+ * It should start with the label, so what is said matches what is shown.
  */
 export function IconButton({
   label,
@@ -31,7 +35,7 @@ export function IconButton({
     <TooltipProvider delayDuration={350}>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button {...props} aria-label={label}>
+          <Button {...props} aria-label={props["aria-label"] ?? label}>
             {children}
           </Button>
         </TooltipTrigger>

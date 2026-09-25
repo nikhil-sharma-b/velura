@@ -56,7 +56,7 @@ export function isViewPanButton(event: {
   return (
     (event.pointerType === "mouse" &&
       (event.button === 1 || event.button === 2)) ||
-    (event.pointerType === "pen" && event.button === 2)
+    (event.pointerType === "pen" && (event.button === 1 || event.button === 2))
   )
 }
 
@@ -205,9 +205,9 @@ export function attachViewGestures(
 
   function onPointerMove(event: PointerEvent) {
     // A pen can report its barrel switch after the tip is already touching,
-    // as a move whose secondary-button bit has just appeared. Turn that
+    // as a move whose secondary- or middle-button bit has just appeared. Turn that
     // half-started stroke into navigation before consuming any movement.
-    if (!dragging && event.pointerType === "pen" && (event.buttons & 2) !== 0) {
+    if (!dragging && event.pointerType === "pen" && (event.buttons & 6) !== 0) {
       event.preventDefault()
       dragging = local(event)
       handlers.cancelStroke()
