@@ -9,7 +9,15 @@ const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL
 // Built once per browser session. The studio at `/` deliberately does not mount
 // this: painting works with no account and no backend, so a missing deployment
 // URL must degrade to "the library is unavailable", never to a broken canvas.
-const client = convexUrl ? new ConvexReactClient(convexUrl) : null
+//
+// Its "Leave site?" prompt is off. It fires while any request is unfinished,
+// and the studio always has one about to be: a presence heartbeat every few
+// seconds, so a plain refresh asked about changes that did not exist. Nothing
+// here depends on it — pixels are on the device before any sync starts, and
+// an unfinished flush is picked up by the next open (§9.2).
+const client = convexUrl
+  ? new ConvexReactClient(convexUrl, { unsavedChangesWarning: false })
+  : null
 
 export function CloudProvider({ children }: { children: ReactNode }) {
   if (client === null) {
