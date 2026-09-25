@@ -84,7 +84,7 @@ import { TiltToggle } from "./tilt-toggle"
 import { IconButton } from "./icon-button"
 import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
-import { VersionPanel } from "./version-panel"
+import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
 
 /** One press of a zoom key or button, which is a comfortable step by eye. */
@@ -298,6 +298,26 @@ export function CanvasHost({
   const [engine, setEngine] = useState<Engine | null>(null)
   const [panelsOpen, setPanelsOpen] = useState(true)
   const [historyOpen, setHistoryOpen] = useState(false)
+  /**
+   * What the version panel has on the canvas. Kept here rather than in the
+   * panel because closing the history is leaving the past — a version still
+   * on trial goes back with it — and the host is present for every way the
+   * panel goes: its own close, the toolbar button, and leaving the canvas,
+   * where the revert has to land before the engine is disposed or the
+   * trial would be what the last sync sends.
+   */
+  const versionPreview = useRef<VersionPreviewState>({
+    busy: false,
+    onTrial: false,
+  })
+  const [historyBusy, setHistoryBusy] = useState(false)
+  function closeHistory() {
+    if (versionPreview.current.onTrial && engine?.canRevertRestore())
+      void engine.revertRestore()
+    versionPreview.current = { busy: false, onTrial: false }
+    setHistoryBusy(false)
+    setHistoryOpen(false)
+  }
   const [colorOpen, setColorOpen] = useState(false)
   const [brushOpen, setBrushOpen] = useState(false)
   const brushButton = useRef<HTMLButtonElement>(null)
@@ -417,7 +437,10 @@ export function CanvasHost({
       return () => {
         observer.disconnect()
         cancelAnimationFrame(frame)
-        attached.dispose()
+        if (versionPreview.current.onTrial && attached.canRevertRestore()) {
+          versionPreview.current = { busy: false, onTrial: false }
+          void attached.revertRestore().finally(() => attached.dispose())
+        } else attached.dispose()
       }
     },
     [documentHeight, documentId, documentWidth, remote]
@@ -972,7 +995,18 @@ export function CanvasHost({
                   side="bottom"
                   aria-pressed={historyOpen}
                   aria-expanded={historyOpen}
-                  onClick={() => setHistoryOpen((open) => !open)}
+                  // Closing while a version is still being opened would let
+                  // it land after the panel had gone, with nothing left to
+                  // take it back — the same reason the panel's own close
+                  // waits.
+                  disabled={historyBusy}
+                  onClick={() => {
+                    if (historyOpen) closeHistory()
+                    else {
+                      setColorOpen(false)
+                      setHistoryOpen(true)
+                    }
+                  }}
                   className="rounded-lg"
                 >
                   <ClockCounterClockwiseIcon />
@@ -980,7 +1014,11 @@ export function CanvasHost({
                 {engine && historyOpen && (
                   <VersionPanel
                     engine={engine}
-                    onClose={() => setHistoryOpen(false)}
+                    onClose={closeHistory}
+                    onPreviewStateChange={(state) => {
+                      versionPreview.current = state
+                      setHistoryBusy(state.busy)
+                    }}
                     className="absolute top-full left-0 mt-3.5"
                   />
                 )}
@@ -1301,6 +1339,14 @@ export function CanvasHost({
                   size="icon"
                   aria-pressed={colorOpen}
                   onClick={() => {
+                    // The two panels open into the same corner, so one gives
+                    // way to the other rather than drawing over it.
+                    if (!colorOpen && historyOpen) {
+                      // Not while a version is being opened; see the history
+                      // button for why closing then would lose track of it.
+                      if (historyBusy) return
+                      closeHistory()
+                    }
                     setColorOpen((open) => !open)
                   }}
                   className="rounded-lg"

@@ -27,42 +27,54 @@ import { IconButton } from "./icon-button"
  * here is destructive and why restoring only has to save — the restore has
  * already happened, and undo is still holding everything it covered.
  */
+/** What the host needs to know to close the panel safely. */
+export type VersionPreviewState = {
+  /** A version is being opened or taken back; closing now would race it. */
+  busy: boolean
+  /** A version is on the canvas on trial, not yet restored. */
+  onTrial: boolean
+}
+
 export function VersionPanel({
   engine,
   onClose,
+  onPreviewStateChange,
   className,
 }: {
   engine: Engine
+  /**
+   * The host closes the panel, and owns going back to now as it does (see
+   * `onPreviewStateChange`): it is the one party present for every way the
+   * panel can go, leaving the canvas included.
+   */
   onClose: () => void
+  /**
+   * Told synchronously, in the same call that changes it, so a host acting on
+   * a close that follows at once — "Restore this version" ends the trial and
+   * then closes — never reads the state from before it.
+   */
+  onPreviewStateChange?: (state: VersionPreviewState) => void
   /** Where the host places it; the panel draws its own pointer at top left. */
   className?: string
 }) {
   const [points, setPoints] = useState<readonly RestorePoint[] | null>(null)
   const [previewing, setPreviewingState] = useState<RestorePoint | null>(null)
-  // Mirrored for the unmount below, which runs after the last render and so
-  // cannot read state; written in the same call as the state so a restore
-  // that is kept and then closed is never mistaken for one still on trial.
-  const previewingRef = useRef<RestorePoint | null>(null)
+  const [busy, setBusyState] = useState(false)
+  const state = useRef<VersionPreviewState>({ busy: false, onTrial: false })
+  const report = useRef(onPreviewStateChange)
+  useEffect(() => {
+    report.current = onPreviewStateChange
+  })
   const setPreviewing = useCallback((point: RestorePoint | null) => {
-    previewingRef.current = point
+    state.current = { ...state.current, onTrial: point !== null }
+    report.current?.(state.current)
     setPreviewingState(point)
   }, [])
-
-  // However the panel goes — its close button, Escape, the toolbar button
-  // that opened it, leaving the canvas — closing the history is leaving the
-  // past: a preview still one step away goes back with it, so the canvas the
-  // artist returns to is the one they opened the panel on. One painted over
-  // is already their work, and stays.
-  useEffect(
-    () => () => {
-      if (previewingRef.current === null || !engine.canRevertRestore()) return
-      void engine.revertRestore().catch(() => {
-        // The engine is already gone with the canvas; nothing to revert.
-      })
-    },
-    [engine]
-  )
-  const [busy, setBusy] = useState(false)
+  const setBusy = useCallback((busy: boolean) => {
+    state.current = { ...state.current, busy }
+    report.current?.(state.current)
+    setBusyState(busy)
+  }, [])
   const [problem, setProblem] = useState<string | null>(null)
   // Read once when the panel opens: labels are relative to "now", and a
   // clock re-read on every render would let a point silently change its name
@@ -103,7 +115,7 @@ export function VersionPanel({
         setBusy(false)
       }
     },
-    [engine, previewing, setPreviewing]
+    [engine, previewing, setBusy, setPreviewing]
   )
 
   // Painting during a preview buries the restore under the artist's own
@@ -121,7 +133,7 @@ export function VersionPanel({
     } finally {
       setBusy(false)
     }
-  }, [engine, setPreviewing])
+  }, [engine, setBusy, setPreviewing])
 
   const restore = useCallback(async () => {
     setBusy(true)
@@ -134,9 +146,7 @@ export function VersionPanel({
     } finally {
       setBusy(false)
     }
-  }, [engine, onClose, setPreviewing])
-
-  const close = onClose
+  }, [engine, onClose, setBusy, setPreviewing])
 
   const groups = points ? groupRestorePointsByDay(points, now) : []
 
@@ -147,7 +157,7 @@ export function VersionPanel({
       onKeyDown={(event) => {
         if (event.key !== "Escape" || busy) return
         event.stopPropagation()
-        close()
+        onClose()
       }}
       className={cn(
         "z-10 flex max-h-[calc(100dvh-6rem)] w-72 max-w-[calc(100vw-11rem)] flex-col rounded-xl border border-studio-edge bg-studio-surface shadow-xl",
@@ -167,7 +177,7 @@ export function VersionPanel({
           size="icon"
           label="Close version history"
           disabled={busy}
-          onClick={close}
+          onClick={onClose}
           className="size-7 rounded-md"
         >
           <XIcon className="size-3.5" />
