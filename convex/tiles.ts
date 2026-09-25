@@ -72,6 +72,22 @@ export const commitFlush = mutation({
     for (const tile of tiles) {
       await upsertTile(ctx, documentId, tile)
     }
+    // The payload is the whole document (see below), so a slot it no longer
+    // names is one the document no longer has: a restore to an earlier
+    // state, an undo, an erase back to nothing. Left in place, the next
+    // device to open the document would read it back. Only the row goes —
+    // the blob is content-addressed and shared, and orphan collection decides
+    // when nothing names it any more.
+    const kept = new Set(
+      tiles.map((tile) => `${tile.surfaceId}:${tile.x},${tile.y}`)
+    )
+    const rows = await ctx.db
+      .query("tiles")
+      .withIndex("by_document", (q) => q.eq("documentId", documentId))
+      .collect()
+    for (const row of rows)
+      if (!kept.has(`${row.surfaceId}:${row.x},${row.y}`))
+        await ctx.db.delete(row._id)
 
     for (const blob of uploaded) {
       await recordBlob(ctx, blob.hash, blob.size)

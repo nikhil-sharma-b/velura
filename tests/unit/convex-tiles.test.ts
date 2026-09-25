@@ -121,6 +121,70 @@ describe("flush", () => {
     expect(rows[0].hash).toBe("hash-b")
   })
 
+  test("a flush that no longer names a tile drops it, since the flush is the whole document", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await createDocument(t, artist)
+    const structure = { layers: [], activeLayerId: "", paintingMask: false }
+
+    await artist.mutation(api.tiles.commitFlush, {
+      documentId,
+      tiles: [
+        { surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" },
+        { surfaceId: "layer-1", x: 1, y: 0, hash: "hash-b" },
+        { surfaceId: "layer-2", x: 0, y: 0, hash: "hash-c" },
+      ],
+      uploaded: [],
+      structure,
+      metrics: { putCount: 0, mutationCount: 1 },
+    })
+    // A restore, an undo or an erase back to nothing: fewer tiles than before.
+    await artist.mutation(api.tiles.commitFlush, {
+      documentId,
+      tiles: [{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }],
+      uploaded: [],
+      structure,
+      metrics: { putCount: 0, mutationCount: 1 },
+    })
+
+    const rows = await artist.query(api.tiles.forDocument, { documentId })
+    expect(rows.map(({ surfaceId, x, y }) => `${surfaceId}:${x},${y}`)).toEqual(
+      ["layer-1:0,0"]
+    )
+  })
+
+  test("dropping one document's tiles leaves another's that share them alone", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const first = await createDocument(t, artist)
+    const second = await createDocument(t, artist)
+    const structure = { layers: [], activeLayerId: "", paintingMask: false }
+    const tile = { surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }
+
+    for (const documentId of [first, second])
+      await artist.mutation(api.tiles.commitFlush, {
+        documentId,
+        tiles: [tile],
+        uploaded: [],
+        structure,
+        metrics: { putCount: 0, mutationCount: 1 },
+      })
+    await artist.mutation(api.tiles.commitFlush, {
+      documentId: first,
+      tiles: [],
+      uploaded: [],
+      structure,
+      metrics: { putCount: 0, mutationCount: 1 },
+    })
+
+    expect(
+      await artist.query(api.tiles.forDocument, { documentId: first })
+    ).toHaveLength(0)
+    expect(
+      await artist.query(api.tiles.forDocument, { documentId: second })
+    ).toHaveLength(1)
+  })
+
   test("a stranger cannot flush or read another artist's tile index", async () => {
     const t = setup()
     const owner = asUser(t, await createUser(t, "owner@example.com"))

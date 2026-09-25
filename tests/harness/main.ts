@@ -235,11 +235,13 @@ window.createFakeCloud = (size) => {
       if (commitDelayMs > 0)
         await new Promise((resolve) => setTimeout(resolve, commitDelayMs))
       if (failing) throw new Error("Simulated network outage.")
-      for (const tile of payload.tiles) {
-        const existing = findRow(tile.surfaceId, tile.x, tile.y)
-        if (existing) existing.hash = tile.hash
-        else tiles.push({ ...tile })
-      }
+      // As `convex/tiles.ts` does: the payload is the whole document, so a
+      // slot it no longer names is gone.
+      tiles.splice(
+        0,
+        tiles.length,
+        ...payload.tiles.map((tile) => ({ ...tile }))
+      )
       for (const blob of payload.uploaded) knownHashes.add(blob.hash)
       structure = payload.structure
       updatedAt = Date.now()
