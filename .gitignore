@@ -42,3 +42,4 @@ test-assets/
 
 # scratch
 /.scratch
+.vercel

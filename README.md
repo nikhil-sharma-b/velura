@@ -156,3 +156,21 @@ runs those functions against `convex-test` (the Convex harness) under the Bun
 runner, covering schema validity, the library operations, and the access-control
 boundary from a second account and from a signed-out caller. Because Bun has no `import.meta.glob`, that file lists the backend
 modules explicitly.
+
+## Staging
+
+The Convex project `velura` (team `nikhil-sharma-colab`) has a personal dev
+deployment, which `bunx convex dev` targets through `.env.local`, and a
+production-type deployment named `staging`. On the Vercel project `velura`,
+`main` is the production branch and `dev` is staging: `CONVEX_DEPLOY_KEY` is a
+staging deploy key scoped to Preview builds of `dev`, and `vercel.json`'s build
+command pushes the Convex functions before `next build`, with
+`NEXT_PUBLIC_CONVEX_URL` injected. Production and every other branch have no
+key, so their builds fail rather than deploy against staging.
+`--check-build-environment disable` is what lets a production-type key build
+from Preview.
+
+Staging lives at https://velura-staging.vercel.app, a project domain that follows
+the latest `dev` deployment, behind Vercel's deployment protection. Both Convex
+deployments share the `velura` R2 bucket for now, so each one's nightly orphan
+sweep can collect tiles the other still references.
