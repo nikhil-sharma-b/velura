@@ -148,6 +148,8 @@ type FakeCloud = {
   remote: RemoteIndex
   /** A flush after this throws, as a brief network outage would. */
   setFailing(failing: boolean): void
+  /** Holds every flush's index commit this long, as a slow network would. */
+  setCommitDelay(ms: number): void
   /**
    * Lands a tile straight in the cloud, bypassing this engine entirely — the
    * shape of a flush a different device made while this one was closed.
@@ -194,6 +196,7 @@ window.fetch = (async (
 
 window.createFakeCloud = (size) => {
   let failing = false
+  let commitDelayMs = 0
   let structure: DocumentStructure | null = null
   let updatedAt = 0
   let previewVersion: number | undefined
@@ -229,6 +232,8 @@ window.createFakeCloud = (size) => {
       return ids.map((id) => ({ id, url: `${FAKE_SCHEME}${id}` }))
     },
     async commitFlush(payload) {
+      if (commitDelayMs > 0)
+        await new Promise((resolve) => setTimeout(resolve, commitDelayMs))
       if (failing) throw new Error("Simulated network outage.")
       for (const tile of payload.tiles) {
         const existing = findRow(tile.surfaceId, tile.x, tile.y)
@@ -277,6 +282,9 @@ window.createFakeCloud = (size) => {
     remote,
     setFailing: (value) => {
       failing = value
+    },
+    setCommitDelay: (ms) => {
+      commitDelayMs = ms
     },
     previewVersion: () => previewVersion,
     ageVersions(byMs: number) {

@@ -95,6 +95,7 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
     <CanvasHost
       documentId={documentId}
       documentName={document.name}
+      libraryHref="/library"
       documentSize={documentSize}
       remote={remote}
       onPreview={(preview) => recordLocalPreview(documentId, preview)}

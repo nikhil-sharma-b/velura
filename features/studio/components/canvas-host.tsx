@@ -3,6 +3,7 @@
 import {
   CaretDownIcon,
   ArrowClockwiseIcon,
+  ArrowLeftIcon,
   ArrowsClockwiseIcon,
   ClockCounterClockwiseIcon,
   ArrowCounterClockwiseIcon,
@@ -41,6 +42,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import Link from "next/link"
 import type { ComponentProps } from "react"
 import type { Brush } from "@/engine/brush/brush"
 import {
@@ -255,6 +257,7 @@ function findLayer(
 export function CanvasHost({
   documentId,
   documentName,
+  libraryHref,
   documentSize,
   remote,
   onPreview,
@@ -266,6 +269,8 @@ export function CanvasHost({
   documentId?: string
   /** The title shown above the canvas; a document with none is called `DEFAULT_DOCUMENT_NAME`. */
   documentName?: string
+  /** Where "Back to documents" goes; a host with no library passes none. */
+  libraryHref?: string
   /** Fixed authored size supplied by the document created in the library. */
   documentSize?: { width: number; height: number }
   /**
@@ -915,6 +920,28 @@ export function CanvasHost({
           )}
 
           <div className="absolute top-3 left-3 flex gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl">
+            {libraryHref && (
+              <>
+                {/* An in-app navigation: unmounting the canvas sends what has
+                    not synced yet, so leaving this way loses nothing. */}
+                <IconButton
+                  variant="ghost"
+                  size="icon"
+                  label="Back to documents"
+                  side="bottom"
+                  className="rounded-lg"
+                  asChild
+                >
+                  <Link href={libraryHref}>
+                    <ArrowLeftIcon />
+                  </Link>
+                </IconButton>
+                <span
+                  aria-hidden
+                  className="mx-0.5 w-px self-stretch bg-studio-edge"
+                />
+              </>
+            )}
             {engine && <ExportDialog engine={engine} />}
             <IconButton
               variant="ghost"

@@ -324,3 +324,111 @@ test("reopening a document the cloud has no preview of uploads one", async ({
 
   await page.waitForFunction(() => window.fakeCloud.previewVersion() === 1)
 })
+
+test("leaving mid-flush still lands its preview and reports the sync as over", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await page.evaluate((id) => {
+    const statuses: string[] = []
+    ;(window as unknown as { statuses: string[] }).statuses = statuses
+    window.remountEngine({
+      persistence: { documentId: id },
+      cloud: {
+        remote: window.fakeCloud.remote,
+        idleMs: 60_000,
+        onSyncStatus: (status) => statuses.push(status),
+      },
+    })
+  }, documentId)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "resize",
+      width: 200,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+  })
+  await paint(page, origin, 40)
+
+  await page.evaluate(async () => {
+    window.fakeCloud.setCommitDelay(300)
+    // A flush already under way — the idle one, or a reopen's repair — when
+    // the artist heads back to the library.
+    void window.engine.save()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    window.engine.dispose()
+  })
+
+  await page.waitForFunction(() => window.fakeCloud.previewVersion() === 1)
+  await page.waitForFunction(
+    () =>
+      (window as unknown as { statuses: string[] }).statuses.at(-1) !==
+      "syncing"
+  )
+})
+
+test("leaving while a reopen's repair is in flight still finishes it", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await page.evaluate((id) => {
+    const { presignPreviewUpload, commitPreview, ...remote } =
+      window.fakeCloud.remote
+    void presignPreviewUpload
+    void commitPreview
+    window.remountEngine({
+      persistence: { documentId: id },
+      cloud: { remote, idleMs: 60_000 },
+    })
+  }, documentId)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "resize",
+      width: 200,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+  })
+  await paint(page, origin, 40)
+  await page.evaluate(() => window.engine.save())
+
+  await page.evaluate(async (id) => {
+    const statuses: string[] = []
+    ;(window as unknown as { statuses: string[] }).statuses = statuses
+    window.fakeCloud.setCommitDelay(300)
+    window.remountEngine({
+      persistence: { documentId: id },
+      cloud: {
+        remote: window.fakeCloud.remote,
+        idleMs: 60_000,
+        onSyncStatus: (status) => statuses.push(status),
+      },
+    })
+    await window.engine.dispatch({
+      type: "resize",
+      width: 200,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    // The repair starts once everything has loaded; leave while it runs.
+    const deadline = Date.now() + 2_000
+    while (!statuses.includes("syncing") && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    window.engine.dispose()
+  }, documentId)
+
+  await page.waitForFunction(() => window.fakeCloud.previewVersion() === 1)
+  await page.waitForFunction(
+    () =>
+      (window as unknown as { statuses: string[] }).statuses.at(-1) !==
+      "syncing"
+  )
+})
