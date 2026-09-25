@@ -147,8 +147,16 @@ export function VersionPanel({
       // Nothing to apply — the pixels are already on the canvas. Until now
       // they were only on trial and saved nowhere; keeping them saves them,
       // here and to the cloud, without waiting for an idle.
-      await engine.keepRestore()
+      const { synced } = await engine.keepRestore()
       setPreviewing(null)
+      if (!synced) {
+        // Kept, and safe on this device; the next sync takes it the rest of
+        // the way. Said here rather than closed on, so it is not missed.
+        setProblem(
+          "Restored on this device. It will reach your other devices once the connection is back."
+        )
+        return
+      }
     } catch {
       // Still on the canvas and still on trial, so nothing is lost: say so
       // and leave the choice with the artist rather than closing on it.

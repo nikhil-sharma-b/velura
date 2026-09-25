@@ -11,8 +11,9 @@ const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL
 // URL must degrade to "the library is unavailable", never to a broken canvas.
 //
 // Its "Leave site?" prompt is off. It fires while any request is unfinished,
-// and the studio always has one about to be: a presence heartbeat every few
-// seconds, so a plain refresh asked about changes that did not exist. Nothing
+// and a document open from the library always has one about to be — a
+// presence heartbeat every few seconds — so a plain refresh asked about
+// changes that did not exist. Nothing
 // here depends on it — pixels are on the device before any sync starts, and
 // an unfinished flush is picked up by the next open (§9.2).
 const client = convexUrl

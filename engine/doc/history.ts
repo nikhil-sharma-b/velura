@@ -132,6 +132,12 @@ export interface DocumentHistory {
   depth(): number
   /** Steps that can still be taken back, which is where the cursor sits. */
   stepsBack(): number
+  /**
+   * The step undo would take back next, as an opaque identity: the same
+   * object for as long as that step exists, whatever is trimmed from the
+   * bottom of the stack or pushed and undone above it.
+   */
+  topStep(): object | undefined
   /** Logical bytes of the tiles history is keeping alive. */
   bytes(): number
   residentBytes(): number
@@ -582,6 +588,7 @@ export function createDocumentHistory(options: {
     canRedo: () => stack.canRedo(),
     depth: () => stack.depth(),
     stepsBack: () => stack.stepsBack(),
+    topStep: () => stack.top(),
     bytes: () => stack.bytes(),
     residentBytes: () => store.residentBytes(),
     spilledBytes: () => store.spilledBytes(),

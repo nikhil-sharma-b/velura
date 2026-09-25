@@ -44,6 +44,8 @@ export interface UndoStack {
   depth(): number
   /** How many steps are behind the cursor: what undo can still take back. */
   stepsBack(): number
+  /** The step undo would take back next, by identity. */
+  top(): UndoEntry | undefined
   /** Logical bytes of the distinct tiles the stack is holding on to. */
   bytes(): number
   clear(): void
@@ -141,6 +143,7 @@ export function createUndoStack(options: {
     },
     depth: () => entries.length,
     stepsBack: () => cursor,
+    top: () => entries[cursor - 1],
     bytes,
     clear() {
       for (const entry of entries) forget(entry)

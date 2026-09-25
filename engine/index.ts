@@ -107,6 +107,7 @@ import {
   type PixelRect,
   type TileCoord,
   tileIndexForPixel,
+  tileKey,
   unionRect,
 } from "./doc/tile-grid"
 import type { SurfaceTiles, TileRef } from "./store/document-store"
@@ -653,7 +654,10 @@ export interface Engine {
    * Writes the document to local storage now, and — where `cloud` is
    * configured — flushes it to R2 too, and waits for both. Strokes already
    * save themselves; this is for a host that wants the tab-hide or explicit
-   * save to be a promise it can await. A no-op with no persistence configured.
+   * save to be a promise it can await. A no-op with no persistence configured,
+   * and with a version preview on trial (see `keepRestore`). While tiles are
+   * still loading it saves locally only and owes the flush, sent once they
+   * are all in: a flush then would send a document missing them.
    */
   save(): Promise<void>
   /**
@@ -678,9 +682,10 @@ export interface Engine {
   /**
    * Keeps the restore in hand: until this is called it is only on trial,
    * saved neither to this device nor to the cloud, so a tab that closes
-   * mid-preview reopens on the document as it was. Saves at once.
+   * mid-preview reopens on the document as it was. Saves at once, and says
+   * whether that save reached the cloud as well as this device.
    */
-  keepRestore(): Promise<void>
+  keepRestore(): Promise<{ synced: boolean }>
   /**
    * Takes back the last restore, where it is still the top step. This is what
    * makes looking at an old state safe: the caller does not have to know how
@@ -810,12 +815,14 @@ export function createEngine(
   let documents: DocumentStore | undefined
   let cloudSync: CloudSync | undefined
   /**
-   * How deep history stood right after the last restore. Compared with the
-   * depth now, it answers whether that restore is still the step undo would
-   * reach — which is the whole of what "this preview is still reversible"
-   * means, and belongs here rather than in a panel counting steps.
+   * The history step the last restore made, by identity. Whether it is still
+   * the step undo would reach is the whole of what "this preview is still
+   * reversible" means — and asked by identity rather than by depth, because
+   * a depth is fooled by old steps trimmed from the bottom of the stack.
    */
-  let restoreDepth: number | undefined
+  let restoreStep: object | undefined
+  /** Set while `revertRestore` takes the trial back through undo. */
+  let revertingRestore = false
   /** True from the moment a restore starts writing until it is on trial. */
   let applyingRestore = false
   /**
@@ -826,11 +833,23 @@ export function createEngine(
    * good (see the commit hook): from then on it is the artist's work and
    * saves like any other, however far undo later walks back.
    */
+  /**
+   * Undo and redo are closed while a preview is on trial: "Back to now" is
+   * the way out of one, and an undo that slipped past it would leave the
+   * next stroke landing where the preview stood, mistaken for it.
+   */
+  function publishHistory() {
+    const trial = restoreRevertible()
+    publish({
+      canUndo: !trial && (history?.canUndo() ?? false),
+      canRedo: !trial && (history?.canRedo() ?? false),
+    })
+  }
   function restoreOnTrial(): boolean {
     return applyingRestore || restoreRevertible()
   }
   function restoreRevertible(): boolean {
-    return restoreDepth !== undefined && history?.stepsBack() === restoreDepth
+    return restoreStep !== undefined && history?.topStep() === restoreStep
   }
   /**
    * Stored tiles still arriving in the background, by surface and slot.
@@ -851,7 +870,7 @@ export function createEngine(
     const merged = new Map(
       surfaces.map((surface) => [
         surface.surfaceId,
-        new Map(surface.tiles.map((tile) => [`${tile.x},${tile.y}`, tile])),
+        new Map(surface.tiles.map((tile) => [tileKey(tile.x, tile.y), tile])),
       ])
     )
     for (const [surfaceId, pending] of pendingTiles) {
@@ -1021,7 +1040,7 @@ export function createEngine(
         node.kind === "group" ? rasterLayers(node.children) : [node]
       const held = layers
         .flatMap((layer) =>
-          past.occupiedTiles(layer.id).map((tile) => `${tile.x},${tile.y}`)
+          past.occupiedTiles(layer.id).map((tile) => tileKey(tile.x, tile.y))
         )
         .sort()
         .join(";")
@@ -2006,7 +2025,7 @@ export function createEngine(
         background.push({ surface, tiles: rest })
         pendingTiles.set(
           surface.surfaceId,
-          new Map(rest.map((tile) => [`${tile.x},${tile.y}`, tile]))
+          new Map(rest.map((tile) => [tileKey(tile.x, tile.y), tile]))
         )
       }
     }
@@ -2023,7 +2042,7 @@ export function createEngine(
             await loadTiles(surface, batch)
             if (disposed) return
             const pending = pendingTiles.get(surface.surfaceId)
-            for (const tile of batch) pending?.delete(`${tile.x},${tile.y}`)
+            for (const tile of batch) pending?.delete(tileKey(tile.x, tile.y))
             if (pending?.size === 0) pendingTiles.delete(surface.surfaceId)
             await past.settle()
             syncComposition()
@@ -2308,11 +2327,7 @@ export function createEngine(
           warmBytes: options.history?.warmBytes ?? DEFAULT_WARM_BYTES,
           spill: createOpfsSpill(),
         }),
-        onChange: () =>
-          publish({
-            canUndo: history?.canUndo() ?? false,
-            canRedo: history?.canRedo() ?? false,
-          }),
+        onChange: () => publishHistory(),
         onError: fail,
         // Every route a pixel takes into the document — a stroke, a layer
         // operation, an undo — ends here, which is why the write to disk hangs
@@ -2326,11 +2341,14 @@ export function createEngine(
           // over it: the trial is over, and undoing that step later lands on
           // a restore they have made theirs, not on a preview.
           if (
-            restoreDepth !== undefined &&
+            restoreStep !== undefined &&
             !applyingRestore &&
-            (history?.stepsBack() ?? 0) > restoreDepth
-          )
-            restoreDepth = undefined
+            !revertingRestore &&
+            history?.topStep() !== restoreStep
+          ) {
+            restoreStep = undefined
+            publishHistory()
+          }
           if (restoreOnTrial()) {
             publishSyncStatus()
             return
@@ -3077,6 +3095,8 @@ export function createEngine(
         case "undo":
         case "redo": {
           if (!history) break
+          // See `publishHistory`: only the revert itself may undo a trial.
+          if (restoreRevertible() && !revertingRestore) break
           // Undo during a drag means the adjustment being made, not the step
           // underneath it: the picture goes back to where it was picked up
           // and the stack is left alone.
@@ -3300,26 +3320,38 @@ export function createEngine(
       for (const id of previous)
         if (!remaining.has(id)) renderer?.releaseLayer(id)
       applyLayerChange()
-      restoreDepth = past.stepsBack()
+      restoreStep = past.topStep()
+      publishHistory()
       return true
     },
-    canRevertRestore: () => restoreRevertible(),
+    canRevertRestore: restoreRevertible,
     async keepRestore() {
       // Ended first, because a save refuses while one is on trial; put back
-      // if the save fails, so the preview is still one to keep or take back.
-      const depth = restoreDepth
-      restoreDepth = undefined
+      // if the save throws, so the preview is still one to keep or take back.
+      const step = restoreStep
+      restoreStep = undefined
+      publishHistory()
       try {
         await this.save()
       } catch (error) {
-        restoreDepth = depth
+        restoreStep = step
+        publishHistory()
         throw error
       }
+      // A failed upload does not throw — it is reported, and retried by the
+      // next flush — so whether this reached the cloud is read back instead.
+      return { synced: !cloudSync || cloudSync.status() === "fully-synced" }
     },
     async revertRestore() {
       if (!this.canRevertRestore()) return false
-      await this.dispatch({ type: "undo" })
-      restoreDepth = undefined
+      revertingRestore = true
+      try {
+        await this.dispatch({ type: "undo" })
+      } finally {
+        revertingRestore = false
+      }
+      restoreStep = undefined
+      publishHistory()
       return true
     },
     cloudMetrics: () => cloudSync?.metrics() ?? null,
