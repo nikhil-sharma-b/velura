@@ -837,6 +837,12 @@ export function createEngine(
    * that document came back but could not be taken on whole.
    */
   let restored = !options.persistence
+  /** Whether the reopened document found the cloud missing work or a preview. */
+  let cloudBehind = false
+  /** Whether this session has changed the document at all. */
+  let committedSinceOpen = false
+  /** Settles once every stored tile is back on the GPU, background ones too. */
+  let fullyLoaded: Promise<void> = Promise.resolve()
   let disposed = false
 
   // The stroke path. Every buffer here is allocated once, at construction:
@@ -1792,6 +1798,8 @@ export function createEngine(
     let document = doc
     const store = documents
     if (!target || !past || !document || !store) return true
+    cloudBehind = false
+    fullyLoaded = Promise.resolve()
     // Bound once, here, so the batch loader below reads a hash and writes a
     // tile without repeating a non-null assertion at every call: TypeScript's
     // narrowing above does not reach into a closure defined further down.
@@ -1811,17 +1819,23 @@ export function createEngine(
       // still shown and still safe to paint on and save (§9.2/18 — an outage
       // must not stop work, only the replication of it).
       const onCloudError = options.cloud.onError ?? (() => {})
-      const newerElsewhere = await remote
-        .documentMeta()
-        .then(
-          (meta) =>
-            meta.structure !== null &&
-            meta.updatedAt > (stored?.updatedAt ?? -Infinity)
-        )
-        .catch((error) => {
-          onCloudError(error)
-          return false
-        })
+      const meta = await remote.documentMeta().catch((error) => {
+        onCloudError(error)
+        return null
+      })
+      const newerElsewhere =
+        meta !== null &&
+        meta.structure !== null &&
+        meta.updatedAt > (stored?.updatedAt ?? -Infinity)
+      // The other way round: this device holds strokes a flush never
+      // delivered, or the cloud has the strokes but never got their preview —
+      // both what a session torn down mid-sync leaves behind. Nothing else
+      // would send them until the next stroke, so this session does, once
+      // the document is fully back.
+      cloudBehind =
+        meta !== null &&
+        ((!!stored && meta.updatedAt < stored.updatedAt) ||
+          (meta.structure !== null && meta.previewVersion === undefined))
       if (disposed) return true
       if (!stored || newerElsewhere)
         await hydrateFromRemote({
@@ -1925,7 +1939,7 @@ export function createEngine(
     publish(describeLayers(document))
     if (background.length > 0) {
       publish({ loading: true })
-      void (async () => {
+      fullyLoaded = (async () => {
         for (const { surface, tiles } of background) {
           for (let index = 0; index < tiles.length; index += BACKGROUND_BATCH) {
             if (disposed) return
@@ -2015,7 +2029,8 @@ export function createEngine(
   }
 
   function scheduleFrame() {
-    if (frame === undefined) frame = requestAnimationFrame(drawFrame)
+    if (frame === undefined && !disposed)
+      frame = requestAnimationFrame(drawFrame)
   }
 
   function beginStroke(
@@ -2227,6 +2242,7 @@ export function createEngine(
           void persistence?.save()
           // Scheduling is a timer reset, not a network call, so this never
           // costs a stroke a frame (§9.2's "off the interactive path").
+          committedSinceOpen = true
           flushScheduler?.touch()
           // A fresh commit changes what a flush would upload, so whatever
           // "fully-synced" meant a moment ago no longer applies.
@@ -2276,10 +2292,10 @@ export function createEngine(
                 assets: writableAssets(structure),
               }
             },
-            // readPixels presents through the renderer's one display-transform
+            // capturePixels presents through the renderer's one display-transform
             // pass. PNG encoding and scaling happen after the GPU readback,
             // off the stroke frame and only when the flush scheduler fires.
-            preview: async () => encodePreview(await engine.readPixels()),
+            preview: async () => encodePreview(await capturePixels()),
             // A flush that fails — an outage, a dropped response — is not the
             // document failing: the stroke is already safe on disk, and
             // `status()` staying "saved-locally" already says truthfully that
@@ -2327,6 +2343,10 @@ export function createEngine(
       // The host may have resized the canvas while validation was pending.
       render()
       publish({ status: "ready" })
+      if (cloudBehind && restored)
+        void fullyLoaded.then(() => {
+          if (!disposed && device === acquired) flushScheduler?.flushNow()
+        })
       // Input is attached only once there is something to draw into.
       if (!detachSampler && canvas instanceof HTMLCanvasElement) {
         detachSampler = attachPointerSampler(
@@ -2477,6 +2497,74 @@ export function createEngine(
       const invalid = await acquired.popErrorScope()
       if (invalid && !disposed && device === acquired)
         throw new Error(invalid.message)
+    }
+  }
+
+  /**
+   * The artwork as pixels, rendered into a target of its own. Not gated on
+   * the engine being ready, because a disposed engine still captures the
+   * preview of its last flush before its device goes (see `dispose`).
+   */
+  async function capturePixels(): Promise<RenderedPixels> {
+    if (!device) throw new Error("The graphics device is not ready.")
+    const { width, height } = snapshot
+    const acquired = device
+    const bytesPerRow = Math.ceil((width * 4) / 256) * 256
+    const buffer = acquired.createBuffer({
+      size: bytesPerRow * height,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    })
+    const output = acquired.createTexture({
+      size: { width, height },
+      format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    })
+    try {
+      // The artwork is what was painted, not how it is being looked at, so
+      // the export presents through the identity rather than the view (D28).
+      renderer?.setView(IDENTITY_MATRIX)
+      // A layer picked out in the list is how it is being looked at too.
+      if (highlight && doc) renderer?.setComposition(planComposite(doc))
+      // Preview/export rendering has its own target. It never replaces the
+      // visible swap-chain frame while its asynchronous readback completes.
+      renderer?.render(output.createView())
+      const encoder = acquired.createCommandEncoder()
+      encoder.copyTextureToBuffer(
+        { texture: output },
+        { buffer, bytesPerRow },
+        { width, height }
+      )
+      acquired.queue.submit([encoder.finish()])
+      // Restore the interactive uniform before yielding to the browser. The
+      // submitted export work is ordered before this queue write.
+      applyView()
+      await buffer.mapAsync(GPUMapMode.READ)
+      const mapped = new Uint8Array(buffer.getMappedRange())
+      const data = new Uint8Array(width * height * 4)
+      for (let y = 0; y < height; y++) {
+        data.set(
+          mapped.subarray(y * bytesPerRow, y * bytesPerRow + width * 4),
+          y * width * 4
+        )
+        if (y % 32 === 31)
+          await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      }
+      if (format === "bgra8unorm") {
+        for (let y = 0; y < height; y++) {
+          const end = (y + 1) * width * 4
+          for (let i = y * width * 4; i < end; i += 4)
+            [data[i], data[i + 2]] = [data[i + 2], data[i]]
+          if (y % 32 === 31)
+            await new Promise<void>((resolve) => setTimeout(resolve, 0))
+        }
+      }
+      return { width, height, data, colorSpace: snapshot.outputColorSpace }
+    } finally {
+      buffer.destroy()
+      output.destroy()
+      // Also restore after an early failure before the normal restoration.
+      applyView()
+      syncComposition()
     }
   }
 
@@ -2796,6 +2884,7 @@ export function createEngine(
           applyLayerChange()
           restored = true
           void persistence?.save()
+          committedSinceOpen = true
           flushScheduler?.touch()
           break
         }
@@ -3108,67 +3197,9 @@ export function createEngine(
       spilledBytes: history?.spilledBytes() ?? 0,
     }),
     async readPixels() {
-      if (snapshot.status !== "ready" || !device)
+      if (snapshot.status !== "ready")
         throw new Error("The graphics device is not ready.")
-      const { width, height } = snapshot
-      const acquired = device
-      const bytesPerRow = Math.ceil((width * 4) / 256) * 256
-      const buffer = acquired.createBuffer({
-        size: bytesPerRow * height,
-        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-      })
-      const output = acquired.createTexture({
-        size: { width, height },
-        format,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-      })
-      try {
-        // The artwork is what was painted, not how it is being looked at, so
-        // the export presents through the identity rather than the view (D28).
-        renderer?.setView(IDENTITY_MATRIX)
-        // A layer picked out in the list is how it is being looked at too.
-        if (highlight && doc) renderer?.setComposition(planComposite(doc))
-        // Preview/export rendering has its own target. It never replaces the
-        // visible swap-chain frame while its asynchronous readback completes.
-        renderer?.render(output.createView())
-        const encoder = acquired.createCommandEncoder()
-        encoder.copyTextureToBuffer(
-          { texture: output },
-          { buffer, bytesPerRow },
-          { width, height }
-        )
-        acquired.queue.submit([encoder.finish()])
-        // Restore the interactive uniform before yielding to the browser. The
-        // submitted export work is ordered before this queue write.
-        applyView()
-        await buffer.mapAsync(GPUMapMode.READ)
-        const mapped = new Uint8Array(buffer.getMappedRange())
-        const data = new Uint8Array(width * height * 4)
-        for (let y = 0; y < height; y++) {
-          data.set(
-            mapped.subarray(y * bytesPerRow, y * bytesPerRow + width * 4),
-            y * width * 4
-          )
-          if (y % 32 === 31)
-            await new Promise<void>((resolve) => setTimeout(resolve, 0))
-        }
-        if (format === "bgra8unorm") {
-          for (let y = 0; y < height; y++) {
-            const end = (y + 1) * width * 4
-            for (let i = y * width * 4; i < end; i += 4)
-              [data[i], data[i + 2]] = [data[i + 2], data[i]]
-            if (y % 32 === 31)
-              await new Promise<void>((resolve) => setTimeout(resolve, 0))
-          }
-        }
-        return { width, height, data, colorSpace: snapshot.outputColorSpace }
-      } finally {
-        buffer.destroy()
-        output.destroy()
-        // Also restore after an early failure before the normal restoration.
-        applyView()
-        syncComposition()
-      }
+      return await capturePixels()
     },
     async exportDocument() {
       if (snapshot.status !== "ready" || !history)
@@ -3289,7 +3320,28 @@ export function createEngine(
       // A disposed engine has no frames to report, and holding the observer
       // would keep whatever it closes over alive with it.
       frameObserver = null
-      release()
+      // Leaving the canvas through the app is an unmount, not a pagehide: it
+      // would otherwise cancel the idle flush that had not fired yet, or tear
+      // the device out from under one mid-preview, leaving the cloud without
+      // the latest strokes and the library without a picture of them. The
+      // runtime is kept just long enough to finish that flush; nothing is
+      // shown from it meanwhile, and the canvas is free for another engine.
+      const sync = cloudSync
+      const unsent =
+        sync &&
+        (sync.status() === "syncing" ||
+          (committedSinceOpen && sync.status() !== "fully-synced"))
+      if (restored && sync && unsent) {
+        if (frame !== undefined) cancelAnimationFrame(frame)
+        frame = undefined
+        context?.unconfigure()
+        context = null
+        void (async () => {
+          await history?.settle()
+          flushScheduler?.flushNow()
+          await sync.settle()
+        })().finally(release)
+      } else release()
       publish({ status: "disposed" })
       listeners.clear()
     },

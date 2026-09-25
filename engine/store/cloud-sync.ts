@@ -69,6 +69,8 @@ export interface RemoteIndex {
     structure: DocumentStructure | null
     /** Bumped by every flush from any device — what "newer elsewhere" means. */
     updatedAt: number
+    /** Absent until a preview has landed; the library shows none without it. */
+    previewVersion?: number
   }>
   /** Every tile this document currently names, across every surface. */
   tileIndex(): Promise<

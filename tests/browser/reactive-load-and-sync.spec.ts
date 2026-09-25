@@ -258,3 +258,69 @@ test("the canvas is usable, and the centre resolves, before every tile has loade
   // immediate viewport batch were still arriving in the background.
   expect(await page.evaluate(() => window.sawReadyWhileLoading)).toBe(true)
 })
+
+test("leaving the canvas before the idle flush still uploads the work and its preview", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 40)
+
+  // The library link is an in-app navigation: no pagehide, no
+  // visibilitychange, only the host unmounting the canvas.
+  await page.evaluate(() => window.engine.dispose())
+
+  await page.waitForFunction(() => window.fakeCloud.previewVersion() === 1)
+  const meta = await page.evaluate(() => window.fakeCloud.remote.documentMeta())
+  expect(meta.structure).not.toBeNull()
+})
+
+test("reopening a document the cloud has no preview of uploads one", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  // A flush whose preview never landed, as when the canvas was torn down
+  // while one was in flight: the tiles are in the cloud, the picture is not.
+  await page.evaluate((id) => {
+    const { presignPreviewUpload, commitPreview, ...remote } =
+      window.fakeCloud.remote
+    void presignPreviewUpload
+    void commitPreview
+    window.remountEngine({
+      persistence: { documentId: id },
+      cloud: { remote, idleMs: 60_000 },
+    })
+  }, documentId)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "resize",
+      width: 200,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+  })
+  await paint(page, origin, 40)
+  await page.evaluate(() => window.engine.save())
+  expect(await page.evaluate(() => window.fakeCloud.previewVersion())).toBe(
+    undefined
+  )
+
+  await page.evaluate(async (id) => {
+    window.remountEngine({
+      persistence: { documentId: id },
+      cloud: { remote: window.fakeCloud.remote, idleMs: 60_000 },
+    })
+    await window.engine.dispatch({
+      type: "resize",
+      width: 200,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+  }, documentId)
+
+  await page.waitForFunction(() => window.fakeCloud.previewVersion() === 1)
+})

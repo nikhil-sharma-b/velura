@@ -160,6 +160,8 @@ type FakeCloud = {
   ): Promise<void>
   /** Backdates every restore point, standing in for a passing day or week. */
   ageVersions(byMs: number): void
+  /** How many previews have been committed, as `previewVersion` counts them. */
+  previewVersion(): number | undefined
 }
 
 // Presigned uploads and downloads are real `fetch` PUTs and GETs in
@@ -194,6 +196,7 @@ window.createFakeCloud = (size) => {
   let failing = false
   let structure: DocumentStructure | null = null
   let updatedAt = 0
+  let previewVersion: number | undefined
   const tiles: FakeTileRow[] = []
   const knownHashes = new Set<string>()
   // Restore points, as `convex/versions.ts` keeps them: the flush's own tile
@@ -245,8 +248,15 @@ window.createFakeCloud = (size) => {
       for (const stale of prunableVersions(versions, now))
         versions.splice(versions.indexOf(stale), 1)
     },
+    // The library's preview, uploaded after the flush that it pictures.
+    async presignPreviewUpload() {
+      return `${FAKE_SCHEME}preview`
+    },
+    async commitPreview() {
+      previewVersion = (previewVersion ?? 0) + 1
+    },
     async documentMeta() {
-      return { ...size, structure, updatedAt }
+      return { ...size, structure, updatedAt, previewVersion }
     },
     async tileIndex() {
       return tiles.map((tile) => ({ ...tile }))
@@ -268,6 +278,7 @@ window.createFakeCloud = (size) => {
     setFailing: (value) => {
       failing = value
     },
+    previewVersion: () => previewVersion,
     ageVersions(byMs: number) {
       for (const version of versions) version.createdAt -= byMs
     },

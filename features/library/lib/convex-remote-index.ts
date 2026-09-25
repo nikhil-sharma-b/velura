@@ -49,6 +49,7 @@ export function createConvexRemoteIndex(
         name: document.name,
         structure: document.structure ?? null,
         updatedAt: document.updatedAt,
+        previewVersion: document.previewVersion,
       }
     },
     tileIndex: () => client.query(api.tiles.forDocument, { documentId }),
