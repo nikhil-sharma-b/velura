@@ -47,7 +47,9 @@ function ThemeHotkey() {
         return
       }
 
-      if (event.key.toLowerCase() !== "d") {
+      // Chrome's autofill dispatches a keydown with no `key` at all when a
+      // saved entry is picked, whatever the type says.
+      if (typeof event.key !== "string" || event.key.toLowerCase() !== "d") {
         return
       }
 
