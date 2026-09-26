@@ -339,6 +339,10 @@ export async function runBenchmark(
 
   try {
     for (const stroke of workload.strokes) {
+      // History captures the previous mark after pen-up, on a later frame.
+      // Wait for it before counting the next pen-down or a slow GPU makes
+      // that prior mark's readback look like an interactive one.
+      if (dispatched > 0) await engine.save()
       const [first] = stroke.samples
       readback.setPenDown(true)
       dispatch("pointerdown", first)

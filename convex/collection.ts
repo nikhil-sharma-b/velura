@@ -7,7 +7,7 @@ import {
   referencedAssetIdsOf,
   referencedHashesOf,
 } from "./lib/collection"
-import { PREVIEW_OBJECT_PREFIX } from "./lib/preview-key"
+import { PREVIEW_OBJECT_PREFIX } from "./lib/preview_key"
 
 /**
  * The database half of orphan collection (D17, §9.4): the mark, the ledger

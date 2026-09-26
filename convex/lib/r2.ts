@@ -9,7 +9,7 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
 import type { StoredTileObject, TileObjectPage } from "./collection"
-import { PREVIEW_OBJECT_PREFIX } from "./preview-key"
+import { PREVIEW_OBJECT_PREFIX } from "./preview_key"
 
 // R2's S3-compatible endpoint is derived from the account id — no separate
 // endpoint or public-domain env var to keep in sync. Reads go through

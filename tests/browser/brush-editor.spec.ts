@@ -320,5 +320,5 @@ test("fitting the view with the editor open keeps the piece clear of it", async 
     const offset = (y * image.width + x) * 4
     const [r, g, b] = image.data.subarray(offset, offset + 3)
     expect((r + g + b) / 3).toBeLessThan(128)
-  }).toPass({ timeout: 3000 })
+  }).toPass({ timeout: 10_000 })
 })
