@@ -1,0 +1,83 @@
+import type { Chord } from "./chord"
+import type { Command, Registry } from "./registry"
+
+/** How many commands the palette remembers having run. */
+const RECENT_LIMIT = 5
+
+/**
+ * How well a query abbreviates a label, or nothing when it does not. Each
+ * word of the query must appear, letters in order, after the word before it,
+ * so "clr lay" finds "Clear layer". Letters that start a word or follow the
+ * previous match score up, and letters skipped to reach a match score down,
+ * so a prefix beats the same letters scattered through a longer label.
+ */
+export function fuzzyScore(query: string, label: string): number | undefined {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  const text = label.toLowerCase()
+  let score = 0
+  let at = 0
+  for (const word of words) {
+    let previous = -2
+    for (const letter of word) {
+      const found = text.indexOf(letter, at)
+      if (found < 0) return
+      const startsWord = found === 0 || /[^a-z0-9]/.test(text[found - 1])
+      if (startsWord) score += 3
+      else if (found === previous + 1) score += 2
+      score -= found - at
+      previous = found
+      at = found + 1
+    }
+  }
+  return score
+}
+
+export interface PaletteEntry<Context> {
+  command: Command<Context>
+  keybinds: readonly Chord[]
+  available: boolean
+}
+
+/**
+ * The palette's rows for a query: every command that matches, best first,
+ * with commands run recently ahead of the rest when the query cannot tell
+ * them apart — which, for an empty query, is always.
+ */
+export function paletteEntries<Context>(
+  registry: Registry<Context>,
+  context: Context,
+  query: string,
+  recent: readonly string[],
+  hidden: readonly string[] = []
+): PaletteEntry<Context>[] {
+  const recency = (id: string) => {
+    const index = recent.indexOf(id)
+    return index < 0 ? recent.length : index
+  }
+  return registry
+    .list()
+    .filter((command) => !hidden.includes(command.id))
+    .flatMap((command, order) => {
+      const score = fuzzyScore(query, command.label)
+      return score === undefined ? [] : [{ command, score, order }]
+    })
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        recency(a.command.id) - recency(b.command.id) ||
+        a.order - b.order
+    )
+    .map(({ command }) => ({
+      command,
+      keybinds: registry.keybinds(command.id),
+      available: !command.available || command.available(context),
+    }))
+}
+
+/** The recent list after running a command: it first, the oldest let go. */
+export function rememberRecent(
+  recent: readonly string[],
+  id: string
+): string[] {
+  return [id, ...recent.filter((other) => other !== id)].slice(0, RECENT_LIMIT)
+}

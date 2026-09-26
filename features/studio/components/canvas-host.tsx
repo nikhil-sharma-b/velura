@@ -87,9 +87,11 @@ import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
 import {
   runStudioCommand,
+  PALETTE_COMMAND,
   studioCommands,
   type StudioContext,
 } from "../lib/studio-commands"
+import { CommandPalette } from "@/features/commands/components/command-palette"
 import { useKeybinds } from "@/features/commands/hooks/use-keybinds"
 import { KeybindHint } from "@/features/commands/components/keybind-hint"
 
@@ -308,6 +310,7 @@ export function CanvasHost({
   const [imageOverCanvas, setImageOverCanvas] = useState(false)
   /** Alt is down, so the next click on the canvas samples rather than paints. */
   const [sampling, setSampling] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   /** The canvas the engine presents into; the transform box sits over it. */
   const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(
     null
@@ -532,6 +535,7 @@ export function CanvasHost({
     historyBusy: () => versionPreview.current.busy,
     occludedRight,
     setSampling,
+    togglePalette: () => setPaletteOpen((open) => !open),
   }
   useKeybinds(studioCommands, commandContext)
 
@@ -1530,6 +1534,13 @@ export function CanvasHost({
           </section>
         </div>
       )}
+      <CommandPalette
+        registry={studioCommands}
+        context={commandContext}
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        toggleId={PALETTE_COMMAND}
+      />
     </main>
   )
 }
