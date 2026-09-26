@@ -6,6 +6,9 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CI ? 2 : undefined,
+  // CI rasterizes WebGPU on two CPU cores, so pointer-driven tests on the
+  // full-size canvas take several times longer than on a real GPU.
+  timeout: process.env.CI ? 60_000 : 30_000,
   use: {
     baseURL: "http://localhost:3000",
     trace: "retain-on-failure",
