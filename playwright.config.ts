@@ -29,7 +29,12 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "bun run dev --hostname localhost --port 3000",
+      // CI serves the build it has already made: on a two-core runner that is
+      // also rasterizing WebGPU in software, a dev server compiling each page
+      // on first visit starves the tests into timeouts.
+      command: process.env.CI
+        ? "bun run start --hostname localhost --port 3000"
+        : "bun run dev --hostname localhost --port 3000",
       url: "http://localhost:3000",
       reuseExistingServer: !process.env.CI,
     },
