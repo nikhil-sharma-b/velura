@@ -1,7 +1,7 @@
 "use client"
 
 import { PlusIcon, TrashIcon, XIcon } from "@phosphor-icons/react"
-import { useMemo, useState, useSyncExternalStore } from "react"
+import { useMemo, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -18,6 +18,8 @@ import {
   hexToWorking,
 } from "@/engine/color/oklch"
 import type { Engine, EngineSnapshot } from "@/engine"
+import { useKeybindLabel } from "@/features/commands/hooks/use-keybinds"
+import { studioCommands } from "@/features/studio/lib/studio-commands"
 
 import type { PaletteRecord, PaletteStore } from "../lib/palette-store"
 
@@ -301,14 +303,6 @@ function PaletteSection({
  * while looking at the painting, and a picker that covers the area being
  * painted makes that impossible.
  */
-/** The keyboard never changes under a running tab, so there is nothing to watch. */
-const subscribeToPlatform = () => () => {}
-const serverAltLabel = () => "Alt"
-const readAltLabel = () =>
-  /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent)
-    ? "Option"
-    : "Alt"
-
 export function ColorPanel({
   engine,
   snapshot,
@@ -367,15 +361,9 @@ export function ColorPanel({
   // during render rather than in an effect, so no frame shows the old colour.
   // Only a colour the panel did not itself send counts, which is what
   // comparing against the last dispatched hex distinguishes.
-  // One key, two names: `altKey` is what the browser reports either way, but a
-  // Mac keyboard has no cap reading "Alt" to reach for. Read as an external
-  // value rather than derived, because the server has no keyboard to name:
-  // "Alt" is what it renders, and the client corrects it as it hydrates.
-  const altLabel = useSyncExternalStore(
-    subscribeToPlatform,
-    readAltLabel,
-    serverAltLabel
-  )
+  // The eyedropper's key as the registry has it; `formatChord` spells it for
+  // the keyboard in front of the artist (⌥ on a Mac, Alt elsewhere).
+  const altLabel = useKeybindLabel(studioCommands, "tool.eyedropper")
 
   const [sentHex, setSentHex] = useState(snapshot.color.hex)
   if (snapshot.color.hex !== sentHex) {

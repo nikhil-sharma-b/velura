@@ -58,6 +58,8 @@ type LayerPanelProps = {
    */
   onCollapse?(): void
   collapseRef?: Ref<HTMLButtonElement>
+  /** Runs a studio command, so the panel's buttons and keys share one path. */
+  runCommand(id: string): void
 }
 
 function findSummary(
@@ -683,6 +685,7 @@ export function LayerPanel({
   snapshot,
   onCollapse,
   collapseRef,
+  runCommand,
 }: LayerPanelProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   /** Why the last image would not come in; cleared by the next attempt. */
@@ -750,7 +753,8 @@ export function LayerPanel({
             variant="ghost"
             size="icon-sm"
             label="Group active layer"
-            onClick={() => void engine.dispatch({ type: "addGroup" })}
+            command="layer.group"
+            onClick={() => runCommand("layer.group")}
           >
             <FolderPlusIcon />
           </IconButton>
@@ -758,7 +762,8 @@ export function LayerPanel({
             variant="ghost"
             size="icon-sm"
             label="Add layer"
-            onClick={() => void engine.dispatch({ type: "addLayer" })}
+            command="layer.add"
+            onClick={() => runCommand("layer.add")}
           >
             <PlusIcon />
           </IconButton>
