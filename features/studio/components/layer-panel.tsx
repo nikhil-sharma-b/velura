@@ -47,6 +47,7 @@ import {
 
 import { placeImageFile } from "../lib/image-import"
 import { IconButton } from "./icon-button"
+import { findSummary, rasterCount } from "../lib/layer-tree"
 
 type LayerPanelProps = {
   engine: Engine
@@ -58,30 +59,14 @@ type LayerPanelProps = {
    */
   onCollapse?(): void
   collapseRef?: Ref<HTMLButtonElement>
-  /** Runs a studio command, so the panel's buttons and keys share one path. */
-  runCommand(id: string): void
+  runCommand: RunCommand
 }
 
-function findSummary(
-  nodes: readonly LayerSummary[],
-  id: string
-): LayerSummary | undefined {
-  for (const node of nodes) {
-    if (node.id === id) return node
-    if (node.kind === "group") {
-      const found = findSummary(node.children, id)
-      if (found) return found
-    }
-  }
-}
-
-function rasterCount(nodes: readonly LayerSummary[]): number {
-  return nodes.reduce(
-    (count, node) =>
-      count + (node.kind === "raster" ? 1 : rasterCount(node.children)),
-    0
-  )
-}
+/**
+ * Runs a studio command, so the panel's buttons and keys share one path. A
+ * row's buttons name their own layer; without one it is the active layer.
+ */
+type RunCommand = (id: string, layerId?: string) => void
 
 /** How long a finger rests on a row before the canvas picks its layer out. */
 const LONG_PRESS_MS = 400
@@ -237,6 +222,7 @@ function LayerRow({
   groupHidden,
   totalRasters,
   onSelect,
+  runCommand,
 }: {
   engine: Engine
   layer: LayerSummary
@@ -251,6 +237,7 @@ function LayerRow({
   paintingMask: boolean
   totalRasters: number
   onSelect(id: string): void
+  runCommand: RunCommand
 }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(layer.name)
@@ -406,13 +393,7 @@ function LayerRow({
             variant="ghost"
             size="icon-xs"
             label={`${layer.visible ? "Hide" : "Show"} ${layer.name}`}
-            onClick={() =>
-              void engine.dispatch({
-                type: "setLayer",
-                id: layer.id,
-                visible: !layer.visible,
-              })
-            }
+            onClick={() => runCommand("layer.toggleVisible", layer.id)}
           >
             {layer.visible ? <EyeIcon /> : <EyeSlashIcon />}
           </IconButton>
@@ -426,12 +407,7 @@ function LayerRow({
                   variant="ghost"
                   size="icon-xs"
                   label={`Move, scale or rotate ${layer.name}`}
-                  onClick={() =>
-                    void engine.dispatch({
-                      type: "beginImageTransform",
-                      id: layer.id,
-                    })
-                  }
+                  onClick={() => runCommand("layer.transformImage", layer.id)}
                 >
                   <ArrowsOutCardinalIcon />
                 </IconButton>
@@ -444,12 +420,7 @@ function LayerRow({
                   variant="ghost"
                   size="icon-xs"
                   label={`Paint on ${layer.name} (changes the photo)`}
-                  onClick={() =>
-                    void engine.dispatch({
-                      type: "makeLayerPaintable",
-                      id: layer.id,
-                    })
-                  }
+                  onClick={() => runCommand("layer.makePaintable", layer.id)}
                 >
                   <PaintBrushIcon />
                 </IconButton>
@@ -458,13 +429,7 @@ function LayerRow({
                 variant="ghost"
                 size="icon-xs"
                 label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
-                onClick={() =>
-                  void engine.dispatch({
-                    type: "setLayer",
-                    id: layer.id,
-                    locked: !layer.locked,
-                  })
-                }
+                onClick={() => runCommand("layer.toggleLock", layer.id)}
               >
                 {layer.locked ? <LockIcon /> : <LockOpenIcon />}
               </IconButton>
@@ -477,12 +442,7 @@ function LayerRow({
                   variant="ghost"
                   size="icon-xs"
                   label={`Duplicate ${layer.name}`}
-                  onClick={() =>
-                    void engine.dispatch({
-                      type: "duplicateLayer",
-                      id: layer.id,
-                    })
-                  }
+                  onClick={() => runCommand("layer.duplicate", layer.id)}
                 >
                   <CopyIcon />
                 </IconButton>
@@ -492,9 +452,7 @@ function LayerRow({
                 size="icon-xs"
                 label={`Delete ${layer.name}`}
                 disabled={totalRasters === removedRasters}
-                onClick={() =>
-                  void engine.dispatch({ type: "removeLayer", id: layer.id })
-                }
+                onClick={() => runCommand("layer.delete", layer.id)}
               >
                 <TrashIcon />
               </IconButton>
@@ -514,6 +472,7 @@ function Rows({
   paintingMask,
   totalRasters,
   onSelect,
+  runCommand,
 }: {
   engine: Engine
   nodes: readonly LayerSummary[]
@@ -522,6 +481,7 @@ function Rows({
   paintingMask: boolean
   totalRasters: number
   onSelect(id: string): void
+  runCommand: RunCommand
 }) {
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [target, setTarget] = useState<{
@@ -559,6 +519,7 @@ function Rows({
         <LayerRow
           key={layer.id}
           engine={engine}
+          runCommand={runCommand}
           layer={layer}
           dragging={draggedId === layer.id}
           dropPosition={
@@ -803,6 +764,7 @@ export function LayerPanel({
       >
         <Rows
           engine={engine}
+          runCommand={runCommand}
           nodes={snapshot.layers}
           selectedId={selected?.id ?? snapshot.activeLayerId}
           activeLayerId={snapshot.activeLayerId}
@@ -823,13 +785,7 @@ export function LayerPanel({
                 variant={selected.clip ? "secondary" : "outline"}
                 size="sm"
                 aria-pressed={selected.clip}
-                onClick={() =>
-                  void engine.dispatch({
-                    type: "setLayer",
-                    id: selected.id,
-                    clip: !selected.clip,
-                  })
-                }
+                onClick={() => runCommand("layer.toggleClip", selected.id)}
               >
                 <IntersectIcon /> Clip
               </Button>
@@ -837,13 +793,7 @@ export function LayerPanel({
                 <Button
                   variant={snapshot.paintingMask ? "secondary" : "outline"}
                   size="sm"
-                  onClick={() =>
-                    void engine.dispatch(
-                      selected.mask
-                        ? { type: "selectMask", id: selected.id }
-                        : { type: "addMask", id: selected.id }
-                    )
-                  }
+                  onClick={() => runCommand("layer.mask", selected.id)}
                 >
                   <MaskHappyIcon /> {selected.mask ? "Paint mask" : "Add mask"}
                 </Button>
@@ -854,25 +804,14 @@ export function LayerPanel({
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() =>
-                    void engine.dispatch({
-                      type: "setMaskEnabled",
-                      id: selected.id,
-                      enabled: !selected.mask!.enabled,
-                    })
-                  }
+                  onClick={() => runCommand("layer.toggleMask", selected.id)}
                 >
                   {selected.mask.enabled ? "Disable mask" : "Enable mask"}
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() =>
-                    void engine.dispatch({
-                      type: "removeMask",
-                      id: selected.id,
-                    })
-                  }
+                  onClick={() => runCommand("layer.removeMask", selected.id)}
                 >
                   Remove mask
                 </Button>

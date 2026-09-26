@@ -43,7 +43,14 @@ function download(blob: Blob, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
-export function ExportDialog({ engine }: { engine: Engine }) {
+export function ExportDialog({
+  engine,
+  runCommand,
+}: {
+  engine: Engine
+  /** Runs a studio command, so clearing goes the same way as every action. */
+  runCommand(id: string): void
+}) {
   const [quality, setQuality] = useState(82)
   const [busy, setBusy] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
@@ -179,9 +186,7 @@ export function ExportDialog({ engine }: { engine: Engine }) {
                 <AlertDialogCancel>Keep artwork</AlertDialogCancel>
                 <AlertDialogAction
                   variant="destructive"
-                  onClick={() =>
-                    void engine.dispatch({ type: "clearDocument" })
-                  }
+                  onClick={() => runCommand("document.clear")}
                 >
                   Clear canvas
                 </AlertDialogAction>

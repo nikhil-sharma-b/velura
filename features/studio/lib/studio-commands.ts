@@ -1,5 +1,7 @@
-import type { Engine, EngineCommand } from "@/engine"
+import type { Engine, EngineCommand, LayerSummary } from "@/engine"
 import { createRegistry, type Command } from "@/features/commands/lib/registry"
+
+import { findSummary, rasterCount } from "./layer-tree"
 
 /** One press of a zoom key or button, which is a comfortable step by eye. */
 export const ZOOM_STEP = 1.25
@@ -19,6 +21,11 @@ export const MAX_RADIUS = 200
 /** What the studio's commands act on, read fresh each time one runs. */
 export interface StudioContext {
   engine: Engine | null
+  /**
+   * The layer a layer command acts on: the row whose button was pressed, or,
+   * from a key, the active layer.
+   */
+  layerId?: string
   /**
    * A version being opened or taken back is itself an undo step in flight;
    * another on top would race it.
@@ -45,6 +52,35 @@ function dispatching(
       ),
   }
 }
+
+/** The layer a layer command acts on, if it is still there. */
+function targetLayer({ engine, layerId }: StudioContext) {
+  if (!engine) return
+  const snapshot = engine.getSnapshot()
+  return findSummary(snapshot.layers, layerId ?? snapshot.activeLayerId)
+}
+
+/**
+ * A command on one layer, available while that layer exists and passes
+ * `applies`; the layer is looked up when it runs, never closed over.
+ */
+function onLayer(
+  command: (layer: LayerSummary) => EngineCommand,
+  applies: (layer: LayerSummary, context: StudioContext) => boolean = () => true
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    available: (context) => {
+      const layer = targetLayer(context)
+      return !!layer && applies(layer, context)
+    },
+    run: (context) => {
+      const layer = targetLayer(context)
+      if (layer) void context.engine?.dispatch(command(layer))
+    },
+  }
+}
+
+const isRaster = (layer: LayerSummary) => layer.kind === "raster"
 
 /**
  * The radius one press of a size key steps to, from the one in the hand, or
@@ -162,6 +198,119 @@ export const studioCommands = createRegistry<StudioContext>([
     label: "Group active layer",
     category: "Layers",
     ...dispatching({ type: "addGroup" }),
+  },
+  {
+    id: "layer.duplicate",
+    label: "Duplicate layer",
+    category: "Layers",
+    ...onLayer((layer) => ({ type: "duplicateLayer", id: layer.id }), isRaster),
+  },
+  {
+    // The document keeps at least one layer to paint on, so the last one
+    // left — alone or inside a group — cannot go.
+    id: "layer.delete",
+    label: "Delete layer",
+    category: "Layers",
+    ...onLayer(
+      (layer) => ({ type: "removeLayer", id: layer.id }),
+      (layer, { engine }) => {
+        const removed =
+          layer.kind === "raster" ? 1 : rasterCount(layer.children)
+        return rasterCount(engine!.getSnapshot().layers) > removed
+      }
+    ),
+  },
+  {
+    id: "layer.toggleVisible",
+    label: "Show or hide layer",
+    category: "Layers",
+    ...onLayer((layer) => ({
+      type: "setLayer",
+      id: layer.id,
+      visible: !layer.visible,
+    })),
+  },
+  {
+    id: "layer.toggleLock",
+    label: "Lock or unlock layer",
+    category: "Layers",
+    ...onLayer(
+      (layer) => ({
+        type: "setLayer",
+        id: layer.id,
+        locked: !(layer.kind === "raster" && layer.locked),
+      }),
+      isRaster
+    ),
+  },
+  {
+    id: "layer.toggleClip",
+    label: "Clip to layer below",
+    category: "Layers",
+    ...onLayer((layer) => ({
+      type: "setLayer",
+      id: layer.id,
+      clip: !layer.clip,
+    })),
+  },
+  {
+    // A layer without a mask gets one; one with a mask starts painting it.
+    id: "layer.mask",
+    label: "Add or paint mask",
+    category: "Layers",
+    ...onLayer(
+      (layer) => ({
+        type: layer.mask ? "selectMask" : "addMask",
+        id: layer.id,
+      }),
+      isRaster
+    ),
+  },
+  {
+    id: "layer.toggleMask",
+    label: "Enable or disable mask",
+    category: "Layers",
+    ...onLayer(
+      (layer) => ({
+        type: "setMaskEnabled",
+        id: layer.id,
+        enabled: !layer.mask?.enabled,
+      }),
+      (layer) => !!layer.mask
+    ),
+  },
+  {
+    id: "layer.removeMask",
+    label: "Remove mask",
+    category: "Layers",
+    ...onLayer(
+      (layer) => ({ type: "removeMask", id: layer.id }),
+      (layer) => !!layer.mask
+    ),
+  },
+  {
+    id: "layer.transformImage",
+    label: "Move, scale or rotate image",
+    category: "Layers",
+    ...onLayer(
+      (layer) => ({ type: "beginImageTransform", id: layer.id }),
+      (layer) => layer.kind === "raster" && !!layer.image && !!layer.placed
+    ),
+  },
+  {
+    id: "layer.makePaintable",
+    label: "Paint on image (changes the photo)",
+    category: "Layers",
+    ...onLayer(
+      (layer) => ({ type: "makeLayerPaintable", id: layer.id }),
+      (layer) => layer.kind === "raster" && !!layer.image
+    ),
+  },
+  {
+    id: "document.clear",
+    label: "Clear canvas",
+    category: "Document",
+    ...dispatching({ type: "clearDocument" }),
   },
   {
     id: "view.zoomIn",

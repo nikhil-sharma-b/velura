@@ -843,7 +843,12 @@ export function CanvasHost({
                 />
               </>
             )}
-            {engine && <ExportDialog engine={engine} />}
+            {engine && (
+              <ExportDialog
+                engine={engine}
+                runCommand={(id) => runStudioCommand(id, commandContext)}
+              />
+            )}
             <IconButton
               variant="ghost"
               size="icon"
@@ -1321,7 +1326,9 @@ export function CanvasHost({
                   engine={engine}
                   snapshot={snapshot}
                   collapseRef={layersToggle}
-                  runCommand={(id) => runStudioCommand(id, commandContext)}
+                  runCommand={(id, layerId) =>
+                    runStudioCommand(id, { ...commandContext, layerId })
+                  }
                   onCollapse={() => {
                     layersToggled.current = true
                     setPanelsOpen(false)
