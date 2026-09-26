@@ -49,7 +49,6 @@ import {
   type CloudOptions,
   createEngine,
   type Engine,
-  type EngineCommand,
   INITIAL_SNAPSHOT,
   MAX_ZOOM,
   MIN_ZOOM,
@@ -86,21 +85,13 @@ import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
 import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
-
-/** One press of a zoom key or button, which is a comfortable step by eye. */
-const ZOOM_STEP = 1.25
-/** One press of a rotate key: fifteen degrees, so a quarter turn is six. */
-const ROTATE_STEP = Math.PI / 12
-/** One press of an arrow key, in CSS pixels: a nudge, not a leap. */
-const PAN_STEP = 40
-/**
- * One press of a size key. Multiplicative, because the step an artist wants
- * between 2px and 3px is not the step they want between 100px and 101px.
- */
-const SIZE_STEP = 1.15
-/** The radius bounds the size slider offers, so the keys cannot leave them. */
-const MIN_RADIUS = 0.5
-const MAX_RADIUS = 200
+import {
+  runStudioCommand,
+  studioCommands,
+  type StudioContext,
+} from "../lib/studio-commands"
+import { useKeybinds } from "@/features/commands/hooks/use-keybinds"
+import { KeybindHint } from "@/features/commands/components/keybind-hint"
 
 function RailAction({
   side = "right",
@@ -154,69 +145,6 @@ function QuickSetting({
       </PopoverPrimitive.Portal>
     </PopoverPrimitive.Root>
   )
-}
-
-/**
- * The navigation a key asks for, or nothing. Unmodified keys, because the
- * hand reaching for them is the one not holding the pen.
- */
-function navigationForKey(
-  key: string,
-  shift: boolean
-): EngineCommand | undefined {
-  switch (key) {
-    case "+":
-    case "=":
-      return { type: "zoomView", factor: ZOOM_STEP }
-    case "-":
-    case "_":
-      return { type: "zoomView", factor: 1 / ZOOM_STEP }
-    case "0":
-      // Fit is the overview; with shift it is the way back to square. The
-      // shifted key arrives as `)` on a US layout and as `0` on the layouts
-      // that put a digit there unshifted, so both spellings mean the same key.
-      return shift ? { type: "resetView" } : { type: "fitView" }
-    case ")":
-      return { type: "resetView" }
-    // The brackets are size (see `sizeForKey`); rotation takes the pair beside
-    // them, which is where Krita and Blender put a step through an angle too.
-    case ",":
-    case "<":
-      return { type: "rotateView", radians: -ROTATE_STEP }
-    case ".":
-    case ">":
-      return { type: "rotateView", radians: ROTATE_STEP }
-    case "h":
-      return { type: "flipView" }
-    // The arrows nudge the canvas, for the artist who has no wheel under the
-    // hand that is free.
-    case "arrowleft":
-      return { type: "panView", dx: PAN_STEP, dy: 0 }
-    case "arrowright":
-      return { type: "panView", dx: -PAN_STEP, dy: 0 }
-    case "arrowup":
-      return { type: "panView", dx: 0, dy: PAN_STEP }
-    case "arrowdown":
-      return { type: "panView", dx: 0, dy: -PAN_STEP }
-  }
-}
-
-/**
- * The radius a size key asks for, given the one in the hand, or nothing.
- *
- * The brackets, because that is where every hand trained on Photoshop,
- * Procreate, Krita or Clip Studio already reaches — a size change is the
- * adjustment made most often, and it should not cost a trip to a panel.
- */
-function sizeForKey(key: string, radius: number): number | undefined {
-  if (key !== "[" && key !== "]") return
-  const next = key === "]" ? radius * SIZE_STEP : radius / SIZE_STEP
-  // A step that rounds back to where it started would make the key look dead
-  // at the small end, where the multiplicative step is under half a pixel.
-  const nudged =
-    key === "]" ? Math.max(next, radius + 0.5) : Math.min(next, radius - 0.5)
-  const clamped = Math.min(MAX_RADIUS, Math.max(MIN_RADIUS, nudged))
-  return clamped === radius ? undefined : clamped
 }
 
 const getInitialSnapshot = () => INITIAL_SNAPSHOT
@@ -596,59 +524,16 @@ export function CanvasHost({
     layersToggle.current?.focus()
   }, [panelsOpen])
 
-  useEffect(() => {
-    if (!engine) return
-    const onKeyDown = (event: KeyboardEvent) => {
-      // A layer being renamed owns its own keys, and these are not them. A key
-      // a control already handled, such as an arrow on one of the docked
-      // brush editor's sliders, must not also pan the canvas.
-      if (event.defaultPrevented) return
-      const target = event.target as HTMLElement | null
-      if (
-        target?.isContentEditable ||
-        ["INPUT", "TEXTAREA"].includes(target?.tagName ?? "")
-      )
-        return
-      const key = event.key.toLowerCase()
-      const accelerated = event.metaKey || event.ctrlKey
-      if ((key === "z" || key === "y") && accelerated && !event.altKey) {
-        event.preventDefault()
-        // A version being opened or taken back is itself an undo step in
-        // flight; another on top would race it.
-        if (versionPreview.current.busy) return
-        const redo = key === "y" || event.shiftKey
-        void engine.dispatch({ type: redo ? "redo" : "undo" })
-        return
-      }
-      // Navigation is unmodified: the hand that reaches for it is the one not
-      // holding the pen, and it should not have to hold a modifier too.
-      if (accelerated || event.altKey) return
-      // Size before navigation: the brackets belong to the brush, and the
-      // radius is read from the engine rather than closed over, so holding the
-      // key steps from the size the last press left rather than repeating one.
-      const current = engine.getSnapshot()
-      const tip = current.tool === "eraser" ? current.eraser : current.brush
-      const radius = sizeForKey(key, tip.shape.radius)
-      if (radius !== undefined) {
-        event.preventDefault()
-        void engine.dispatch({
-          type: current.tool === "eraser" ? "setEraser" : "setBrush",
-          radius,
-        })
-        return
-      }
-      const navigation = navigationForKey(key, event.shiftKey)
-      if (!navigation) return
-      event.preventDefault()
-      void engine.dispatch(
-        navigation.type === "resetView" || navigation.type === "fitView"
-          ? { ...navigation, occludedRight: occludedRight() }
-          : navigation
-      )
-    }
-    window.addEventListener("keydown", onKeyDown)
-    return () => window.removeEventListener("keydown", onKeyDown)
-  }, [engine, occludedRight])
+  // Undo, navigation and size are keystrokes before they are buttons, and
+  // every one of them — keys, buttons and tooltips — goes through the studio's
+  // command registry, so they agree about what a key does.
+  const commandContext: StudioContext = {
+    engine,
+    historyBusy: () => versionPreview.current.busy,
+    occludedRight,
+    setSampling,
+  }
+  useKeybinds(studioCommands, commandContext)
 
   /**
    * Frames the document the first time it is ready to be looked at.
@@ -673,24 +558,6 @@ export function CanvasHost({
     // away the zoom they had chosen to work at.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, snapshot.status, documentKey])
-
-  // The eyedropper is a held modifier rather than a tool (D-input), which
-  // leaves it with nowhere to announce itself. Tracking the key is what lets
-  // the cursor do it: the dropper appears under the hand before the click.
-  useEffect(() => {
-    const track = (event: KeyboardEvent) => setSampling(event.altKey)
-    // A window that loses focus mid-hold never sees the keyup, and a canvas
-    // still wearing the dropper would be lying about what a click does.
-    const clear = () => setSampling(false)
-    window.addEventListener("keydown", track)
-    window.addEventListener("keyup", track)
-    window.addEventListener("blur", clear)
-    return () => {
-      window.removeEventListener("keydown", track)
-      window.removeEventListener("keyup", track)
-      window.removeEventListener("blur", clear)
-    }
-  }, [])
 
   // A brush names its textures and never carries them (24), so a library
   // synced from another machine arrives as definitions pointing at assets this
@@ -789,50 +656,13 @@ export function CanvasHost({
   const unavailable = snapshot.status === "unavailable"
   const failed = snapshot.status === "failed"
   const viewActions = [
-    [
-      "Zoom out",
-      <MagnifyingGlassMinusIcon key="zoom-out" />,
-      () => void engine?.dispatch({ type: "zoomView", factor: 1 / ZOOM_STEP }),
-    ],
-    [
-      "Zoom in",
-      <MagnifyingGlassPlusIcon key="zoom-in" />,
-      () => void engine?.dispatch({ type: "zoomView", factor: ZOOM_STEP }),
-    ],
-    [
-      "Rotate left",
-      <ArrowCounterClockwiseIcon key="rotate-left" />,
-      () =>
-        void engine?.dispatch({ type: "rotateView", radians: -ROTATE_STEP }),
-    ],
-    [
-      "Rotate right",
-      <ArrowClockwiseIcon key="rotate-right" />,
-      () => void engine?.dispatch({ type: "rotateView", radians: ROTATE_STEP }),
-    ],
-    [
-      "Flip canvas horizontally",
-      <FlipHorizontalIcon key="flip" />,
-      () => void engine?.dispatch({ type: "flipView" }),
-    ],
-    [
-      "Fit canvas to window",
-      <CornersOutIcon key="fit" />,
-      () =>
-        void engine?.dispatch({
-          type: "fitView",
-          occludedRight: occludedRight(),
-        }),
-    ],
-    [
-      "Reset view",
-      <ArrowsClockwiseIcon key="reset" />,
-      () =>
-        void engine?.dispatch({
-          type: "resetView",
-          occludedRight: occludedRight(),
-        }),
-    ],
+    ["view.zoomOut", <MagnifyingGlassMinusIcon key="zoom-out" />],
+    ["view.zoomIn", <MagnifyingGlassPlusIcon key="zoom-in" />],
+    ["view.rotateLeft", <ArrowCounterClockwiseIcon key="rotate-left" />],
+    ["view.rotateRight", <ArrowClockwiseIcon key="rotate-right" />],
+    ["view.flip", <FlipHorizontalIcon key="flip" />],
+    ["view.fit", <CornersOutIcon key="fit" />],
+    ["view.reset", <ArrowsClockwiseIcon key="reset" />],
   ] as const
   return (
     <main
@@ -1013,14 +843,20 @@ export function CanvasHost({
                 />
               </>
             )}
-            {engine && <ExportDialog engine={engine} />}
+            {engine && (
+              <ExportDialog
+                engine={engine}
+                runCommand={(id) => runStudioCommand(id, commandContext)}
+              />
+            )}
             <IconButton
               variant="ghost"
               size="icon"
               label="Undo"
+              command="edit.undo"
               side="bottom"
               disabled={!snapshot.canUndo || historyBusy}
-              onClick={() => void engine?.dispatch({ type: "undo" })}
+              onClick={() => runStudioCommand("edit.undo", commandContext)}
               className="rounded-lg"
             >
               <ArrowUUpLeftIcon />
@@ -1029,9 +865,10 @@ export function CanvasHost({
               variant="ghost"
               size="icon"
               label="Redo"
+              command="edit.redo"
               side="bottom"
               disabled={!snapshot.canRedo || historyBusy}
-              onClick={() => void engine?.dispatch({ type: "redo" })}
+              onClick={() => runStudioCommand("edit.redo", commandContext)}
               className="rounded-lg"
             >
               <ArrowUUpRightIcon />
@@ -1355,6 +1192,7 @@ export function CanvasHost({
               <div className="flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl">
                 <RailAction
                   label="Brush tool"
+                  command="tool.brush"
                   variant={snapshot.tool === "brush" ? "default" : "ghost"}
                   size="icon"
                   aria-pressed={snapshot.tool === "brush"}
@@ -1362,7 +1200,7 @@ export function CanvasHost({
                     setEraserOpen(false)
                     if (snapshot.tool === "brush")
                       setLibraryOpen((open) => !open)
-                    void engine?.dispatch({ type: "setTool", tool: "brush" })
+                    runStudioCommand("tool.brush", commandContext)
                   }}
                   className="rounded-lg"
                 >
@@ -1370,6 +1208,7 @@ export function CanvasHost({
                 </RailAction>
                 <RailAction
                   label="Eraser tool"
+                  command="tool.eraser"
                   variant={snapshot.tool === "eraser" ? "default" : "ghost"}
                   size="icon"
                   aria-pressed={snapshot.tool === "eraser"}
@@ -1377,7 +1216,7 @@ export function CanvasHost({
                     setLibraryOpen(false)
                     if (snapshot.tool === "eraser")
                       setEraserOpen((open) => !open)
-                    void engine?.dispatch({ type: "setTool", tool: "eraser" })
+                    runStudioCommand("tool.eraser", commandContext)
                   }}
                   className="rounded-lg"
                 >
@@ -1487,6 +1326,9 @@ export function CanvasHost({
                   engine={engine}
                   snapshot={snapshot}
                   collapseRef={layersToggle}
+                  runCommand={(id, layerId) =>
+                    runStudioCommand(id, { ...commandContext, layerId })
+                  }
                   onCollapse={() => {
                     layersToggled.current = true
                     setPanelsOpen(false)
@@ -1587,26 +1429,25 @@ export function CanvasHost({
                     })
                   }
                 />
-                {viewActions.map(([label, icon, action]) => (
-                  <Tooltip key={label}>
+                {viewActions.map(([id, icon]) => (
+                  <Tooltip key={id}>
                     <TooltipTrigger asChild>
                       <Button
                         variant="ghost"
                         size="icon"
-                        aria-label={label}
+                        aria-label={studioCommands.get(id)?.label}
                         aria-pressed={
-                          label === "Flip canvas horizontally"
-                            ? snapshot.view.flipped
-                            : undefined
+                          id === "view.flip" ? snapshot.view.flipped : undefined
                         }
-                        onClick={action}
+                        onClick={() => runStudioCommand(id, commandContext)}
                         className="rounded-lg"
                       >
                         {icon}
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent side="left" sideOffset={8}>
-                      {label}
+                      {studioCommands.get(id)?.label}
+                      <KeybindHint registry={studioCommands} id={id} />
                     </TooltipContent>
                   </Tooltip>
                 ))}

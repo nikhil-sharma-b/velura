@@ -136,7 +136,14 @@ export const rename = mutation({
     const next = normaliseDocumentName(name)
     // A rename that changes nothing must not reorder the library.
     if (next === document.name) return
-    const updatedAt = nextUpdatedAt(document.updatedAt)
+    const newest = await ctx.db
+      .query("documents")
+      .withIndex("by_owner_updated", (q) => q.eq("ownerId", document.ownerId))
+      .order("desc")
+      .first()
+    const updatedAt = nextUpdatedAt(
+      Math.max(document.updatedAt, newest?.updatedAt ?? 0)
+    )
     await ctx.db.patch(documentId, {
       name: next,
       updatedAt,
@@ -226,11 +233,12 @@ export const remove = mutation({
 
 /**
  * `updatedAt` orders the library. A rename inside the same millisecond as the
- * row's last write would tie, and the tie falls back on creation time — exactly
- * the order the rename was meant to change. Advancing by a millisecond keeps
- * "most recently touched first" true however fast the writes land. Inserts need
- * no such nudge: for two rows created in the same millisecond, creation order
- * and the intended order already agree.
+ * newest write in the library would tie with it, and the tie falls back on
+ * creation time — exactly the order the rename was meant to change. Advancing
+ * a millisecond past the newest row, not only past this row's own last write,
+ * keeps "most recently touched first" true however fast the writes land.
+ * Inserts need no such nudge: for two rows created in the same millisecond,
+ * creation order and the intended order already agree.
  */
 function nextUpdatedAt(previous: number): number {
   return Math.max(Date.now(), previous + 1)

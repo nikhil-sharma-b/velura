@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, setSystemTime, test } from "bun:test"
 import { convexTest } from "convex-test"
 
 import { api } from "@/convex/_generated/api"
@@ -205,6 +205,35 @@ describe("managing the library", () => {
       documentId: first,
       name: "First again",
     })
+
+    expect(
+      (await artist.query(api.documents.list, {})).map((doc) => doc.name)
+    ).toEqual(["First again", "Second"])
+  })
+
+  test("a rename in the millisecond after another document's creation still lists it first", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    try {
+      setSystemTime(new Date(1_000_000))
+      const first = await artist.mutation(api.documents.create, {
+        name: "First",
+        width: 512,
+        height: 512,
+      })
+      setSystemTime(new Date(1_000_001))
+      await artist.mutation(api.documents.create, {
+        name: "Second",
+        width: 512,
+        height: 512,
+      })
+      await artist.mutation(api.documents.rename, {
+        documentId: first,
+        name: "First again",
+      })
+    } finally {
+      setSystemTime()
+    }
 
     expect(
       (await artist.query(api.documents.list, {})).map((doc) => doc.name)

@@ -9,6 +9,9 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { KeybindHint } from "@/features/commands/components/keybind-hint"
+
+import { studioCommands } from "../lib/studio-commands"
 
 /**
  * A button whose only content is an icon, and so whose only name is its
@@ -18,17 +21,22 @@ import {
  * An `aria-label` overrides the spoken name only, for a control whose context
  * the eye gets from where it sits — a card's "Share" — and the ear does not.
  * It should start with the label, so what is said matches what is shown.
+ *
+ * A button that runs a studio command names it, and its tooltip shows the
+ * command's keybind as the registry has it.
  */
 export function IconButton({
   label,
   side = "top",
   sideOffset = 8,
+  command,
   children,
   ...props
 }: ComponentProps<typeof Button> & {
   label: string
   side?: ComponentProps<typeof TooltipContent>["side"]
   sideOffset?: number
+  command?: string
   children: ReactNode
 }) {
   return (
@@ -41,6 +49,7 @@ export function IconButton({
         </TooltipTrigger>
         <TooltipContent side={side} sideOffset={sideOffset}>
           {label}
+          {command && <KeybindHint registry={studioCommands} id={command} />}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
