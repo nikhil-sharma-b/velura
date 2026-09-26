@@ -35,9 +35,14 @@ export interface StudioContext {
   occludedRight: () => number
   /** The eyedropper is held: the next click on the canvas samples. */
   setSampling: (sampling: boolean) => void
+  /** Opens the command palette, or closes it when it is open. */
+  togglePalette: () => void
 }
 
 type StudioCommand = Command<StudioContext>
+
+/** The command that opens the palette, which the palette itself leaves out. */
+export const PALETTE_COMMAND = "palette.toggle"
 
 const hasEngine = ({ engine }: StudioContext) => !!engine
 
@@ -127,6 +132,14 @@ function resize(direction: 1 | -1): Pick<StudioCommand, "run" | "available"> {
  * pen, and it should not have to hold a modifier too.
  */
 export const studioCommands = createRegistry<StudioContext>([
+  {
+    id: PALETTE_COMMAND,
+    label: "Command palette",
+    category: "General",
+    keybinds: ["mod+k"],
+    repeat: false,
+    run: ({ togglePalette }) => togglePalette(),
+  },
   {
     id: "edit.undo",
     label: "Undo",

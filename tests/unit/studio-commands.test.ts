@@ -42,6 +42,7 @@ function context(engine: Engine, layerId?: string): StudioContext {
     historyBusy: () => false,
     occludedRight: () => 0,
     setSampling: () => {},
+    togglePalette: () => {},
   }
 }
 
