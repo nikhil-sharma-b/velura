@@ -20,6 +20,7 @@ import type * as lib_brush from "../lib/brush.js";
 import type * as lib_collection from "../lib/collection.js";
 import type * as lib_documents from "../lib/documents.js";
 import type * as lib_palette from "../lib/palette.js";
+import type * as lib_preview_key from "../lib/preview-key.js";
 import type * as lib_r2 from "../lib/r2.js";
 import type * as lib_retention from "../lib/retention.js";
 import type * as palettes from "../palettes.js";
@@ -48,6 +49,7 @@ declare const fullApi: ApiFromModules<{
   "lib/collection": typeof lib_collection;
   "lib/documents": typeof lib_documents;
   "lib/palette": typeof lib_palette;
+  "lib/preview-key": typeof lib_preview_key;
   "lib/r2": typeof lib_r2;
   "lib/retention": typeof lib_retention;
   palettes: typeof palettes;

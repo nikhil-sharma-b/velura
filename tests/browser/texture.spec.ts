@@ -164,7 +164,10 @@ test("grain movement carries the tooth along with the brush", async ({
   const y = SIZE / 2
   const first = row(aligned, y, 20, 76)
   const second = row(offset, y, 20, 76)
-  expect(spread(first)).toBeGreaterThan(20)
+  // Carried grain leaves the band lighter than canvas-fixed paper does, and
+  // light marks on white paper sit in a compressed stretch of sRGB, so the
+  // tooth reads shallower here. Still well clear of a flat band's 2.
+  expect(spread(first)).toBeGreaterThan(10)
   // Somewhere along the row the two passes disagree by more than the couple of
   // levels the canvas-fixed paper stayed within.
   expect(
@@ -233,7 +236,8 @@ test("a tip texture rotates and scales with the stamp", async ({ page }) => {
       { tip: "graphite", grain: null, scale: 1, depth: 0, movement: 0 }
     )
     const image = read(await probe.screenshot())
-    const inked = (x: number, y: number) => image.at(x, y) > 60
+    // Dark ink on white paper: inked is well below the paper's 255.
+    const inked = (x: number, y: number) => image.at(x, y) < 195
     let width = 0
     let height = 0
     for (let i = 0; i < SIZE; i++) {
