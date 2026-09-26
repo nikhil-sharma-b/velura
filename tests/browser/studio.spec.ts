@@ -470,7 +470,7 @@ test("painting on a placed image says why nothing lands", async ({ page }) => {
   await page.getByRole("img", { name: "Drawing canvas" }).click({
     position: { x: 400, y: 300 },
   })
-  await expect(page.getByText(/is an image layer/)).toBeVisible()
+  await expect(page.getByText(/is a placed photo/)).toBeVisible()
   await expect(page.getByText(/is locked/)).toHaveCount(0)
 })
 
@@ -500,5 +500,5 @@ test("a right-click on an image layer is not a refused stroke", async ({
     button: "right",
     position: { x: 400, y: 300 },
   })
-  await expect(page.getByText(/is an image layer/)).toHaveCount(0)
+  await expect(page.getByText(/is a placed photo/)).toHaveCount(0)
 })

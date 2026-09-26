@@ -1,0 +1,25 @@
+name: Update Linux snapshots
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  snapshots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium
+      # Linux baselines are made on the runner CI compares them on, so the
+      # SwiftShader output matches exactly. Download and commit the result.
+      - run: bun run test:browser --update-snapshots=changed
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-snapshots
+          path: tests/browser/**/*-linux.png
+          retention-days: 7

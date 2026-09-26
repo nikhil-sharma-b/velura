@@ -14,6 +14,16 @@ export default defineConfig({
         "--enable-unsafe-webgpu",
         "--use-angle=swiftshader",
         "--enable-unsafe-swiftshader",
+        // Linux CI has no GPU. Without Vulkan-backed SwiftShader, headless
+        // Chromium cannot back a WebGPU canvas swap chain, and the device is
+        // lost on the first present.
+        ...(process.platform === "linux"
+          ? [
+              "--enable-features=Vulkan",
+              "--use-vulkan=swiftshader",
+              "--use-webgpu-adapter=swiftshader",
+            ]
+          : []),
       ],
     },
   },

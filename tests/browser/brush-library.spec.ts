@@ -54,7 +54,7 @@ test("the studio opens with a ready-made brush already in the hand", async ({
   // the engine's dynamics-free default.
   await page.keyboard.press("Escape")
   await page.getByRole("button", { name: "Brush editor" }).click()
-  await expect(editor(page)).toContainText("Round brush")
+  await expect(editor(page)).toContainText("Pencil")
   await expect(editor(page).getByText("No changes")).toBeVisible()
 })
 

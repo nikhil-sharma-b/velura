@@ -87,8 +87,8 @@ test("a second layer paints over the first and the first is left alone", async (
 
   await paintThroughGreen(page, origin)
   const marked = await painted(page)
-  // White ink on the layer above hides the green under it.
-  expect(channel(marked, IN_GREEN, 0)).toBeGreaterThan(200)
+  // Dark ink on the layer above hides the green under it.
+  expect(channel(marked, IN_GREEN, 1)).toBeLessThan(60)
 
   // Hiding the top layer shows the untouched scene again, which is only true
   // if the mark went into the new layer rather than into the one below it.
@@ -111,7 +111,7 @@ test("order and opacity decide what shows", async ({ page }) => {
   const [bottom, top] = state.layers.map((layer) => layer.id)
   await paintThroughGreen(page, origin)
   const over = await painted(page)
-  expect(channel(over, IN_GREEN, 0)).toBeGreaterThan(200)
+  expect(channel(over, IN_GREEN, 1)).toBeLessThan(60)
 
   // Sent under the scene, the mark is behind an opaque rectangle and gone.
   await page.evaluate(
@@ -132,10 +132,7 @@ test("order and opacity decide what shows", async ({ page }) => {
     [top, bottom]
   )
   const faded = await painted(page)
-  expect(channel(faded, IN_GREEN, 0)).toBeGreaterThan(
-    channel(under, IN_GREEN, 0)
-  )
-  expect(channel(faded, IN_GREEN, 0)).toBeLessThan(channel(over, IN_GREEN, 0))
+  expect(channel(faded, IN_GREEN, 1)).toBeLessThan(channel(under, IN_GREEN, 1))
   expect(channel(faded, IN_GREEN, 1)).toBeGreaterThan(
     channel(over, IN_GREEN, 1)
   )
@@ -345,7 +342,7 @@ test("blend commands update snapshots and pixels through the engine facade", asy
   await page.evaluate(() => window.engine.dispatch({ type: "addLayer" }))
   await paintThroughGreen(page, origin)
   const normal = await painted(page)
-  expect(channel(normal, IN_GREEN, 0)).toBeGreaterThan(200)
+  expect(channel(normal, IN_GREEN, 1)).toBeLessThan(60)
 
   const state = await page.evaluate(async () => {
     const { activeLayerId: id } = window.engine.getSnapshot()
@@ -359,9 +356,17 @@ test("blend commands update snapshots and pixels through the engine facade", asy
   })
   expect(state.layers[1]).toMatchObject({ blend: "multiply", opacity: 0.5 })
   const multiplied = await painted(page)
-  // The light neutral ink cannot turn green into white under Multiply.
-  expect(channel(multiplied, IN_GREEN, 0)).toBe(channel(scene, IN_GREEN, 0))
-  expect(channel(multiplied, IN_GREEN, 1)).toBeGreaterThan(200)
+  // Multiply only darkens: at half opacity the dark ink dims the green
+  // without reaching what Normal at full opacity covered it with.
+  expect(channel(multiplied, IN_GREEN, 1)).toBeLessThan(
+    channel(scene, IN_GREEN, 1)
+  )
+  expect(channel(multiplied, IN_GREEN, 1)).toBeGreaterThan(
+    channel(normal, IN_GREEN, 1)
+  )
+  expect(channel(multiplied, IN_GREEN, 0)).toBeLessThanOrEqual(
+    channel(scene, IN_GREEN, 0)
+  )
   await page.evaluate(
     (id) => window.engine.dispatch({ type: "selectLayer", id }),
     state.layers[0].id
