@@ -202,7 +202,7 @@ test("the canvas is usable, and the centre resolves, before every tile has loade
   // A big viewport so the document (tiles are sparse — only painted ones
   // exist at all) can hold more of them than one immediate viewport-priority
   // batch (engine/index.ts's `IMMEDIATE_TILES`) covers for one layer.
-  const size = { width: 1600, height: 1000 }
+  const size = { width: 1536, height: 1280 }
   await page.setViewportSize(size)
   const documentId = "doc-progressive"
   await page.goto("http://127.0.0.1:3101/tests/harness/")
@@ -230,12 +230,12 @@ test("the canvas is usable, and the centre resolves, before every tile has loade
   // Several sweeps across the full width, spread down the height: sparse
   // tiles only exist where paint actually landed, so this is what gives the
   // document more tiles than one layer's immediate batch covers.
-  for (const fraction of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) {
+  for (const fraction of [0.1, 0.3, 0.5, 0.7, 0.9]) {
     const before = await page.evaluate(() => window.engine.historyUsage().steps)
     const y = box.y + size.height * fraction
     await page.mouse.move(box.x + 10, y)
     await page.mouse.down()
-    await page.mouse.move(box.x + size.width - 10, y, { steps: 12 })
+    await page.mouse.move(box.x + size.width - 10, y, { steps: 5 })
     await page.mouse.up()
     await page.waitForFunction(
       (steps) => window.engine.historyUsage().steps > steps,
@@ -289,7 +289,7 @@ test("the canvas is usable, and the centre resolves, before every tile has loade
 test("a change made while tiles are still loading is saved, with every tile it has not loaded yet", async ({
   page,
 }) => {
-  const size = { width: 1600, height: 1000 }
+  const size = { width: 1536, height: 1280 }
   await page.setViewportSize(size)
   const documentId = newId()
   await page.goto("http://127.0.0.1:3101/tests/harness/")
@@ -310,12 +310,12 @@ test("a change made while tiles are still loading is saved, with every tile it h
     [size.width, size.height, documentId] as const
   )
   const box = (await page.locator("canvas").boundingBox())!
-  for (const fraction of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) {
+  for (const fraction of [0.1, 0.3, 0.5, 0.7, 0.9]) {
     const before = await page.evaluate(() => window.engine.historyUsage().steps)
     const y = box.y + size.height * fraction
     await page.mouse.move(box.x + 10, y)
     await page.mouse.down()
-    await page.mouse.move(box.x + size.width - 10, y, { steps: 12 })
+    await page.mouse.move(box.x + size.width - 10, y, { steps: 5 })
     await page.mouse.up()
     await page.waitForFunction(
       (steps) => window.engine.historyUsage().steps > steps,
