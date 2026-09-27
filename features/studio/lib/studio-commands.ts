@@ -154,7 +154,7 @@ export const studioCommands = createRegistry<StudioContext>([
   },
   {
     // Tab, as in Photoshop and Krita: the key that clears the screen is the
-    // one every painter already expects to.
+    // key every painter already reaches for.
     id: "view.zen",
     label: "Zen mode",
     category: "View",
