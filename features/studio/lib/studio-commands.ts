@@ -37,6 +37,8 @@ export interface StudioContext {
   setSampling: (sampling: boolean) => void
   /** Opens the command palette, or closes it when it is open. */
   togglePalette: () => void
+  /** Opens the preferences panel. */
+  openPreferences: () => void
 }
 
 type StudioCommand = Command<StudioContext>
@@ -139,6 +141,14 @@ export const studioCommands = createRegistry<StudioContext>([
     keybinds: ["mod+k"],
     repeat: false,
     run: ({ togglePalette }) => togglePalette(),
+  },
+  {
+    id: "preferences.open",
+    label: "Preferences",
+    category: "General",
+    keybinds: ["mod+,"],
+    repeat: false,
+    run: ({ openPreferences }) => openPreferences(),
   },
   {
     id: "edit.undo",

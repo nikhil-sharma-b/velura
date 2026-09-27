@@ -93,6 +93,8 @@ import {
 } from "../lib/studio-commands"
 import { CommandPalette } from "@/features/commands/components/command-palette"
 import { useKeybinds } from "@/features/commands/hooks/use-keybinds"
+import { useBoundRegistry } from "@/features/commands/hooks/use-keybind-overrides"
+import { PreferencesPanel } from "@/features/commands/components/preferences-panel"
 import { KeybindHint } from "@/features/commands/components/keybind-hint"
 
 function RailAction({
@@ -311,6 +313,7 @@ export function CanvasHost({
   /** Alt is down, so the next click on the canvas samples rather than paints. */
   const [sampling, setSampling] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [preferencesOpen, setPreferencesOpen] = useState(false)
   /** The canvas the engine presents into; the transform box sits over it. */
   const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(
     null
@@ -536,8 +539,12 @@ export function CanvasHost({
     occludedRight,
     setSampling,
     togglePalette: () => setPaletteOpen((open) => !open),
+    openPreferences: () => setPreferencesOpen(true),
   }
-  useKeybinds(studioCommands, commandContext)
+  // The artist's own keybinds over the defaults. While preferences are open
+  // the keys are being rebound, not used.
+  const commands = useBoundRegistry(studioCommands)
+  useKeybinds(commands, commandContext, !preferencesOpen)
 
   /**
    * Frames the document the first time it is ready to be looked at.
@@ -1451,7 +1458,7 @@ export function CanvasHost({
                     </TooltipTrigger>
                     <TooltipContent side="left" sideOffset={8}>
                       {studioCommands.get(id)?.label}
-                      <KeybindHint registry={studioCommands} id={id} />
+                      <KeybindHint registry={commands} id={id} />
                     </TooltipContent>
                   </Tooltip>
                 ))}
@@ -1534,8 +1541,13 @@ export function CanvasHost({
           </section>
         </div>
       )}
+      <PreferencesPanel
+        defaults={studioCommands}
+        open={preferencesOpen}
+        onOpenChange={setPreferencesOpen}
+      />
       <CommandPalette
-        registry={studioCommands}
+        registry={commands}
         context={commandContext}
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
