@@ -65,6 +65,7 @@ export function writeKeybindOverrides(overrides: KeybindOverrides) {
   for (const listener of listeners) listener()
 }
 
+/** The artist's keybind overrides on this device, kept current as they change. */
 export function useKeybindOverrides(): KeybindOverrides {
   return useSyncExternalStore(subscribe, read, () => EMPTY)
 }

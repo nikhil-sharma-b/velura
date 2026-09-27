@@ -97,7 +97,9 @@ export function rebind<Context>(
   for (const [other, chords] of bindings) {
     const at = chords.indexOf(next)
     if (other === id || at < 0) continue
-    if (mode === "swap" && replace !== undefined) chords.splice(at, 1, replace)
+    // A command that already has the replaced chord just loses this one.
+    if (mode === "swap" && replace !== undefined && !chords.includes(replace))
+      chords.splice(at, 1, replace)
     else chords.splice(at, 1)
   }
   const at = replace === undefined ? -1 : own.indexOf(replace)

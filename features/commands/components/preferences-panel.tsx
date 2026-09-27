@@ -1,7 +1,7 @@
 "use client"
 
 import { XIcon } from "@phosphor-icons/react"
-import { useState } from "react"
+import { useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -12,18 +12,19 @@ import {
 } from "@/components/ui/dialog"
 
 import {
+  useBoundRegistry,
   useKeybindOverrides,
   writeKeybindOverrides,
 } from "../hooks/use-keybind-overrides"
 import { usePlatform } from "../hooks/use-keybinds"
 import {
+  MODIFIERS,
   chordFromEvent,
   formatChord,
   normaliseKey,
   type Chord,
 } from "../lib/chord"
 import {
-  applyOverrides,
   conflictFor,
   rebind,
   resetCommand,
@@ -31,8 +32,6 @@ import {
   type RebindMode,
 } from "../lib/overrides"
 import type { Command, Registry } from "../lib/registry"
-
-const MODIFIER_KEYS = ["mod", "alt", "shift"]
 
 /** The slot being rebound: a new chord, or one in place of `replace`. */
 interface Capture {
@@ -62,9 +61,12 @@ export function PreferencesPanel<Context>({
 }) {
   const platform = usePlatform()
   const overrides = useKeybindOverrides()
-  const registry = applyOverrides(defaults, overrides)
+  const registry = useBoundRegistry(defaults)
   const [capture, setCapture] = useState<Capture>()
   const [pending, setPending] = useState<Pending>()
+  // The modifier pressed alone since capture began, so a key already held
+  // when it began cannot be recorded by being let go.
+  const lone = useRef<string | undefined>(undefined)
 
   const format = (chord: Chord) => formatChord(chord, platform)
 
@@ -99,14 +101,19 @@ export function PreferencesPanel<Context>({
       return setCapture(undefined)
     // A modifier alone is a chord too (hold-to-use), but only once it is let
     // go without another key having joined it.
-    if (MODIFIER_KEYS.includes(key)) return
+    if ((MODIFIERS as readonly string[]).includes(key)) {
+      lone.current = chordFromEvent(event) === key ? key : undefined
+      return
+    }
+    lone.current = undefined
     captured(chordFromEvent(event))
   }
   const onCaptureKeyUp = (event: React.KeyboardEvent) => {
     event.preventDefault()
     event.stopPropagation()
     const key = normaliseKey(event.key)
-    if (MODIFIER_KEYS.includes(key)) captured(key)
+    if (lone.current === key) captured(key)
+    lone.current = undefined
   }
 
   const categories = [
@@ -124,7 +131,15 @@ export function PreferencesPanel<Context>({
         onOpenChange(next)
       }}
     >
-      <DialogContent className="max-h-[85vh] grid-rows-[auto_1fr] sm:max-w-lg">
+      <DialogContent
+        // Escape while a key is awaited cancels the capture, not the panel.
+        onEscapeKeyDown={(event) => {
+          if (!capture) return
+          event.preventDefault()
+          setCapture(undefined)
+        }}
+        className="max-h-[85vh] grid-rows-[auto_1fr] sm:max-w-lg"
+      >
         <div>
           <DialogTitle>Preferences</DialogTitle>
           <DialogDescription>

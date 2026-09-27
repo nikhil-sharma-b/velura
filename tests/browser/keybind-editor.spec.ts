@@ -33,6 +33,11 @@ test("a rebound key runs its command and survives a reload", async ({
   await dialog
     .getByRole("button", { name: "Add a shortcut for Eraser tool" })
     .click()
+  await page.keyboard.press("Escape")
+  await expect(dialog).toBeVisible()
+  await dialog
+    .getByRole("button", { name: "Add a shortcut for Eraser tool" })
+    .click()
   await page.keyboard.press("x")
   await page.keyboard.press("Escape")
   await expect(dialog).toBeHidden()

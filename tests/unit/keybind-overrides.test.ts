@@ -89,6 +89,25 @@ describe("rebind", () => {
     expect(registry.lookup("mod+z")?.id).toBe("brush")
   })
 
+  test("swap never gives the owner a chord it already has", () => {
+    const next = rebind(defaults, {}, "redo", "mod+z", {
+      replace: "mod+y",
+      mode: "swap",
+    })
+    const withBoth = rebind(
+      defaults,
+      { undo: ["mod+z", "mod+y"] },
+      "redo",
+      "mod+z",
+      {
+        replace: "mod+y",
+        mode: "swap",
+      }
+    )
+    expect(next.undo).toEqual(["mod+y"])
+    expect(withBoth.undo).toEqual(["mod+y"])
+  })
+
   test("swapping back to the defaults leaves no overrides", () => {
     const swapped = rebind(defaults, {}, "undo", "b", {
       replace: "mod+z",
