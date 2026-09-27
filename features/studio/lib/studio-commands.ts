@@ -39,6 +39,8 @@ export interface StudioContext {
   togglePalette: () => void
   /** Opens the preferences panel. */
   openPreferences: () => void
+  /** Hides every control so only the canvas is left, or brings them back. */
+  toggleZen: () => void
 }
 
 type StudioCommand = Command<StudioContext>
@@ -149,6 +151,16 @@ export const studioCommands = createRegistry<StudioContext>([
     keybinds: ["mod+,"],
     repeat: false,
     run: ({ openPreferences }) => openPreferences(),
+  },
+  {
+    // Tab, as in Photoshop and Krita: the key that clears the screen is the
+    // one every painter already expects to.
+    id: "view.zen",
+    label: "Zen mode",
+    category: "View",
+    keybinds: ["tab"],
+    repeat: false,
+    run: ({ toggleZen }) => toggleZen(),
   },
   {
     id: "edit.undo",
