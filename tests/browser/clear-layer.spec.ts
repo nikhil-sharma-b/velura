@@ -141,3 +141,24 @@ test("clearing an empty or locked layer is not a step", async ({ page }) => {
   expect(await steps(page)).toBe(locked)
   expect(await painted(page)).toEqual(marked)
 })
+
+test("the canvas on screen shows the clear as soon as it is dispatched", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await page.evaluate(() => window.engine.dispatch({ type: "addLayer" }))
+  const canvas = page.locator("canvas")
+  const blank = await canvas.screenshot()
+  await paint(page, origin, 40)
+  expect(await canvas.screenshot()).not.toEqual(blank)
+
+  // No readback here: `readPixels` settles history and draws a fresh frame,
+  // which would hide a clear that never reached the presented canvas.
+  await page.evaluate(() =>
+    window.engine.dispatch({
+      type: "clearLayer",
+      id: window.engine.getSnapshot().activeLayerId,
+    })
+  )
+  expect(await canvas.screenshot()).toEqual(blank)
+})

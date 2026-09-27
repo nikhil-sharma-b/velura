@@ -3089,6 +3089,9 @@ export function createEngine(
             replaced: [{ surfaceId: layer.id, tiles: [] }],
             canvas: { width: document.width, height: document.height },
           })
+          // History empties the GPU tiles from its queue, so the frame that
+          // shows the clear has to wait for it or it draws the marks again.
+          await history.settle()
           applyLayerChange()
           break
         }
