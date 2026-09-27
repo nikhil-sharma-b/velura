@@ -21,6 +21,7 @@ import {
   recordSyncStatus,
 } from "@/features/library/lib/preview-cache"
 import { tabSessionId } from "@/features/library/lib/tab-session"
+import { PreferencesSync } from "@/features/commands/components/preferences-sync"
 import { useConvexPaletteStore } from "@/features/color/lib/convex-palette-store"
 import { useConvexBrushStore } from "@/features/studio/lib/convex-brush-store"
 import { CanvasHost } from "@/features/studio/components/canvas-host"
@@ -40,6 +41,7 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
         <RedirectToSignIn />
       </Unauthenticated>
       <Authenticated>
+        <PreferencesSync />
         {/* The segment is unvalidated text until Convex resolves it; a bad or
             foreign id throws in the query and lands on the error boundary. */}
         <OwnedDocument documentId={documentId as Id<"documents">} />

@@ -211,6 +211,16 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_owner_document", ["ownerId", "documentId"]),
 
+  // At most one row per artist: settings that belong to the person rather
+  // than to a document, so they follow them between machines (v2 04). The
+  // keybinds are the sparse overrides of `features/commands/lib/overrides.ts`,
+  // by command id; a command not listed keeps whatever its default is now.
+  preferences: defineTable({
+    ownerId: v.id("users"),
+    keybinds: v.record(v.string(), v.array(v.string())),
+    updatedAt: v.number(),
+  }).index("by_owner", ["ownerId"]),
+
   // One row per tab/device with a document open, heartbeat-refreshed while it
   // stays open (18). This is what lets a session opening a document already
   // open elsewhere warn instead of letting two tabs silently race each
