@@ -153,12 +153,13 @@ export const studioCommands = createRegistry<StudioContext>([
     run: ({ openPreferences }) => openPreferences(),
   },
   {
-    // Tab, as in Photoshop and Krita: the key that clears the screen is the
-    // key every painter already reaches for.
+    // F, where Photoshop cycles its screen modes. Not Tab: in a browser Tab
+    // is how the keyboard moves between the controls, and zen should not
+    // cost anyone that.
     id: "view.zen",
     label: "Zen mode",
     category: "View",
-    keybinds: ["tab"],
+    keybinds: ["f"],
     repeat: false,
     run: ({ toggleZen }) => toggleZen(),
   },

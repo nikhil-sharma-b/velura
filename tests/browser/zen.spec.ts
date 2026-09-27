@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test"
  * Zen hides every control and leaves the canvas; the keys and the pen keep
  * working underneath, and the controls come back as they were left.
  */
-test("tab hides the controls, painting still lands, and tab restores them", async ({
+test("f hides the controls, painting still lands, and f restores them", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 600 })
@@ -18,7 +18,7 @@ test("tab hides the controls, painting still lands, and tab restores them", asyn
   const layers = page.getByRole("region", { name: "Layers" })
   await expect(undo).toBeDisabled()
 
-  await page.keyboard.press("Tab")
+  await page.keyboard.press("f")
   await expect(undo).toBeHidden()
   await expect(layers).toBeHidden()
   await expect(page.getByText("Saved on this device")).toBeHidden()
@@ -41,14 +41,14 @@ test("tab hides the controls, painting still lands, and tab restores them", asyn
   await page.keyboard.press("Escape")
   await expect(search).toBeHidden()
 
-  await page.keyboard.press("Tab")
+  await page.keyboard.press("f")
   await expect(layers).toBeVisible()
   await expect(undo).toBeEnabled()
 
   // Undo reaches the engine while the controls are away.
-  await page.keyboard.press("Tab")
+  await page.keyboard.press("f")
   await expect(undo).toBeHidden()
   await page.keyboard.press("ControlOrMeta+z")
-  await page.keyboard.press("Tab")
+  await page.keyboard.press("f")
   await expect(undo).toBeDisabled()
 })

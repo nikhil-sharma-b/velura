@@ -157,7 +157,7 @@ describe("size steps", () => {
 })
 
 describe("zen mode", () => {
-  test("tab toggles it, once per press", () => {
+  test("f toggles it, once per press", () => {
     const { engine } = fakeEngine([raster("a")])
     const toggleZen = mock(() => {})
     const resolver = createKeybindResolver(studioCommands, () => ({
@@ -167,7 +167,7 @@ describe("zen mode", () => {
     const press = (repeat: boolean) => {
       const preventDefault = mock(() => {})
       resolver.keydown({
-        key: "Tab",
+        key: "f",
         shiftKey: false,
         metaKey: false,
         ctrlKey: false,
