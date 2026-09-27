@@ -18,7 +18,7 @@ export interface KeyLike {
   shiftKey: boolean
 }
 
-const MODIFIERS = ["mod", "alt", "shift"] as const
+export const MODIFIERS = ["mod", "alt", "shift"] as const
 
 const ALIASES: Record<string, string> = {
   cmd: "mod",

@@ -43,6 +43,7 @@ function context(engine: Engine, layerId?: string): StudioContext {
     occludedRight: () => 0,
     setSampling: () => {},
     togglePalette: () => {},
+    openPreferences: () => {},
   }
 }
 

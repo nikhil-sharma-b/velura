@@ -20,6 +20,7 @@ import {
 import type { Engine, EngineSnapshot } from "@/engine"
 import { useKeybindLabel } from "@/features/commands/hooks/use-keybinds"
 import { studioCommands } from "@/features/studio/lib/studio-commands"
+import { useBoundRegistry } from "@/features/commands/hooks/use-keybind-overrides"
 
 import type { PaletteRecord, PaletteStore } from "../lib/palette-store"
 
@@ -363,7 +364,10 @@ export function ColorPanel({
   // comparing against the last dispatched hex distinguishes.
   // The eyedropper's key as the registry has it; `formatChord` spells it for
   // the keyboard in front of the artist (⌥ on a Mac, Alt elsewhere).
-  const altLabel = useKeybindLabel(studioCommands, "tool.eyedropper")
+  const altLabel = useKeybindLabel(
+    useBoundRegistry(studioCommands),
+    "tool.eyedropper"
+  )
 
   const [sentHex, setSentHex] = useState(snapshot.color.hex)
   if (snapshot.color.hex !== sentHex) {

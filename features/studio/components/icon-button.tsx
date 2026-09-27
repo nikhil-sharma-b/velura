@@ -10,6 +10,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { KeybindHint } from "@/features/commands/components/keybind-hint"
+import { useBoundRegistry } from "@/features/commands/hooks/use-keybind-overrides"
 
 import { studioCommands } from "../lib/studio-commands"
 
@@ -39,6 +40,7 @@ export function IconButton({
   command?: string
   children: ReactNode
 }) {
+  const commands = useBoundRegistry(studioCommands)
   return (
     <TooltipProvider delayDuration={350}>
       <Tooltip>
@@ -49,7 +51,7 @@ export function IconButton({
         </TooltipTrigger>
         <TooltipContent side={side} sideOffset={sideOffset}>
           {label}
-          {command && <KeybindHint registry={studioCommands} id={command} />}
+          {command && <KeybindHint registry={commands} id={command} />}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
