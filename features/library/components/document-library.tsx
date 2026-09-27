@@ -45,6 +45,8 @@ import { Spinner } from "@/components/ui/spinner"
 import { api } from "@/convex/_generated/api"
 import type { Doc } from "@/convex/_generated/dataModel"
 import { NewDocumentDialog } from "@/features/library/components/new-document-dialog"
+import { PreferencesSync } from "@/features/commands/components/preferences-sync"
+import { forgetAccountKeybinds } from "@/features/commands/hooks/use-keybind-overrides"
 import { AnonymousMigration } from "@/features/library/components/anonymous-migration"
 import { IconButton } from "@/features/studio/components/icon-button"
 import {
@@ -70,6 +72,7 @@ export function DocumentLibrary() {
       </Unauthenticated>
       <Authenticated>
         <AnonymousMigration />
+        <PreferencesSync />
         <LibraryHeader />
         <DocumentList />
       </Authenticated>
@@ -109,6 +112,7 @@ function LibraryHeader() {
             // refresh token — goes with the server session, so a shared machine
             // is left with nothing to reopen.
             await signOut()
+            forgetAccountKeybinds()
             router.replace("/signin")
           }}
         >
