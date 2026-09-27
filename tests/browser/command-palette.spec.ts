@@ -77,3 +77,23 @@ test("keys pressed right after Escape reach the canvas", async ({ page }) => {
   await page.keyboard.press("e")
   await expect(eraser).toHaveAttribute("aria-pressed", "true")
 })
+
+test("the palette takes typing again after preferences opened from it closes", async ({
+  page,
+}) => {
+  await openStudio(page)
+  const search = await openPalette(page)
+  await search.fill("preferences")
+  await page.keyboard.press("Enter")
+  const preferences = page.getByRole("dialog", { name: "Preferences" })
+  await expect(preferences).toBeVisible()
+  // Straight on, while preferences is still animating out: an artist does
+  // not wait for a fade before reaching for the next key.
+  await page.keyboard.press("Escape")
+  const again = await openPalette(page)
+  await expect(preferences).toBeHidden()
+  await page.keyboard.type("clear layer")
+  await expect(again).toHaveValue("clear layer")
+  await page.keyboard.press("Escape")
+  await expect(again).toBeHidden()
+})
