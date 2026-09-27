@@ -375,6 +375,11 @@ export type EngineCommand =
   | { type: "duplicateLayer"; id: string }
   /** Removes a layer. The document always keeps at least one. */
   | { type: "removeLayer"; id: string }
+  /**
+   * Empties a paintable layer's pixels. The layer itself — its name, blend,
+   * mask and place in the tree — stays, and the emptying is one undo step.
+   */
+  | { type: "clearLayer"; id: string }
   /** Starts a blank artwork at the current document size. */
   | { type: "clearDocument" }
   /** Chooses where the pen paints, which is what the caches are built around. */
@@ -3067,6 +3072,23 @@ export function createEngine(
           const mask = removeMask(document, command.id)
           recordOperation("remove mask", before, { removed: [mask.id] })
           renderer?.releaseLayer(mask.id)
+          applyLayerChange()
+          break
+        }
+        case "clearLayer": {
+          const document = requireDocument()
+          const layer = findLayer(document, command.id)
+          // A locked layer is not to be touched, and a placed image's pixels
+          // are rendered from its file, so neither is cleared.
+          if (layer.locked || layer.image) break
+          // Clearing nothing is not a step worth undoing.
+          if (!history?.occupiedTiles(layer.id).length) break
+          // Replacing with no tiles at all is what empty means; the step keeps
+          // what was there, so undo puts it back.
+          recordOperation("clear layer", captureStructure(document), {
+            replaced: [{ surfaceId: layer.id, tiles: [] }],
+            canvas: { width: document.width, height: document.height },
+          })
           applyLayerChange()
           break
         }

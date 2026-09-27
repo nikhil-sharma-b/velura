@@ -90,6 +90,9 @@ function onLayer(
 }
 
 const isRaster = (layer: LayerSummary) => layer.kind === "raster"
+/** A layer whose own pixels the artist may change: not locked, not an image. */
+const isPaintable = (layer: LayerSummary) =>
+  layer.kind === "raster" && !layer.locked && !layer.image
 
 /**
  * The radius one press of a size key steps to, from the one in the hand, or
@@ -240,6 +243,12 @@ export const studioCommands = createRegistry<StudioContext>([
     label: "Duplicate layer",
     category: "Layers",
     ...onLayer((layer) => ({ type: "duplicateLayer", id: layer.id }), isRaster),
+  },
+  {
+    id: "layer.clear",
+    label: "Clear layer",
+    category: "Layers",
+    ...onLayer((layer) => ({ type: "clearLayer", id: layer.id }), isPaintable),
   },
   {
     // The document keeps at least one layer to paint on, so the last one
