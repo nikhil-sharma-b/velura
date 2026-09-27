@@ -107,6 +107,13 @@ test("a group shows its children together, and a mask sits beside its layer", as
 }) => {
   const layers = await openStudio(page)
   await layers.getByRole("button", { name: "Add layer" }).click()
+  // A group's thumbnail scales its children down further than a layer row
+  // does, and the default pencil line thins out to nothing at that size on
+  // CI's software rasteriser. A broad stroke survives the reduction.
+  const size = page.getByRole("button", { name: /^Size:/ })
+  const initial = (await size.getAttribute("aria-label"))!
+  for (let press = 0; press < 10; press++) await page.keyboard.press("]")
+  await expect(size).not.toHaveAttribute("aria-label", initial)
   await (
     await stroke(page, 200, 600)
   )()
