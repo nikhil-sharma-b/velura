@@ -68,3 +68,12 @@ test("an unavailable command is disabled and does not run", async ({
   await page.keyboard.press("Enter")
   await expect(search).toBeVisible()
 })
+
+test("keys pressed right after Escape reach the canvas", async ({ page }) => {
+  await openStudio(page)
+  const eraser = page.getByRole("button", { name: "Eraser tool" })
+  await openPalette(page)
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("e")
+  await expect(eraser).toHaveAttribute("aria-pressed", "true")
+})

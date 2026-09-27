@@ -44,6 +44,7 @@ function context(engine: Engine, layerId?: string): StudioContext {
     setSampling: () => {},
     togglePalette: () => {},
     openPreferences: () => {},
+    toggleZen: () => {},
   }
 }
 
@@ -152,5 +153,34 @@ describe("size steps", () => {
     expect(steppedRadius(0.5, -1)).toBeUndefined()
     expect(steppedRadius(200, 1)).toBeUndefined()
     expect(steppedRadius(190, 1)).toBe(200)
+  })
+})
+
+describe("zen mode", () => {
+  test("f toggles it, once per press", () => {
+    const { engine } = fakeEngine([raster("a")])
+    const toggleZen = mock(() => {})
+    const resolver = createKeybindResolver(studioCommands, () => ({
+      ...context(engine),
+      toggleZen,
+    }))
+    const press = (repeat: boolean) => {
+      const preventDefault = mock(() => {})
+      resolver.keydown({
+        key: "f",
+        shiftKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+        repeat,
+        defaultPrevented: false,
+        target: null,
+        preventDefault,
+      })
+      return preventDefault
+    }
+    expect(press(false)).toHaveBeenCalled()
+    press(true)
+    expect(toggleZen).toHaveBeenCalledTimes(1)
   })
 })

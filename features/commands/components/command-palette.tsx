@@ -1,6 +1,6 @@
 "use client"
 
-import { useId, useState } from "react"
+import { useId, useRef, useState } from "react"
 
 import {
   Dialog,
@@ -57,6 +57,7 @@ export function CommandPalette<Context>({
 }) {
   const platform = usePlatform()
   const listId = useId()
+  const search = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState("")
   const [active, setActive] = useState(0)
   const [recent, setRecent] = useState<string[]>([])
@@ -72,6 +73,17 @@ export function CommandPalette<Context>({
     }
   }
 
+  /**
+   * The dialog stays mounted while it animates out, and the search field would
+   * keep focus all that time: the window's keybinds leave a focused field's
+   * keys alone, so the first keys after closing would go nowhere. Letting go
+   * of focus as it closes hands them back to the canvas at once.
+   */
+  const setOpen = (next: boolean) => {
+    if (!next) search.current?.blur()
+    onOpenChange(next)
+  }
+
   const entries = open
     ? paletteEntries(registry, context, query, recent, [toggleId])
     : []
@@ -85,14 +97,14 @@ export function CommandPalette<Context>({
     writeRecent(next)
     // Closed first, so a command that moves focus or opens a panel of its own
     // is not undone by the dialog handing focus back as it goes.
-    onOpenChange(false)
+    setOpen(false)
     entry.command.run(context)
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (registry.lookup(chordFromEvent(event))?.id === toggleId) {
       event.preventDefault()
-      onOpenChange(false)
+      setOpen(false)
     } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault()
       const step = event.key === "ArrowDown" ? 1 : -1
@@ -106,7 +118,7 @@ export function CommandPalette<Context>({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         showCloseButton={false}
         className="top-[20%] translate-y-0 gap-0 p-0 sm:max-w-md"
@@ -116,6 +128,7 @@ export function CommandPalette<Context>({
           Search for a command and press Enter to run it.
         </DialogDescription>
         <input
+          ref={search}
           role="combobox"
           aria-label="Search commands"
           aria-expanded

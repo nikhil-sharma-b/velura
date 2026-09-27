@@ -314,6 +314,9 @@ export function CanvasHost({
   const [sampling, setSampling] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [preferencesOpen, setPreferencesOpen] = useState(false)
+  // Zen hides the controls rather than unmounting them, so the panels the
+  // artist had open are open again when they come back.
+  const [zen, setZen] = useState(false)
   /** The canvas the engine presents into; the transform box sits over it. */
   const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(
     null
@@ -515,7 +518,9 @@ export function CanvasHost({
    */
   const occludedRight = useCallback(() => {
     const panel = brushPanel.current
-    if (!panel) return 0
+    // A hidden panel measures as a zero rect at the left edge, which would
+    // read as covering the whole window.
+    if (!panel || !panel.getClientRects().length) return 0
     return Math.max(0, window.innerWidth - panel.getBoundingClientRect().left)
   }, [])
 
@@ -540,6 +545,7 @@ export function CanvasHost({
     setSampling,
     togglePalette: () => setPaletteOpen((open) => !open),
     openPreferences: () => setPreferencesOpen(true),
+    toggleZen: () => setZen((on) => !on),
   }
   // The artist's own keybinds over the defaults. While preferences are open
   // the keys are being rebound, not used.
@@ -769,7 +775,7 @@ export function CanvasHost({
         style={{ cursor: sampling ? SAMPLING_CURSOR : TOOL_CURSOR }}
       />
       {snapshot.status === "ready" && (
-        <>
+        <div className="contents" hidden={zen} data-testid="studio-chrome">
           <div className="pointer-events-none absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-studio-edge bg-studio-surface/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
             <span>{documentName || DEFAULT_DOCUMENT_NAME}</span>
             {snapshot.loading && (
@@ -1493,7 +1499,7 @@ export function CanvasHost({
               {imageProblem}
             </div>
           )}
-        </>
+        </div>
       )}
       {snapshot.status !== "ready" && (
         <div className="absolute inset-0 grid place-items-center bg-background p-6">
