@@ -181,7 +181,7 @@ V2 makes Velura a tool you can revise and finish work in.
 - Overrides and other preferences are stored per user in Convex in a new preferences table, cached locally so shortcuts work before sync. Anonymous users keep them locally, and they move into the account with the rest of the anonymous-upgrade migration.
 - The registry lives outside the engine. Engine-side actions are commands that issue existing engine commands; the engine stays free of React and DOM dependencies.
 
-**Zen mode.** A UI state toggled by a registry command (default Tab). It hides the chrome only; the canvas host, input handling and keybind resolver keep running.
+**Zen mode.** A UI state toggled by a registry command (default F; Tab stays keyboard focus navigation). It hides the chrome only; the canvas host, input handling and keybind resolver keep running.
 
 **Clear.** A new engine command that empties the active layer — or, when a selection exists, the selected area weighted by the mask. On vector layers it removes objects: all of them, or those within the selection. It records a single undo entry through the existing undo system.
 
