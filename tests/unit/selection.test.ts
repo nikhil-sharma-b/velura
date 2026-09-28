@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import {
+  combineSelections,
   dragRect,
   ellipseSelection,
   invertSelection,
+  lassoSelection,
   rectSelection,
   sameSelection,
   selectAll,
@@ -201,5 +203,150 @@ describe("sameSelection", () => {
       sameSelection(rectSelection(size, rect), ellipseSelection(size, rect))
     ).toBe(false)
     expect(sameSelection(rectSelection(size, rect), null)).toBe(false)
+  })
+})
+
+describe("lasso selection", () => {
+  test("fills the closed outline, pixel centres inside it selected", () => {
+    const mask = lassoSelection(size, [
+      { x: 10, y: 10 },
+      { x: 50, y: 10 },
+      { x: 50, y: 40 },
+      { x: 10, y: 40 },
+    ])!
+    expect(mask.bounds).toEqual({ x: 10, y: 10, width: 40, height: 30 })
+    expect(mask.coverage(10, 10)).toBe(255)
+    expect(mask.coverage(49, 39)).toBe(255)
+    expect(mask.coverage(50, 20)).toBe(0)
+  })
+
+  test("closes the outline itself: a triangle leaves its far corner out", () => {
+    const mask = lassoSelection(size, [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 0, y: 100 },
+    ])!
+    expect(mask.coverage(10, 10)).toBe(255)
+    expect(mask.coverage(90, 90)).toBe(0)
+    expect(mask.coverage(60, 30)).toBe(255)
+    expect(mask.coverage(60, 45)).toBe(0)
+  })
+
+  test("a self-crossing outline selects both lobes of the figure eight", () => {
+    const mask = lassoSelection(size, [
+      { x: 0, y: 0 },
+      { x: 40, y: 40 },
+      { x: 40, y: 0 },
+      { x: 0, y: 40 },
+    ])!
+    expect(mask.coverage(5, 20)).toBe(255)
+    expect(mask.coverage(35, 20)).toBe(255)
+    expect(mask.coverage(20, 5)).toBe(0)
+  })
+
+  test("fewer than three points, or no area, selects nothing", () => {
+    expect(lassoSelection(size, [])).toBeNull()
+    expect(
+      lassoSelection(size, [
+        { x: 0, y: 0 },
+        { x: 10, y: 10 },
+      ])
+    ).toBeNull()
+    expect(
+      lassoSelection(size, [
+        { x: 0, y: 0 },
+        { x: 10, y: 10 },
+        { x: 20, y: 20 },
+      ])
+    ).toBeNull()
+  })
+
+  test("a large outline fills interior tiles with the shared full tile", () => {
+    const mask = lassoSelection(size, [
+      { x: 0, y: 0 },
+      { x: 1000, y: 0 },
+      { x: 1000, y: 600 },
+      { x: 0, y: 600 },
+    ])!
+    expect(sameSelection(mask, selectAll(size))).toBe(true)
+    expect(mask.tiles().every((tile) => tile.full)).toBe(true)
+  })
+
+  test("clips to the canvas", () => {
+    const mask = lassoSelection(size, [
+      { x: -50, y: -50 },
+      { x: 20, y: -50 },
+      { x: 20, y: 20 },
+      { x: -50, y: 20 },
+    ])!
+    expect(mask.bounds).toEqual({ x: 0, y: 0, width: 20, height: 20 })
+  })
+})
+
+describe("combining selections", () => {
+  const a = () => rectSelection(size, { x: 0, y: 0, width: 60, height: 40 })
+  const b = () => rectSelection(size, { x: 40, y: 20, width: 60, height: 40 })
+
+  test("replace keeps only the new shape", () => {
+    const next = b()
+    expect(combineSelections(size, a(), next, "replace")).toBe(next)
+  })
+
+  test("add is the union", () => {
+    const mask = combineSelections(size, a(), b(), "add")!
+    expect(mask.bounds).toEqual({ x: 0, y: 0, width: 100, height: 60 })
+    expect(mask.coverage(5, 5)).toBe(255)
+    expect(mask.coverage(95, 55)).toBe(255)
+    expect(mask.coverage(95, 5)).toBe(0)
+  })
+
+  test("subtract takes the new shape away", () => {
+    const mask = combineSelections(size, a(), b(), "subtract")!
+    expect(mask.coverage(5, 5)).toBe(255)
+    expect(mask.coverage(50, 30)).toBe(0)
+    expect(mask.coverage(50, 10)).toBe(255)
+    expect(mask.coverage(95, 55)).toBe(0)
+  })
+
+  test("intersect keeps only the overlap", () => {
+    const mask = combineSelections(size, a(), b(), "intersect")!
+    expect(mask.bounds).toEqual({ x: 40, y: 20, width: 20, height: 20 })
+  })
+
+  test("with nothing selected, add and replace give the shape; subtract and intersect nothing", () => {
+    expect(sameSelection(combineSelections(size, null, b(), "add"), b())).toBe(
+      true
+    )
+    expect(combineSelections(size, null, b(), "subtract")).toBeNull()
+    expect(combineSelections(size, null, b(), "intersect")).toBeNull()
+  })
+
+  test("an empty shape leaves add and subtract as they were, empties intersect", () => {
+    const base = a()
+    expect(combineSelections(size, base, null, "add")).toBe(base)
+    expect(combineSelections(size, base, null, "subtract")).toBe(base)
+    expect(combineSelections(size, base, null, "intersect")).toBeNull()
+  })
+
+  test("soft edges combine by coverage", () => {
+    const soft = ellipseSelection(size, { x: 0, y: 0, width: 40, height: 40 })!
+    let edge = { x: 0, y: 0 }
+    for (let x = 0; x < 40; x++) {
+      const v = soft.coverage(x, 3)
+      if (v > 0 && v < 255) edge = { x, y: 3 }
+    }
+    const value = soft.coverage(edge.x, edge.y)
+    expect(value).toBeGreaterThan(0)
+    expect(value).toBeLessThan(255)
+    const removed = combineSelections(size, selectAll(size), soft, "subtract")!
+    expect(removed.coverage(edge.x, edge.y)).toBe(255 - value)
+  })
+
+  test("tiles untouched by the shape are shared, not copied", () => {
+    const far = rectSelection(size, { x: 900, y: 530, width: 50, height: 50 })!
+    const all = selectAll(size)
+    const mask = combineSelections(size, all, far, "subtract")!
+    const shared = mask.tiles().filter((tile) => tile.full).length
+    expect(shared).toBe(all.tileCount() - 1)
   })
 })

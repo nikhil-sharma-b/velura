@@ -213,6 +213,21 @@ export const studioCommands = createRegistry<StudioContext>([
     ...dispatching({ type: "setTool", tool: "ellipseSelect" }),
   },
   {
+    // L for the lasso, as M is for the marquee; Shift for the polygonal one.
+    id: "tool.lasso",
+    label: "Lasso tool",
+    category: "Tools",
+    keybinds: ["l"],
+    ...dispatching({ type: "setTool", tool: "lasso" }),
+  },
+  {
+    id: "tool.polygonLasso",
+    label: "Polygonal lasso tool",
+    category: "Tools",
+    keybinds: ["shift+l"],
+    ...dispatching({ type: "setTool", tool: "polygonLasso" }),
+  },
+  {
     id: "select.all",
     label: "Select all",
     category: "Select",

@@ -18,7 +18,9 @@ import {
   FlipHorizontalIcon,
   MagnifyingGlassMinusIcon,
   MagnifyingGlassPlusIcon,
+  LassoIcon,
   PaletteIcon,
+  PolygonIcon,
   SelectionIcon,
   SlidersIcon,
   StackIcon,
@@ -52,6 +54,7 @@ import {
   createEngine,
   type Engine,
   INITIAL_SNAPSHOT,
+  isSelectionTool,
   MAX_ZOOM,
   MIN_ZOOM,
   type LayerSummary,
@@ -297,6 +300,13 @@ export function CanvasHost({
   const layersToggled = useRef(false)
   const [eraserOpen, setEraserOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  // The member of each selection family last in the hand, which its rail
+  // slot shows and a press picks up again (09). Followed from the snapshot,
+  // so a keybind moves it as a click does.
+  const [marqueeTool, setMarqueeTool] = useState<
+    "rectSelect" | "ellipseSelect"
+  >("rectSelect")
+  const [lassoTool, setLassoTool] = useState<"lasso" | "polygonLasso">("lasso")
   const [pressureOpen, setPressureOpen] = useState(false)
   /**
    * The brush as it was last saved. The engine holds the *working* brush — so
@@ -350,6 +360,16 @@ export function CanvasHost({
     engine?.getSnapshot ?? getInitialSnapshot,
     getInitialSnapshot
   )
+  if (
+    (snapshot.tool === "rectSelect" || snapshot.tool === "ellipseSelect") &&
+    snapshot.tool !== marqueeTool
+  )
+    setMarqueeTool(snapshot.tool)
+  if (
+    (snapshot.tool === "lasso" || snapshot.tool === "polygonLasso") &&
+    snapshot.tool !== lassoTool
+  )
+    setLassoTool(snapshot.tool)
 
   // React 19 ref cleanup also covers Strict Mode's attach/detach rehearsal.
   const attach = useCallback(
@@ -777,8 +797,7 @@ export function CanvasHost({
         style={{
           cursor: sampling
             ? SAMPLING_CURSOR
-            : snapshot.tool === "rectSelect" ||
-                snapshot.tool === "ellipseSelect"
+            : isSelectionTool(snapshot.tool)
               ? "crosshair"
               : TOOL_CURSOR,
         }}
@@ -1254,37 +1273,82 @@ export function CanvasHost({
                     }
                   />
                 </RailAction>
+                {/* One slot per family, as the rail has height for no more:
+                    the one in the hand shows, and a second press swaps to
+                    its sibling. */}
                 <RailAction
-                  label="Rectangle select tool"
-                  command="tool.rectSelect"
-                  variant={snapshot.tool === "rectSelect" ? "default" : "ghost"}
-                  size="icon"
-                  aria-pressed={snapshot.tool === "rectSelect"}
-                  onClick={() => {
-                    setLibraryOpen(false)
-                    setEraserOpen(false)
-                    runStudioCommand("tool.rectSelect", commandContext)
-                  }}
-                  className="rounded-lg"
-                >
-                  <SelectionIcon />
-                </RailAction>
-                <RailAction
-                  label="Ellipse select tool"
-                  command="tool.ellipseSelect"
+                  label={
+                    marqueeTool === "ellipseSelect"
+                      ? "Ellipse select tool"
+                      : "Rectangle select tool"
+                  }
+                  command={`tool.${marqueeTool}`}
                   variant={
-                    snapshot.tool === "ellipseSelect" ? "default" : "ghost"
+                    snapshot.tool === "rectSelect" ||
+                    snapshot.tool === "ellipseSelect"
+                      ? "default"
+                      : "ghost"
                   }
                   size="icon"
-                  aria-pressed={snapshot.tool === "ellipseSelect"}
+                  aria-pressed={
+                    snapshot.tool === "rectSelect" ||
+                    snapshot.tool === "ellipseSelect"
+                  }
                   onClick={() => {
                     setLibraryOpen(false)
                     setEraserOpen(false)
-                    runStudioCommand("tool.ellipseSelect", commandContext)
+                    const next =
+                      snapshot.tool !== marqueeTool
+                        ? marqueeTool
+                        : marqueeTool === "rectSelect"
+                          ? "ellipseSelect"
+                          : "rectSelect"
+                    runStudioCommand(`tool.${next}`, commandContext)
                   }}
                   className="rounded-lg"
                 >
-                  <CircleDashedIcon />
+                  {marqueeTool === "ellipseSelect" ? (
+                    <CircleDashedIcon />
+                  ) : (
+                    <SelectionIcon />
+                  )}
+                </RailAction>
+                <RailAction
+                  label={
+                    lassoTool === "polygonLasso"
+                      ? "Polygonal lasso tool"
+                      : "Lasso tool"
+                  }
+                  command={`tool.${lassoTool}`}
+                  variant={
+                    snapshot.tool === "lasso" ||
+                    snapshot.tool === "polygonLasso"
+                      ? "default"
+                      : "ghost"
+                  }
+                  size="icon"
+                  aria-pressed={
+                    snapshot.tool === "lasso" ||
+                    snapshot.tool === "polygonLasso"
+                  }
+                  onClick={() => {
+                    setLibraryOpen(false)
+                    setEraserOpen(false)
+                    const next =
+                      snapshot.tool !== lassoTool
+                        ? lassoTool
+                        : lassoTool === "lasso"
+                          ? "polygonLasso"
+                          : "lasso"
+                    runStudioCommand(`tool.${next}`, commandContext)
+                  }}
+                  className="rounded-lg"
+                >
+                  {lassoTool === "polygonLasso" ? (
+                    <PolygonIcon />
+                  ) : (
+                    <LassoIcon />
+                  )}
                 </RailAction>
                 <RailAction
                   label="Colour"

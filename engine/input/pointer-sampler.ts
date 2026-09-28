@@ -41,10 +41,11 @@ export interface StrokeHandlers {
   /** Samples the canvas instead of opening a stroke while Alt/Option is held. */
   sample?(x: number, y: number): void
   /**
-   * Whether Shift is held, told as the pen goes down and with every move, so
-   * a drag can be constrained mid-gesture.
+   * Whether Shift and Alt/Option are held, told as the pen goes down and with
+   * every move, so a drag can be constrained mid-gesture and a selection
+   * know how to combine.
    */
-  constrain?(shift: boolean): void
+  modifiers?(shift: boolean, alt: boolean): void
 }
 
 export interface SamplerOptions {
@@ -60,6 +61,11 @@ export interface SamplerOptions {
    * switch takes effect on the next mark.
    */
   tiltEnabled?: () => boolean
+  /**
+   * Whether Alt/Option held as the pen goes down samples the canvas. Off, the
+   * press opens a stroke and the key is only reported through `modifiers`.
+   */
+  altSamples?: () => boolean
 }
 
 /** Whether the browser reports raw pointer updates ahead of `pointermove`. */
@@ -164,7 +170,7 @@ export function attachPointerSampler(
     )
       return
     measure()
-    if (event.altKey && handlers.sample) {
+    if (event.altKey && handlers.sample && (options.altSamples?.() ?? true)) {
       event.preventDefault()
       handlers.sample(canvasX(event), canvasY(event))
       return
@@ -182,7 +188,7 @@ export function attachPointerSampler(
     }
     event.preventDefault()
     buffer.clear()
-    handlers.constrain?.(event.shiftKey)
+    handlers.modifiers?.(event.shiftKey, event.altKey)
     strokeStart = event.timeStamp
     const [tiltX, tiltY] = canvasTilt(event)
     handlers.begin(
@@ -200,7 +206,7 @@ export function attachPointerSampler(
   function onPointerUpdate(event: PointerEvent) {
     if (event.pointerId !== activePointer) return
     event.preventDefault()
-    handlers.constrain?.(event.shiftKey)
+    handlers.modifiers?.(event.shiftKey, event.altKey)
     // Coalesced events are the samples the browser withheld between frames.
     // The event itself is the last of them, so it is never read separately.
     const coalesced = event.getCoalescedEvents?.()

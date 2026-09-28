@@ -151,10 +151,14 @@ import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
 import { attachPointerSampler } from "./input/pointer-sampler"
 import {
   dragRect,
+  combineSelections,
   ellipseSelection,
   invertSelection,
+  lassoSelection,
+  type Point,
   rectSelection,
   sameSelection,
+  type SelectionMode,
   selectAll,
   type SelectionMask,
 } from "./doc/selection"
@@ -249,7 +253,18 @@ export type { ImageAsset, ImageAssetRef, PlacedImage } from "./doc/image-source"
 
 export type PaintTool = "brush" | "eraser"
 /** Tools that draw out a selection (07) instead of making a mark. */
-export type SelectionTool = "rectSelect" | "ellipseSelect"
+const SELECTION_TOOLS = [
+  "rectSelect",
+  "ellipseSelect",
+  "lasso",
+  "polygonLasso",
+] as const
+export type SelectionTool = (typeof SELECTION_TOOLS)[number]
+
+export type { SelectionMode }
+
+export const isSelectionTool = (tool: Tool): tool is SelectionTool =>
+  (SELECTION_TOOLS as readonly Tool[]).includes(tool)
 export type Tool = PaintTool | SelectionTool
 
 /** Display-encoded colour sampled from the composited canvas. */
@@ -477,7 +492,8 @@ export type EngineCommand =
   /**
    * Replaces the selection (07) with a shape in document pixels: a rectangle
    * snapped to whole pixels, or the ellipse inscribed in one. What the
-   * selection tools commit when a drag ends; one undo step.
+   * selection tools commit when a drag ends; one undo step. `mode` (09)
+   * says how it meets the selection already there, replacing it by default.
    */
   | {
       type: "selectShape"
@@ -486,6 +502,16 @@ export type EngineCommand =
       y: number
       width: number
       height: number
+      mode?: SelectionMode
+    }
+  /**
+   * The closed outline through `points`, in document pixels, as the lasso
+   * tools commit it (09); combined with the selection as `mode` says.
+   */
+  | {
+      type: "selectLasso"
+      points: readonly Point[]
+      mode?: SelectionMode
     }
   | { type: "selectAll" }
   | { type: "deselect" }
@@ -1802,17 +1828,48 @@ export function createEngine(
   let selectionKey: string | null = null
   const selections = new Map<string, SelectionMask>()
   let nextSelectionKey = 0
-  /** A selection tool's drag in progress, in document pixels. */
+  /**
+   * A selection tool's gesture in progress, in document pixels: a drag for
+   * the marquees and the freehand lasso, a run of clicks for the polygonal
+   * one (09), which outlives each pen-up until the outline is closed.
+   */
   let marquee:
     | {
         shape: "rect" | "ellipse"
-        anchor: { x: number; y: number }
-        point: { x: number; y: number }
+        anchor: Point
+        point: Point
+        mode: SelectionMode
         ended: boolean
       }
+    | { shape: "lasso"; points: Point[]; mode: SelectionMode; ended: boolean }
+    | {
+        shape: "polygon"
+        points: Point[]
+        mode: SelectionMode
+        /** The pen is down, placing the last vertex. */
+        placing: boolean
+        /** When the last vertex went down, for telling a double-click. */
+        clickedAt: number
+        /**
+         * The click that closes the outline, which takes effect as the pen
+         * lifts so the rest of its gesture is not read as a stroke.
+         */
+        closing?: "commit" | "drop"
+      }
     | undefined
-  /** Shift, as the pen last reported it. */
-  let constrained = false
+  /** Shift and Alt/Option, as the pen last reported them. */
+  let shiftHeld = false
+  let altHeld = false
+  /**
+   * Shift chose the combine mode as the pen went down, so it is not also a
+   * constraint until it has been let go and pressed again — the way a
+   * marquee is both added and squared in every editor the hand learned on.
+   */
+  let shiftLatched = false
+  const constrained = () => shiftHeld && !shiftLatched
+  /** How near the first vertex, in backing pixels, a click closes a polygon. */
+  const CLOSE_RADIUS = 8
+  const DOUBLE_CLICK_MS = 400
   // How far the ants have marched. They move on a timer of their own, which
   // runs only while there is a selection to outline.
   let antsPhase = 0
@@ -1889,13 +1946,40 @@ export function createEngine(
     antsTimer = undefined
   }
 
-  /** The shape a marquee drag outlines right now. */
-  function marqueeMask(): SelectionMask | null {
+  /** The shape a selection gesture outlines right now. */
+  function marqueeShape(): SelectionMask | null {
     if (!marquee || !doc) return null
-    const box = dragRect(marquee.anchor, marquee.point, constrained)
+    if (marquee.shape === "lasso" || marquee.shape === "polygon")
+      return lassoSelection(doc, marquee.points)
+    const box = dragRect(marquee.anchor, marquee.point, constrained())
     return marquee.shape === "rect"
       ? rectSelection(doc, box)
       : ellipseSelection(doc, box)
+  }
+
+  /** What the selection would become were the gesture to end now. */
+  function marqueeMask(): SelectionMask | null {
+    if (!marquee || !doc) return null
+    return combineSelections(doc, selection, marqueeShape(), marquee.mode)
+  }
+
+  /** Shift adds, Alt/Option subtracts, both intersect (09). */
+  function modeFromModifiers(): SelectionMode {
+    if (shiftHeld && altHeld) return "intersect"
+    if (shiftHeld) return "add"
+    if (altHeld) return "subtract"
+    return "replace"
+  }
+
+  /** Ends a selection gesture, its outline becoming the selection. */
+  function commitMarquee() {
+    const mask = marqueeMask()
+    marquee = undefined
+    forgetGestureInput()
+    // A click without a drag is how a replacing marquee lets go of the
+    // selection; adding or subtracting nothing leaves it as it was, and
+    // intersecting with nothing empties it.
+    commitSelection(mask ? "select" : "deselect", mask)
   }
 
   /**
@@ -2291,23 +2375,84 @@ export function createEngine(
   function drawMarquee() {
     const drag = marquee!
     samples.drain((x, y) => {
-      drag.point = { x: toDocX(x, y), y: toDocY(x, y) }
+      const point = { x: toDocX(x, y), y: toDocY(x, y) }
+      if (drag.shape === "lasso") {
+        const last = drag.points[drag.points.length - 1]
+        if (last.x !== point.x || last.y !== point.y) drag.points.push(point)
+      } else if (drag.shape === "polygon") {
+        if (drag.placing) drag.points[drag.points.length - 1] = point
+      } else drag.point = point
     })
-    const mask = marqueeMask()
-    if (drag.ended) {
-      marquee = undefined
-      // A click without a drag is how a marquee lets go of the selection.
-      commitSelection(mask ? "select" : "deselect", mask)
+    if (drag.shape !== "polygon" && drag.ended) {
+      commitMarquee()
       return
     }
-    renderer?.setSelection(mask ?? selection)
+    // Until the gesture outlines something, what is selected stays shown.
+    renderer?.setSelection(marqueeShape() ? marqueeMask() : selection)
     try {
       if (snapshot.status === "ready") render()
     } catch (error) {
       fail(error)
       return
     }
-    frame = requestAnimationFrame(drawFrame)
+    // Between clicks a polygon waits for the next one, not for a frame.
+    if (drag.shape !== "polygon" || drag.placing)
+      frame = requestAnimationFrame(drawFrame)
+  }
+
+  /**
+   * What the pen reported for a gesture that has ended is not a stroke's to
+   * draw, and a frame still waiting for it would take it for one.
+   */
+  function forgetGestureInput() {
+    samples.clear()
+    if (frame !== undefined) cancelAnimationFrame(frame)
+    frame = undefined
+  }
+
+  /** Abandons a selection gesture, the selection left as it was. */
+  function dropMarquee() {
+    if (!marquee) return
+    marquee = undefined
+    forgetGestureInput()
+    showSelection(selection)
+  }
+
+  /**
+   * One click of the polygonal lasso: a new vertex, or — on the first vertex
+   * or a double-click — the outline closed and made the selection.
+   */
+  function clickPolygon(point: Point, time: number) {
+    if (!marquee || marquee.shape !== "polygon") {
+      marquee = {
+        shape: "polygon",
+        points: [point],
+        mode: modeFromModifiers(),
+        placing: true,
+        clickedAt: time,
+      }
+      shiftLatched = shiftHeld
+      scheduleFrame()
+      return
+    }
+    const polygon = marquee
+    const reach = CLOSE_RADIUS * Math.hypot(toDoc[0], toDoc[1])
+    const near = (other: Point) =>
+      Math.hypot(point.x - other.x, point.y - other.y) <= reach
+    const last = polygon.points[polygon.points.length - 1]
+    const closes =
+      (polygon.points.length >= 3 && near(polygon.points[0])) ||
+      (time - polygon.clickedAt <= DOUBLE_CLICK_MS && near(last))
+    if (closes) {
+      // Too few corners to hold any area: the outline is dropped rather than
+      // made the selection, so a stray double-click never deselects.
+      polygon.closing = polygon.points.length < 3 ? "drop" : "commit"
+      return
+    }
+    polygon.points.push(point)
+    polygon.placing = true
+    polygon.clickedAt = time
+    scheduleFrame()
   }
 
   /**
@@ -2350,19 +2495,29 @@ export function createEngine(
     sensesPressure: boolean
   ) {
     if (snapshot.status !== "ready" || !doc) return
-    if (tool === "rectSelect" || tool === "ellipseSelect") {
+    if (isSelectionTool(tool)) {
       // The selection belongs to the document, so a locked or image layer
       // does not stop one being drawn.
       const anchor = {
         x: toDocX(screenX, screenY),
         y: toDocY(screenX, screenY),
       }
-      marquee = {
-        shape: tool === "rectSelect" ? "rect" : "ellipse",
-        anchor,
-        point: anchor,
-        ended: false,
+      if (tool === "polygonLasso") {
+        clickPolygon(anchor, origin)
+        return
       }
+      const mode = modeFromModifiers()
+      shiftLatched = shiftHeld
+      marquee =
+        tool === "lasso"
+          ? { shape: "lasso", points: [anchor], mode, ended: false }
+          : {
+              shape: tool === "rectSelect" ? "rect" : "ellipse",
+              anchor,
+              point: anchor,
+              mode,
+              ended: false,
+            }
       scheduleFrame()
       return
     }
@@ -2417,12 +2572,20 @@ export function createEngine(
    */
   function cancelStroke() {
     if (marquee) {
-      marquee = undefined
+      // A polygon loses only the vertex the gesture was placing.
+      if (marquee.shape === "polygon" && marquee.points.length > 1) {
+        if (marquee.placing) marquee.points.pop()
+        marquee.placing = false
+        marquee.closing = undefined
+      } else marquee = undefined
       if (frame !== undefined) cancelAnimationFrame(frame)
       frame = undefined
       samples.clear()
       // Back to what was selected before the drag began.
-      showSelection(selection)
+      if (marquee)
+        renderer?.setSelection(marqueeShape() ? marqueeMask() : selection)
+      else showSelection(selection)
+      if (marquee && snapshot.status === "ready") render()
       return
     }
     if (!stroking && !opening) return
@@ -2440,7 +2603,14 @@ export function createEngine(
 
   function endStroke() {
     if (marquee) {
-      marquee.ended = true
+      if (marquee.shape === "polygon") {
+        if (marquee.closing) {
+          if (marquee.closing === "drop") dropMarquee()
+          else commitMarquee()
+          return
+        }
+        marquee.placing = false
+      } else marquee.ended = true
       scheduleFrame()
       return
     }
@@ -2716,8 +2886,10 @@ export function createEngine(
           {
             begin: beginStroke,
             end: endStroke,
-            constrain: (shift) => {
-              constrained = shift
+            modifiers: (shift, alt) => {
+              shiftHeld = shift
+              altHeld = alt
+              if (!shift) shiftLatched = false
             },
             // A colour that could not be read is a colour the artist did not
             // get. It says so and leaves the session standing: the eyedropper
@@ -2736,6 +2908,9 @@ export function createEngine(
           {
             pressureCurve: () => pressureCurve,
             tiltEnabled: () => tiltEnabled,
+            // With a selection tool, Alt/Option subtracts (09) rather than
+            // sampling.
+            altSamples: () => !isSelectionTool(tool),
           }
         )
         // Navigation is input too, and it belongs to the same canvas. Holding
@@ -3374,10 +3549,33 @@ export function createEngine(
           if (!Object.values(box).every(Number.isFinite))
             throw new Error("A selection must be finite.")
           const document = requireDocument()
-          const mask =
+          const shape =
             command.shape === "rect"
               ? rectSelection(document, box)
               : ellipseSelection(document, box)
+          const mask = combineSelections(
+            document,
+            selection,
+            shape,
+            command.mode ?? "replace"
+          )
+          commitSelection(mask ? "select" : "deselect", mask)
+          break
+        }
+        case "selectLasso": {
+          if (
+            !command.points.every(
+              (point) => Number.isFinite(point.x) && Number.isFinite(point.y)
+            )
+          )
+            throw new Error("A selection must be finite.")
+          const document = requireDocument()
+          const mask = combineSelections(
+            document,
+            selection,
+            lassoSelection(document, command.points),
+            command.mode ?? "replace"
+          )
           commitSelection(mask ? "select" : "deselect", mask)
           break
         }
@@ -3399,6 +3597,12 @@ export function createEngine(
           if (!history) break
           // See `publishHistory`: only the revert itself may undo a trial.
           if (restoreRevertible() && !revertingRestore) break
+          // Undo with an outline half drawn takes back the outline, not the
+          // selection step beneath it.
+          if (marquee) {
+            if (command.type === "undo") dropMarquee()
+            break
+          }
           // Undo during a drag means the adjustment being made, not the step
           // underneath it: the picture goes back to where it was picked up
           // and the stack is left alone.
@@ -3525,6 +3729,8 @@ export function createEngine(
         }
         case "setTool":
           cancelStroke()
+          // A polygon half clicked out is dropped with the tool drawing it.
+          dropMarquee()
           tool = command.tool
           resampler = createStrokeResampler(brushSpacing(activeBrush()))
           applyBrushTextures()
