@@ -5,6 +5,7 @@ import {
   CaretUpIcon,
   CopyIcon,
   DotsSixVerticalIcon,
+  EraserIcon,
   EyeIcon,
   EyeSlashIcon,
   FolderPlusIcon,
@@ -445,6 +446,19 @@ function LayerRow({
                   onClick={() => runCommand("layer.duplicate", layer.id)}
                 >
                   <CopyIcon />
+                </IconButton>
+              )}
+              {/* A placed image's pixels come from its file, so it has none
+                  of its own to clear. */}
+              {layer.kind === "raster" && !layer.image && (
+                <IconButton
+                  variant="ghost"
+                  size="icon-xs"
+                  label={`Clear ${layer.name}`}
+                  disabled={layer.locked}
+                  onClick={() => runCommand("layer.clear", layer.id)}
+                >
+                  <EraserIcon />
                 </IconButton>
               )}
               <IconButton

@@ -176,3 +176,25 @@ test("pointing at a row dims the canvas around it and previews it larger", async
   await expect(preview).toBeHidden()
   await expect.poll(shot).toBe(plain)
 })
+
+test("the active row's clear button empties the layer, and undo refills it", async ({
+  page,
+}) => {
+  const layers = await openStudio(page)
+  await layers.getByRole("button", { name: "Add layer" }).click()
+  const second = layers.getByTestId("thumbnail-Layer 2")
+  await (
+    await stroke(page, 200, 600)
+  )()
+  await expect(second).toHaveAttribute("data-state", "shown")
+
+  const clear = layers.getByRole("button", { name: "Clear Layer 2" })
+  await clear.click()
+  await expect(second).toHaveAttribute("data-state", "empty")
+  await page.keyboard.press("ControlOrMeta+z")
+  await expect(second).toHaveAttribute("data-state", "shown")
+
+  // A locked layer is one the artist said not to touch.
+  await layers.getByRole("button", { name: "Lock Layer 2" }).click()
+  await expect(clear).toBeDisabled()
+})
