@@ -40,6 +40,11 @@ export interface StrokeHandlers {
   end(): void
   /** Samples the canvas instead of opening a stroke while Alt/Option is held. */
   sample?(x: number, y: number): void
+  /**
+   * Whether Shift is held, told as the pen goes down and with every move, so
+   * a drag can be constrained mid-gesture.
+   */
+  constrain?(shift: boolean): void
 }
 
 export interface SamplerOptions {
@@ -177,6 +182,7 @@ export function attachPointerSampler(
     }
     event.preventDefault()
     buffer.clear()
+    handlers.constrain?.(event.shiftKey)
     strokeStart = event.timeStamp
     const [tiltX, tiltY] = canvasTilt(event)
     handlers.begin(
@@ -194,6 +200,7 @@ export function attachPointerSampler(
   function onPointerUpdate(event: PointerEvent) {
     if (event.pointerId !== activePointer) return
     event.preventDefault()
+    handlers.constrain?.(event.shiftKey)
     // Coalesced events are the samples the browser withheld between frames.
     // The event itself is the last of them, so it is never read separately.
     const coalesced = event.getCoalescedEvents?.()

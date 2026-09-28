@@ -150,6 +150,15 @@ import {
 import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
 import { attachPointerSampler } from "./input/pointer-sampler"
 import {
+  dragRect,
+  ellipseSelection,
+  invertSelection,
+  rectSelection,
+  sameSelection,
+  selectAll,
+  type SelectionMask,
+} from "./doc/selection"
+import {
   DEFAULT_PRESSURE_CURVE,
   validatePressureCurve,
 } from "./input/pressure-curve"
@@ -239,6 +248,9 @@ export {
 export type { ImageAsset, ImageAssetRef, PlacedImage } from "./doc/image-source"
 
 export type PaintTool = "brush" | "eraser"
+/** Tools that draw out a selection (07) instead of making a mark. */
+export type SelectionTool = "rectSelect" | "ellipseSelect"
+export type Tool = PaintTool | SelectionTool
 
 /** Display-encoded colour sampled from the composited canvas. */
 export type EngineColor = Readonly<{
@@ -271,7 +283,7 @@ export type EngineCommand =
   | { type: "resize"; width: number; height: number; devicePixelRatio: number }
   /** Stabilizer strength in [0, 1]; zero restores the raw unfiltered path. */
   | { type: "setStabilization"; strength: number }
-  | { type: "setTool"; tool: PaintTool }
+  | { type: "setTool"; tool: Tool }
   /**
    * The artist's pen response curve, applied to every force reading before a
    * brush sees it. Null restores the default. See `engine/input/pressure-curve`
@@ -462,6 +474,23 @@ export type EngineCommand =
    * a stroke clears it.
    */
   | { type: "highlightLayer"; id: string | null }
+  /**
+   * Replaces the selection (07) with a shape in document pixels: a rectangle
+   * snapped to whole pixels, or the ellipse inscribed in one. What the
+   * selection tools commit when a drag ends; one undo step.
+   */
+  | {
+      type: "selectShape"
+      shape: "rect" | "ellipse"
+      x: number
+      y: number
+      width: number
+      height: number
+    }
+  | { type: "selectAll" }
+  | { type: "deselect" }
+  /** Selects what was not selected; with nothing selected, everything. */
+  | { type: "invertSelection" }
   | { type: "undo" }
   | { type: "redo" }
 
@@ -486,8 +515,8 @@ export type EngineSnapshot = Readonly<{
   pressureCurve: Curve
   /** Whether pen tilt reaches the dynamics graph. */
   tiltEnabled: boolean
-  /** The persistent mark-making tool; Alt/Option sampling never changes it. */
-  tool: PaintTool
+  /** The persistent tool in the hand; Alt/Option sampling never changes it. */
+  tool: Tool
   /** Current display-encoded ink, updated by the eyedropper. */
   color: EngineColor
   /** The brush in the hand: serialisable data, never code (D23). */
@@ -515,6 +544,11 @@ export type EngineSnapshot = Readonly<{
    * picture never held, which the box says out loud rather than pretending.
    */
   imageTransform: ImageTransformState | null
+  /**
+   * The document's selection (07), or null when nothing is selected. It
+   * belongs to the document, not a layer, so it stays as layers are switched.
+   */
+  selection: SelectionSummary | null
   /** Whether there is a step to take back, and one to put back (D21). */
   canUndo: boolean
   canRedo: boolean
@@ -534,6 +568,11 @@ export type EngineSnapshot = Readonly<{
    * farther away may still be arriving in the background.
    */
   loading: boolean
+}>
+
+export type SelectionSummary = Readonly<{
+  /** The smallest rectangle holding every selected pixel. */
+  bounds: PixelRect
 }>
 
 export type ImageTransformState = Readonly<{
@@ -588,6 +627,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   paintingMask: false,
   view: DEFAULT_VIEW,
   imageTransform: null,
+  selection: null,
   canUndo: false,
   canRedo: false,
   error: null,
@@ -636,6 +676,16 @@ export interface Engine {
   exportDocument(): Promise<Uint8Array>
   /** Validates a backup in full before replacing the open document. */
   importDocument(bytes: Uint8Array): Promise<void>
+  /**
+   * The selection (07) as coverage, one byte per document pixel, read back
+   * from the GPU; null while nothing is selected. Explicit and asynchronous,
+   * like `readPixels`.
+   */
+  readSelection(): Promise<{
+    width: number
+    height: number
+    data: Uint8Array
+  } | null>
   /** Samples one composited canvas pixel and makes it the current ink. */
   sampleColor(x: number, y: number): Promise<EngineColor>
   /**
@@ -979,7 +1029,7 @@ export function createEngine(
   let brush = cloneBrush(DEFAULT_BRUSH)
   let eraser = eraserBrush()
   const activeBrush = () => (tool === "eraser" ? eraser : brush)
-  let tool: PaintTool = "brush"
+  let tool: Tool = "brush"
   let ink = [...BRUSH_COLOR] as [number, number, number, number]
   // Jitter is seeded per stroke, so a `random` mapping differs between marks
   // while any one mark stays reproducible — which is what lets a stroke be
@@ -1163,6 +1213,9 @@ export function createEngine(
   function release() {
     if (frame !== undefined) cancelAnimationFrame(frame)
     frame = undefined
+    // The selection goes with the document it was drawn on; a new one is
+    // started or restored after this, without one.
+    stopSelection()
     stroking = false
     opening = false
     stampCount = 0
@@ -1250,6 +1303,7 @@ export function createEngine(
     doc = createDocument(size)
     contentBounds.clear()
     renderer?.resize(size.width, size.height)
+    resetSelection()
     uploadLayers()
     syncComposition()
     publish({ width: size.width, height: size.height, ...describeLayers(doc) })
@@ -1741,6 +1795,109 @@ export function createEngine(
     if (snapshot.status === "ready") render()
   }
 
+  // The selection (07). History names each one it made by key, so undoing a
+  // selection step is the tree plus the key to go back to; the masks are
+  // immutable and share their tiles, which keeps every one of them cheap.
+  let selection: SelectionMask | null = null
+  let selectionKey: string | null = null
+  const selections = new Map<string, SelectionMask>()
+  let nextSelectionKey = 0
+  /** A selection tool's drag in progress, in document pixels. */
+  let marquee:
+    | {
+        shape: "rect" | "ellipse"
+        anchor: { x: number; y: number }
+        point: { x: number; y: number }
+        ended: boolean
+      }
+    | undefined
+  /** Shift, as the pen last reported it. */
+  let constrained = false
+  // How far the ants have marched. They move on a timer of their own, which
+  // runs only while there is a selection to outline.
+  let antsPhase = 0
+  let antsTimer: ReturnType<typeof setInterval> | undefined
+  const ANTS_INTERVAL_MS = 120
+
+  /**
+   * What the screen and the snapshot show; history is not touched. `draw`
+   * is off where the caller is mid-way through replacing the document and
+   * draws once it is whole.
+   */
+  function showSelection(mask: SelectionMask | null, draw = true) {
+    selection = mask
+    renderer?.setSelection(mask)
+    publish({
+      selection: mask ? Object.freeze({ bounds: mask.bounds }) : null,
+    })
+    if (mask && !antsTimer && !disposed)
+      antsTimer = setInterval(() => {
+        antsPhase = (antsPhase + 1) % 8
+        // A frame of drawing already presents the ants where they are now.
+        if (frame !== undefined || snapshot.status !== "ready") return
+        try {
+          render()
+        } catch (error) {
+          fail(error)
+        }
+      }, ANTS_INTERVAL_MS)
+    if (!mask && antsTimer) {
+      clearInterval(antsTimer)
+      antsTimer = undefined
+    }
+    if (draw && snapshot.status === "ready") render()
+  }
+
+  /** Makes `mask` the selection as one undo step. */
+  function commitSelection(label: string, mask: SelectionMask | null) {
+    if (sameSelection(mask, selection)) {
+      // Nothing changed, so not a step; a drag's preview is put back.
+      showSelection(selection)
+      return
+    }
+    const document = requireDocument()
+    const key = mask ? `selection-${++nextSelectionKey}` : null
+    if (mask) selections.set(key!, mask)
+    history?.recordOperation(
+      label,
+      {
+        before: { ...captureStructure(document), selection: selectionKey },
+        after: { ...captureStructure(document), selection: key },
+      },
+      undefined
+    )
+    selectionKey = key
+    showSelection(mask)
+  }
+
+  /**
+   * Forgets every selection: the document it was drawn on is gone. Draws
+   * nothing, since the caller is still putting the new document in place.
+   */
+  function resetSelection() {
+    stopSelection()
+    showSelection(null, false)
+  }
+
+  /** The same, with nothing drawn: for a teardown that has no frame to draw. */
+  function stopSelection() {
+    marquee = undefined
+    selection = null
+    selectionKey = null
+    selections.clear()
+    if (antsTimer) clearInterval(antsTimer)
+    antsTimer = undefined
+  }
+
+  /** The shape a marquee drag outlines right now. */
+  function marqueeMask(): SelectionMask | null {
+    if (!marquee || !doc) return null
+    const box = dragRect(marquee.anchor, marquee.point, constrained)
+    return marquee.shape === "rect"
+      ? rectSelection(doc, box)
+      : ellipseSelection(doc, box)
+  }
+
   /**
    * Collects one dab, drawing early if the instance buffer would overflow.
    *
@@ -2085,6 +2242,10 @@ export function createEngine(
     const cpuStart = frameObserver ? performance.now() : 0
     frameStamps = 0
     frameOldestSample = null
+    if (marquee) {
+      drawMarquee()
+      return
+    }
     samples.drain(consumeSample)
     // A stroke that ended before its opening sample was drained drew nothing.
     if (!stroking && !opening) {
@@ -2121,6 +2282,32 @@ export function createEngine(
     }
     if (frameObserver) reportFrame(timestamp, cpuStart)
     if (stroking) frame = requestAnimationFrame(drawFrame)
+  }
+
+  /**
+   * One frame of a selection drag: the pen's latest position outlines the
+   * shape, shown by its ants until the pen lifts and it becomes the selection.
+   */
+  function drawMarquee() {
+    const drag = marquee!
+    samples.drain((x, y) => {
+      drag.point = { x: toDocX(x, y), y: toDocY(x, y) }
+    })
+    const mask = marqueeMask()
+    if (drag.ended) {
+      marquee = undefined
+      // A click without a drag is how a marquee lets go of the selection.
+      commitSelection(mask ? "select" : "deselect", mask)
+      return
+    }
+    renderer?.setSelection(mask ?? selection)
+    try {
+      if (snapshot.status === "ready") render()
+    } catch (error) {
+      fail(error)
+      return
+    }
+    frame = requestAnimationFrame(drawFrame)
   }
 
   /**
@@ -2163,6 +2350,22 @@ export function createEngine(
     sensesPressure: boolean
   ) {
     if (snapshot.status !== "ready" || !doc) return
+    if (tool === "rectSelect" || tool === "ellipseSelect") {
+      // The selection belongs to the document, so a locked or image layer
+      // does not stop one being drawn.
+      const anchor = {
+        x: toDocX(screenX, screenY),
+        y: toDocY(screenX, screenY),
+      }
+      marquee = {
+        shape: tool === "rectSelect" ? "rect" : "ellipse",
+        anchor,
+        point: anchor,
+        ended: false,
+      }
+      scheduleFrame()
+      return
+    }
     // A locked layer is one the painter has said not to touch, and the pen is
     // the one place that has to be told so.
     // An image layer refuses it too, unless the stroke is going to its mask.
@@ -2213,6 +2416,15 @@ export function createEngine(
    * the canvas, not to leave a dot on it.
    */
   function cancelStroke() {
+    if (marquee) {
+      marquee = undefined
+      if (frame !== undefined) cancelAnimationFrame(frame)
+      frame = undefined
+      samples.clear()
+      // Back to what was selected before the drag began.
+      showSelection(selection)
+      return
+    }
     if (!stroking && !opening) return
     stroking = false
     opening = false
@@ -2227,6 +2439,11 @@ export function createEngine(
   }
 
   function endStroke() {
+    if (marquee) {
+      marquee.ended = true
+      scheduleFrame()
+      return
+    }
     if (!stroking) return
     // The tail is flushed by the next frame, so the stroke reaches the point
     // the pen actually lifted from rather than stopping a sample short.
@@ -2241,7 +2458,7 @@ export function createEngine(
     if (!device || !context || !renderer)
       throw new Error("The graphics device is not ready.")
     const texture = context.getCurrentTexture()
-    renderer.render(texture.createView())
+    renderer.render(texture.createView(), { ants: antsPhase })
     return texture
   }
 
@@ -2499,6 +2716,9 @@ export function createEngine(
           {
             begin: beginStroke,
             end: endStroke,
+            constrain: (shift) => {
+              constrained = shift
+            },
             // A colour that could not be read is a colour the artist did not
             // get. It says so and leaves the session standing: the eyedropper
             // touches no pixel of the artwork, so nothing it fails at is work.
@@ -3023,6 +3243,7 @@ export function createEngine(
             width: previous.width,
             height: previous.height,
           })
+          resetSelection()
           // The view is how the artist is looking, not what is on the
           // canvas: clearing the pixels leaves the zoom and pan alone.
           applyLayerChange()
@@ -3129,6 +3350,36 @@ export function createEngine(
           if (snapshot.status === "ready") render()
           break
         }
+        case "selectShape": {
+          const box = {
+            x: command.x,
+            y: command.y,
+            width: command.width,
+            height: command.height,
+          }
+          if (!Object.values(box).every(Number.isFinite))
+            throw new Error("A selection must be finite.")
+          const document = requireDocument()
+          const mask =
+            command.shape === "rect"
+              ? rectSelection(document, box)
+              : ellipseSelection(document, box)
+          commitSelection(mask ? "select" : "deselect", mask)
+          break
+        }
+        case "selectAll":
+          commitSelection("select all", selectAll(requireDocument()))
+          break
+        case "deselect":
+          requireDocument()
+          commitSelection("deselect", null)
+          break
+        case "invertSelection":
+          commitSelection(
+            "invert selection",
+            invertSelection(requireDocument(), selection)
+          )
+          break
         case "undo":
         case "redo": {
           if (!history) break
@@ -3143,7 +3394,9 @@ export function createEngine(
           }
           const document = requireDocument()
           const previous = structureSurfaceIds(captureStructure(document))
+          let restoredSelection: string | null | undefined
           const applied = await history[command.type]((structure) => {
+            restoredSelection = structure.selection
             restoreStructure(document, structure)
             // Uploaded before the entry's tiles are written, so a layer that
             // came back cannot have its restored pixels overwritten by the
@@ -3154,6 +3407,14 @@ export function createEngine(
           const remaining = structureSurfaceIds(captureStructure(document))
           for (const id of previous)
             if (!remaining.has(id)) renderer?.releaseLayer(id)
+          if (restoredSelection !== undefined) {
+            selectionKey = restoredSelection
+            showSelection(
+              restoredSelection === null
+                ? null
+                : (selections.get(restoredSelection) ?? null)
+            )
+          }
           applyLayerChange()
           break
         }
@@ -3403,6 +3664,14 @@ export function createEngine(
         throw new Error("The graphics device is not ready.")
       return await capturePixels()
     },
+    async readSelection() {
+      if (snapshot.status !== "ready" || !renderer)
+        throw new Error("The graphics device is not ready.")
+      const data = await renderer.readSelection()
+      return data
+        ? { width: snapshot.width, height: snapshot.height, data }
+        : null
+    },
     async exportDocument() {
       if (snapshot.status !== "ready" || !history)
         throw new Error("The graphics device is not ready.")
@@ -3476,6 +3745,7 @@ export function createEngine(
       uploadLayers()
       syncComposition()
       view = DEFAULT_VIEW
+      resetSelection()
       publish({
         width: imported.manifest.width,
         height: imported.manifest.height,
@@ -3510,6 +3780,7 @@ export function createEngine(
     dispose() {
       if (disposed) return
       disposed = true
+      stopSelection()
       thumbnails.dispose()
       thumbnailViews.clear()
       // A picture still held open by a transform that was never finished.

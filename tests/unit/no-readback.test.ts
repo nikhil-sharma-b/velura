@@ -3,11 +3,12 @@ import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 /**
- * D30 forbids CPU readback in the interactive path outright. Three calls are
+ * D30 forbids CPU readback in the interactive path outright. Four calls are
  * sanctioned exceptions, all asynchronous and none per frame: `readPixels`
  * for export and previews, `sampleColor` for one explicit eyedropper sample,
- * and the renderer's `readTiles`, which is how an undo entry learns what a
- * finished mark left behind (D21). The rule is
+ * the renderer's `readTiles`, which is how an undo entry learns what a
+ * finished mark left behind (D21), and its `readSelection`, which reads the
+ * selection mask (07) on request. The rule is
  * checkable as a fact about the source: nothing else in the engine may name
  * the calls that move pixels back across the bus, and neither exception may
  * leak the calls into the module around it.
@@ -40,6 +41,7 @@ const SANCTIONED = {
       from: "async readTiles(",
       to: "    writeTiles(id, tiles) {",
     },
+    { from: "async readSelection(", to: "    render(view, overlay) {" },
   ],
 } as const
 

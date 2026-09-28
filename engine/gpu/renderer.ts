@@ -11,8 +11,11 @@ import {
   type PixelRect,
   TILE_CHANNELS,
   TILE_SIZE,
+  TILE_TEXELS,
   type TileCoord,
   tileBounds,
+  tileCoordFromKey,
+  tileKey,
 } from "../doc/tile-grid"
 import {
   cacheKey,
@@ -21,11 +24,13 @@ import {
   type CompositeItem,
 } from "../doc/document"
 import type { LinearColor, TiledLayer } from "../doc/tiled-layer"
+import type { SelectionMask } from "../doc/selection"
 import type { TiledMask } from "../doc/tiled-mask"
 import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
 import { stampShader } from "../shaders/stamp"
 import { surfaceCompositeShader } from "../shaders/surface-composite"
+import { marchingAntsShader } from "../shaders/marching-ants"
 import { placedImageShader } from "../shaders/placed-image"
 import { thumbnailShader } from "../shaders/thumbnail"
 import {
@@ -214,7 +219,24 @@ export interface Renderer {
    * present pass reads it, so exporting simply presents with the identity.
    */
   setView(matrix: ViewMatrix): void
-  render(view: GPUTextureView): void
+  /**
+   * The document's selection (07), or null for none. Only the tiles that
+   * changed since the last one are written, and no texture is held at all
+   * while nothing is selected.
+   */
+  setSelection(mask: SelectionMask | null): void
+  /**
+   * The selection's coverage as the GPU holds it, one byte per document
+   * pixel, top row first; null while nothing is selected. For tests and for
+   * what will lift selected pixels, never per frame.
+   */
+  readSelection(): Promise<Uint8Array | null>
+  /**
+   * Draws the document through the view. `overlay` is what goes over it on
+   * screen and nowhere else: the selection's marching ants, marched `ants`
+   * pixels along. A readback leaves it out.
+   */
+  render(view: GPUTextureView, overlay?: { ants: number }): void
   /**
    * Draws one thumbnail into a small target, reading the surfaces the
    * compositor already holds: nothing crosses back to the CPU. Answers
@@ -694,6 +716,37 @@ export function createRenderer(
   const coverageCaches = new Map<string, Surface>()
   let active: Surface | undefined
   let presentBindGroup: GPUBindGroup | undefined
+  const antsShader = device.createShaderModule({ code: marchingAntsShader })
+  const antsPipeline = device.createRenderPipeline({
+    label: "marching-ants",
+    layout: "auto",
+    vertex: { module: antsShader, entryPoint: "vertexMain" },
+    fragment: {
+      module: antsShader,
+      entryPoint: "fragmentMain",
+      targets: [{ format: options.format }],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  const antsUniform = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
+  const antsValues = new Float32Array(4)
+  /** Written over a tile the new selection no longer holds. */
+  const EMPTY_SELECTION_TILE = new Uint8Array(TILE_TEXELS)
+  let selection:
+    | {
+        texture: GPUTexture
+        bindGroup: GPUBindGroup
+        /** The coverage each tile was last written from, by identity. */
+        tiles: Map<string, Uint8Array>
+      }
+    | undefined
+  function releaseSelection() {
+    selection?.texture.destroy()
+    selection = undefined
+  }
   /** The plan in force. Undefined forces the next one to be applied in full. */
   let composition: string | undefined
   /** What the caches were built from, which is only part of that plan. */
@@ -1184,6 +1237,7 @@ export function createRenderer(
 
   return {
     resize(nextWidth, nextHeight) {
+      releaseSelection()
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
       for (const surface of groupCaches.values()) surface.texture.destroy()
@@ -1701,7 +1755,93 @@ export function createRenderer(
     setView(matrix) {
       writeView(matrix)
     },
-    render(view) {
+    setSelection(mask) {
+      if (!mask) {
+        releaseSelection()
+        return
+      }
+      if (!selection) {
+        if (width === 0)
+          throw new Error("The render target has not been sized.")
+        const texture = device.createTexture({
+          size: { width, height },
+          format: "r8unorm",
+          usage:
+            GPUTextureUsage.TEXTURE_BINDING |
+            GPUTextureUsage.COPY_DST |
+            GPUTextureUsage.COPY_SRC,
+        })
+        selection = {
+          texture,
+          bindGroup: device.createBindGroup({
+            layout: antsPipeline.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: { buffer: uniform } },
+              { binding: 1, resource: texture.createView() },
+              { binding: 2, resource: { buffer: antsUniform } },
+            ],
+          }),
+          tiles: new Map(),
+        }
+      }
+      const canvas = { x: 0, y: 0, width, height }
+      const write = (coord: TileCoord, coverage: Uint8Array) => {
+        const visible = intersectRect(tileBounds(coord), canvas)
+        if (!visible) return
+        device.queue.writeTexture(
+          {
+            texture: selection!.texture,
+            origin: { x: visible.x, y: visible.y },
+          },
+          coverage,
+          { bytesPerRow: TILE_SIZE, rowsPerImage: TILE_SIZE },
+          { width: visible.width, height: visible.height }
+        )
+      }
+      const next = new Map<string, Uint8Array>()
+      for (const tile of mask.tiles()) {
+        const key = tileKey(tile.x, tile.y)
+        next.set(key, tile.coverage)
+        // Masks share the tiles an operation left alone, so an unchanged
+        // tile is the same array and costs no upload.
+        if (selection.tiles.get(key) !== tile.coverage)
+          write(tile, tile.coverage)
+      }
+      for (const key of selection.tiles.keys())
+        if (!next.has(key)) {
+          write(tileCoordFromKey(key), EMPTY_SELECTION_TILE)
+        }
+      selection.tiles = next
+    },
+    async readSelection() {
+      if (!selection) return null
+      const bytesPerRow = Math.ceil(width / 256) * 256
+      const buffer = device.createBuffer({
+        size: bytesPerRow * height,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      })
+      try {
+        const encoder = device.createCommandEncoder()
+        encoder.copyTextureToBuffer(
+          { texture: selection.texture },
+          { buffer, bytesPerRow },
+          { width, height }
+        )
+        device.queue.submit([encoder.finish()])
+        await buffer.mapAsync(GPUMapMode.READ)
+        const mapped = new Uint8Array(buffer.getMappedRange())
+        const data = new Uint8Array(width * height)
+        for (let y = 0; y < height; y++)
+          data.set(
+            mapped.subarray(y * bytesPerRow, y * bytesPerRow + width),
+            y * width
+          )
+        return data
+      } finally {
+        buffer.destroy()
+      }
+    },
+    render(view, overlay) {
       if (!presentBindGroup)
         throw new Error("No composition has been set to present.")
       if (complexStages) {
@@ -1760,6 +1900,13 @@ export function createRenderer(
       pass.setPipeline(pipeline)
       pass.setBindGroup(0, presentBindGroup)
       pass.draw(3)
+      if (overlay && selection) {
+        antsValues[0] = overlay.ants
+        device.queue.writeBuffer(antsUniform, 0, antsValues)
+        pass.setPipeline(antsPipeline)
+        pass.setBindGroup(0, selection.bindGroup)
+        pass.draw(3)
+      }
       pass.end()
       device.queue.submit([encoder.finish()])
     },
@@ -1819,6 +1966,8 @@ export function createRenderer(
       return !!view
     },
     destroy() {
+      releaseSelection()
+      antsUniform.destroy()
       thumbnailUniform.destroy()
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
