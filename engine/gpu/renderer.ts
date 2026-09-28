@@ -215,8 +215,18 @@ export interface Renderer {
    */
   openLayerImage(id: string, surfaceId: string, region: PixelRect): void
   /**
+   * Lifts what the selection covers of a layer (14): the layer scaled by the
+   * coverage, cut to `region`, becomes a source to draw through
+   * `drawPlacedImage`, and from then on every such draw lands over the layer
+   * as it is with those pixels taken out — so a move leaves the vacated area
+   * empty and a soft edge leaves its unselected share behind. The layer
+   * itself is untouched until the first draw. Needs a selection.
+   */
+  openSelectionImage(id: string, surfaceId: string, region: PixelRect): void
+  /**
    * Puts a layer snapshot back exactly where it was taken from, texel for
-   * texel, over an emptied surface: what cancelling a layer transform is.
+   * texel, over an emptied surface: what cancelling a layer transform is. A
+   * lifted selection puts back the whole layer as it was lifted from.
    */
   restoreLayerImage(id: string, surfaceId: string): void
   /** Lets go of an original's texture. */
@@ -572,6 +582,37 @@ export function createRenderer(
     primitive: { topology: "triangle-list" },
   })
   /**
+   * A lifted selection (14) is a mark on the layer rather than all of it, so
+   * it goes over what the lift left: premultiplied source-over.
+   */
+  const floatingImagePipeline = device.createRenderPipeline({
+    label: "floating selection",
+    layout: "auto",
+    vertex: { module: placedImageModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: placedImageModule,
+      entryPoint: "fragmentMain",
+      targets: [
+        {
+          format: LAYER_FORMAT,
+          blend: {
+            color: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+          },
+        },
+      ],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  /**
    * Four corners then the surface size. A `vec2` in a uniform array takes a
    * whole 16-byte slot, so the corners occupy 64 bytes and the size follows
    * them rather than sharing one.
@@ -602,12 +643,20 @@ export function createRenderer(
       premultiplied: boolean
       /** Where a layer snapshot was taken from. */
       region?: PixelRect
+      /**
+       * A lifted selection's layer (14): as lifted, for a cancel, and with
+       * the lifted pixels taken out, which every draw lands over.
+       */
+      lifted?: { original: Surface; base: Surface }
     }
   >()
 
-  function placedImageBindGroup(texture: GPUTexture) {
+  function placedImageBindGroup(
+    texture: GPUTexture,
+    pipeline: GPURenderPipeline = placedImagePipeline
+  ) {
     return device.createBindGroup({
-      layout: placedImagePipeline.getBindGroupLayout(0),
+      layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: placedImageUniform } },
         { binding: 1, resource: texture.createView() },
@@ -930,6 +979,75 @@ export function createRenderer(
     const surface = createSurface()
     surfaces.set(id, surface)
     return surface
+  }
+
+  /**
+   * Empties `target` wherever the selection covers it, in proportion to the
+   * coverage (08). Answers the region it touched.
+   */
+  function drawClearSelected(target: Surface): PixelRect {
+    const region = selection!.bounds
+    const encoder = device.createCommandEncoder()
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: target.view, loadOp: "load", storeOp: "store" },
+      ],
+    })
+    pass.setPipeline(clearSelectionPipeline)
+    pass.setBindGroup(
+      0,
+      device.createBindGroup({
+        layout: clearSelectionPipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: selection!.texture.createView() }],
+      })
+    )
+    pass.setScissorRect(region.x, region.y, region.width, region.height)
+    pass.draw(3)
+    pass.end()
+    device.queue.submit([encoder.finish()])
+    return region
+  }
+
+  /**
+   * Draws what the selection covers of `source` into `target`, in
+   * proportion to the coverage (11). Answers the region it wrote.
+   */
+  function drawCopySelected(source: Surface, target: Surface): PixelRect {
+    const region = selection!.bounds
+    const encoder = device.createCommandEncoder()
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: target.view, loadOp: "load", storeOp: "store" },
+      ],
+    })
+    pass.setPipeline(copySelectionPipeline)
+    pass.setBindGroup(
+      0,
+      device.createBindGroup({
+        layout: copySelectionPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: selection!.texture.createView() },
+          { binding: 1, resource: source.view },
+        ],
+      })
+    )
+    pass.setScissorRect(region.x, region.y, region.width, region.height)
+    pass.draw(3)
+    pass.end()
+    device.queue.submit([encoder.finish()])
+    return region
+  }
+
+  /** A whole surface copied into another, texel for texel. */
+  function copySurface(from: Surface, to: Surface) {
+    const encoder = device.createCommandEncoder()
+    encoder.copyTextureToTexture(
+      { texture: from.texture },
+      { texture: to.texture },
+      { width, height }
+    )
+    device.queue.submit([encoder.finish()])
+    to.empty = from.empty
   }
 
   /**
@@ -1760,10 +1878,54 @@ export function createRenderer(
         region,
       })
     },
+    openSelectionImage(id, surfaceId, region) {
+      this.closePlacedImage(id)
+      if (!selection) throw new Error("Nothing is selected to lift.")
+      const surface = ensureSurface(surfaceId)
+      const original = createSurface()
+      copySurface(surface, original)
+      const base = createSurface()
+      copySurface(surface, base)
+      drawClearSelected(base)
+      // The lifted pixels are drawn at their own place on a scratch surface,
+      // then cut down to the region: the copy pass writes where it reads.
+      const scratch = createSurface()
+      clearSurface(scratch)
+      drawCopySelected(surface, scratch)
+      const texture = device.createTexture({
+        size: { width: region.width, height: region.height },
+        format: LAYER_FORMAT,
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.COPY_SRC,
+      })
+      const encoder = device.createCommandEncoder()
+      encoder.copyTextureToTexture(
+        { texture: scratch.texture, origin: { x: region.x, y: region.y } },
+        { texture },
+        { width: region.width, height: region.height }
+      )
+      device.queue.submit([encoder.finish()])
+      scratch.texture.destroy()
+      placedImages.set(id, {
+        texture,
+        bindGroup: placedImageBindGroup(texture, floatingImagePipeline),
+        premultiplied: true,
+        region,
+        lifted: { original, base },
+      })
+    },
     restoreLayerImage(id, surfaceId) {
       const image = placedImages.get(id)
       if (!image?.region) throw new Error(`No layer snapshot is open as ${id}.`)
       const surface = ensureSurface(surfaceId)
+      if (image.lifted) {
+        copySurface(image.lifted.original, surface)
+        composition = undefined
+        cachedFrom = undefined
+        return
+      }
       clearSurface(surface)
       const { region } = image
       const encoder = device.createCommandEncoder()
@@ -1791,6 +1953,8 @@ export function createRenderer(
       placedImageValues[17] = height
       placedImageValues[18] = image.premultiplied ? 1 : 0
       device.queue.writeBuffer(placedImageUniform, 0, placedImageValues)
+      // A lifted selection lands over the layer it was lifted from.
+      if (image.lifted) copySurface(image.lifted.base, surface)
       const encoder = device.createCommandEncoder()
       // Cleared and drawn in one pass. The clear is the whole surface rather
       // than the region the picture covers, and it can be: a layer holding a
@@ -1802,12 +1966,14 @@ export function createRenderer(
           {
             view: surface.view,
             clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: "clear",
+            loadOp: image.lifted ? "load" : "clear",
             storeOp: "store",
           },
         ],
       })
-      pass.setPipeline(placedImagePipeline)
+      pass.setPipeline(
+        image.lifted ? floatingImagePipeline : placedImagePipeline
+      )
       pass.setBindGroup(0, image.bindGroup)
       pass.draw(6)
       pass.end()
@@ -1821,6 +1987,8 @@ export function createRenderer(
       const held = placedImages.get(id)
       if (!held) return
       held.texture.destroy()
+      held.lifted?.original.texture.destroy()
+      held.lifted?.base.texture.destroy()
       placedImages.delete(id)
     },
     async readTiles(id, coords) {
@@ -1963,54 +2131,14 @@ export function createRenderer(
       if (!selection) return null
       const target = surfaces.get(surfaceId)
       if (!target || target.empty) return null
-      const region = selection.bounds
-      const encoder = device.createCommandEncoder()
-      const pass = encoder.beginRenderPass({
-        colorAttachments: [
-          { view: target.view, loadOp: "load", storeOp: "store" },
-        ],
-      })
-      pass.setPipeline(clearSelectionPipeline)
-      pass.setBindGroup(
-        0,
-        device.createBindGroup({
-          layout: clearSelectionPipeline.getBindGroupLayout(0),
-          entries: [{ binding: 0, resource: selection.texture.createView() }],
-        })
-      )
-      pass.setScissorRect(region.x, region.y, region.width, region.height)
-      pass.draw(3)
-      pass.end()
-      device.queue.submit([encoder.finish()])
-      return region
+      return drawClearSelected(target)
     },
     copySelected(sourceId, targetId) {
       if (!selection) return null
       const source = surfaces.get(sourceId)
       if (!source || source.empty) return null
       const target = ensureSurface(targetId)
-      const region = selection.bounds
-      const encoder = device.createCommandEncoder()
-      const pass = encoder.beginRenderPass({
-        colorAttachments: [
-          { view: target.view, loadOp: "load", storeOp: "store" },
-        ],
-      })
-      pass.setPipeline(copySelectionPipeline)
-      pass.setBindGroup(
-        0,
-        device.createBindGroup({
-          layout: copySelectionPipeline.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: selection.texture.createView() },
-            { binding: 1, resource: source.view },
-          ],
-        })
-      )
-      pass.setScissorRect(region.x, region.y, region.width, region.height)
-      pass.draw(3)
-      pass.end()
-      device.queue.submit([encoder.finish()])
+      const region = drawCopySelected(source, target)
       target.empty = false
       composition = undefined
       cachedFrom = undefined
