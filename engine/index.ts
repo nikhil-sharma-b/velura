@@ -88,6 +88,7 @@ import {
   centeredPlacement,
   type ImagePlacement,
   placementBounds,
+  quadBounds,
   placementQuad,
   resolution,
   samePlacement,
@@ -112,7 +113,6 @@ import {
   tileIndexForPixel,
   tileKey,
   tilesCoveringRect,
-  unionRect,
 } from "./doc/tile-grid"
 import { decodeFloat16 } from "./doc/float16"
 import type { SurfaceTiles, TileRef } from "./store/document-store"
@@ -138,6 +138,12 @@ import {
 } from "./store/flush-scheduler"
 import { encodePreview } from "./store/preview"
 import { decodeVeluraFile, encodeVeluraFile } from "./store/velura-file"
+import {
+  affineFromPlacement,
+  affineQuad,
+  beginTransform,
+  type TransformSession,
+} from "./doc/transform-session"
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
 import {
@@ -1038,14 +1044,12 @@ export function createEngine(
         asset: ImageAsset
         /** The original, decoded once for the whole drag (06). */
         open: OpenImage
-        /** The tree before the transform, which is the step's "before". */
-        structure: DocumentStructure
         /**
-         * Everything the picture has covered since it was picked up, which is
-         * the region the commit reads back: where it now is, and everywhere
-         * it has been and left.
+         * The shared transform session (12): previews from the original,
+         * one resample and one step on commit, nothing kept on cancel. The
+         * placement is the artist's description; this is its matrix.
          */
-        touched: PixelRect
+        transform: TransformSession
       }
     | undefined
   let flushScheduler: FlushScheduler | undefined
@@ -1507,19 +1511,13 @@ export function createEngine(
     const open = await imageCodec().open(asset)
     try {
       renderer?.openPlacedImage(layerId, open.source)
-      showTransform(layerId, placement)
+      showTransform(layerId, placementQuad(placement))
     } finally {
       open.close()
       renderer?.closePlacedImage(layerId)
     }
   }
 
-  /**
-   * Shows a transform in progress without recording it. Mid-drag there is no
-   * step to take back yet — the step is the whole drag — so these pixels go
-   * to the GPU and history's index is left describing the picture as it was,
-   * which is exactly the "before" the commit then records against.
-   */
   /**
    * Shows a transform in progress without recording it.
    *
@@ -1529,16 +1527,19 @@ export function createEngine(
    * picture as it was, which is exactly the "before" the commit records
    * against.
    */
-  function showTransform(layerId: string, placement: ImagePlacement) {
+  function showTransform(
+    layerId: string,
+    corners: readonly [Point, Point, Point, Point]
+  ) {
     if (!renderer) return
     renderer.drawPlacedImage({
       surfaceId: layerId,
       imageId: layerId,
       // The quad, not the box: which way round the picture is drawn inside
       // its corners is what a flip changes.
-      corners: placementQuad(placement),
+      corners,
     })
-    contentBounds.grow(layerId, placementBounds(placement))
+    contentBounds.grow(layerId, quadBounds(corners))
     invalidateThumbnailsOf(layerId)
     if (snapshot.status === "ready") render()
   }
@@ -1687,30 +1688,13 @@ export function createEngine(
     const session = imageTransform
     if (!session) return
     imageTransform = undefined
-    const document = requireDocument()
-    const canvas = { width: document.width, height: document.height }
-    if (samePlacement(session.placement, session.start)) {
+    const changed = !samePlacement(session.placement, session.start)
+    if (!session.transform.commit({ changed })) {
       // Picked up and put down: not a step, and nothing to re-render.
       closeTransform(session)
       publish({ imageTransform: null })
       return
     }
-    // The drag drew the picture with the renderer, so the pixels this step
-    // has to remember are the ones on the GPU. The region is everywhere the
-    // picture has been since it was picked up, so the tiles it left behind
-    // are recorded as the empty ones they now are.
-    recordOperation("transform image", session.structure, {
-      readback: [
-        {
-          surfaceId: session.layerId,
-          region: unionRect(
-            session.touched,
-            placementBounds(session.placement)
-          ),
-        },
-      ],
-      canvas,
-    })
     closeTransform(session)
     publish({ imageTransform: null })
     applyLayerChange()
@@ -1726,10 +1710,7 @@ export function createEngine(
     const session = imageTransform
     if (!session) return
     imageTransform = undefined
-    const document = requireDocument()
-    setPlacement(document, session.layerId, session.start)
-    if (!samePlacement(session.placement, session.start))
-      showTransform(session.layerId, session.start)
+    session.transform.cancel()
     closeTransform(session)
     publish({ imageTransform: null })
     applyLayerChange()
@@ -3477,14 +3458,40 @@ export function createEngine(
             open.close()
             throw error
           }
+          const layerId = command.id
+          const start = layer.placed.placement
+          const before = captureStructure(document)
           imageTransform = {
-            layerId: command.id,
-            start: layer.placed.placement,
-            placement: layer.placed.placement,
+            layerId,
+            start,
+            placement: start,
             asset,
             open,
-            structure: captureStructure(document),
-            touched: placementBounds(layer.placed.placement),
+            transform: beginTransform(
+              {
+                source: asset,
+                preview: (matrix) =>
+                  showTransform(layerId, affineQuad(matrix, asset)),
+                commit: (_matrix, region) =>
+                  // The drag drew the picture with the renderer, so the
+                  // pixels this step has to remember are the ones on the
+                  // GPU. The region is everywhere the picture has been since
+                  // it was picked up, so the tiles it left behind are
+                  // recorded as the empty ones they now are.
+                  recordOperation("transform image", before, {
+                    readback: [{ surfaceId: layerId, region }],
+                    canvas: { width: document.width, height: document.height },
+                  }),
+                cancel: (startMatrix, moved) => {
+                  // Rendered once more from the original rather than the
+                  // preview being "undone": there is no step to undo.
+                  setPlacement(requireDocument(), layerId, start)
+                  if (moved)
+                    showTransform(layerId, affineQuad(startMatrix, asset))
+                },
+              },
+              affineFromPlacement(start, asset)
+            ),
           }
           publish({ imageTransform: describeTransform() })
           break
@@ -3496,13 +3503,10 @@ export function createEngine(
           if (!validPlacement(command.placement, canvas))
             throw new Error("That is not a placement an image can be put at.")
           if (samePlacement(command.placement, session.placement)) break
+          const matrix = affineFromPlacement(command.placement, session.asset)
           session.placement = command.placement
           setPlacement(document, session.layerId, command.placement)
-          showTransform(session.layerId, command.placement)
-          session.touched = unionRect(
-            session.touched,
-            placementBounds(command.placement)
-          )
+          session.transform.update(matrix)
           publish({
             imageTransform: describeTransform(),
             ...describeLayers(document),

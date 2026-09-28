@@ -162,7 +162,11 @@ export function placementQuad(
  * leave the resampler guessing where the picture's edge was.
  */
 export function placementBounds(placement: ImagePlacement): PixelRect {
-  const corners = placementCorners(placement)
+  return quadBounds(placementCorners(placement))
+}
+
+/** The whole-pixel box any four corners fit inside, rounded outwards. */
+export function quadBounds(corners: readonly Point[]): PixelRect {
   const left = Math.floor(Math.min(...corners.map((corner) => corner.x)))
   const top = Math.floor(Math.min(...corners.map((corner) => corner.y)))
   const right = Math.ceil(Math.max(...corners.map((corner) => corner.x)))
