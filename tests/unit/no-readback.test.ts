@@ -8,7 +8,8 @@ import { join } from "node:path"
  * for export and previews, `sampleColor` for one explicit eyedropper sample,
  * the renderer's `readTiles`, which is how an undo entry learns what a
  * finished mark left behind (D21), and its `readSelection`, which reads the
- * selection mask (07) on request. The rule is
+ * selection mask (07) on request. The magic wand (10) reaches the same
+ * pixels through `readTiles` and `readPixels`' capture, once per click. The rule is
  * checkable as a fact about the source: nothing else in the engine may name
  * the calls that move pixels back across the bus, and neither exception may
  * leak the calls into the module around it.

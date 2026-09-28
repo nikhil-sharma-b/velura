@@ -137,6 +137,44 @@ function settle(
   return { ...coord, coverage, full: false }
 }
 
+/** Selects pixels [from, to) of row `y` in coverage tiles made as needed. */
+function fillSpan(
+  tiles: Map<string, Uint8Array>,
+  y: number,
+  from: number,
+  to: number
+) {
+  const tileY = tileIndexForPixel(y)
+  const row = (y - tileY * TILE_SIZE) * TILE_SIZE
+  for (let x = from; x < to;) {
+    const tileX = tileIndexForPixel(x)
+    const key = tileKey(tileX, tileY)
+    let coverage = tiles.get(key)
+    if (!coverage) {
+      coverage = new Uint8Array(TILE_TEXELS)
+      tiles.set(key, coverage)
+    }
+    const end = Math.min(to, (tileX + 1) * TILE_SIZE)
+    const origin = row - tileX * TILE_SIZE
+    coverage.fill(255, origin + x, origin + end)
+    x = end
+  }
+}
+
+/** A mask of freshly filled coverage tiles, keyed as `tileKey` keys them. */
+function settleAll(
+  size: Size,
+  tiles: ReadonlyMap<string, Uint8Array>
+): SelectionMask | null {
+  const settled = new Map<string, SelectionTile>()
+  for (const [key, coverage] of tiles) {
+    const [x, y] = key.split(",").map(Number)
+    const tile = settle({ x, y }, coverage, size)
+    if (tile) settled.set(key, tile)
+  }
+  return createSelection(size, settled)
+}
+
 /**
  * Rasterises coverage over the tiles a box touches on the canvas. `whole`
  * answers, for the canvas part of a tile, whether the shape certainly covers
@@ -403,8 +441,6 @@ export function lassoSelection(
     }
     if (crossings.length === 0) continue
     crossings.sort((p, q) => p.x - q.x)
-    const tileY = tileIndexForPixel(y)
-    const row = (y - tileY * TILE_SIZE) * TILE_SIZE
     let winding = 0
     for (let i = 0; i < crossings.length - 1; i++) {
       winding += crossings[i].winding
@@ -415,29 +451,11 @@ export function lassoSelection(
         box.x + box.width,
         Math.ceil(crossings[i + 1].x - 0.5)
       )
-      for (let x = from; x < to;) {
-        const tileX = tileIndexForPixel(x)
-        const key = tileKey(tileX, tileY)
-        let coverage = tiles.get(key)
-        if (!coverage) {
-          coverage = new Uint8Array(TILE_TEXELS)
-          tiles.set(key, coverage)
-        }
-        const end = Math.min(to, (tileX + 1) * TILE_SIZE)
-        const origin = row - tileX * TILE_SIZE
-        coverage.fill(255, origin + x, origin + end)
-        x = end
-      }
+      fillSpan(tiles, y, from, to)
     }
   }
 
-  const settled = new Map<string, SelectionTile>()
-  for (const [key, coverage] of tiles) {
-    const [x, y] = key.split(",").map(Number)
-    const tile = settle({ x, y }, coverage, size)
-    if (tile) settled.set(key, tile)
-  }
-  return createSelection(size, settled)
+  return settleAll(size, tiles)
 }
 
 /** How a new shape meets the selection already there (09). */
@@ -499,4 +517,88 @@ export function combineSelections(
   if (mode === "add")
     for (const [key, tile] of own) if (!tiles.has(key)) tiles.set(key, tile)
   return createSelection(size, tiles)
+}
+
+/** Straight-alpha RGBA8, tightly packed, top row first. */
+export type WandPixels = {
+  readonly width: number
+  readonly height: number
+  readonly data: Uint8Array
+}
+
+/**
+ * The region the magic wand picks out (10): every pixel joined to `seed`
+ * edge to edge — never only at a corner — through pixels within `tolerance`
+ * levels (0–255) of the seed's own colour on every channel. Measured against
+ * the seed rather than a neighbour, so a gradient cannot creep the region
+ * across the whole canvas. Colour counts only as far as it can be seen: two
+ * pixels differ in colour scaled by the fainter one's opacity, so every
+ * fully transparent pixel is alike whatever its channels hold. Hard-edged,
+ * like the lasso.
+ */
+export function wandSelection(
+  pixels: WandPixels,
+  seed: Point,
+  tolerance: number
+): SelectionMask | null {
+  const { width, height, data } = pixels
+  const sx = Math.floor(seed.x)
+  const sy = Math.floor(seed.y)
+  if (!(sx >= 0 && sy >= 0 && sx < width && sy < height)) return null
+  const origin = (sy * width + sx) * 4
+  const [r, g, b, a] = data.subarray(origin, origin + 4)
+  const matches = (pixel: number) => {
+    const i = pixel * 4
+    const alpha = data[i + 3]
+    if (Math.abs(alpha - a) > tolerance) return false
+    const seen = Math.min(alpha, a) / 255
+    return (
+      Math.abs(data[i] - r) * seen <= tolerance &&
+      Math.abs(data[i + 1] - g) * seen <= tolerance &&
+      Math.abs(data[i + 2] - b) * seen <= tolerance
+    )
+  }
+
+  // Scanline fill: each popped pixel grows into its whole matching run, and
+  // the rows above and below are seeded once per run rather than per pixel.
+  const visited = new Uint8Array(width * height)
+  const tiles = new Map<string, Uint8Array>()
+  const stack = [sy * width + sx]
+  const seedRow = (y: number, from: number, to: number) => {
+    if (y < 0 || y >= height) return
+    let inRun = false
+    for (let x = from; x < to; x++) {
+      const pixel = y * width + x
+      const open = !visited[pixel] && matches(pixel)
+      if (open && !inRun) stack.push(pixel)
+      inRun = open
+    }
+  }
+  while (stack.length > 0) {
+    const pixel = stack.pop()!
+    if (visited[pixel]) continue
+    const y = Math.floor(pixel / width)
+    const rowStart = y * width
+    let left = pixel - rowStart
+    let right = left + 1
+    while (
+      left > 0 &&
+      !visited[rowStart + left - 1] &&
+      matches(rowStart + left - 1)
+    )
+      left--
+    while (
+      right < width &&
+      !visited[rowStart + right] &&
+      matches(rowStart + right)
+    )
+      right++
+    visited.fill(1, rowStart + left, rowStart + right)
+    fillSpan(tiles, y, left, right)
+    seedRow(y - 1, left, right)
+    seedRow(y + 1, left, right)
+  }
+
+  const size = { width, height }
+  return settleAll(size, tiles)
 }

@@ -244,6 +244,10 @@ describe("selection commands", () => {
     ])
   })
 
+  test("w picks the magic wand", () => {
+    expect(press("w", {})).toEqual([{ type: "setTool", tool: "magicWand" }])
+  })
+
   test("escape abandons an outline being drawn", () => {
     expect(press("Escape", {})).toEqual([{ type: "abandonSelectionGesture" }])
   })
