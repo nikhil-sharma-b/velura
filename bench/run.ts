@@ -14,7 +14,8 @@
  * measurement, and breaking it fails the run.
  *
  * `--sweep` runs the document-size ladder instead of the two passes, and
- * `--layers` the layer-count one. They are how the tables in
+ * `--layers` the layer-count one; `--feather` paints inside a large feathered
+ * selection against the same painting with none (11). They are how the tables in
  * `docs/design/benchmark.md` were measured, and they exist so those tables can
  * be reproduced rather than taken on trust.
  */
@@ -292,13 +293,42 @@ async function layerSweep(): Promise<void> {
   console.log()
 }
 
+/**
+ * Painting inside a large feathered selection (11), against the same painting
+ * with nothing selected: the soft mask is read by every dab, and this is what
+ * says whether that costs a frame anything.
+ */
+const FEATHER_RADIUS = 64
+
+async function featherSweep(): Promise<void> {
+  const pass = PASSES.find((entry) => entry.name === "unpaced")!
+  console.log("\n  feather     ms/frame   mean fps   sustained fps   frames")
+  for (const feather of [undefined, FEATHER_RADIUS]) {
+    const { report } = await measure(pass, {
+      ...BENCHMARK_WORKLOAD,
+      strokes: SWEEP_STROKES,
+      feather,
+    })
+    const perFrame = report.frameIntervalMs.mean
+    console.log(
+      `  ${String(feather ?? "none").padStart(7)}   ${fixed(perFrame, 3).padStart(10)}   ` +
+        `${fixed(1000 / perFrame).padStart(8)}   ` +
+        `${fixed(report.frameRate.sustained).padStart(13)}   ` +
+        `${String(report.frames).padStart(6)}`
+    )
+  }
+  console.log()
+}
+
 async function main(): Promise<void> {
   const stop = await serve()
   const ladder = process.argv.includes("--sweep")
     ? sweep
     : process.argv.includes("--layers")
       ? layerSweep
-      : null
+      : process.argv.includes("--feather")
+        ? featherSweep
+        : null
   if (ladder) {
     try {
       await ladder()

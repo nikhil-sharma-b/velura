@@ -602,3 +602,149 @@ export function wandSelection(
   const size = { width, height }
   return settleAll(size, tiles)
 }
+
+/**
+ * Widths of three box blurs that together approximate a gaussian of `sigma`:
+ * each pass is a running sum, so a wide feather costs what a narrow one does.
+ */
+function gaussianBoxes(sigma: number): number[] {
+  const passes = 3
+  const ideal = Math.sqrt((12 * sigma * sigma) / passes + 1)
+  let lower = Math.floor(ideal)
+  if (lower % 2 === 0) lower--
+  const upper = lower + 2
+  const lowerCount = Math.round(
+    (12 * sigma * sigma -
+      passes * lower * lower -
+      4 * passes * lower -
+      3 * passes) /
+      (-4 * lower - 4)
+  )
+  return Array.from({ length: passes }, (_, i) =>
+    i < lowerCount ? lower : upper
+  )
+}
+
+/**
+ * One box blur along a line of `count` values `stride` apart, the ends held
+ * at their edge value — past the region is either the canvas edge, which a
+ * feather does not fade at, or empty coverage the padding already holds.
+ */
+function boxBlurLine(
+  data: Float32Array,
+  scratch: Float32Array,
+  start: number,
+  stride: number,
+  count: number,
+  half: number
+) {
+  const at = (i: number) =>
+    data[start + Math.min(count - 1, Math.max(0, i)) * stride]
+  let sum = 0
+  for (let i = -half; i <= half; i++) sum += at(i)
+  const width = 2 * half + 1
+  for (let i = 0; i < count; i++) {
+    scratch[i] = sum / width
+    sum += at(i + half + 1) - at(i - half)
+  }
+  for (let i = 0; i < count; i++) data[start + i * stride] = scratch[i]
+}
+
+/**
+ * The selection with its edges softened over `radius` pixels (11): coverage
+ * blurred by a gaussian of half that deviation, so the ramp across a hard
+ * edge runs roughly `radius` either side of it. The canvas edge is not an
+ * edge of the selection, so everything selected stays everything selected;
+ * a selection too small to survive the blur is gone.
+ */
+export function featherSelection(
+  size: Size,
+  mask: SelectionMask,
+  radius: number
+): SelectionMask | null {
+  if (!(radius > 0)) return mask
+  const boxes = gaussianBoxes(radius / 2)
+  const pad = boxes.reduce((total, width) => total + (width - 1) / 2, 0)
+  const region = intersectRect(
+    {
+      x: mask.bounds.x - pad,
+      y: mask.bounds.y - pad,
+      width: mask.bounds.width + 2 * pad,
+      height: mask.bounds.height + 2 * pad,
+    },
+    { x: 0, y: 0, ...size }
+    // The bounds are on the canvas, so the padded region always meets it.
+  )!
+  const { x: left, y: top, width, height } = region
+  // Copied in tile by tile rather than asked for pixel by pixel: a large
+  // selection is millions of pixels.
+  const data = new Float32Array(width * height)
+  for (const tile of mask.tiles()) {
+    const span = intersectRect(tileBounds(tile), region)
+    if (!span) continue
+    const originX = tile.x * TILE_SIZE
+    const originY = tile.y * TILE_SIZE
+    for (let y = span.y; y < span.y + span.height; y++) {
+      const from = (y - originY) * TILE_SIZE - originX
+      const to = (y - top) * width - left
+      for (let x = span.x; x < span.x + span.width; x++)
+        data[to + x] = tile.coverage[from + x]
+    }
+  }
+  const scratch = new Float32Array(Math.max(width, height))
+  for (const box of boxes) {
+    const half = (box - 1) / 2
+    for (let y = 0; y < height; y++)
+      boxBlurLine(data, scratch, y * width, 1, width, half)
+    for (let x = 0; x < width; x++)
+      boxBlurLine(data, scratch, x, width, height, half)
+  }
+
+  const tiles = new Map<string, Uint8Array>()
+  for (let y = 0; y < height; y++) {
+    const docY = top + y
+    const tileY = tileIndexForPixel(docY)
+    const row = (docY - tileY * TILE_SIZE) * TILE_SIZE
+    for (let x = 0; x < width; x++) {
+      const value = Math.round(data[y * width + x])
+      if (value === 0) continue
+      const docX = left + x
+      const tileX = tileIndexForPixel(docX)
+      const key = tileKey(tileX, tileY)
+      let coverage = tiles.get(key)
+      if (!coverage) {
+        coverage = new Uint8Array(TILE_TEXELS)
+        tiles.set(key, coverage)
+      }
+      coverage[row + docX - tileX * TILE_SIZE] = value
+    }
+  }
+  return settleAll(size, tiles)
+}
+
+/**
+ * The selection outline moved by whole pixels (11), its coverage carried as
+ * it is; what is moved off the canvas is gone.
+ */
+export function translateSelection(
+  size: Size,
+  mask: SelectionMask,
+  dx: number,
+  dy: number
+): SelectionMask | null {
+  const ox = Math.round(dx)
+  const oy = Math.round(dy)
+  if (ox === 0 && oy === 0) return mask
+  const { bounds } = mask
+  return rasterise(
+    size,
+    {
+      x: bounds.x + ox,
+      y: bounds.y + oy,
+      width: bounds.width,
+      height: bounds.height,
+    },
+    (x, y) => mask.coverage(x - ox, y - oy),
+    () => false
+  )
+}

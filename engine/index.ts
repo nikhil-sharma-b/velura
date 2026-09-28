@@ -159,7 +159,9 @@ import {
   combineSelections,
   ellipseSelection,
   invertSelection,
+  featherSelection,
   lassoSelection,
+  translateSelection,
   wandSelection,
   type WandPixels,
   type Point,
@@ -266,6 +268,7 @@ const SELECTION_TOOLS = [
   "lasso",
   "polygonLasso",
   "magicWand",
+  "moveSelection",
 ] as const
 export type SelectionTool = (typeof SELECTION_TOOLS)[number]
 
@@ -554,6 +557,18 @@ export type EngineCommand =
   | { type: "abandonSelectionGesture" }
   /** Selects what was not selected; with nothing selected, everything. */
   | { type: "invertSelection" }
+  /**
+   * Softens the selection's edges over `radius` document pixels (11), so
+   * painting fades out across the boundary rather than stopping at it.
+   */
+  | { type: "featherSelection"; radius: number }
+  /** Moves the selection outline by whole pixels, the pixels left alone (11). */
+  | { type: "moveSelection"; dx: number; dy: number }
+  /**
+   * Copies what the selection covers of the active layer into a new layer
+   * above it, in place (11); soft coverage copies partly.
+   */
+  | { type: "copySelectionToLayer" }
   | { type: "undo" }
   | { type: "redo" }
 
@@ -1881,6 +1896,8 @@ export function createEngine(
         ended: boolean
       }
     | { shape: "lasso"; points: Point[]; mode: SelectionMode; ended: boolean }
+    /** The move-outline tool (11): the selection dragged, pixels left put. */
+    | { shape: "move"; anchor: Point; point: Point; ended: boolean }
     | {
         shape: "polygon"
         points: Point[]
@@ -1989,6 +2006,15 @@ export function createEngine(
   /** The shape a selection gesture outlines right now. */
   function marqueeShape(): SelectionMask | null {
     if (!marquee || !doc) return null
+    if (marquee.shape === "move")
+      return selection
+        ? translateSelection(
+            doc,
+            selection,
+            marquee.point.x - marquee.anchor.x,
+            marquee.point.y - marquee.anchor.y
+          )
+        : null
     if (marquee.shape === "lasso" || marquee.shape === "polygon")
       return lassoSelection(doc, marquee.points)
     const box = dragRect(marquee.anchor, marquee.point, constrained())
@@ -2000,6 +2026,7 @@ export function createEngine(
   /** What the selection would become were the gesture to end now. */
   function marqueeMask(): SelectionMask | null {
     if (!marquee || !doc) return null
+    if (marquee.shape === "move") return marqueeShape()
     return combineSelections(doc, selection, marqueeShape(), marquee.mode)
   }
 
@@ -2079,12 +2106,18 @@ export function createEngine(
 
   /** Ends a selection gesture, its outline becoming the selection. */
   function commitMarquee() {
+    const moving = marquee?.shape === "move"
     const mask = marqueeMask()
     marquee = undefined
     forgetGestureInput()
     // A click without a drag is how a replacing marquee lets go of the
     // selection; adding or subtracting nothing leaves it as it was, and
     // intersecting with nothing empties it.
+    if (moving) {
+      // An outline dragged wholly off the canvas is let go of.
+      commitSelection(mask ? "move selection" : "deselect", mask)
+      return
+    }
     commitSelection(mask ? "select" : "deselect", mask)
   }
 
@@ -2494,7 +2527,10 @@ export function createEngine(
       return
     }
     // Until the gesture outlines something, what is selected stays shown.
-    renderer?.setSelection(marqueeShape() ? marqueeMask() : selection)
+    // A moved outline has nowhere to be shown once it is off the canvas.
+    renderer?.setSelection(
+      marqueeShape() || drag.shape === "move" ? marqueeMask() : selection
+    )
     try {
       if (snapshot.status === "ready") render()
     } catch (error) {
@@ -2621,6 +2657,13 @@ export function createEngine(
             },
           })
         })
+        return
+      }
+      if (tool === "moveSelection") {
+        // Nothing selected, nothing to move.
+        if (!selection) return
+        marquee = { shape: "move", anchor, point: anchor, ended: false }
+        scheduleFrame()
         return
       }
       const mode = modeFromModifiers()
@@ -3737,6 +3780,63 @@ export function createEngine(
             invertSelection(requireDocument(), selection)
           )
           break
+        case "featherSelection": {
+          if (!Number.isFinite(command.radius) || command.radius < 0)
+            throw new Error("A feather radius must be finite and not negative.")
+          const document = requireDocument()
+          if (!selection) break
+          // A feather that would leave nothing selected is not taken: the
+          // artist asked for softer edges, not for the selection to go.
+          const mask = featherSelection(document, selection, command.radius)
+          if (mask) commitSelection("feather selection", mask)
+          break
+        }
+        case "moveSelection": {
+          if (!Number.isFinite(command.dx) || !Number.isFinite(command.dy))
+            throw new Error("A selection can only be moved by a finite offset.")
+          const document = requireDocument()
+          if (!selection) break
+          const mask = translateSelection(
+            document,
+            selection,
+            command.dx,
+            command.dy
+          )
+          commitSelection(mask ? "move selection" : "deselect", mask)
+          break
+        }
+        case "copySelectionToLayer": {
+          const document = requireDocument()
+          // A group has no pixels of its own to copy, and a mask being
+          // painted is not a layer's picture.
+          if (
+            !selection ||
+            document.paintingMask ||
+            findNodeIn(document.layers, document.activeLayerId)?.kind !==
+              "raster"
+          )
+            break
+          const source = activeLayer(document)
+          const sourceId = source.id
+          const before = captureStructure(document)
+          const copyId = addLayer(document)
+          setLayer(document, copyId, { name: `${source.name} copy` })
+          // The layer reaches the GPU before its pixels are drawn into it.
+          uploadLayers()
+          const region = renderer?.copySelected(sourceId, copyId) ?? null
+          recordOperation(
+            "copy to layer",
+            before,
+            region ? { readback: [{ surfaceId: copyId, region }] } : undefined
+          )
+          if (region) {
+            contentBounds.grow(copyId, region)
+            await history?.settle()
+            invalidateThumbnailsOf(copyId)
+          }
+          applyLayerChange()
+          break
+        }
         case "undo":
         case "redo": {
           if (!history) break

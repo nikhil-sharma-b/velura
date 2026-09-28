@@ -73,6 +73,8 @@ describe("createWorkload", () => {
     expect(() => createWorkload({ ...options, sampleRateHz: 0 })).toThrow()
     expect(() => createWorkload({ ...options, width: 0 })).toThrow()
     expect(() => createWorkload({ ...options, penSpeed: -1 })).toThrow()
+    expect(() => createWorkload({ ...options, feather: -1 })).toThrow()
+    expect(() => createWorkload({ ...options, feather: NaN })).toThrow()
   })
 })
 
