@@ -197,6 +197,43 @@ export const studioCommands = createRegistry<StudioContext>([
     ...dispatching({ type: "setTool", tool: "eraser" }),
   },
   {
+    // M, the marquee in every editor the hand learned on; Shift for the
+    // ellipse, since there is no second marquee key to cycle to.
+    id: "tool.rectSelect",
+    label: "Rectangle select tool",
+    category: "Tools",
+    keybinds: ["m"],
+    ...dispatching({ type: "setTool", tool: "rectSelect" }),
+  },
+  {
+    id: "tool.ellipseSelect",
+    label: "Ellipse select tool",
+    category: "Tools",
+    keybinds: ["shift+m"],
+    ...dispatching({ type: "setTool", tool: "ellipseSelect" }),
+  },
+  {
+    id: "select.all",
+    label: "Select all",
+    category: "Select",
+    keybinds: ["mod+a"],
+    ...dispatching({ type: "selectAll" }),
+  },
+  {
+    id: "select.deselect",
+    label: "Deselect",
+    category: "Select",
+    keybinds: ["mod+d"],
+    ...dispatching({ type: "deselect" }),
+  },
+  {
+    id: "select.invert",
+    label: "Invert selection",
+    category: "Select",
+    keybinds: ["mod+shift+i"],
+    ...dispatching({ type: "invertSelection" }),
+  },
+  {
     // A held modifier rather than a tool (D-input): the canvas samples while
     // it is down, and painting resumes the moment it is let go.
     id: "tool.eyedropper",

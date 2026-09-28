@@ -11,6 +11,7 @@ import {
   ArrowUUpRightIcon,
   CornersOutIcon,
   CircleIcon,
+  CircleDashedIcon,
   DropHalfIcon,
   WaveSineIcon,
   ChartLineUpIcon,
@@ -18,6 +19,7 @@ import {
   MagnifyingGlassMinusIcon,
   MagnifyingGlassPlusIcon,
   PaletteIcon,
+  SelectionIcon,
   SlidersIcon,
   StackIcon,
 } from "@phosphor-icons/react"
@@ -772,7 +774,14 @@ export function CanvasHost({
         // Touch and pen gestures belong to the stroke, not to the scroller.
         className="block h-full w-full touch-none"
         // A dot under the hand, so the mark has a visible starting point.
-        style={{ cursor: sampling ? SAMPLING_CURSOR : TOOL_CURSOR }}
+        style={{
+          cursor: sampling
+            ? SAMPLING_CURSOR
+            : snapshot.tool === "rectSelect" ||
+                snapshot.tool === "ellipseSelect"
+              ? "crosshair"
+              : TOOL_CURSOR,
+        }}
       />
       {snapshot.status === "ready" && (
         <div className="contents" hidden={zen} data-testid="studio-chrome">
@@ -1244,6 +1253,38 @@ export function CanvasHost({
                         : "solid"
                     }
                   />
+                </RailAction>
+                <RailAction
+                  label="Rectangle select tool"
+                  command="tool.rectSelect"
+                  variant={snapshot.tool === "rectSelect" ? "default" : "ghost"}
+                  size="icon"
+                  aria-pressed={snapshot.tool === "rectSelect"}
+                  onClick={() => {
+                    setLibraryOpen(false)
+                    setEraserOpen(false)
+                    runStudioCommand("tool.rectSelect", commandContext)
+                  }}
+                  className="rounded-lg"
+                >
+                  <SelectionIcon />
+                </RailAction>
+                <RailAction
+                  label="Ellipse select tool"
+                  command="tool.ellipseSelect"
+                  variant={
+                    snapshot.tool === "ellipseSelect" ? "default" : "ghost"
+                  }
+                  size="icon"
+                  aria-pressed={snapshot.tool === "ellipseSelect"}
+                  onClick={() => {
+                    setLibraryOpen(false)
+                    setEraserOpen(false)
+                    runStudioCommand("tool.ellipseSelect", commandContext)
+                  }}
+                  className="rounded-lg"
+                >
+                  <CircleDashedIcon />
                 </RailAction>
                 <RailAction
                   label="Colour"

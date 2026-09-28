@@ -209,3 +209,39 @@ describe("zen mode", () => {
     expect(toggleZen).toHaveBeenCalledTimes(1)
   })
 })
+
+describe("selection commands", () => {
+  const press = (
+    key: string,
+    modifiers: { shift?: boolean; mod?: boolean }
+  ) => {
+    const { engine, sent } = fakeEngine([raster("a")])
+    createKeybindResolver(studioCommands, () => context(engine)).keydown({
+      key,
+      shiftKey: !!modifiers.shift,
+      metaKey: false,
+      ctrlKey: !!modifiers.mod,
+      altKey: false,
+      repeat: false,
+      defaultPrevented: false,
+      target: null,
+      preventDefault: () => {},
+    })
+    return sent
+  }
+
+  test("m picks the rectangle and shift+m the ellipse", () => {
+    expect(press("m", {})).toEqual([{ type: "setTool", tool: "rectSelect" }])
+    expect(press("M", { shift: true })).toEqual([
+      { type: "setTool", tool: "ellipseSelect" },
+    ])
+  })
+
+  test("select all, deselect and invert have their usual keys", () => {
+    expect(press("a", { mod: true })).toEqual([{ type: "selectAll" }])
+    expect(press("d", { mod: true })).toEqual([{ type: "deselect" }])
+    expect(press("I", { mod: true, shift: true })).toEqual([
+      { type: "invertSelection" },
+    ])
+  })
+})

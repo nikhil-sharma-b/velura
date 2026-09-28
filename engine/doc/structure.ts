@@ -40,6 +40,13 @@ export type DocumentStructure = {
   layers: NodeStructure[]
   activeLayerId: string
   paintingMask: boolean
+  /**
+   * Which selection (07) the step left, by the key the engine holds its mask
+   * under; null for none. Only a selection step names one — absent, undoing
+   * the step leaves the selection as it is. Never saved: a selection is part
+   * of the session, not of the artwork.
+   */
+  selection?: string | null
 }
 
 function captureNode(node: LayerNode): NodeStructure {
