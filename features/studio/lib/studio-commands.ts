@@ -228,6 +228,14 @@ export const studioCommands = createRegistry<StudioContext>([
     ...dispatching({ type: "setTool", tool: "polygonLasso" }),
   },
   {
+    // W, the wand in every editor the hand learned on.
+    id: "tool.magicWand",
+    label: "Magic wand tool",
+    category: "Tools",
+    keybinds: ["w"],
+    ...dispatching({ type: "setTool", tool: "magicWand" }),
+  },
+  {
     // Escape lets go of an outline half drawn, the polygonal lasso's above
     // all, as it does in every editor with one.
     id: "select.abandonOutline",

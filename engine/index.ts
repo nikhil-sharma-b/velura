@@ -30,6 +30,7 @@ import {
   chooseOutputColorSpace,
   decodeTransfer,
   displayTransform,
+  encodeTransfer,
   type OutputColorSpace,
   srgbToWorking,
 } from "./color/display-transform"
@@ -106,10 +107,14 @@ import {
   intersectRect,
   type PixelRect,
   type TileCoord,
+  TILE_SIZE,
+  tileBounds,
   tileIndexForPixel,
   tileKey,
+  tilesCoveringRect,
   unionRect,
 } from "./doc/tile-grid"
+import { decodeFloat16 } from "./doc/float16"
 import type { SurfaceTiles, TileRef } from "./store/document-store"
 import { type BlobStore, createLocalBlobStore } from "./store/blob-store"
 import { createDocumentStore, type DocumentStore } from "./store/document-store"
@@ -155,6 +160,8 @@ import {
   ellipseSelection,
   invertSelection,
   lassoSelection,
+  wandSelection,
+  type WandPixels,
   type Point,
   rectSelection,
   sameSelection,
@@ -258,10 +265,26 @@ const SELECTION_TOOLS = [
   "ellipseSelect",
   "lasso",
   "polygonLasso",
+  "magicWand",
 ] as const
 export type SelectionTool = (typeof SELECTION_TOOLS)[number]
 
 export type { SelectionMode }
+
+/**
+ * What the magic wand reads (10): the active layer's own pixels, or the
+ * picture as it is composited.
+ */
+export type WandSample = "layer" | "composite"
+export type WandOptions = Readonly<{
+  /** Levels, 0–255, a pixel may differ from the clicked one per channel. */
+  tolerance: number
+  sample: WandSample
+}>
+export const DEFAULT_WAND: WandOptions = Object.freeze({
+  tolerance: 32,
+  sample: "layer",
+})
 
 export const isSelectionTool = (tool: Tool): tool is SelectionTool =>
   (SELECTION_TOOLS as readonly Tool[]).includes(tool)
@@ -513,6 +536,14 @@ export type EngineCommand =
       points: readonly Point[]
       mode?: SelectionMode
     }
+  /**
+   * The magic wand's click (10), in document pixels: the region of similar
+   * colour joined to that point, read as the wand's options say, combined
+   * with the selection as `mode` says. Asynchronous — the pixels are read
+   * back off the GPU once, for this click (D30).
+   */
+  | { type: "selectWand"; x: number; y: number; mode?: SelectionMode }
+  | { type: "setWandOptions"; tolerance?: number; sample?: WandSample }
   | { type: "selectAll" }
   | { type: "deselect" }
   /**
@@ -581,6 +612,7 @@ export type EngineSnapshot = Readonly<{
    * belongs to the document, not a layer, so it stays as layers are switched.
    */
   selection: SelectionSummary | null
+  wand: WandOptions
   /** Whether there is a step to take back, and one to put back (D21). */
   canUndo: boolean
   canRedo: boolean
@@ -660,6 +692,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   view: DEFAULT_VIEW,
   imageTransform: null,
   selection: null,
+  wand: DEFAULT_WAND,
   canUndo: false,
   canRedo: false,
   error: null,
@@ -1865,6 +1898,7 @@ export function createEngine(
     | undefined
   /** Shift and Alt/Option, as the pen last reported them. */
   let shiftHeld = false
+  let wand: WandOptions = DEFAULT_WAND
   let altHeld = false
   /**
    * Shift chose the combine mode as the pen went down, so it is not also a
@@ -1975,6 +2009,72 @@ export function createEngine(
     if (shiftHeld) return "add"
     if (altHeld) return "subtract"
     return "replace"
+  }
+
+  /**
+   * Straight-alpha RGBA8 of what the wand reads. The active layer's tiles are
+   * premultiplied linear half floats; they are brought to the same footing as
+   * the composite — display-encoded bytes — so a tolerance means the same
+   * number of levels whichever is sampled.
+   */
+  async function wandPixels(): Promise<RenderedPixels | WandPixels> {
+    const document = requireDocument()
+    if (wand.sample === "composite") return await capturePixels()
+    if (!renderer) throw new Error("The graphics device is not ready.")
+    const { width, height } = document
+    const coords = tilesCoveringRect({ x: 0, y: 0, width, height })
+    const tiles = await renderer.readTiles(paintTargetId(document), coords)
+    const data = new Uint8Array(width * height * 4)
+    coords.forEach((coord, index) => {
+      const texels = tiles[index]
+      const span = intersectRect(tileBounds(coord), {
+        x: 0,
+        y: 0,
+        width,
+        height,
+      })
+      if (!span) return
+      for (let y = span.y; y < span.y + span.height; y++)
+        for (let x = span.x; x < span.x + span.width; x++) {
+          const from =
+            ((y - coord.y * TILE_SIZE) * TILE_SIZE + x - coord.x * TILE_SIZE) *
+            4
+          const to = (y * width + x) * 4
+          const alpha = Math.min(
+            1,
+            Math.max(0, decodeFloat16(texels[from + 3]))
+          )
+          data[to + 3] = Math.round(alpha * 255)
+          if (alpha === 0) continue
+          for (let channel = 0; channel < 3; channel++)
+            data[to + channel] = Math.round(
+              encodeTransfer(decodeFloat16(texels[from + channel]) / alpha) *
+                255
+            )
+        }
+    })
+    return { width, height, data }
+  }
+
+  /**
+   * One click of the magic wand (10). Clicks are taken in turn, so a quick
+   * shift-click combines with the selection the click before it made rather
+   * than racing it; a document swapped out during the read is not selected in.
+   */
+  let wandQueue: Promise<void> = Promise.resolve()
+  function selectWand(point: Point, mode: SelectionMode): Promise<void> {
+    const run = wandQueue.then(async () => {
+      const document = doc
+      const pixels = await wandPixels()
+      if (disposed || !doc || doc !== document) return
+      const shape = wandSelection(pixels, point, wand.tolerance)
+      // A click off the canvas picks nothing: a replacing wand lets go of the
+      // selection there, as a replacing marquee's click does.
+      const mask = combineSelections(doc, selection, shape, mode)
+      commitSelection(mask ? "select" : "deselect", mask)
+    })
+    wandQueue = run.catch(() => {})
+    return run
   }
 
   /** Ends a selection gesture, its outline becoming the selection. */
@@ -2510,6 +2610,17 @@ export function createEngine(
       }
       if (tool === "polygonLasso") {
         clickPolygon(anchor, origin)
+        return
+      }
+      if (tool === "magicWand") {
+        void selectWand(anchor, modeFromModifiers()).catch(() => {
+          publish({
+            problem: {
+              action: "retry",
+              message: "That area could not be selected. Try again.",
+            },
+          })
+        })
         return
       }
       const mode = modeFromModifiers()
@@ -3583,6 +3694,31 @@ export function createEngine(
             command.mode ?? "replace"
           )
           commitSelection(mask ? "select" : "deselect", mask)
+          break
+        }
+        case "selectWand": {
+          if (!Number.isFinite(command.x) || !Number.isFinite(command.y))
+            throw new Error("A selection must be finite.")
+          if (snapshot.status !== "ready")
+            throw new Error("The graphics device is not ready.")
+          await selectWand(
+            { x: command.x, y: command.y },
+            command.mode ?? "replace"
+          )
+          break
+        }
+        case "setWandOptions": {
+          const tolerance = command.tolerance ?? wand.tolerance
+          if (!Number.isFinite(tolerance))
+            throw new Error("A tolerance must be finite.")
+          const sample = command.sample ?? wand.sample
+          if (sample !== "layer" && sample !== "composite")
+            throw new Error(`Not a wand sample: ${sample}`)
+          wand = Object.freeze({
+            tolerance: Math.round(Math.min(255, Math.max(0, tolerance))),
+            sample,
+          })
+          publish({ wand })
           break
         }
         case "selectAll":

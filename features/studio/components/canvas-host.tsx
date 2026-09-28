@@ -19,6 +19,7 @@ import {
   MagnifyingGlassMinusIcon,
   MagnifyingGlassPlusIcon,
   LassoIcon,
+  MagicWandIcon,
   PaletteIcon,
   PolygonIcon,
   SelectionIcon,
@@ -1141,6 +1142,53 @@ export function CanvasHost({
                     </PopoverPrimitive.Portal>
                   </PopoverPrimitive.Root>
                 )}
+                {/* The wand's own options (10), shown while it is in the hand:
+                how far a colour may stray, and whether it reads the layer
+                or the picture as a whole. */}
+                {snapshot.tool === "magicWand" && (
+                  <QuickSetting
+                    label="Tolerance"
+                    value={`${snapshot.wand.tolerance}, ${snapshot.wand.sample === "layer" ? "active layer" : "all layers"}`}
+                    readout={`${snapshot.wand.tolerance}`}
+                    icon={<MagicWandIcon />}
+                  >
+                    <SliderSetting
+                      label="Tolerance"
+                      value={snapshot.wand.tolerance}
+                      min={0}
+                      max={255}
+                      step={1}
+                      onChange={(tolerance) =>
+                        void engine?.dispatch({
+                          type: "setWandOptions",
+                          tolerance,
+                        })
+                      }
+                    />
+                    <div
+                      role="group"
+                      aria-label="Sample"
+                      className="mt-3 grid grid-cols-2 gap-1 text-xs"
+                    >
+                      {(["layer", "composite"] as const).map((sample) => (
+                        <button
+                          key={sample}
+                          type="button"
+                          aria-pressed={snapshot.wand.sample === sample}
+                          className="rounded-md border border-transparent px-2 py-1 hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
+                          onClick={() =>
+                            void engine?.dispatch({
+                              type: "setWandOptions",
+                              sample,
+                            })
+                          }
+                        >
+                          {sample === "layer" ? "Active layer" : "All layers"}
+                        </button>
+                      ))}
+                    </div>
+                  </QuickSetting>
+                )}
                 {/* Size and opacity are the two a hand reaches for mid-piece, so
                 they stay on the canvas: the editor is for shaping a brush,
                 not for the adjustment made between one stroke and the next. */}
@@ -1334,6 +1382,21 @@ export function CanvasHost({
                     }}
                   />
                 ))}
+                <RailAction
+                  label="Magic wand tool"
+                  command="tool.magicWand"
+                  variant={snapshot.tool === "magicWand" ? "default" : "ghost"}
+                  size="icon"
+                  aria-pressed={snapshot.tool === "magicWand"}
+                  onClick={() => {
+                    setLibraryOpen(false)
+                    setEraserOpen(false)
+                    runStudioCommand("tool.magicWand", commandContext)
+                  }}
+                  className="rounded-lg"
+                >
+                  <MagicWandIcon />
+                </RailAction>
                 <RailAction
                   label="Colour"
                   variant={colorOpen ? "default" : "ghost"}
