@@ -9,6 +9,7 @@ import {
   tileKey,
   tilesCoveringRect,
 } from "./tile-grid"
+import { affineBounds, type Affine } from "./transform-session"
 
 /**
  * The document's selection (07): one byte of coverage per pixel, tiled like
@@ -745,6 +746,46 @@ export function translateSelection(
       height: bounds.height,
     },
     (x, y) => mask.coverage(x - ox, y - oy),
+    () => false
+  )
+}
+
+/**
+ * The selection carried along with the pixels it lifted (14): `matrix` takes
+ * `source` — the region lifted, in its own pixels from its top left — to
+ * where it now sits. Each pixel centre is looked up through the inverse and
+ * the old coverage sampled bilinearly, the same resample the pixels get, so
+ * a feathered edge travels soft. What lands off the canvas is gone.
+ */
+export function transformSelection(
+  size: Size,
+  mask: SelectionMask,
+  source: PixelRect,
+  matrix: Affine
+): SelectionMask | null {
+  const [a, b, c, d, e, f] = matrix
+  const det = a * d - b * c
+  const at = (x: number, y: number) => {
+    const u = x - e
+    const v = y - f
+    // Back into the source's pixels, then into the document's, as a texel
+    // coordinate whose centres sit on whole numbers.
+    const sx = (d * u - c * v) / det + source.x - 0.5
+    const sy = (a * v - b * u) / det + source.y - 0.5
+    const x0 = Math.floor(sx)
+    const y0 = Math.floor(sy)
+    const tx = sx - x0
+    const ty = sy - y0
+    const top =
+      mask.coverage(x0, y0) * (1 - tx) + mask.coverage(x0 + 1, y0) * tx
+    const bottom =
+      mask.coverage(x0, y0 + 1) * (1 - tx) + mask.coverage(x0 + 1, y0 + 1) * tx
+    return Math.round(top * (1 - ty) + bottom * ty)
+  }
+  return rasterise(
+    size,
+    affineBounds(matrix, source),
+    (x, y) => at(x + 0.5, y + 0.5),
     () => false
   )
 }

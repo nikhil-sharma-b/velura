@@ -169,6 +169,7 @@ import {
   ellipseSelection,
   invertSelection,
   featherSelection,
+  transformSelection,
   lassoSelection,
   translateSelection,
   wandSelection,
@@ -701,6 +702,11 @@ export type ImageTransformState = Readonly<{
 
 export type LayerTransformState = Readonly<{
   layerId: string
+  /**
+   * Only the selected pixels were picked up (14): the handles are on the
+   * selection, and the outline goes with the pixels when put down.
+   */
+  lifted: boolean
   placement: ImagePlacement
   /** The snapshot's size: the layer's content box as it was picked up. */
   source: Readonly<{ width: number; height: number }>
@@ -1098,6 +1104,8 @@ export function createEngine(
         start: ImagePlacement
         placement: ImagePlacement
         source: PixelRect
+        /** Only the selection's pixels were picked up (14). */
+        lifted: boolean
         transform: TransformSession
       }
     | undefined
@@ -1799,10 +1807,11 @@ export function createEngine(
 
   function describeLayerTransform(): LayerTransformState | null {
     if (!layerTransform) return null
-    const { layerId, placement, source } = layerTransform
+    const { layerId, placement, source, lifted } = layerTransform
     return Object.freeze({
       layerId,
       placement,
+      lifted,
       source: Object.freeze({ width: source.width, height: source.height }),
     })
   }
@@ -1834,21 +1843,41 @@ export function createEngine(
     }
     const area = held && intersectRect(held, canvasRect)
     const coords = area ? tilesCoveringRect(area) : []
-    const texels = await renderer.readTiles(id, coords)
-    // Whole tiles overhang the canvas's edge; the surface does not.
-    const covered = coveredBounds(
-      coords.map((coord, index) => ({ ...coord, texels: texels[index]! }))
-    )
-    const region = covered && intersectRect(covered, canvasRect)
+    // With a selection, only what it covers is lifted (14), and the handles
+    // sit on the selection rather than on the layer's content.
+    const lifted = selection
+      ? { mask: selection, key: selectionKey }
+      : undefined
+    let region: PixelRect | null
+    if (lifted) {
+      // Nothing painted under the selection is nothing to lift.
+      region =
+        held && intersectRect(held, lifted.mask.bounds)
+          ? lifted.mask.bounds
+          : null
+    } else {
+      const texels = await renderer.readTiles(id, coords)
+      // Whole tiles overhang the canvas's edge; the surface does not.
+      const covered = coveredBounds(
+        coords.map((coord, index) => ({ ...coord, texels: texels[index]! }))
+      )
+      region = covered && intersectRect(covered, canvasRect)
+    }
     if (!region) throw new Error("There is nothing on this layer to transform.")
     const imageId = layerImageId(id)
-    renderer.openLayerImage(imageId, id, region)
+    if (lifted) {
+      renderer.openSelectionImage(imageId, id, region)
+      // The outline is put down with the pixels, so it is not shown behind.
+      renderer.setSelection(null)
+    } else renderer.openLayerImage(imageId, id, region)
     const start = layerStartPlacement(region)
     const before = captureStructure(document)
+    const source = region
     const show = (matrix: Affine) =>
       showLayerImage(id, imageId, affineQuad(matrix, region))
     layerTransform = {
       layerId: id,
+      lifted: !!lifted,
       start,
       placement: start,
       source: region,
@@ -1858,8 +1887,8 @@ export function createEngine(
           preview: show,
           // The pixels the step remembers are the ones the last preview
           // drew, over everywhere the content has been since it was lifted.
-          commit: (_matrix, touched) =>
-            recordOperation("transform layer", before, {
+          commit: (matrix, touched) => {
+            const pixels = {
               readback: [
                 {
                   surfaceId: id,
@@ -1867,8 +1896,33 @@ export function createEngine(
                 },
               ],
               canvas: { width: document.width, height: document.height },
-            }),
+            }
+            if (!lifted) {
+              recordOperation("transform layer", before, pixels)
+              return
+            }
+            // The outline goes where the pixels went, in the same step.
+            const mask = transformSelection(
+              document,
+              lifted.mask,
+              source,
+              matrix
+            )
+            const key = mask ? `selection-${++nextSelectionKey}` : null
+            if (mask) selections.set(key!, mask)
+            history?.recordOperation(
+              "transform selection",
+              {
+                before: { ...before, selection: lifted.key },
+                after: { ...captureStructure(document), selection: key },
+              },
+              pixels
+            )
+            selectionKey = key
+            showSelection(mask, false)
+          },
           cancel: (_start, moved) => {
+            if (lifted) renderer?.setSelection(lifted.mask)
             if (!moved) return
             renderer?.restoreLayerImage(imageId, id)
             invalidateThumbnailsOf(id)
@@ -1916,6 +1970,15 @@ export function createEngine(
     layerTransform = undefined
     const changed = !samePlacement(session.placement, session.start)
     const recorded = session.transform.commit({ changed })
+    if (!recorded && session.lifted) {
+      // Put down where it was picked up: a soft edge drawn back over its own
+      // hole is not quite the layer it came from, so the layer is put back.
+      renderer?.restoreLayerImage(
+        layerImageId(session.layerId),
+        session.layerId
+      )
+      renderer?.setSelection(selection)
+    }
     renderer?.closePlacedImage(layerImageId(session.layerId))
     publish({ layerTransform: null })
     if (recorded) applyLayerChange()
@@ -1935,6 +1998,7 @@ export function createEngine(
   function abandonLayerTransform() {
     if (!layerTransform) return
     renderer?.closePlacedImage(layerImageId(layerTransform.layerId))
+    if (layerTransform.lifted) renderer?.setSelection(selection)
     layerTransform = undefined
     publish({ layerTransform: null })
   }

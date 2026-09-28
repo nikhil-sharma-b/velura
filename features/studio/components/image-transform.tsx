@@ -140,7 +140,8 @@ export function ImageTransform({
 
 /**
  * A painted layer's box (13): the same handles, drawn from a snapshot of the
- * layer taken as it was picked up rather than from a file.
+ * layer taken as it was picked up rather than from a file. With a selection,
+ * the box is the selection's and only its pixels move (14).
  */
 export function LayerTransform({
   engine,
@@ -159,7 +160,7 @@ export function LayerTransform({
       snapshot={snapshot}
       canvas={canvas}
       placement={transform.placement}
-      subject="layer"
+      subject={transform.lifted ? "selection" : "layer"}
       commands={{
         adjust: "adjustLayerTransform",
         commit: "commitLayerTransform",
@@ -182,7 +183,7 @@ function TransformBox({
   snapshot: EngineSnapshot
   canvas: HTMLCanvasElement | null
   placement: ImagePlacement
-  subject: "image" | "layer"
+  subject: "image" | "layer" | "selection"
   commands: {
     adjust: "adjustImageTransform" | "adjustLayerTransform"
     commit: "commitImageTransform" | "commitLayerTransform"
@@ -295,7 +296,7 @@ function TransformBox({
       aria-label={
         subject === "image"
           ? "Move, scale or rotate the placed image"
-          : "Move, scale or rotate the layer"
+          : `Move, scale or rotate the ${subject}`
       }
       data-testid={`${subject}-transform`}
       className="absolute inset-0 outline-none"
