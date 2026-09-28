@@ -147,6 +147,14 @@ import {
   type TransformSession,
 } from "./doc/transform-session"
 import { layerStartPlacement, coveredBounds } from "./doc/layer-transform"
+import {
+  alignedPlacement,
+  placementExtent,
+  snapTargets,
+  type AlignAnchor,
+  type Extent,
+  type SnapTargets,
+} from "./doc/snap"
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
 import {
@@ -269,6 +277,8 @@ export {
   scaledPlacement,
 } from "./doc/image-placement"
 export type { ImageAsset, ImageAssetRef, PlacedImage } from "./doc/image-source"
+export type { AlignAnchor, Extent, Snap, SnapTargets } from "./doc/snap"
+export { placementExtent, resolveSnap } from "./doc/snap"
 
 export type PaintTool = "brush" | "eraser"
 /** Tools that draw out a selection (07) instead of making a mark. */
@@ -507,6 +517,21 @@ export type EngineCommand =
    */
   | { type: "flipLayer"; id: string; axis: "horizontal" | "vertical" }
   /**
+   * Lines a layer's content up with the canvas or the selection (15), along
+   * one axis, as one step — or, mid-transform, as one more adjustment of it.
+   * Against the canvas with a selection, only a painted layer's selected
+   * pixels move; a placed image, and anything aligned against the
+   * selection, moves whole.
+   */
+  | {
+      type: "alignLayer"
+      id: string
+      anchor: AlignAnchor
+      to: "canvas" | "selection"
+    }
+  /** Whether transform drags snap to edges, centres and other content (15). */
+  | { type: "setSnapping"; enabled: boolean }
+  /**
    * A layer's own settings. Every field is optional and unnamed ones are left
    * alone, so a control that owns one property need not know the rest.
    */
@@ -625,6 +650,8 @@ export type EngineSnapshot = Readonly<{
   pressureCurve: Curve
   /** Whether pen tilt reaches the dynamics graph. */
   tiltEnabled: boolean
+  /** Whether transform drags snap (15); a host may suspend it per drag. */
+  snapping: boolean
   /** The persistent tool in the hand; Alt/Option sampling never changes it. */
   tool: Tool
   /** Current display-encoded ink, updated by the eyedropper. */
@@ -698,6 +725,8 @@ export type ImageTransformState = Readonly<{
   source: Readonly<{ width: number; height: number }>
   /** Drawn pixels per source pixel; 1 is the size the picture was recorded at. */
   resolution: number
+  /** What a drag of it may snap to, found as it was picked up (15). */
+  snapTargets: SnapTargets
 }>
 
 export type LayerTransformState = Readonly<{
@@ -710,6 +739,8 @@ export type LayerTransformState = Readonly<{
   placement: ImagePlacement
   /** The snapshot's size: the layer's content box as it was picked up. */
   source: Readonly<{ width: number; height: number }>
+  /** What a drag of it may snap to, found as it was picked up (15). */
+  snapTargets: SnapTargets
 }>
 
 export type MaskSummary = Readonly<Omit<LayerMask, "surface">>
@@ -737,6 +768,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   stabilization: DEFAULT_STABILIZATION,
   pressureCurve: DEFAULT_PRESSURE_CURVE,
   tiltEnabled: true,
+  snapping: true,
   tool: "brush",
   color: Object.freeze({
     red: 36 / 255,
@@ -1086,6 +1118,7 @@ export function createEngine(
         start: ImagePlacement
         placement: ImagePlacement
         asset: ImageAsset
+        snapTargets: SnapTargets
         /** The original, decoded once for the whole drag (06). */
         open: OpenImage
         /**
@@ -1106,6 +1139,7 @@ export function createEngine(
         source: PixelRect
         /** Only the selection's pixels were picked up (14). */
         lifted: boolean
+        snapTargets: SnapTargets
         transform: TransformSession
       }
     | undefined
@@ -1135,6 +1169,7 @@ export function createEngine(
   // On unless the artist says otherwise: a pen that reports tilt should use
   // it, and a pen that does not already reads as upright.
   let tiltEnabled = true
+  let snapping = true
   // Rebuilt only when the brush changes its spacing, which never happens
   // inside a stroke: a frame of drawing still allocates nothing (D30).
   let resampler = createStrokeResampler(brushSpacing(DEFAULT_BRUSH))
@@ -1604,10 +1639,11 @@ export function createEngine(
   /** What the host needs to draw the box and to say how much detail is left. */
   function describeTransform(): ImageTransformState | null {
     if (!imageTransform) return null
-    const { layerId, placement, asset } = imageTransform
+    const { layerId, placement, asset, snapTargets } = imageTransform
     return Object.freeze({
       layerId,
       placement,
+      snapTargets,
       source: Object.freeze({ width: asset.width, height: asset.height }),
       resolution: resolution(placement, asset),
     })
@@ -1802,15 +1838,145 @@ export function createEngine(
     })
   }
 
+  /** Picks a placed image up; see `beginImageTransform`. */
+  async function beginImageTransformOf(id: string): Promise<void> {
+    const document = requireDocument()
+    const layer = findLayer(document, id)
+    if (layer.kind !== "raster" || !layer.image || !layer.placed)
+      throw new Error("Only a placed image can be moved, scaled or turned.")
+    // A transform in flight on another layer is finished rather than
+    // abandoned: the artist moved on, they did not undo.
+    if (imageTransform && imageTransform.layerId !== id) await commitTransform()
+    await commitLayerTransform()
+    const asset = assetFor(layer.placed.asset.id)
+    // Decoded and uploaded here, once. Every adjustment after this is a
+    // textured quad: no decode, no canvas-sized conversion in
+    // JavaScript, no tile upload — which is the difference between
+    // dragging a six-megapixel photograph at three frames a second and
+    // dragging it at the frame rate (06).
+    const open = await imageCodec().open(asset)
+    try {
+      renderer?.openPlacedImage(id, open.source)
+    } catch (error) {
+      open.close()
+      throw error
+    }
+    const layerId = id
+    const start = layer.placed.placement
+    const before = captureStructure(document)
+    imageTransform = {
+      layerId,
+      start,
+      placement: start,
+      asset,
+      snapTargets: snapTargetsBesides(layerId),
+      open,
+      transform: beginTransform(
+        {
+          source: asset,
+          preview: (matrix) =>
+            showTransform(layerId, affineQuad(matrix, asset)),
+          commit: (_matrix, region) =>
+            // The drag drew the picture with the renderer, so the
+            // pixels this step has to remember are the ones on the
+            // GPU. The region is everywhere the picture has been since
+            // it was picked up, so the tiles it left behind are
+            // recorded as the empty ones they now are.
+            recordOperation("transform image", before, {
+              readback: [{ surfaceId: layerId, region }],
+              canvas: { width: document.width, height: document.height },
+            }),
+          cancel: (startMatrix, moved) => {
+            // Rendered once more from the original rather than the
+            // preview being "undone": there is no step to undo.
+            setPlacement(requireDocument(), layerId, start)
+            if (moved) showTransform(layerId, affineQuad(startMatrix, asset))
+          },
+        },
+        affineFromPlacement(start, asset)
+      ),
+    }
+    publish({ imageTransform: describeTransform() })
+  }
+
+  /**
+   * The lines a drag may snap to (15): the canvas's, and every other visible
+   * layer's content box — a placed image's by its placement, a painted
+   * layer's by where it has been marked, within the canvas.
+   */
+  function snapTargetsBesides(id: string): SnapTargets {
+    const document = requireDocument()
+    const canvas = {
+      x: 0,
+      y: 0,
+      width: document.width,
+      height: document.height,
+    }
+    const others: Extent[] = []
+    for (const layer of rasterLayers(document.layers)) {
+      if (layer.id === id || !layer.visible) continue
+      const box = layer.placed
+        ? placementExtent(layer.placed.placement)
+        : contentBounds.get(layer.id)
+      const within = box && intersectRect(box, canvas)
+      if (within) others.push(within)
+    }
+    return Object.freeze(snapTargets(document, others))
+  }
+
+  /** Lines a layer up with the canvas or the selection; see `alignLayer`. */
+  async function alignLayer(
+    id: string,
+    anchor: AlignAnchor,
+    to: "canvas" | "selection"
+  ): Promise<void> {
+    const document = requireDocument()
+    const within =
+      to === "canvas"
+        ? { x: 0, y: 0, width: document.width, height: document.height }
+        : selection?.bounds
+    if (!within) throw new Error("There is no selection to align to.")
+    if (imageTransform?.layerId === id) {
+      adjustImageTransformTo(
+        alignedPlacement(imageTransform.placement, anchor, within)
+      )
+      return
+    }
+    if (layerTransform?.layerId === id) {
+      adjustLayerTransformTo(
+        alignedPlacement(layerTransform.placement, anchor, within)
+      )
+      return
+    }
+    const layer = findLayer(document, id)
+    if (layer.kind === "raster" && layer.image && layer.placed) {
+      await beginImageTransformOf(id)
+      const session = requireTransform()
+      adjustImageTransformTo(
+        alignedPlacement(session.placement, anchor, within)
+      )
+      await commitTransform()
+      return
+    }
+    // Aligned to the selection, the layer moves to it rather than the
+    // selection's own pixels being lifted onto where they already are.
+    await beginLayerTransformOf(id, { lift: to === "canvas" })
+    const session = layerTransform as typeof layerTransform
+    if (!session) return
+    adjustLayerTransformTo(alignedPlacement(session.placement, anchor, within))
+    await commitLayerTransform()
+  }
+
   /** Layer transforms hold their snapshot under an id no asset can have. */
   const layerImageId = (layerId: string) => `layer-transform:${layerId}`
 
   function describeLayerTransform(): LayerTransformState | null {
     if (!layerTransform) return null
-    const { layerId, placement, source, lifted } = layerTransform
+    const { layerId, placement, source, lifted, snapTargets } = layerTransform
     return Object.freeze({
       layerId,
       placement,
+      snapTargets,
       lifted,
       source: Object.freeze({ width: source.width, height: source.height }),
     })
@@ -1821,7 +1987,10 @@ export function createEngine(
    * tight box round them found from one readback, and a shared session (12)
    * that previews from the snapshot and resamples once on commit.
    */
-  async function beginLayerTransformOf(id: string): Promise<void> {
+  async function beginLayerTransformOf(
+    id: string,
+    options: { lift?: boolean } = {}
+  ): Promise<void> {
     const document = requireDocument()
     const layer = findLayer(document, id)
     if (layer.kind !== "raster")
@@ -1845,9 +2014,10 @@ export function createEngine(
     const coords = area ? tilesCoveringRect(area) : []
     // With a selection, only what it covers is lifted (14), and the handles
     // sit on the selection rather than on the layer's content.
-    const lifted = selection
-      ? { mask: selection, key: selectionKey }
-      : undefined
+    const lifted =
+      selection && options.lift !== false
+        ? { mask: selection, key: selectionKey }
+        : undefined
     let region: PixelRect | null
     if (lifted) {
       // Nothing painted under the selection is nothing to lift.
@@ -1878,6 +2048,7 @@ export function createEngine(
     layerTransform = {
       layerId: id,
       lifted: !!lifted,
+      snapTargets: snapTargetsBesides(id),
       start,
       placement: start,
       source: region,
@@ -3709,69 +3880,9 @@ export function createEngine(
           applyLayerChange()
           break
         }
-        case "beginImageTransform": {
-          const document = requireDocument()
-          const layer = findLayer(document, command.id)
-          if (layer.kind !== "raster" || !layer.image || !layer.placed)
-            throw new Error(
-              "Only a placed image can be moved, scaled or turned."
-            )
-          // A transform in flight on another layer is finished rather than
-          // abandoned: the artist moved on, they did not undo.
-          if (imageTransform && imageTransform.layerId !== command.id)
-            await commitTransform()
-          await commitLayerTransform()
-          const asset = assetFor(layer.placed.asset.id)
-          // Decoded and uploaded here, once. Every adjustment after this is a
-          // textured quad: no decode, no canvas-sized conversion in
-          // JavaScript, no tile upload — which is the difference between
-          // dragging a six-megapixel photograph at three frames a second and
-          // dragging it at the frame rate (06).
-          const open = await imageCodec().open(asset)
-          try {
-            renderer?.openPlacedImage(command.id, open.source)
-          } catch (error) {
-            open.close()
-            throw error
-          }
-          const layerId = command.id
-          const start = layer.placed.placement
-          const before = captureStructure(document)
-          imageTransform = {
-            layerId,
-            start,
-            placement: start,
-            asset,
-            open,
-            transform: beginTransform(
-              {
-                source: asset,
-                preview: (matrix) =>
-                  showTransform(layerId, affineQuad(matrix, asset)),
-                commit: (_matrix, region) =>
-                  // The drag drew the picture with the renderer, so the
-                  // pixels this step has to remember are the ones on the
-                  // GPU. The region is everywhere the picture has been since
-                  // it was picked up, so the tiles it left behind are
-                  // recorded as the empty ones they now are.
-                  recordOperation("transform image", before, {
-                    readback: [{ surfaceId: layerId, region }],
-                    canvas: { width: document.width, height: document.height },
-                  }),
-                cancel: (startMatrix, moved) => {
-                  // Rendered once more from the original rather than the
-                  // preview being "undone": there is no step to undo.
-                  setPlacement(requireDocument(), layerId, start)
-                  if (moved)
-                    showTransform(layerId, affineQuad(startMatrix, asset))
-                },
-              },
-              affineFromPlacement(start, asset)
-            ),
-          }
-          publish({ imageTransform: describeTransform() })
+        case "beginImageTransform":
+          await beginImageTransformOf(command.id)
           break
-        }
         case "adjustImageTransform":
           adjustImageTransformTo(command.placement)
           break
@@ -3792,6 +3903,9 @@ export function createEngine(
           break
         case "cancelLayerTransform":
           await cancelLayerTransform()
+          break
+        case "alignLayer":
+          await alignLayer(command.id, command.anchor, command.to)
           break
         case "flipLayer": {
           // Mid-transform, a flip is one more adjustment of it.
@@ -4250,6 +4364,10 @@ export function createEngine(
           publish({ pressureCurve: Object.freeze(next.map((p) => ({ ...p }))) })
           break
         }
+        case "setSnapping":
+          snapping = command.enabled !== false
+          publish({ snapping })
+          break
         case "setTiltEnabled": {
           tiltEnabled = command.enabled !== false
           publish({ tiltEnabled })

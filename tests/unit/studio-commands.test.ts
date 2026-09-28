@@ -20,10 +20,15 @@ const raster = (id: string, extra: Partial<LayerSummary> = {}) =>
   }) as unknown as LayerSummary
 
 /** An engine that records what it is asked to do, over a fixed layer tree. */
-function fakeEngine(layers: LayerSummary[], activeLayerId = "a") {
+function fakeEngine(
+  layers: LayerSummary[],
+  activeLayerId = "a",
+  extra: Record<string, unknown> = {}
+) {
   const sent: EngineCommand[] = []
   const engine = {
     getSnapshot: () => ({
+      ...extra,
       layers,
       activeLayerId,
       tool: "brush",
@@ -269,6 +274,66 @@ describe("selection commands", () => {
     expect(press("d", { mod: true })).toEqual([{ type: "deselect" }])
     expect(press("I", { mod: true, shift: true })).toEqual([
       { type: "invertSelection" },
+    ])
+  })
+})
+
+describe("snapping and alignment", () => {
+  test("align commands line the layer up with the canvas", () => {
+    const { engine, sent } = fakeEngine([raster("a"), raster("b")], "b")
+    for (const anchor of [
+      "left",
+      "hcenter",
+      "right",
+      "top",
+      "vcenter",
+      "bottom",
+    ])
+      runStudioCommand(`layer.align.canvas.${anchor}`, context(engine))
+    expect(sent).toEqual(
+      ["left", "hcenter", "right", "top", "vcenter", "bottom"].map(
+        (anchor) => ({ type: "alignLayer", id: "b", anchor, to: "canvas" })
+      ) as EngineCommand[]
+    )
+  })
+
+  test("aligning to the selection needs a selection", () => {
+    const without = fakeEngine([raster("a")])
+    runStudioCommand("layer.align.selection.left", context(without.engine))
+    expect(without.sent).toEqual([])
+    const withSelection = fakeEngine([raster("a")], "a", {
+      selection: { bounds: { x: 0, y: 0, width: 5, height: 5 } },
+    })
+    runStudioCommand(
+      "layer.align.selection.left",
+      context(withSelection.engine)
+    )
+    expect(withSelection.sent).toEqual([
+      { type: "alignLayer", id: "a", anchor: "left", to: "selection" },
+    ])
+  })
+
+  test("groups are not aligned", () => {
+    const group = {
+      id: "g",
+      kind: "group",
+      name: "g",
+      visible: true,
+      children: [raster("a")],
+    } as unknown as LayerSummary
+    const { engine, sent } = fakeEngine([group])
+    runStudioCommand("layer.align.canvas.left", context(engine, "g"))
+    expect(sent).toEqual([])
+  })
+
+  test("the snapping toggle flips what the engine holds", () => {
+    const on = fakeEngine([raster("a")], "a", { snapping: true })
+    runStudioCommand("view.toggleSnapping", context(on.engine))
+    const off = fakeEngine([raster("a")], "a", { snapping: false })
+    runStudioCommand("view.toggleSnapping", context(off.engine))
+    expect([...on.sent, ...off.sent]).toEqual([
+      { type: "setSnapping", enabled: false },
+      { type: "setSnapping", enabled: true },
     ])
   })
 })

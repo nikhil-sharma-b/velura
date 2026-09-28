@@ -1,4 +1,4 @@
-import type { Engine, EngineCommand, LayerSummary } from "@/engine"
+import type { AlignAnchor, Engine, EngineCommand, LayerSummary } from "@/engine"
 import { createRegistry, type Command } from "@/features/commands/lib/registry"
 
 import { findSummary, rasterCount } from "./layer-tree"
@@ -93,6 +93,40 @@ const isRaster = (layer: LayerSummary) => layer.kind === "raster"
 /** A layer whose own pixels the artist may change: not locked, not an image. */
 const isPaintable = (layer: LayerSummary) =>
   layer.kind === "raster" && !layer.locked && !layer.image
+
+const ALIGN_ANCHORS: readonly [AlignAnchor, string][] = [
+  ["left", "left edges"],
+  ["hcenter", "horizontal centres"],
+  ["right", "right edges"],
+  ["top", "top edges"],
+  ["vcenter", "vertical centres"],
+  ["bottom", "bottom edges"],
+]
+
+/**
+ * Align commands (15): each anchor against the canvas, and against the
+ * selection while there is one. A group has no pixels of its own to move.
+ */
+function alignCommands(): StudioCommand[] {
+  return (["canvas", "selection"] as const).flatMap((to) =>
+    ALIGN_ANCHORS.map(([anchor, lines]) => ({
+      id: `layer.align.${to}.${anchor}`,
+      label: `Align ${lines} to ${to}`,
+      category: "Layers",
+      ...onLayer(
+        (layer): EngineCommand => ({
+          type: "alignLayer",
+          id: layer.id,
+          anchor,
+          to,
+        }),
+        (layer, { engine }) =>
+          isRaster(layer) &&
+          (to === "canvas" || !!engine?.getSnapshot().selection)
+      ),
+    }))
+  )
+}
 
 /**
  * The radius one press of a size key steps to, from the one in the hand, or
@@ -455,6 +489,7 @@ export const studioCommands = createRegistry<StudioContext>([
       (layer) => layer.kind === "raster" && !layer.image
     ),
   },
+  ...alignCommands(),
   {
     id: "layer.makePaintable",
     label: "Paint on image (changes the photo)",
@@ -506,6 +541,16 @@ export const studioCommands = createRegistry<StudioContext>([
     category: "View",
     keybinds: ["h"],
     ...dispatching({ type: "flipView" }),
+  },
+  {
+    id: "view.toggleSnapping",
+    label: "Toggle snapping",
+    category: "View",
+    keybinds: ["mod+;"],
+    ...dispatching(({ engine }) => ({
+      type: "setSnapping",
+      enabled: !engine?.getSnapshot().snapping,
+    })),
   },
   {
     id: "view.fit",
