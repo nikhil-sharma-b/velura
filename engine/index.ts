@@ -86,6 +86,7 @@ import {
 } from "./doc/structure"
 import {
   centeredPlacement,
+  flippedPlacement,
   type ImagePlacement,
   placementBounds,
   quadBounds,
@@ -142,8 +143,10 @@ import {
   affineFromPlacement,
   affineQuad,
   beginTransform,
+  type Affine,
   type TransformSession,
 } from "./doc/transform-session"
+import { layerStartPlacement, coveredBounds } from "./doc/layer-transform"
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
 import {
@@ -481,6 +484,28 @@ export type EngineCommand =
   /** Ends the transform, putting the picture back where it was picked up. */
   | { type: "cancelImageTransform" }
   /**
+   * Picks a painted layer up to be moved, scaled, turned or mirrored (13).
+   *
+   * The layer's pixels are snapshotted on the GPU as it is picked up — the
+   * tight box round them — and every `adjustLayerTransform` after that is
+   * drawn from the snapshot, never from the last preview, so a dozen
+   * adjustments are as sharp as one. `commitLayerTransform` resamples once
+   * and records one step; `cancelLayerTransform` puts the pixels back
+   * texel for texel. A placed image has its own original to go back to and
+   * is moved with `beginImageTransform` instead; a group has no pixels.
+   * The mask stays put, for the reason a placed image's does.
+   */
+  | { type: "beginLayerTransform"; id: string }
+  /** Where the layer's content sits as of this moment of the drag. */
+  | { type: "adjustLayerTransform"; placement: ImagePlacement }
+  | { type: "commitLayerTransform" }
+  | { type: "cancelLayerTransform" }
+  /**
+   * Mirrors a layer's content in place, as one step: a picked-up placed
+   * image or painted layer is flipped within its transform instead.
+   */
+  | { type: "flipLayer"; id: string; axis: "horizontal" | "vertical" }
+  /**
    * A layer's own settings. Every field is optional and unnamed ones are left
    * alone, so a control that owns one property need not know the rest.
    */
@@ -629,6 +654,11 @@ export type EngineSnapshot = Readonly<{
    */
   imageTransform: ImageTransformState | null
   /**
+   * The painted layer being transformed, if one is (13): its content box as
+   * a placement, and the size of the snapshot it is drawn from.
+   */
+  layerTransform: LayerTransformState | null
+  /**
    * The document's selection (07), or null when nothing is selected. It
    * belongs to the document, not a layer, so it stays as layers are switched.
    */
@@ -667,6 +697,13 @@ export type ImageTransformState = Readonly<{
   source: Readonly<{ width: number; height: number }>
   /** Drawn pixels per source pixel; 1 is the size the picture was recorded at. */
   resolution: number
+}>
+
+export type LayerTransformState = Readonly<{
+  layerId: string
+  placement: ImagePlacement
+  /** The snapshot's size: the layer's content box as it was picked up. */
+  source: Readonly<{ width: number; height: number }>
 }>
 
 export type MaskSummary = Readonly<Omit<LayerMask, "surface">>
@@ -712,6 +749,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   paintingMask: false,
   view: DEFAULT_VIEW,
   imageTransform: null,
+  layerTransform: null,
   selection: null,
   wand: DEFAULT_WAND,
   canUndo: false,
@@ -1049,6 +1087,17 @@ export function createEngine(
          * one resample and one step on commit, nothing kept on cancel. The
          * placement is the artist's description; this is its matrix.
          */
+        transform: TransformSession
+      }
+    | undefined
+  /** The painted layer being moved, if one is; see `beginLayerTransform`. */
+  let layerTransform:
+    | {
+        layerId: string
+        /** The content box as picked up, which is the snapshot's region. */
+        start: ImagePlacement
+        placement: ImagePlacement
+        source: PixelRect
         transform: TransformSession
       }
     | undefined
@@ -1726,6 +1775,168 @@ export function createEngine(
   function requireTransform() {
     if (!imageTransform) throw new Error("No image is being transformed.")
     return imageTransform
+  }
+
+  function adjustImageTransformTo(placement: ImagePlacement) {
+    const document = requireDocument()
+    const session = requireTransform()
+    const canvas = { width: document.width, height: document.height }
+    if (!validPlacement(placement, canvas))
+      throw new Error("That is not a placement an image can be put at.")
+    if (samePlacement(placement, session.placement)) return
+    const matrix = affineFromPlacement(placement, session.asset)
+    session.placement = placement
+    setPlacement(document, session.layerId, placement)
+    session.transform.update(matrix)
+    publish({
+      imageTransform: describeTransform(),
+      ...describeLayers(document),
+    })
+  }
+
+  /** Layer transforms hold their snapshot under an id no asset can have. */
+  const layerImageId = (layerId: string) => `layer-transform:${layerId}`
+
+  function describeLayerTransform(): LayerTransformState | null {
+    if (!layerTransform) return null
+    const { layerId, placement, source } = layerTransform
+    return Object.freeze({
+      layerId,
+      placement,
+      source: Object.freeze({ width: source.width, height: source.height }),
+    })
+  }
+
+  /**
+   * Picks a painted layer up (13): its pixels snapshotted on the GPU, the
+   * tight box round them found from one readback, and a shared session (12)
+   * that previews from the snapshot and resamples once on commit.
+   */
+  async function beginLayerTransformOf(id: string): Promise<void> {
+    const document = requireDocument()
+    const layer = findLayer(document, id)
+    if (layer.kind !== "raster")
+      throw new Error("Only a layer with pixels of its own can be transformed.")
+    if (layer.image)
+      throw new Error("A placed image is moved with its own transform.")
+    if (imageTransform) await commitTransform()
+    if (layerTransform) {
+      if (layerTransform.layerId === id) return
+      await commitLayerTransform()
+    }
+    if (!renderer) throw new Error("The canvas is not ready.")
+    const held = contentBounds.get(id)
+    const canvasRect = {
+      x: 0,
+      y: 0,
+      width: document.width,
+      height: document.height,
+    }
+    const area = held && intersectRect(held, canvasRect)
+    const coords = area ? tilesCoveringRect(area) : []
+    const texels = await renderer.readTiles(id, coords)
+    // Whole tiles overhang the canvas's edge; the surface does not.
+    const covered = coveredBounds(
+      coords.map((coord, index) => ({ ...coord, texels: texels[index]! }))
+    )
+    const region = covered && intersectRect(covered, canvasRect)
+    if (!region) throw new Error("There is nothing on this layer to transform.")
+    const imageId = layerImageId(id)
+    renderer.openLayerImage(imageId, id, region)
+    const start = layerStartPlacement(region)
+    const before = captureStructure(document)
+    const show = (matrix: Affine) =>
+      showLayerImage(id, imageId, affineQuad(matrix, region))
+    layerTransform = {
+      layerId: id,
+      start,
+      placement: start,
+      source: region,
+      transform: beginTransform(
+        {
+          source: region,
+          preview: show,
+          // The pixels the step remembers are the ones the last preview
+          // drew, over everywhere the content has been since it was lifted.
+          commit: (_matrix, touched) =>
+            recordOperation("transform layer", before, {
+              readback: [
+                {
+                  surfaceId: id,
+                  region: intersectRect(touched, canvasRect) ?? touched,
+                },
+              ],
+              canvas: { width: document.width, height: document.height },
+            }),
+          cancel: (_start, moved) => {
+            if (!moved) return
+            renderer?.restoreLayerImage(imageId, id)
+            invalidateThumbnailsOf(id)
+            if (snapshot.status === "ready") render()
+          },
+        },
+        affineFromPlacement(start, region)
+      ),
+    }
+    publish({ layerTransform: describeLayerTransform() })
+  }
+
+  function showLayerImage(
+    layerId: string,
+    imageId: string,
+    corners: readonly [Point, Point, Point, Point]
+  ) {
+    if (!renderer) return
+    renderer.drawPlacedImage({ surfaceId: layerId, imageId, corners })
+    contentBounds.grow(layerId, quadBounds(corners))
+    invalidateThumbnailsOf(layerId)
+    if (snapshot.status === "ready") render()
+  }
+
+  function adjustLayerTransformTo(placement: ImagePlacement) {
+    const session = layerTransform
+    if (!session) throw new Error("No layer is being transformed.")
+    const document = requireDocument()
+    if (
+      !validPlacement(placement, {
+        width: document.width,
+        height: document.height,
+      })
+    )
+      throw new Error("That is not a placement a layer can be put at.")
+    if (samePlacement(placement, session.placement)) return
+    session.placement = placement
+    session.transform.update(affineFromPlacement(placement, session.source))
+    publish({ layerTransform: describeLayerTransform() })
+  }
+
+  async function commitLayerTransform(): Promise<void> {
+    const session = layerTransform
+    if (!session) return
+    layerTransform = undefined
+    const changed = !samePlacement(session.placement, session.start)
+    const recorded = session.transform.commit({ changed })
+    renderer?.closePlacedImage(layerImageId(session.layerId))
+    publish({ layerTransform: null })
+    if (recorded) applyLayerChange()
+  }
+
+  async function cancelLayerTransform(): Promise<void> {
+    const session = layerTransform
+    if (!session) return
+    layerTransform = undefined
+    session.transform.cancel()
+    renderer?.closePlacedImage(layerImageId(session.layerId))
+    publish({ layerTransform: null })
+    applyLayerChange()
+  }
+
+  /** Drops a layer transform whose layer is going away, recording nothing. */
+  function abandonLayerTransform() {
+    if (!layerTransform) return
+    renderer?.closePlacedImage(layerImageId(layerTransform.layerId))
+    layerTransform = undefined
+    publish({ layerTransform: null })
   }
 
   /** Hands the renderer whatever pixels each layer's surface has gained. */
@@ -3445,6 +3656,7 @@ export function createEngine(
           // abandoned: the artist moved on, they did not undo.
           if (imageTransform && imageTransform.layerId !== command.id)
             await commitTransform()
+          await commitLayerTransform()
           const asset = assetFor(layer.placed.asset.id)
           // Decoded and uploaded here, once. Every adjustment after this is a
           // textured quad: no decode, no canvas-sized conversion in
@@ -3496,29 +3708,50 @@ export function createEngine(
           publish({ imageTransform: describeTransform() })
           break
         }
-        case "adjustImageTransform": {
-          const document = requireDocument()
-          const session = requireTransform()
-          const canvas = { width: document.width, height: document.height }
-          if (!validPlacement(command.placement, canvas))
-            throw new Error("That is not a placement an image can be put at.")
-          if (samePlacement(command.placement, session.placement)) break
-          const matrix = affineFromPlacement(command.placement, session.asset)
-          session.placement = command.placement
-          setPlacement(document, session.layerId, command.placement)
-          session.transform.update(matrix)
-          publish({
-            imageTransform: describeTransform(),
-            ...describeLayers(document),
-          })
+        case "adjustImageTransform":
+          adjustImageTransformTo(command.placement)
           break
-        }
         case "commitImageTransform":
           await commitTransform()
           break
         case "cancelImageTransform":
           await cancelTransform()
           break
+        case "beginLayerTransform":
+          await beginLayerTransformOf(command.id)
+          break
+        case "adjustLayerTransform":
+          adjustLayerTransformTo(command.placement)
+          break
+        case "commitLayerTransform":
+          await commitLayerTransform()
+          break
+        case "cancelLayerTransform":
+          await cancelLayerTransform()
+          break
+        case "flipLayer": {
+          // Mid-transform, a flip is one more adjustment of it.
+          if (imageTransform?.layerId === command.id) {
+            adjustImageTransformTo(
+              flippedPlacement(imageTransform.placement, command.axis)
+            )
+            break
+          }
+          if (layerTransform?.layerId === command.id) {
+            adjustLayerTransformTo(
+              flippedPlacement(layerTransform.placement, command.axis)
+            )
+            break
+          }
+          await beginLayerTransformOf(command.id)
+          const session = layerTransform as typeof layerTransform
+          if (!session) break
+          adjustLayerTransformTo(
+            flippedPlacement(session.placement, command.axis)
+          )
+          await commitLayerTransform()
+          break
+        }
         case "addGroup": {
           const before = captureStructure(requireDocument())
           addGroup(requireDocument(), command.ids)
@@ -3559,6 +3792,7 @@ export function createEngine(
               imageTransform = undefined
               publish({ imageTransform: null })
             }
+            if (layerTransform?.layerId === command.id) abandonLayerTransform()
             const document = requireDocument()
             const before = captureStructure(document)
             const removed = removeLayer(document, command.id)
@@ -3574,6 +3808,7 @@ export function createEngine(
           if (imageTransform) closeTransform(imageTransform)
           imageTransform = undefined
           publish({ imageTransform: null })
+          abandonLayerTransform()
           const previous = requireDocument()
           for (const id of structureSurfaceIds(captureStructure(previous)))
             renderer?.releaseLayer(id)
@@ -3857,6 +4092,10 @@ export function createEngine(
           // and the stack is left alone.
           if (imageTransform) {
             await cancelTransform()
+            break
+          }
+          if (layerTransform) {
+            await cancelLayerTransform()
             break
           }
           const document = requireDocument()
@@ -4255,6 +4494,9 @@ export function createEngine(
       // A picture still held open by a transform that was never finished.
       if (imageTransform) closeTransform(imageTransform)
       imageTransform = undefined
+      if (layerTransform)
+        renderer?.closePlacedImage(layerImageId(layerTransform.layerId))
+      layerTransform = undefined
       detachSampler?.()
       detachSampler = undefined
       detachGestures?.()

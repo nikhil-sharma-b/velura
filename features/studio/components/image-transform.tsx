@@ -102,6 +102,7 @@ type Drag =
   | { kind: "scale"; handle: Exclude<PlacementHandle, "rotate"> }
   | { kind: "rotate"; start: ImagePlacement; fromAngle: number }
 
+/** A placed image's box: previews re-rendered from the original file (06). */
 export function ImageTransform({
   engine,
   snapshot,
@@ -112,31 +113,106 @@ export function ImageTransform({
   canvas: HTMLCanvasElement | null
 }) {
   const transform = snapshot.imageTransform
+  if (!transform) return null
+  return (
+    <TransformBox
+      engine={engine}
+      snapshot={snapshot}
+      canvas={canvas}
+      placement={transform.placement}
+      subject="image"
+      commands={{
+        adjust: "adjustImageTransform",
+        commit: "commitImageTransform",
+        cancel: "cancelImageTransform",
+      }}
+      status={
+        // The honest number. Above the picture's own resolution the extra
+        // pixels are the resampler's invention, and saying so is the
+        // difference between a tool and a stretch.
+        transform.resolution > 1.005
+          ? `${Math.round(transform.resolution * 100)}% — larger than the picture’s own detail`
+          : `${Math.round(transform.resolution * 100)}% of the picture’s own detail`
+      }
+    />
+  )
+}
+
+/**
+ * A painted layer's box (13): the same handles, drawn from a snapshot of the
+ * layer taken as it was picked up rather than from a file.
+ */
+export function LayerTransform({
+  engine,
+  snapshot,
+  canvas,
+}: {
+  engine: Engine
+  snapshot: EngineSnapshot
+  canvas: HTMLCanvasElement | null
+}) {
+  const transform = snapshot.layerTransform
+  if (!transform) return null
+  return (
+    <TransformBox
+      engine={engine}
+      snapshot={snapshot}
+      canvas={canvas}
+      placement={transform.placement}
+      subject="layer"
+      commands={{
+        adjust: "adjustLayerTransform",
+        commit: "commitLayerTransform",
+        cancel: "cancelLayerTransform",
+      }}
+    />
+  )
+}
+
+function TransformBox({
+  engine,
+  snapshot,
+  canvas,
+  placement,
+  subject,
+  commands,
+  status,
+}: {
+  engine: Engine
+  snapshot: EngineSnapshot
+  canvas: HTMLCanvasElement | null
+  placement: ImagePlacement
+  subject: "image" | "layer"
+  commands: {
+    adjust: "adjustImageTransform" | "adjustLayerTransform"
+    commit: "commitImageTransform" | "commitLayerTransform"
+    cancel: "cancelImageTransform" | "cancelLayerTransform"
+  }
+  status?: string
+}) {
   const { toCss, toDoc } = useDocumentToCss(canvas, snapshot)
   const drag = useRef<Drag | null>(null)
   const box = useRef<HTMLDivElement>(null)
 
   const adjust = useCallback(
-    (placement: ImagePlacement) => {
+    (next: ImagePlacement) => {
       void engine
-        .dispatch({ type: "adjustImageTransform", placement })
+        .dispatch({ type: commands.adjust, placement: next })
         .catch(() => {
           // A placement the engine will not take — dragged to nothing, or
           // past what it will render — simply does not move the box.
         })
     },
-    [engine]
+    [engine, commands.adjust]
   )
 
   // The box takes the keyboard as soon as it appears: the arrow keys are how
   // a placement is put exactly where it belongs, and hunting for something to
   // click first would be in the way of that.
   useEffect(() => {
-    if (transform) box.current?.focus()
-  }, [transform])
+    box.current?.focus()
+  }, [])
 
-  if (!transform) return null
-  const placement = transform.placement
   const corners = placementCorners(placement).map(toCss)
   const handles = handlePoints(placement)
 
@@ -195,8 +271,8 @@ export function ImageTransform({
     ;(event.target as Element).releasePointerCapture?.(event.pointerId)
   }
 
-  const commit = () => void engine.dispatch({ type: "commitImageTransform" })
-  const cancel = () => void engine.dispatch({ type: "cancelImageTransform" })
+  const commit = () => void engine.dispatch({ type: commands.commit })
+  const cancel = () => void engine.dispatch({ type: commands.cancel })
 
   const outline = corners.map((point) => `${point.x},${point.y}`).join(" ")
   const handleAt = (name: PlacementHandle) => toCss(handles[name])
@@ -216,8 +292,12 @@ export function ImageTransform({
       ref={box}
       role="group"
       tabIndex={-1}
-      aria-label="Move, scale or rotate the placed image"
-      data-testid="image-transform"
+      aria-label={
+        subject === "image"
+          ? "Move, scale or rotate the placed image"
+          : "Move, scale or rotate the layer"
+      }
+      data-testid={`${subject}-transform`}
       className="absolute inset-0 outline-none"
       onKeyDown={(event) => {
         const step = event.shiftKey ? COARSE_NUDGE : NUDGE
@@ -225,6 +305,9 @@ export function ImageTransform({
           event.preventDefault()
           adjust(nudgedPlacement(placement, { dx: dx * step, dy: dy * step }))
         }
+        // Typing a number is not a nudge or a commit; Escape still cancels.
+        if (event.target instanceof HTMLInputElement && event.key !== "Escape")
+          return
         if (event.key === "ArrowLeft") nudge(-1, 0)
         else if (event.key === "ArrowRight") nudge(1, 0)
         else if (event.key === "ArrowUp") nudge(0, -1)
@@ -304,18 +387,12 @@ export function ImageTransform({
       </svg>
 
       <div className="absolute bottom-5 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-studio-edge bg-studio-surface/95 px-3 py-1.5 text-xs shadow-lg">
-        <span data-testid="transform-resolution">
-          {/* The honest number. Above the picture's own resolution the extra
-              pixels are the resampler's invention, and saying so is the
-              difference between a tool and a stretch. */}
-          {transform.resolution > 1.005
-            ? `${Math.round(transform.resolution * 100)}% — larger than the picture’s own detail`
-            : `${Math.round(transform.resolution * 100)}% of the picture’s own detail`}
-        </span>
+        {status && <span data-testid="transform-resolution">{status}</span>}
+        <PlacementFields placement={placement} onChange={adjust} />
         <Button
           variant="ghost"
           size="sm"
-          aria-label="Flip the image horizontally"
+          aria-label={`Flip the ${subject} horizontally`}
           onClick={() => adjust(flippedPlacement(placement, "horizontal"))}
         >
           <FlipHorizontalIcon />
@@ -323,7 +400,7 @@ export function ImageTransform({
         <Button
           variant="ghost"
           size="sm"
-          aria-label="Flip the image vertically"
+          aria-label={`Flip the ${subject} vertically`}
           onClick={() => adjust(flippedPlacement(placement, "vertical"))}
         >
           <FlipVerticalIcon />
@@ -331,7 +408,7 @@ export function ImageTransform({
         <Button
           variant="ghost"
           size="sm"
-          aria-label="Turn the image a quarter turn"
+          aria-label={`Turn the ${subject} a quarter turn`}
           onClick={() =>
             adjust(
               rotatedPlacement(placement, placement.rotation + Math.PI / 2)
@@ -347,6 +424,107 @@ export function ImageTransform({
           <CheckIcon />
         </Button>
       </div>
+    </div>
+  )
+}
+
+function resized(
+  placement: ImagePlacement,
+  width: number | null,
+  height: number | null
+): ImagePlacement {
+  const dx = ((width ?? placement.width) - placement.width) / 2
+  const dy = ((height ?? placement.height) - placement.height) / 2
+  const cos = Math.cos(placement.rotation)
+  const sin = Math.sin(placement.rotation)
+  return {
+    ...placement,
+    x: placement.x + dx * cos - dy * sin,
+    y: placement.y + dx * sin + dy * cos,
+    width: width ?? placement.width,
+    height: height ?? placement.height,
+  }
+}
+
+/**
+ * Numeric entry (13): the box's top-left corner as it stands unturned, its
+ * size, and its angle in degrees. Committed on Enter or blur, so a
+ * half-typed number is never sent.
+ */
+function PlacementFields({
+  placement,
+  onChange,
+}: {
+  placement: ImagePlacement
+  onChange: (placement: ImagePlacement) => void
+}) {
+  const fields: {
+    key: string
+    label: string
+    value: number
+    apply: (value: number) => ImagePlacement | null
+  }[] = [
+    {
+      key: "x",
+      label: "X",
+      value: placement.x - placement.width / 2,
+      apply: (value) => ({ ...placement, x: value + placement.width / 2 }),
+    },
+    {
+      key: "y",
+      label: "Y",
+      value: placement.y - placement.height / 2,
+      apply: (value) => ({ ...placement, y: value + placement.height / 2 }),
+    },
+    {
+      key: "w",
+      label: "W",
+      value: placement.width,
+      // Resized about the box's own top-left corner, along its own edges,
+      // so a turned box grows the way its handles would drag it.
+      apply: (value) => (value > 0 ? resized(placement, value, null) : null),
+    },
+    {
+      key: "h",
+      label: "H",
+      value: placement.height,
+      apply: (value) => (value > 0 ? resized(placement, null, value) : null),
+    },
+    {
+      key: "angle",
+      label: "°",
+      value: (placement.rotation * 180) / Math.PI,
+      apply: (value) => ({ ...placement, rotation: (value * Math.PI) / 180 }),
+    },
+  ]
+  return (
+    <div className="flex items-center gap-1">
+      {fields.map((field) => (
+        <label key={field.key} className="flex items-center gap-0.5">
+          <span className="text-muted-foreground">{field.label}</span>
+          <input
+            // Re-keyed on the value, so a drag shows through and an entry
+            // the engine refused snaps back.
+            key={Math.round(field.value * 100)}
+            data-testid={`transform-field-${field.key}`}
+            aria-label={field.label === "°" ? "Angle" : field.label}
+            type="number"
+            defaultValue={Math.round(field.value * 100) / 100}
+            className="w-14 rounded border border-studio-edge bg-transparent px-1 py-0.5 tabular-nums"
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur()
+            }}
+            onBlur={(event) => {
+              const value = Number(event.currentTarget.value)
+              if (!Number.isFinite(value) || event.currentTarget.value === "")
+                return
+              if (Math.abs(value - field.value) < 0.005) return
+              const next = field.apply(value)
+              if (next) onChange(next)
+            }}
+          />
+        </label>
+      ))}
     </div>
   )
 }

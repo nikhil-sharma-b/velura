@@ -206,6 +206,19 @@ export interface Renderer {
     /** The quad's corners in document pixels, clockwise from its top left. */
     corners: readonly { x: number; y: number }[]
   }): void
+  /**
+   * Takes a snapshot of part of a layer's own pixels as a source to draw
+   * through `drawPlacedImage`, for transforming a painted layer (13). The
+   * snapshot is what every preview is drawn from, so however many
+   * adjustments the artist makes the layer is resampled once. Answers
+   * nothing; release it with `closePlacedImage`.
+   */
+  openLayerImage(id: string, surfaceId: string, region: PixelRect): void
+  /**
+   * Puts a layer snapshot back exactly where it was taken from, texel for
+   * texel, over an emptied surface: what cancelling a layer transform is.
+   */
+  restoreLayerImage(id: string, surfaceId: string): void
   /** Lets go of an original's texture. */
   closePlacedImage(id: string): void
   /**
@@ -582,8 +595,26 @@ export function createRenderer(
   /** Originals on the GPU, by asset id, while a transform holds them open. */
   const placedImages = new Map<
     string,
-    { texture: GPUTexture; bindGroup: GPUBindGroup }
+    {
+      texture: GPUTexture
+      bindGroup: GPUBindGroup
+      /** A layer's own pixels: premultiplied linear already (13). */
+      premultiplied: boolean
+      /** Where a layer snapshot was taken from. */
+      region?: PixelRect
+    }
   >()
+
+  function placedImageBindGroup(texture: GPUTexture) {
+    return device.createBindGroup({
+      layout: placedImagePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: placedImageUniform } },
+        { binding: 1, resource: texture.createView() },
+        { binding: 2, resource: placedImageSampler },
+      ],
+    })
+  }
 
   const thumbnailModule = device.createShaderModule({ code: thumbnailShader })
   const thumbnailPipeline = device.createRenderPipeline({
@@ -1699,15 +1730,52 @@ export function createRenderer(
       )
       placedImages.set(id, {
         texture,
-        bindGroup: device.createBindGroup({
-          layout: placedImagePipeline.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: { buffer: placedImageUniform } },
-            { binding: 1, resource: texture.createView() },
-            { binding: 2, resource: placedImageSampler },
-          ],
-        }),
+        bindGroup: placedImageBindGroup(texture),
+        premultiplied: false,
       })
+    },
+    openLayerImage(id, surfaceId, region) {
+      this.closePlacedImage(id)
+      const surface = ensureSurface(surfaceId)
+      const texture = device.createTexture({
+        size: { width: region.width, height: region.height },
+        format: LAYER_FORMAT,
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.COPY_SRC,
+      })
+      // Texel for texel, on the GPU: the layer never crosses to the CPU.
+      const encoder = device.createCommandEncoder()
+      encoder.copyTextureToTexture(
+        { texture: surface.texture, origin: { x: region.x, y: region.y } },
+        { texture },
+        { width: region.width, height: region.height }
+      )
+      device.queue.submit([encoder.finish()])
+      placedImages.set(id, {
+        texture,
+        bindGroup: placedImageBindGroup(texture),
+        premultiplied: true,
+        region,
+      })
+    },
+    restoreLayerImage(id, surfaceId) {
+      const image = placedImages.get(id)
+      if (!image?.region) throw new Error(`No layer snapshot is open as ${id}.`)
+      const surface = ensureSurface(surfaceId)
+      clearSurface(surface)
+      const { region } = image
+      const encoder = device.createCommandEncoder()
+      encoder.copyTextureToTexture(
+        { texture: image.texture },
+        { texture: surface.texture, origin: { x: region.x, y: region.y } },
+        { width: region.width, height: region.height }
+      )
+      device.queue.submit([encoder.finish()])
+      surface.empty = false
+      composition = undefined
+      cachedFrom = undefined
     },
     drawPlacedImage({ surfaceId, imageId, corners }) {
       const image = placedImages.get(imageId)
@@ -1721,6 +1789,7 @@ export function createRenderer(
       }
       placedImageValues[16] = width
       placedImageValues[17] = height
+      placedImageValues[18] = image.premultiplied ? 1 : 0
       device.queue.writeBuffer(placedImageUniform, 0, placedImageValues)
       const encoder = device.createCommandEncoder()
       // Cleared and drawn in one pass. The clear is the whole surface rather

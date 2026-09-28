@@ -28,7 +28,8 @@ struct Placement {
   // address space is laid out on a 16-byte stride whatever it holds.
   corners: array<vec4<f32>, 4>,
   // The layer surface's size in pixels (xy), to put the corners into clip
-  // space.
+  // space. z is 1 when the source is a layer's own pixels (13): already
+  // premultiplied linear P3, so there is nothing to convert.
   surface: vec4<f32>,
 }
 
@@ -77,6 +78,9 @@ fn fragmentMain(vertex: Vertex) -> @location(0) vec4<f32> {
   // The texture is sRGB-encoded, so this sample is already linear light; the
   // hardware did the transfer function the CPU route spends a pow on.
   let source_color = textureSample(source, sourceSampler, vertex.uv);
+  if (placement.surface.z > 0.5) {
+    return source_color;
+  }
   let working = SRGB_TO_P3 * source_color.rgb;
   // Premultiplied, like every other surface in the document.
   return vec4<f32>(working * source_color.a, source_color.a);
