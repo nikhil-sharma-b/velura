@@ -228,6 +228,15 @@ export const studioCommands = createRegistry<StudioContext>([
     ...dispatching({ type: "setTool", tool: "polygonLasso" }),
   },
   {
+    // Escape lets go of an outline half drawn, the polygonal lasso's above
+    // all, as it does in every editor with one.
+    id: "select.abandonOutline",
+    label: "Abandon selection outline",
+    category: "Select",
+    keybinds: ["escape"],
+    ...dispatching({ type: "abandonSelectionGesture" }),
+  },
+  {
     id: "select.all",
     label: "Select all",
     category: "Select",

@@ -244,6 +244,10 @@ describe("selection commands", () => {
     ])
   })
 
+  test("escape abandons an outline being drawn", () => {
+    expect(press("Escape", {})).toEqual([{ type: "abandonSelectionGesture" }])
+  })
+
   test("select all, deselect and invert have their usual keys", () => {
     expect(press("a", { mod: true })).toEqual([{ type: "selectAll" }])
     expect(press("d", { mod: true })).toEqual([{ type: "deselect" }])

@@ -515,6 +515,12 @@ export type EngineCommand =
     }
   | { type: "selectAll" }
   | { type: "deselect" }
+  /**
+   * Drops a selection outline still being drawn — above all a polygon
+   * between clicks — leaving the selection as it was. Nothing to drop, it
+   * does nothing.
+   */
+  | { type: "abandonSelectionGesture" }
   /** Selects what was not selected; with nothing selected, everything. */
   | { type: "invertSelection" }
   | { type: "undo" }
@@ -3581,6 +3587,9 @@ export function createEngine(
         }
         case "selectAll":
           commitSelection("select all", selectAll(requireDocument()))
+          break
+        case "abandonSelectionGesture":
+          dropMarquee()
           break
         case "deselect":
           requireDocument()

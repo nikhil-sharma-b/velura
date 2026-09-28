@@ -185,7 +185,7 @@ test("the polygonal lasso closes on its first point or a double-click", async ({
   expect(at(mask, 40, 40)).toBe(0)
 })
 
-test("a polygon too small to close, or undone, leaves the selection alone", async ({
+test("a polygon too small to close, undone or abandoned, leaves the selection alone", async ({
   page,
 }) => {
   const errors: string[] = []
@@ -211,6 +211,13 @@ test("a polygon too small to close, or undone, leaves the selection alone", asyn
   // Undo drops the outline in progress and nothing beneath it.
   await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
   await page.mouse.click(origin.x + 121, origin.y + 21)
+  // So does Escape, and the next click starts afresh rather than closing.
+  await page.mouse.click(origin.x + 180, origin.y + 20)
+  await page.mouse.click(origin.x + 180, origin.y + 100)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "abandonSelectionGesture" })
+  )
+  await page.mouse.click(origin.x + 122, origin.y + 22)
   expect(await steps(page)).toBe(before)
   expect(await readMask(page)).toEqual(kept)
   expect(errors).toEqual([])

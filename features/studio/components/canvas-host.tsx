@@ -55,6 +55,8 @@ import {
   type Engine,
   INITIAL_SNAPSHOT,
   isSelectionTool,
+  type SelectionTool,
+  type Tool,
   MAX_ZOOM,
   MIN_ZOOM,
   type LayerSummary,
@@ -107,6 +109,70 @@ function RailAction({
   ...props
 }: ComponentProps<typeof IconButton>) {
   return <IconButton {...props} side={side} className="rounded-lg" />
+}
+
+type FamilyMember = {
+  tool: SelectionTool
+  label: string
+  icon: React.ReactNode
+}
+
+/** The selection tools, by the rail slot each pair shares (09). */
+const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
+  [
+    {
+      tool: "rectSelect",
+      label: "Rectangle select tool",
+      icon: <SelectionIcon />,
+    },
+    {
+      tool: "ellipseSelect",
+      label: "Ellipse select tool",
+      icon: <CircleDashedIcon />,
+    },
+  ],
+  [
+    { tool: "lasso", label: "Lasso tool", icon: <LassoIcon /> },
+    {
+      tool: "polygonLasso",
+      label: "Polygonal lasso tool",
+      icon: <PolygonIcon />,
+    },
+  ],
+]
+
+/**
+ * Two sibling tools in one rail slot, as the rail has height for no more:
+ * the one last in the hand shows, a press picks it up, and a second press
+ * swaps to its sibling. The slot follows the tool in the hand rather than
+ * its own presses, so a keybind moves it as a press does.
+ */
+function ToolFamilySlot({
+  members,
+  tool,
+  onPick,
+}: {
+  members: readonly [FamilyMember, FamilyMember]
+  tool: Tool
+  onPick(tool: SelectionTool): void
+}) {
+  const [shown, setShown] = useState(members[0])
+  const held = members.find((member) => member.tool === tool)
+  if (held && held !== shown) setShown(held)
+  const sibling = members[0] === shown ? members[1] : members[0]
+  return (
+    <RailAction
+      label={shown.label}
+      command={`tool.${shown.tool}`}
+      variant={held ? "default" : "ghost"}
+      size="icon"
+      aria-pressed={!!held}
+      onClick={() => onPick(held ? sibling.tool : shown.tool)}
+      className="rounded-lg"
+    >
+      {shown.icon}
+    </RailAction>
+  )
 }
 
 /** Compact triggers keep adjustments close without covering the artwork. */
@@ -300,13 +366,6 @@ export function CanvasHost({
   const layersToggled = useRef(false)
   const [eraserOpen, setEraserOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
-  // The member of each selection family last in the hand, which its rail
-  // slot shows and a press picks up again (09). Followed from the snapshot,
-  // so a keybind moves it as a click does.
-  const [marqueeTool, setMarqueeTool] = useState<
-    "rectSelect" | "ellipseSelect"
-  >("rectSelect")
-  const [lassoTool, setLassoTool] = useState<"lasso" | "polygonLasso">("lasso")
   const [pressureOpen, setPressureOpen] = useState(false)
   /**
    * The brush as it was last saved. The engine holds the *working* brush — so
@@ -360,16 +419,6 @@ export function CanvasHost({
     engine?.getSnapshot ?? getInitialSnapshot,
     getInitialSnapshot
   )
-  if (
-    (snapshot.tool === "rectSelect" || snapshot.tool === "ellipseSelect") &&
-    snapshot.tool !== marqueeTool
-  )
-    setMarqueeTool(snapshot.tool)
-  if (
-    (snapshot.tool === "lasso" || snapshot.tool === "polygonLasso") &&
-    snapshot.tool !== lassoTool
-  )
-    setLassoTool(snapshot.tool)
 
   // React 19 ref cleanup also covers Strict Mode's attach/detach rehearsal.
   const attach = useCallback(
@@ -1273,83 +1322,18 @@ export function CanvasHost({
                     }
                   />
                 </RailAction>
-                {/* One slot per family, as the rail has height for no more:
-                    the one in the hand shows, and a second press swaps to
-                    its sibling. */}
-                <RailAction
-                  label={
-                    marqueeTool === "ellipseSelect"
-                      ? "Ellipse select tool"
-                      : "Rectangle select tool"
-                  }
-                  command={`tool.${marqueeTool}`}
-                  variant={
-                    snapshot.tool === "rectSelect" ||
-                    snapshot.tool === "ellipseSelect"
-                      ? "default"
-                      : "ghost"
-                  }
-                  size="icon"
-                  aria-pressed={
-                    snapshot.tool === "rectSelect" ||
-                    snapshot.tool === "ellipseSelect"
-                  }
-                  onClick={() => {
-                    setLibraryOpen(false)
-                    setEraserOpen(false)
-                    const next =
-                      snapshot.tool !== marqueeTool
-                        ? marqueeTool
-                        : marqueeTool === "rectSelect"
-                          ? "ellipseSelect"
-                          : "rectSelect"
-                    runStudioCommand(`tool.${next}`, commandContext)
-                  }}
-                  className="rounded-lg"
-                >
-                  {marqueeTool === "ellipseSelect" ? (
-                    <CircleDashedIcon />
-                  ) : (
-                    <SelectionIcon />
-                  )}
-                </RailAction>
-                <RailAction
-                  label={
-                    lassoTool === "polygonLasso"
-                      ? "Polygonal lasso tool"
-                      : "Lasso tool"
-                  }
-                  command={`tool.${lassoTool}`}
-                  variant={
-                    snapshot.tool === "lasso" ||
-                    snapshot.tool === "polygonLasso"
-                      ? "default"
-                      : "ghost"
-                  }
-                  size="icon"
-                  aria-pressed={
-                    snapshot.tool === "lasso" ||
-                    snapshot.tool === "polygonLasso"
-                  }
-                  onClick={() => {
-                    setLibraryOpen(false)
-                    setEraserOpen(false)
-                    const next =
-                      snapshot.tool !== lassoTool
-                        ? lassoTool
-                        : lassoTool === "lasso"
-                          ? "polygonLasso"
-                          : "lasso"
-                    runStudioCommand(`tool.${next}`, commandContext)
-                  }}
-                  className="rounded-lg"
-                >
-                  {lassoTool === "polygonLasso" ? (
-                    <PolygonIcon />
-                  ) : (
-                    <LassoIcon />
-                  )}
-                </RailAction>
+                {SELECTION_FAMILIES.map((members) => (
+                  <ToolFamilySlot
+                    key={members[0].tool}
+                    members={members}
+                    tool={snapshot.tool}
+                    onPick={(tool) => {
+                      setLibraryOpen(false)
+                      setEraserOpen(false)
+                      runStudioCommand(`tool.${tool}`, commandContext)
+                    }}
+                  />
+                ))}
                 <RailAction
                   label="Colour"
                   variant={colorOpen ? "default" : "ghost"}
