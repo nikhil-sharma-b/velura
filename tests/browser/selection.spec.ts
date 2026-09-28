@@ -297,14 +297,18 @@ test("the rectangle tool drags out a selection, square with Shift", async ({
   await page.evaluate(() =>
     window.engine.dispatch({ type: "setTool", tool: "rectSelect" })
   )
-  const drag = async (dx: number, dy: number) => {
+  const drag = async (dx: number, dy: number, square = false) => {
     const before = await steps(page)
     await page.mouse.move(origin.x + 20, origin.y + 20)
     await page.mouse.down()
+    // Shift pressed once the drag is under way constrains it; held as the
+    // pen goes down it would add to the selection instead (09).
+    if (square) await page.keyboard.down("Shift")
     await page.mouse.move(origin.x + 20 + dx, origin.y + 20 + dy, {
       steps: 8,
     })
     await page.mouse.up()
+    if (square) await page.keyboard.up("Shift")
     await page.waitForFunction(
       (n) => window.engine.historyUsage().steps > n,
       before
@@ -314,9 +318,7 @@ test("the rectangle tool drags out a selection, square with Shift", async ({
   const free = await drag(80, 40)
   expect(free.width).toBeGreaterThan(free.height * 1.5)
 
-  await page.keyboard.down("Shift")
-  const square = await drag(80, 40)
-  await page.keyboard.up("Shift")
+  const square = await drag(80, 40, true)
   expect(square.width).toBe(square.height)
   expect(square.width).toBeGreaterThan(free.height * 1.5)
 

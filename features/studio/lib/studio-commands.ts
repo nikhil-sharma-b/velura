@@ -213,6 +213,30 @@ export const studioCommands = createRegistry<StudioContext>([
     ...dispatching({ type: "setTool", tool: "ellipseSelect" }),
   },
   {
+    // L for the lasso, as M is for the marquee; Shift for the polygonal one.
+    id: "tool.lasso",
+    label: "Lasso tool",
+    category: "Tools",
+    keybinds: ["l"],
+    ...dispatching({ type: "setTool", tool: "lasso" }),
+  },
+  {
+    id: "tool.polygonLasso",
+    label: "Polygonal lasso tool",
+    category: "Tools",
+    keybinds: ["shift+l"],
+    ...dispatching({ type: "setTool", tool: "polygonLasso" }),
+  },
+  {
+    // Escape lets go of an outline half drawn, the polygonal lasso's above
+    // all, as it does in every editor with one.
+    id: "select.abandonOutline",
+    label: "Abandon selection outline",
+    category: "Select",
+    keybinds: ["escape"],
+    ...dispatching({ type: "abandonSelectionGesture" }),
+  },
+  {
     id: "select.all",
     label: "Select all",
     category: "Select",

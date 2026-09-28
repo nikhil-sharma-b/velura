@@ -237,6 +237,17 @@ describe("selection commands", () => {
     ])
   })
 
+  test("l picks the freehand lasso and shift+l the polygonal one", () => {
+    expect(press("l", {})).toEqual([{ type: "setTool", tool: "lasso" }])
+    expect(press("L", { shift: true })).toEqual([
+      { type: "setTool", tool: "polygonLasso" },
+    ])
+  })
+
+  test("escape abandons an outline being drawn", () => {
+    expect(press("Escape", {})).toEqual([{ type: "abandonSelectionGesture" }])
+  })
+
   test("select all, deselect and invert have their usual keys", () => {
     expect(press("a", { mod: true })).toEqual([{ type: "selectAll" }])
     expect(press("d", { mod: true })).toEqual([{ type: "deselect" }])

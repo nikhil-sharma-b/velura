@@ -346,3 +346,157 @@ export function sameSelection(
     return true
   })
 }
+
+export type Point = { x: number; y: number }
+
+/**
+ * The closed outline through `points`, last point joined back to the first
+ * (09). A pixel is selected where its centre sits inside by the nonzero rule,
+ * so a freehand loop that crosses back over itself stays filled. Edges are
+ * hard: a lasso is drawn by hand, and a soft rim would only blur what the
+ * hand meant.
+ */
+export function lassoSelection(
+  size: Size,
+  points: readonly Point[]
+): SelectionMask | null {
+  if (points.length < 3) return null
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const { x, y } of points) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+    minX = Math.min(minX, x)
+    minY = Math.min(minY, y)
+    maxX = Math.max(maxX, x)
+    maxY = Math.max(maxY, y)
+  }
+  const box = intersectRect(
+    {
+      x: Math.floor(minX),
+      y: Math.floor(minY),
+      width: Math.ceil(maxX) - Math.floor(minX),
+      height: Math.ceil(maxY) - Math.floor(minY),
+    },
+    { x: 0, y: 0, ...size }
+  )
+  if (!box) return null
+
+  const tiles = new Map<string, Uint8Array>()
+  const crossings: { x: number; winding: number }[] = []
+  for (let y = box.y; y < box.y + box.height; y++) {
+    // Each row is cut where the outline crosses its pixel centres' line; the
+    // spans between cuts with a nonzero winding are inside.
+    const centre = y + 0.5
+    crossings.length = 0
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i]
+      const b = points[(i + 1) % points.length]
+      // Half-open in y, so a vertex on the line is counted once.
+      if (a.y <= centre === b.y <= centre) continue
+      const t = (centre - a.y) / (b.y - a.y)
+      crossings.push({
+        x: a.x + t * (b.x - a.x),
+        winding: b.y > a.y ? 1 : -1,
+      })
+    }
+    if (crossings.length === 0) continue
+    crossings.sort((p, q) => p.x - q.x)
+    const tileY = tileIndexForPixel(y)
+    const row = (y - tileY * TILE_SIZE) * TILE_SIZE
+    let winding = 0
+    for (let i = 0; i < crossings.length - 1; i++) {
+      winding += crossings[i].winding
+      if (winding === 0) continue
+      // Pixels whose centre lies in [left, right).
+      const from = Math.max(box.x, Math.ceil(crossings[i].x - 0.5))
+      const to = Math.min(
+        box.x + box.width,
+        Math.ceil(crossings[i + 1].x - 0.5)
+      )
+      for (let x = from; x < to;) {
+        const tileX = tileIndexForPixel(x)
+        const key = tileKey(tileX, tileY)
+        let coverage = tiles.get(key)
+        if (!coverage) {
+          coverage = new Uint8Array(TILE_TEXELS)
+          tiles.set(key, coverage)
+        }
+        const end = Math.min(to, (tileX + 1) * TILE_SIZE)
+        const origin = row - tileX * TILE_SIZE
+        coverage.fill(255, origin + x, origin + end)
+        x = end
+      }
+    }
+  }
+
+  const settled = new Map<string, SelectionTile>()
+  for (const [key, coverage] of tiles) {
+    const [x, y] = key.split(",").map(Number)
+    const tile = settle({ x, y }, coverage, size)
+    if (tile) settled.set(key, tile)
+  }
+  return createSelection(size, settled)
+}
+
+/** How a new shape meets the selection already there (09). */
+export type SelectionMode = "replace" | "add" | "subtract" | "intersect"
+
+/**
+ * The selection `mode` makes of `base` and a newly drawn `shape`, by
+ * coverage: add keeps the greater, subtract what `shape` leaves of `base`,
+ * intersect the lesser. Tiles only one side speaks for are carried over
+ * as they are, and full tiles decide a pair without a texel being read.
+ */
+export function combineSelections(
+  size: Size,
+  base: SelectionMask | null,
+  shape: SelectionMask | null,
+  mode: SelectionMode
+): SelectionMask | null {
+  if (mode === "replace") return shape
+  if (!base) return mode === "add" ? shape : null
+  if (!shape) return mode === "intersect" ? null : base
+
+  const own = new Map(shape.tiles().map((t) => [tileKey(t.x, t.y), t]))
+  const tiles = new Map<string, SelectionTile>()
+  const merge = (
+    coord: TileCoord,
+    a: Uint8Array,
+    b: Uint8Array,
+    pick: (a: number, b: number) => number
+  ) => {
+    const coverage = new Uint8Array(TILE_TEXELS)
+    for (let texel = 0; texel < TILE_TEXELS; texel++)
+      coverage[texel] = pick(a[texel], b[texel])
+    return settle(coord, coverage, size)
+  }
+  for (const tile of base.tiles()) {
+    const key = tileKey(tile.x, tile.y)
+    const other = own.get(key)
+    let next: SelectionTile | null
+    if (mode === "add") {
+      if (!other || tile.full) next = tile
+      else if (other.full) next = other
+      else next = merge(tile, tile.coverage, other.coverage, Math.max)
+    } else if (mode === "subtract") {
+      if (!other) next = tile
+      else if (other.full) next = null
+      else
+        next = merge(tile, tile.coverage, other.coverage, (a, b) =>
+          Math.min(a, 255 - b)
+        )
+    } else {
+      if (!other) next = null
+      else if (tile.full) next = other
+      else if (other.full) next = tile
+      else next = merge(tile, tile.coverage, other.coverage, Math.min)
+    }
+    if (next) tiles.set(key, next)
+  }
+  // Only a union reaches past the tiles the selection already held.
+  if (mode === "add")
+    for (const [key, tile] of own) if (!tiles.has(key)) tiles.set(key, tile)
+  return createSelection(size, tiles)
+}

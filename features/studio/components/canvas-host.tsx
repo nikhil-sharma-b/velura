@@ -18,7 +18,9 @@ import {
   FlipHorizontalIcon,
   MagnifyingGlassMinusIcon,
   MagnifyingGlassPlusIcon,
+  LassoIcon,
   PaletteIcon,
+  PolygonIcon,
   SelectionIcon,
   SlidersIcon,
   StackIcon,
@@ -52,6 +54,9 @@ import {
   createEngine,
   type Engine,
   INITIAL_SNAPSHOT,
+  isSelectionTool,
+  type SelectionTool,
+  type Tool,
   MAX_ZOOM,
   MIN_ZOOM,
   type LayerSummary,
@@ -104,6 +109,70 @@ function RailAction({
   ...props
 }: ComponentProps<typeof IconButton>) {
   return <IconButton {...props} side={side} className="rounded-lg" />
+}
+
+type FamilyMember = {
+  tool: SelectionTool
+  label: string
+  icon: React.ReactNode
+}
+
+/** The selection tools, by the rail slot each pair shares (09). */
+const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
+  [
+    {
+      tool: "rectSelect",
+      label: "Rectangle select tool",
+      icon: <SelectionIcon />,
+    },
+    {
+      tool: "ellipseSelect",
+      label: "Ellipse select tool",
+      icon: <CircleDashedIcon />,
+    },
+  ],
+  [
+    { tool: "lasso", label: "Lasso tool", icon: <LassoIcon /> },
+    {
+      tool: "polygonLasso",
+      label: "Polygonal lasso tool",
+      icon: <PolygonIcon />,
+    },
+  ],
+]
+
+/**
+ * Two sibling tools in one rail slot, as the rail has height for no more:
+ * the one last in the hand shows, a press picks it up, and a second press
+ * swaps to its sibling. The slot follows the tool in the hand rather than
+ * its own presses, so a keybind moves it as a press does.
+ */
+function ToolFamilySlot({
+  members,
+  tool,
+  onPick,
+}: {
+  members: readonly [FamilyMember, FamilyMember]
+  tool: Tool
+  onPick(tool: SelectionTool): void
+}) {
+  const [shown, setShown] = useState(members[0])
+  const held = members.find((member) => member.tool === tool)
+  if (held && held !== shown) setShown(held)
+  const sibling = members[0] === shown ? members[1] : members[0]
+  return (
+    <RailAction
+      label={shown.label}
+      command={`tool.${shown.tool}`}
+      variant={held ? "default" : "ghost"}
+      size="icon"
+      aria-pressed={!!held}
+      onClick={() => onPick(held ? sibling.tool : shown.tool)}
+      className="rounded-lg"
+    >
+      {shown.icon}
+    </RailAction>
+  )
 }
 
 /** Compact triggers keep adjustments close without covering the artwork. */
@@ -777,8 +846,7 @@ export function CanvasHost({
         style={{
           cursor: sampling
             ? SAMPLING_CURSOR
-            : snapshot.tool === "rectSelect" ||
-                snapshot.tool === "ellipseSelect"
+            : isSelectionTool(snapshot.tool)
               ? "crosshair"
               : TOOL_CURSOR,
         }}
@@ -1254,38 +1322,18 @@ export function CanvasHost({
                     }
                   />
                 </RailAction>
-                <RailAction
-                  label="Rectangle select tool"
-                  command="tool.rectSelect"
-                  variant={snapshot.tool === "rectSelect" ? "default" : "ghost"}
-                  size="icon"
-                  aria-pressed={snapshot.tool === "rectSelect"}
-                  onClick={() => {
-                    setLibraryOpen(false)
-                    setEraserOpen(false)
-                    runStudioCommand("tool.rectSelect", commandContext)
-                  }}
-                  className="rounded-lg"
-                >
-                  <SelectionIcon />
-                </RailAction>
-                <RailAction
-                  label="Ellipse select tool"
-                  command="tool.ellipseSelect"
-                  variant={
-                    snapshot.tool === "ellipseSelect" ? "default" : "ghost"
-                  }
-                  size="icon"
-                  aria-pressed={snapshot.tool === "ellipseSelect"}
-                  onClick={() => {
-                    setLibraryOpen(false)
-                    setEraserOpen(false)
-                    runStudioCommand("tool.ellipseSelect", commandContext)
-                  }}
-                  className="rounded-lg"
-                >
-                  <CircleDashedIcon />
-                </RailAction>
+                {SELECTION_FAMILIES.map((members) => (
+                  <ToolFamilySlot
+                    key={members[0].tool}
+                    members={members}
+                    tool={snapshot.tool}
+                    onPick={(tool) => {
+                      setLibraryOpen(false)
+                      setEraserOpen(false)
+                      runStudioCommand(`tool.${tool}`, commandContext)
+                    }}
+                  />
+                ))}
                 <RailAction
                   label="Colour"
                   variant={colorOpen ? "default" : "ghost"}
