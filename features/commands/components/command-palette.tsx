@@ -1,6 +1,6 @@
 "use client"
 
-import { useId, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 
 import {
   Dialog,
@@ -83,6 +83,16 @@ export function CommandPalette<Context>({
     if (!next) search.current?.blur()
     onOpenChange(next)
   }
+
+  /**
+   * Reopened before it has finished animating out, the dialog keeps the
+   * content it already had and does not focus it again on mounting, so it
+   * would sit open with every key going past it. Focusing on each opening
+   * covers that as well as the ordinary case.
+   */
+  useEffect(() => {
+    if (open) search.current?.focus()
+  }, [open])
 
   const entries = open
     ? paletteEntries(registry, context, query, recent, [toggleId])

@@ -105,6 +105,31 @@ describe("layer commands", () => {
       )
   })
 
+  test("clear empties the active paintable layer", () => {
+    const { engine, sent } = fakeEngine([raster("a"), raster("b")], "b")
+    runStudioCommand("layer.clear", context(engine))
+    expect(sent).toEqual([{ type: "clearLayer", id: "b" }])
+  })
+
+  test("clear is not offered on a locked layer, an image or a group", () => {
+    const group = {
+      id: "g",
+      kind: "group",
+      name: "g",
+      visible: true,
+      children: [raster("a")],
+    } as unknown as LayerSummary
+    const { engine } = fakeEngine([
+      group,
+      raster("locked", { locked: true }),
+      raster("photo", { image: true } as Partial<LayerSummary>),
+    ])
+    for (const id of ["g", "locked", "photo"])
+      expect(
+        studioCommands.get("layer.clear")!.available!(context(engine, id))
+      ).toBe(false)
+  })
+
   test("a layer that is not there is not acted on", () => {
     const { engine, sent } = fakeEngine([raster("a"), raster("b")])
     runStudioCommand("layer.delete", context(engine, "missing"))
