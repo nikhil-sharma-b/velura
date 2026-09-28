@@ -3304,6 +3304,20 @@ export function createEngine(
           if (layer.locked || layer.image) break
           // Clearing nothing is not a step worth undoing.
           if (!history?.occupiedTiles(layer.id).length) break
+          if (selection) {
+            // With a selection, only what is selected goes (08). The pixels
+            // change on the GPU first; the step reads them back against what
+            // history still holds, like a stroke.
+            const region = renderer?.clearSelected(layer.id)
+            if (!region) break
+            recordOperation("clear selection", captureStructure(document), {
+              readback: [{ surfaceId: layer.id, region }],
+            })
+            await history.settle()
+            invalidateThumbnailsOf(layer.id)
+            applyLayerChange()
+            break
+          }
           // Replacing with no tiles at all is what empty means; the step keeps
           // what was there, so undo puts it back.
           recordOperation("clear layer", captureStructure(document), {
