@@ -85,7 +85,7 @@ import {
 } from "../lib/image-import"
 import { readTextureFile } from "../lib/texture-import"
 import { BrushEditor } from "./brush-editor"
-import { ImageTransform } from "./image-transform"
+import { ImageTransform, LayerTransform } from "./image-transform"
 import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor"
 import { BrushIcon, EraserToolIcon } from "./brush-icon"
 import { BrushLibrary } from "./brush-library"
@@ -1666,6 +1666,13 @@ export function CanvasHost({
 
           {engine && snapshot.imageTransform && (
             <ImageTransform
+              engine={engine}
+              snapshot={snapshot}
+              canvas={canvasElement}
+            />
+          )}
+          {engine && snapshot.layerTransform && (
+            <LayerTransform
               engine={engine}
               snapshot={snapshot}
               canvas={canvasElement}

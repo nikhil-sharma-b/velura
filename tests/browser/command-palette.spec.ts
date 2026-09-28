@@ -40,7 +40,7 @@ test("a command run from the palette is listed first next time", async ({
 }) => {
   await openStudio(page)
   const search = await openPalette(page)
-  await search.fill("flip")
+  await search.fill("flip canvas")
   await page.keyboard.press("Enter")
   await expect(search).toBeHidden()
 

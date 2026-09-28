@@ -428,6 +428,34 @@ export const studioCommands = createRegistry<StudioContext>([
     ),
   },
   {
+    id: "layer.transform",
+    label: "Move, scale or rotate layer",
+    category: "Layers",
+    keybinds: ["mod+t"],
+    ...onLayer(
+      (layer) => ({ type: "beginLayerTransform", id: layer.id }),
+      (layer) => layer.kind === "raster" && !layer.image
+    ),
+  },
+  {
+    id: "layer.flipHorizontal",
+    label: "Flip layer horizontally",
+    category: "Layers",
+    ...onLayer(
+      (layer) => ({ type: "flipLayer", id: layer.id, axis: "horizontal" }),
+      (layer) => layer.kind === "raster" && !layer.image
+    ),
+  },
+  {
+    id: "layer.flipVertical",
+    label: "Flip layer vertically",
+    category: "Layers",
+    ...onLayer(
+      (layer) => ({ type: "flipLayer", id: layer.id, axis: "vertical" }),
+      (layer) => layer.kind === "raster" && !layer.image
+    ),
+  },
+  {
     id: "layer.makePaintable",
     label: "Paint on image (changes the photo)",
     category: "Layers",
