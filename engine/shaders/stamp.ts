@@ -53,7 +53,8 @@ struct Stamp {
   // How much the grain travels with the dab: zero is paper fixed to the
   // canvas, one is a tooth the brush carries with it.
   grainMovement: f32,
-  padding: f32,
+  // One when a selection (08) clips the stroke, zero when nothing is selected.
+  useSelection: f32,
 }
 
 @group(0) @binding(0) var<uniform> stamp: Stamp;
@@ -64,6 +65,9 @@ struct Stamp {
 @group(0) @binding(2) var grainSampler: sampler;
 @group(0) @binding(3) var tipTexture: texture_2d<f32>;
 @group(0) @binding(4) var grainTexture: texture_2d<f32>;
+// The selection's coverage, one texel per document pixel. Read only when
+// \`useSelection\` says there is one; a placeholder is bound otherwise.
+@group(0) @binding(5) var selectionTexture: texture_2d<f32>;
 
 struct Instance {
   // Dab centre in canvas pixels.
@@ -167,6 +171,14 @@ fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
   let carved = smoothstep(cut, min(1.0, cut + GRAIN_SLOPE), grain);
   let bite = mix(1.0, carved, depth);
 
-  return stamp.color * (shape * bite * varyings.opacity);
+  // The selection clips the dab where it lands, so the stroke buffer never
+  // holds ink outside it: the live preview, the commit and an eraser's
+  // destination-out all inherit the clip without knowing it exists.
+  var selected = 1.0;
+  if (stamp.useSelection > 0.0) {
+    selected = textureLoad(selectionTexture, vec2<i32>(varyings.position.xy), 0).r;
+  }
+
+  return stamp.color * (shape * bite * varyings.opacity * selected);
 }
 `

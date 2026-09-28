@@ -30,6 +30,7 @@ import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
 import { stampShader } from "../shaders/stamp"
 import { surfaceCompositeShader } from "../shaders/surface-composite"
+import { clearSelectionShader } from "../shaders/clear-selection"
 import { marchingAntsShader } from "../shaders/marching-ants"
 import { placedImageShader } from "../shaders/placed-image"
 import { thumbnailShader } from "../shaders/thumbnail"
@@ -77,6 +78,8 @@ const USE_TIP_OFFSET = 12
 const GRAIN_OFFSET = 32
 /** Where the rim falloff sits: after the viewport. */
 const FEATHER_OFFSET = 8
+/** Where the selection flag sits: the last float, after the grain. */
+const USE_SELECTION_OFFSET = 44
 /** Greyscale, because a tip is coverage and grain is how much gets through. */
 const TEXTURE_FORMAT: GPUTextureFormat = "r8unorm"
 /** Five f32 composite controls, padded to uniform-struct alignment. */
@@ -231,6 +234,11 @@ export interface Renderer {
    * what will lift selected pixels, never per frame.
    */
   readSelection(): Promise<Uint8Array | null>
+  /**
+   * Empties a surface wherever the selection covers it, in proportion to the
+   * coverage. Returns the region it touched, or null with nothing selected.
+   */
+  clearSelected(surfaceId: string): PixelRect | null
   /**
    * Draws the document through the view. `overlay` is what goes over it on
    * screen and nowhere else: the selection's marching ants, marched `ants`
@@ -388,6 +396,11 @@ export function createRenderer(
       },
       {
         binding: 4,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float" },
+      },
+      {
+        binding: 5,
         visibility: GPUShaderStage.FRAGMENT,
         texture: { sampleType: "float" },
       },
@@ -716,6 +729,29 @@ export function createRenderer(
   const coverageCaches = new Map<string, Surface>()
   let active: Surface | undefined
   let presentBindGroup: GPUBindGroup | undefined
+  const clearSelectionModule = device.createShaderModule({
+    code: clearSelectionShader,
+  })
+  const clearSelectionPipeline = device.createRenderPipeline({
+    label: "clear selection",
+    layout: "auto",
+    vertex: { module: clearSelectionModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: clearSelectionModule,
+      entryPoint: "fragmentMain",
+      targets: [
+        {
+          format: LAYER_FORMAT,
+          // The eraser's blend: colour and alpha lose the same coverage.
+          blend: {
+            color: { srcFactor: "zero", dstFactor: "one-minus-src-alpha" },
+            alpha: { srcFactor: "zero", dstFactor: "one-minus-src-alpha" },
+          },
+        },
+      ],
+    },
+    primitive: { topology: "triangle-list" },
+  })
   const antsShader = device.createShaderModule({ code: marchingAntsShader })
   const antsPipeline = device.createRenderPipeline({
     label: "marching-ants",
@@ -741,6 +777,8 @@ export function createRenderer(
         bindGroup: GPUBindGroup
         /** The coverage each tile was last written from, by identity. */
         tiles: Map<string, Uint8Array>
+        /** The mask's own bounds: nothing outside them is selected. */
+        bounds: PixelRect
       }
     | undefined
   function releaseSelection() {
@@ -1169,8 +1207,17 @@ export function createRenderer(
         { binding: 2, resource: grainSampler },
         { binding: 3, resource: tipTexture.createView() },
         { binding: 4, resource: grainTexture.createView() },
+        {
+          binding: 5,
+          resource: selection?.texture.createView() ?? placeholderView,
+        },
       ],
     })
+    device.queue.writeBuffer(
+      stampUniform,
+      USE_SELECTION_OFFSET,
+      new Float32Array([selection ? 1 : 0])
+    )
   }
 
   /** The present pass shows the stroke in flight at the opacity it will land at. */
@@ -1757,7 +1804,10 @@ export function createRenderer(
     },
     setSelection(mask) {
       if (!mask) {
+        if (!selection) return
         releaseSelection()
+        // Dabs stop being clipped once nothing is selected.
+        if (stampBindGroup) refreshStampBindGroup()
         return
       }
       if (!selection) {
@@ -1782,7 +1832,10 @@ export function createRenderer(
             ],
           }),
           tiles: new Map(),
+          bounds: mask.bounds,
         }
+        // From the next dab on, the stroke is clipped to the new texture.
+        refreshStampBindGroup()
       }
       const canvas = { x: 0, y: 0, width, height }
       const write = (coord: TileCoord, coverage: Uint8Array) => {
@@ -1812,6 +1865,32 @@ export function createRenderer(
           write(tileCoordFromKey(key), EMPTY_SELECTION_TILE)
         }
       selection.tiles = next
+      selection.bounds = mask.bounds
+    },
+    clearSelected(surfaceId) {
+      if (!selection) return null
+      const target = surfaces.get(surfaceId)
+      if (!target || target.empty) return null
+      const region = selection.bounds
+      const encoder = device.createCommandEncoder()
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          { view: target.view, loadOp: "load", storeOp: "store" },
+        ],
+      })
+      pass.setPipeline(clearSelectionPipeline)
+      pass.setBindGroup(
+        0,
+        device.createBindGroup({
+          layout: clearSelectionPipeline.getBindGroupLayout(0),
+          entries: [{ binding: 0, resource: selection.texture.createView() }],
+        })
+      )
+      pass.setScissorRect(region.x, region.y, region.width, region.height)
+      pass.draw(3)
+      pass.end()
+      device.queue.submit([encoder.finish()])
+      return region
     },
     async readSelection() {
       if (!selection) return null
