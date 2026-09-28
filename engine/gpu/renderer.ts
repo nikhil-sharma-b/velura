@@ -30,7 +30,10 @@ import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
 import { stampShader } from "../shaders/stamp"
 import { surfaceCompositeShader } from "../shaders/surface-composite"
-import { clearSelectionShader } from "../shaders/clear-selection"
+import {
+  clearSelectionShader,
+  copySelectionShader,
+} from "../shaders/clear-selection"
 import { marchingAntsShader } from "../shaders/marching-ants"
 import { placedImageShader } from "../shaders/placed-image"
 import { thumbnailShader } from "../shaders/thumbnail"
@@ -239,6 +242,12 @@ export interface Renderer {
    * coverage. Returns the region it touched, or null with nothing selected.
    */
   clearSelected(surfaceId: string): PixelRect | null
+  /**
+   * Draws what the selection covers of one surface into another, in
+   * proportion to the coverage (11). Returns the region it wrote, or null
+   * with nothing selected or nothing there to copy.
+   */
+  copySelected(sourceId: string, targetId: string): PixelRect | null
   /**
    * Draws the document through the view. `overlay` is what goes over it on
    * screen and nowhere else: the selection's marching ants, marched `ants`
@@ -749,6 +758,20 @@ export function createRenderer(
           },
         },
       ],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  const copySelectionModule = device.createShaderModule({
+    code: copySelectionShader,
+  })
+  const copySelectionPipeline = device.createRenderPipeline({
+    label: "copy selection",
+    layout: "auto",
+    vertex: { module: copySelectionModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: copySelectionModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format: LAYER_FORMAT }],
     },
     primitive: { topology: "triangle-list" },
   })
@@ -1890,6 +1913,38 @@ export function createRenderer(
       pass.draw(3)
       pass.end()
       device.queue.submit([encoder.finish()])
+      return region
+    },
+    copySelected(sourceId, targetId) {
+      if (!selection) return null
+      const source = surfaces.get(sourceId)
+      if (!source || source.empty) return null
+      const target = ensureSurface(targetId)
+      const region = selection.bounds
+      const encoder = device.createCommandEncoder()
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          { view: target.view, loadOp: "load", storeOp: "store" },
+        ],
+      })
+      pass.setPipeline(copySelectionPipeline)
+      pass.setBindGroup(
+        0,
+        device.createBindGroup({
+          layout: copySelectionPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: selection.texture.createView() },
+            { binding: 1, resource: source.view },
+          ],
+        })
+      )
+      pass.setScissorRect(region.x, region.y, region.width, region.height)
+      pass.draw(3)
+      pass.end()
+      device.queue.submit([encoder.finish()])
+      target.empty = false
+      composition = undefined
+      cachedFrom = undefined
       return region
     },
     async readSelection() {

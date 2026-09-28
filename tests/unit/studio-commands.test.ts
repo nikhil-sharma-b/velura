@@ -248,6 +248,18 @@ describe("selection commands", () => {
     expect(press("w", {})).toEqual([{ type: "setTool", tool: "magicWand" }])
   })
 
+  test("shift+v picks the move-outline tool", () => {
+    expect(press("V", { shift: true })).toEqual([
+      { type: "setTool", tool: "moveSelection" },
+    ])
+  })
+
+  test("mod+j copies the selection to a new layer", () => {
+    expect(press("j", { mod: true })).toEqual([
+      { type: "copySelectionToLayer" },
+    ])
+  })
+
   test("escape abandons an outline being drawn", () => {
     expect(press("Escape", {})).toEqual([{ type: "abandonSelectionGesture" }])
   })

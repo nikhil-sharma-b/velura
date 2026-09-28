@@ -9,6 +9,8 @@ import {
   ArrowCounterClockwiseIcon,
   ArrowUUpLeftIcon,
   ArrowUUpRightIcon,
+  ArrowsOutCardinalIcon,
+  CopySimpleIcon,
   CornersOutIcon,
   CircleIcon,
   CircleDashedIcon,
@@ -138,6 +140,14 @@ const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
       tool: "polygonLasso",
       label: "Polygonal lasso tool",
       icon: <PolygonIcon />,
+    },
+  ],
+  [
+    { tool: "magicWand", label: "Magic wand tool", icon: <MagicWandIcon /> },
+    {
+      tool: "moveSelection",
+      label: "Move selection outline tool",
+      icon: <ArrowsOutCardinalIcon />,
     },
   ],
 ]
@@ -366,6 +376,7 @@ export function CanvasHost({
   const layersToggle = useRef<HTMLButtonElement>(null)
   const layersToggled = useRef(false)
   const [eraserOpen, setEraserOpen] = useState(false)
+  const [featherRadius, setFeatherRadius] = useState(10)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [pressureOpen, setPressureOpen] = useState(false)
   /**
@@ -847,9 +858,11 @@ export function CanvasHost({
         style={{
           cursor: sampling
             ? SAMPLING_CURSOR
-            : isSelectionTool(snapshot.tool)
-              ? "crosshair"
-              : TOOL_CURSOR,
+            : snapshot.tool === "moveSelection"
+              ? "move"
+              : isSelectionTool(snapshot.tool)
+                ? "crosshair"
+                : TOOL_CURSOR,
         }}
       />
       {snapshot.status === "ready" && (
@@ -1189,6 +1202,48 @@ export function CanvasHost({
                     </div>
                   </QuickSetting>
                 )}
+                {/* What can be done with a selection once there is one (11):
+                its edges softened, and what it covers lifted to a layer. */}
+                {snapshot.selection && (
+                  <QuickSetting
+                    label="Feather"
+                    value={`${featherRadius} px`}
+                    readout={`${featherRadius}`}
+                    icon={<DropHalfIcon />}
+                  >
+                    <SliderSetting
+                      label="Feather radius"
+                      value={featherRadius}
+                      min={1}
+                      max={200}
+                      step={1}
+                      onChange={setFeatherRadius}
+                    />
+                    <div className="mt-3 grid grid-cols-2 gap-1 text-xs">
+                      <button
+                        type="button"
+                        className="rounded-md border border-studio-edge px-2 py-1 hover:bg-muted"
+                        onClick={() =>
+                          void engine?.dispatch({
+                            type: "featherSelection",
+                            radius: featherRadius,
+                          })
+                        }
+                      >
+                        Feather
+                      </button>
+                      <button
+                        type="button"
+                        className="flex items-center justify-center gap-1 rounded-md border border-studio-edge px-2 py-1 hover:bg-muted"
+                        onClick={() =>
+                          runStudioCommand("select.copyToLayer", commandContext)
+                        }
+                      >
+                        <CopySimpleIcon /> To layer
+                      </button>
+                    </div>
+                  </QuickSetting>
+                )}
                 {/* Size and opacity are the two a hand reaches for mid-piece, so
                 they stay on the canvas: the editor is for shaping a brush,
                 not for the adjustment made between one stroke and the next. */}
@@ -1382,21 +1437,6 @@ export function CanvasHost({
                     }}
                   />
                 ))}
-                <RailAction
-                  label="Magic wand tool"
-                  command="tool.magicWand"
-                  variant={snapshot.tool === "magicWand" ? "default" : "ghost"}
-                  size="icon"
-                  aria-pressed={snapshot.tool === "magicWand"}
-                  onClick={() => {
-                    setLibraryOpen(false)
-                    setEraserOpen(false)
-                    runStudioCommand("tool.magicWand", commandContext)
-                  }}
-                  className="rounded-lg"
-                >
-                  <MagicWandIcon />
-                </RailAction>
                 <RailAction
                   label="Colour"
                   variant={colorOpen ? "default" : "ghost"}

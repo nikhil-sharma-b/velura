@@ -52,6 +52,12 @@ export type WorkloadOptions = {
    * a cache above it and a cache below it. Defaults to one.
    */
   layers?: number
+  /**
+   * Paints inside a large selection feathered by this many pixels (11): an
+   * ellipse over most of the canvas, so every dab is clipped by soft
+   * coverage. Absent, nothing is selected.
+   */
+  feather?: number
 }
 
 /**
@@ -176,6 +182,11 @@ export function createWorkload(options: WorkloadOptions): Workload {
     (!Number.isInteger(options.layers) || options.layers < 1)
   )
     throw new Error("A workload must have at least one layer.")
+  if (
+    options.feather !== undefined &&
+    (!Number.isFinite(options.feather) || options.feather < 0)
+  )
+    throw new Error("A workload's feather must be finite and not negative.")
   const random = createRandom(options.seed)
   const strokes: BenchStroke[] = []
   for (let i = 0; i < options.strokes; i++)

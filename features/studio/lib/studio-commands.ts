@@ -236,6 +236,14 @@ export const studioCommands = createRegistry<StudioContext>([
     ...dispatching({ type: "setTool", tool: "magicWand" }),
   },
   {
+    // Shift+V: V is the move tool elsewhere, and this moves only the outline.
+    id: "tool.moveSelection",
+    label: "Move selection outline tool",
+    category: "Tools",
+    keybinds: ["shift+v"],
+    ...dispatching({ type: "setTool", tool: "moveSelection" }),
+  },
+  {
     // Escape lets go of an outline half drawn, the polygonal lasso's above
     // all, as it does in every editor with one.
     id: "select.abandonOutline",
@@ -264,6 +272,14 @@ export const studioCommands = createRegistry<StudioContext>([
     category: "Select",
     keybinds: ["mod+shift+i"],
     ...dispatching({ type: "invertSelection" }),
+  },
+  {
+    // Layer via copy, on the key every editor the hand learned on gives it.
+    id: "select.copyToLayer",
+    label: "Copy selection to new layer",
+    category: "Select",
+    keybinds: ["mod+j"],
+    ...dispatching({ type: "copySelectionToLayer" }),
   },
   {
     // A held modifier rather than a tool (D-input): the canvas samples while

@@ -302,6 +302,18 @@ export async function runBenchmark(
     toClientX,
     toClientY,
   })
+  const feather = workload.options.feather
+  if (feather !== undefined) {
+    await engine.dispatch({
+      type: "selectShape",
+      shape: "ellipse",
+      x: workload.width * 0.05,
+      y: workload.height * 0.05,
+      width: workload.width * 0.9,
+      height: workload.height * 0.9,
+    })
+    await engine.dispatch({ type: "featherSelection", radius: feather })
+  }
   const detachThumbnails = attachThumbnails(engine)
 
   const frames: FrameTiming[] = []
