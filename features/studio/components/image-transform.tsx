@@ -9,9 +9,17 @@ import {
   XIcon,
 } from "@phosphor-icons/react"
 
-import type { Engine, EngineSnapshot, ImagePlacement } from "@/engine"
+import type {
+  Engine,
+  EngineSnapshot,
+  ImagePlacement,
+  Snap,
+  SnapTargets,
+} from "@/engine"
 import {
   docToScreen,
+  placementExtent,
+  resolveSnap,
   flippedPlacement,
   handlePoints,
   movedPlacement,
@@ -43,6 +51,15 @@ const NUDGE = 1
 const COARSE_NUDGE = 10
 /** How near a right angle a turn snaps, with the modifier held. */
 const SNAP_STEP = Math.PI / 12
+/** How near an edge or centre a drag is pulled onto it, in CSS pixels (15). */
+const SNAP_REACH = 6
+
+/**
+ * Snapping is suspended while Ctrl or Cmd is held (15): Shift already means
+ * "keep the shape" or "step the angle", and Alt is the eyedropper.
+ */
+const snapSuspended = (event: { ctrlKey: boolean; metaKey: boolean }) =>
+  event.ctrlKey || event.metaKey
 
 type Point = { x: number; y: number }
 
@@ -120,6 +137,7 @@ export function ImageTransform({
       snapshot={snapshot}
       canvas={canvas}
       placement={transform.placement}
+      snapTargets={transform.snapTargets}
       subject="image"
       commands={{
         adjust: "adjustImageTransform",
@@ -160,6 +178,7 @@ export function LayerTransform({
       snapshot={snapshot}
       canvas={canvas}
       placement={transform.placement}
+      snapTargets={transform.snapTargets}
       subject={transform.lifted ? "selection" : "layer"}
       commands={{
         adjust: "adjustLayerTransform",
@@ -175,6 +194,7 @@ function TransformBox({
   snapshot,
   canvas,
   placement,
+  snapTargets,
   subject,
   commands,
   status,
@@ -183,6 +203,7 @@ function TransformBox({
   snapshot: EngineSnapshot
   canvas: HTMLCanvasElement | null
   placement: ImagePlacement
+  snapTargets: SnapTargets
   subject: "image" | "layer" | "selection"
   commands: {
     adjust: "adjustImageTransform" | "adjustLayerTransform"
@@ -194,6 +215,8 @@ function TransformBox({
   const { toCss, toDoc } = useDocumentToCss(canvas, snapshot)
   const drag = useRef<Drag | null>(null)
   const box = useRef<HTMLDivElement>(null)
+  /** The lines a drag is snapped onto right now, drawn as guides. */
+  const [guides, setGuides] = useState<Snap["guides"] | null>(null)
 
   const adjust = useCallback(
     (next: ImagePlacement) => {
@@ -228,27 +251,58 @@ function TransformBox({
   const angleTo = (point: Point) =>
     Math.atan2(point.y - placement.y, point.x - placement.x)
 
+  /** The snap reach in document pixels, at the zoom the artist is at. */
+  const reach = () => {
+    const origin = toDoc({ x: 0, y: 0 })
+    const along = toDoc({ x: SNAP_REACH, y: 0 })
+    return Math.hypot(along.x - origin.x, along.y - origin.y)
+  }
+
   const onPointerMove = (event: React.PointerEvent) => {
     const active = drag.current
     if (!active) return
     const point = pointerIn(event)
-    if (active.kind === "move")
+    const snapping = snapshot.snapping && !snapSuspended(event)
+    if (active.kind === "move") {
+      const moved = movedPlacement(active.start, {
+        dx: point.x - active.from.x,
+        dy: point.y - active.from.y,
+      })
+      const snap = snapping
+        ? resolveSnap(placementExtent(moved), snapTargets, reach())
+        : null
+      setGuides(snap?.guides ?? null)
+      adjust(snap ? movedPlacement(moved, snap) : moved)
+    } else if (active.kind === "scale") {
+      // The handle itself is what snaps, along the axes it moves, so the
+      // edge it drags lands on a line. Only an upright box's edges are
+      // upright, and a corner that keeps the shape moves both edges from one
+      // axis's demand, so those are left to the hand.
+      const horizontal = active.handle !== "top" && active.handle !== "bottom"
+      const vertical = active.handle !== "left" && active.handle !== "right"
+      const keepsShape = !event.shiftKey && horizontal && vertical
+      const snap =
+        snapping && placement.rotation === 0 && !keepsShape
+          ? resolveSnap(
+              { ...point, width: 0, height: 0 },
+              {
+                x: horizontal ? snapTargets.x : [],
+                y: vertical ? snapTargets.y : [],
+              },
+              reach()
+            )
+          : null
+      setGuides(snap?.guides ?? null)
+      const to = snap ? { x: point.x + snap.dx, y: point.y + snap.dy } : point
       adjust(
-        movedPlacement(active.start, {
-          dx: point.x - active.from.x,
-          dy: point.y - active.from.y,
-        })
-      )
-    else if (active.kind === "scale")
-      adjust(
-        scaledPlacement(placement, active.handle, point, {
+        scaledPlacement(placement, active.handle, to, {
           // A corner keeps the picture's shape, because a stretched
           // photograph is nearly always a mistake; Shift is how stretching is
           // asked for on purpose, and an edge handle is one axis anyway.
           preserveAspect: !event.shiftKey && active.handle.includes("-"),
         })
       )
-    else {
+    } else {
       const turned = active.start.rotation + (angleTo(point) - active.fromAngle)
       adjust(
         rotatedPlacement(
@@ -269,6 +323,7 @@ function TransformBox({
   const end = (event: React.PointerEvent) => {
     if (!drag.current) return
     drag.current = null
+    setGuides(null)
     ;(event.target as Element).releasePointerCapture?.(event.pointerId)
   }
 
@@ -300,7 +355,13 @@ function TransformBox({
       }
       data-testid={`${subject}-transform`}
       className="absolute inset-0 outline-none"
+      onKeyUp={(event) => {
+        // Letting go of the suspend key shows nothing stale; the next move
+        // snaps again.
+        if (event.key === "Control" || event.key === "Meta") setGuides(null)
+      }}
       onKeyDown={(event) => {
+        if (event.key === "Control" || event.key === "Meta") setGuides(null)
         const step = event.shiftKey ? COARSE_NUDGE : NUDGE
         const nudge = (dx: number, dy: number) => {
           event.preventDefault()
@@ -326,6 +387,28 @@ function TransformBox({
         // rest of the canvas is still the canvas.
         style={{ pointerEvents: "none" }}
       >
+        {guides?.x != null && (
+          <line
+            data-testid="snap-guide-x"
+            x1={toCss({ x: guides.x, y: 0 }).x}
+            y1={toCss({ x: guides.x, y: 0 }).y}
+            x2={toCss({ x: guides.x, y: snapshot.height }).x}
+            y2={toCss({ x: guides.x, y: snapshot.height }).y}
+            className="stroke-brand-coral"
+            strokeWidth={1}
+          />
+        )}
+        {guides?.y != null && (
+          <line
+            data-testid="snap-guide-y"
+            x1={toCss({ x: 0, y: guides.y }).x}
+            y1={toCss({ x: 0, y: guides.y }).y}
+            x2={toCss({ x: snapshot.width, y: guides.y }).x}
+            y2={toCss({ x: snapshot.width, y: guides.y }).y}
+            className="stroke-brand-coral"
+            strokeWidth={1}
+          />
+        )}
         <polygon
           points={outline}
           className="fill-brand-gold/5 stroke-brand-gold"
