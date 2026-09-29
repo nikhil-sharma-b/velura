@@ -19,6 +19,7 @@ import type * as lib_branding from "../lib/branding.js";
 import type * as lib_brush from "../lib/brush.js";
 import type * as lib_collection from "../lib/collection.js";
 import type * as lib_documents from "../lib/documents.js";
+import type * as lib_guides from "../lib/guides.js";
 import type * as lib_palette from "../lib/palette.js";
 import type * as lib_preferences from "../lib/preferences.js";
 import type * as lib_preview_key from "../lib/preview_key.js";
@@ -50,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   "lib/brush": typeof lib_brush;
   "lib/collection": typeof lib_collection;
   "lib/documents": typeof lib_documents;
+  "lib/guides": typeof lib_guides;
   "lib/palette": typeof lib_palette;
   "lib/preferences": typeof lib_preferences;
   "lib/preview_key": typeof lib_preview_key;

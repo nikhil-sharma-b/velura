@@ -4,6 +4,7 @@ import {
   type LayerNode,
   type PaintDocument,
 } from "./document"
+import { normaliseGuides, type Guide } from "./guides"
 import type { BlendMode } from "../shaders/blend-modes"
 import type { ImageAssetRef, PlacedImage } from "./image-source"
 import { createTiledMask } from "./tiled-mask"
@@ -41,6 +42,11 @@ export type DocumentStructure = {
   activeLayerId: string
   paintingMask: boolean
   /**
+   * The guides (16). Only written when there are some, so a tree saved before
+   * guides existed and one with none compare the same.
+   */
+  guides?: Guide[]
+  /**
    * Which selection (07) the step left, by the key the engine holds its mask
    * under; null for none. Only a selection step names one — absent, undoing
    * the step leaves the selection as it is. Never saved: a selection is part
@@ -77,6 +83,7 @@ export function captureStructure(doc: PaintDocument): DocumentStructure {
     layers: doc.layers.map(captureNode),
     activeLayerId: doc.activeLayerId,
     paintingMask: doc.paintingMask,
+    ...(doc.guides.length ? { guides: [...doc.guides] } : {}),
   }
 }
 
@@ -261,4 +268,6 @@ export function restoreStructure(
   doc.activeLayerId = findLayer(doc, structure.activeLayerId).id
   doc.paintingMask =
     structure.paintingMask && !!findLayer(doc, doc.activeLayerId).mask
+  // A saved tree came from outside, so its guides are checked on the way in.
+  doc.guides = normaliseGuides(structure.guides)
 }

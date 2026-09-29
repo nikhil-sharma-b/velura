@@ -553,6 +553,33 @@ export const studioCommands = createRegistry<StudioContext>([
     })),
   },
   {
+    id: "view.toggleRulers",
+    label: "Toggle rulers",
+    category: "View",
+    keybinds: ["mod+r"],
+    ...dispatching(({ engine }) => ({
+      type: "setRulersVisible",
+      visible: !engine?.getSnapshot().rulersVisible,
+    })),
+  },
+  {
+    id: "view.toggleGuides",
+    label: "Show or hide guides",
+    category: "View",
+    keybinds: ["mod+'"],
+    ...dispatching(({ engine }) => ({
+      type: "setGuidesVisible",
+      visible: !engine?.getSnapshot().guidesVisible,
+    })),
+  },
+  {
+    id: "view.clearGuides",
+    label: "Clear guides",
+    category: "View",
+    available: ({ engine }) => !!engine?.getSnapshot().guides.length,
+    run: ({ engine }) => void engine?.dispatch({ type: "clearGuides" }),
+  },
+  {
     id: "view.fit",
     label: "Fit canvas to window",
     category: "View",

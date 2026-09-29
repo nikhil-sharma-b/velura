@@ -1,6 +1,7 @@
 import { v } from "convex/values"
 
 import { requireOwnDocument } from "./documents"
+import { withNormalisedGuides } from "./lib/guides"
 import { recordVersion } from "./versions"
 import type { Id } from "./_generated/dataModel"
 import {
@@ -73,9 +74,10 @@ export const commitFlush = mutation({
   },
   handler: async (
     ctx,
-    { documentId, tiles, removed, uploaded, structure, metrics }
+    { documentId, tiles, removed, uploaded, structure: raw, metrics }
   ) => {
     const document = await requireOwnDocument(ctx, documentId)
+    const structure = withNormalisedGuides(raw)
 
     for (const tile of tiles) {
       await upsertTile(ctx, documentId, tile)

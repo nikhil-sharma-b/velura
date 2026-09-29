@@ -243,3 +243,41 @@ describe("a placed image in the tree", () => {
     expect(captureStructure(doc).layers[0].placed).toBeUndefined()
   })
 })
+
+describe("guides in the tree (16)", () => {
+  test("travel through a snapshot and back", () => {
+    const doc = document()
+    doc.guides = [{ id: "guide-1", axis: "x", position: 40 }]
+    const structure = captureStructure(doc)
+    expect(structure.guides).toEqual([
+      { id: "guide-1", axis: "x", position: 40 },
+    ])
+    doc.guides = []
+    restoreStructure(doc, structure)
+    expect(doc.guides).toEqual([{ id: "guide-1", axis: "x", position: 40 }])
+  })
+
+  test("are absent from a tree with none, as it was before guides", () => {
+    expect("guides" in captureStructure(document())).toBe(false)
+  })
+
+  test("a tree saved before guides existed restores with none", () => {
+    const doc = document()
+    const before = captureStructure(doc)
+    doc.guides = [{ id: "guide-1", axis: "y", position: 3 }]
+    restoreStructure(doc, before)
+    expect(doc.guides).toEqual([])
+  })
+
+  test("malformed guides from a save are dropped on restore", () => {
+    const doc = document()
+    restoreStructure(doc, {
+      ...captureStructure(doc),
+      guides: [
+        { id: "guide-1", axis: "x", position: 1 },
+        { id: "guide-2", axis: "q", position: 2 },
+      ] as never,
+    })
+    expect(doc.guides).toEqual([{ id: "guide-1", axis: "x", position: 1 }])
+  })
+})

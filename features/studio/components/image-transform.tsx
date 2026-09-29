@@ -64,7 +64,7 @@ const snapSuspended = (event: { ctrlKey: boolean; metaKey: boolean }) =>
 type Point = { x: number; y: number }
 
 /** Document pixels to CSS pixels of the canvas element. */
-function useDocumentToCss(
+export function useDocumentToCss(
   canvas: HTMLCanvasElement | null,
   snapshot: EngineSnapshot
 ) {

@@ -36,7 +36,8 @@ export default defineSchema({
     // The layer tree without pixels — engine/doc/structure.ts's
     // `DocumentStructure`, opaque here. Absent until the first flush; a
     // session reopening on a cleared cache reads this plus the `tiles` rows
-    // to rebuild the document (§9.3).
+    // to rebuild the document (§9.3). Carries the document's guides (16),
+    // which `commitFlush` normalises on the way in (convex/lib/guides.ts).
     structure: v.optional(v.any()),
     // Incremented after a preview upload lands. The value refreshes signed
     // library URLs without storing expiring URLs.

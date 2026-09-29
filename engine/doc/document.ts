@@ -1,6 +1,7 @@
 import type { BlendMode } from "../shaders/blend-modes"
 export type { BlendMode } from "../shaders/blend-modes"
 
+import type { Guide } from "./guides"
 import type { ImagePlacement } from "./image-placement"
 import type { PlacedImage } from "./image-source"
 export type { PlacedImage } from "./image-source"
@@ -63,6 +64,8 @@ export type PaintDocument = {
   /** Always a raster layer: groups organise paint targets but are not one. */
   activeLayerId: string
   paintingMask: boolean
+  /** Lines laid over the canvas from the rulers (16), in document pixels. */
+  guides: Guide[]
 }
 
 export type CompositeItem = {
@@ -138,6 +141,7 @@ export function createDocument(size: {
     layers: [layer],
     activeLayerId: layer.id,
     paintingMask: false,
+    guides: [],
   }
 }
 
@@ -152,6 +156,7 @@ export function createBlankDocument(size: {
     layers: [layer],
     activeLayerId: layer.id,
     paintingMask: false,
+    guides: [],
   }
 }
 

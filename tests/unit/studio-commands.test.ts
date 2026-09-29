@@ -336,4 +336,37 @@ describe("snapping and alignment", () => {
       { type: "setSnapping", enabled: true },
     ])
   })
+
+  test("the ruler and guide toggles flip what the engine holds", () => {
+    const shown = fakeEngine([raster("a")], "a", {
+      rulersVisible: true,
+      guidesVisible: true,
+    })
+    runStudioCommand("view.toggleRulers", context(shown.engine))
+    runStudioCommand("view.toggleGuides", context(shown.engine))
+    const hidden = fakeEngine([raster("a")], "a", {
+      rulersVisible: false,
+      guidesVisible: false,
+    })
+    runStudioCommand("view.toggleRulers", context(hidden.engine))
+    runStudioCommand("view.toggleGuides", context(hidden.engine))
+    expect([...shown.sent, ...hidden.sent]).toEqual([
+      { type: "setRulersVisible", visible: false },
+      { type: "setGuidesVisible", visible: false },
+      { type: "setRulersVisible", visible: true },
+      { type: "setGuidesVisible", visible: true },
+    ])
+  })
+
+  test("clearing guides is offered only when there are some", () => {
+    const none = fakeEngine([raster("a")], "a", { guides: [] })
+    const some = fakeEngine([raster("a")], "a", {
+      guides: [{ id: "guide-1", axis: "x", position: 1 }],
+    })
+    const clear = studioCommands.get("view.clearGuides")!
+    expect(clear.available!(context(none.engine))).toBe(false)
+    expect(clear.available!(context(some.engine))).toBe(true)
+    runStudioCommand("view.clearGuides", context(some.engine))
+    expect(some.sent).toEqual([{ type: "clearGuides" }])
+  })
 })
