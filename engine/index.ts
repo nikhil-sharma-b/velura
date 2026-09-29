@@ -155,6 +155,14 @@ import {
   type Extent,
   type SnapTargets,
 } from "./doc/snap"
+import {
+  addGuide,
+  guideSnapTargets,
+  moveGuide,
+  removeGuide,
+  type Guide,
+  type GuideAxis,
+} from "./doc/guides"
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
 import {
@@ -279,6 +287,7 @@ export {
 export type { ImageAsset, ImageAssetRef, PlacedImage } from "./doc/image-source"
 export type { AlignAnchor, Extent, Snap, SnapTargets } from "./doc/snap"
 export { placementExtent, resolveSnap } from "./doc/snap"
+export type { Guide, GuideAxis } from "./doc/guides"
 
 export type PaintTool = "brush" | "eraser"
 /** Tools that draw out a selection (07) instead of making a mark. */
@@ -532,6 +541,19 @@ export type EngineCommand =
   /** Whether transform drags snap to edges, centres and other content (15). */
   | { type: "setSnapping"; enabled: boolean }
   /**
+   * Guides (16): lines in document pixels, `x` a vertical line and `y` a
+   * horizontal one. Laying one down, moving it and taking it away are each
+   * one step, saved with the document.
+   */
+  | { type: "addGuide"; axis: GuideAxis; position: number }
+  | { type: "moveGuide"; id: string; position: number }
+  | { type: "removeGuide"; id: string }
+  | { type: "clearGuides" }
+  /** Hides guides without deleting them; hidden guides are not snapped to. */
+  | { type: "setGuidesVisible"; visible: boolean }
+  /** Whether the rulers are shown along the canvas's edges (16). */
+  | { type: "setRulersVisible"; visible: boolean }
+  /**
    * A layer's own settings. Every field is optional and unnamed ones are left
    * alone, so a control that owns one property need not know the rest.
    */
@@ -652,6 +674,11 @@ export type EngineSnapshot = Readonly<{
   tiltEnabled: boolean
   /** Whether transform drags snap (15); a host may suspend it per drag. */
   snapping: boolean
+  /** The document's guides (16); part of the document, so undo restores them. */
+  guides: readonly Guide[]
+  /** Session view state (16): whether guides are drawn and snapped to. */
+  guidesVisible: boolean
+  rulersVisible: boolean
   /** The persistent tool in the hand; Alt/Option sampling never changes it. */
   tool: Tool
   /** Current display-encoded ink, updated by the eyedropper. */
@@ -769,6 +796,9 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   pressureCurve: DEFAULT_PRESSURE_CURVE,
   tiltEnabled: true,
   snapping: true,
+  guides: Object.freeze([]),
+  guidesVisible: true,
+  rulersVisible: false,
   tool: "brush",
   color: Object.freeze({
     red: 36 / 255,
@@ -1170,6 +1200,7 @@ export function createEngine(
   // it, and a pen that does not already reads as upright.
   let tiltEnabled = true
   let snapping = true
+  let guidesVisible = true
   // Rebuilt only when the brush changes its spacing, which never happens
   // inside a stroke: a frame of drawing still allocates nothing (D30).
   let resampler = createStrokeResampler(brushSpacing(DEFAULT_BRUSH))
@@ -1921,7 +1952,10 @@ export function createEngine(
       const within = box && intersectRect(box, canvas)
       if (within) others.push(within)
     }
-    return Object.freeze(snapTargets(document, others))
+    const targets = snapTargets(document, others)
+    return Object.freeze(
+      guidesVisible ? guideSnapTargets(targets, document.guides) : targets
+    )
   }
 
   /** Lines a layer up with the canvas or the selection; see `alignLayer`. */
@@ -2245,6 +2279,7 @@ export function createEngine(
       layers: Object.freeze(document.layers.map(describe)),
       activeLayerId: document.activeLayerId,
       paintingMask: document.paintingMask,
+      guides: Object.freeze([...document.guides]),
     }
   }
 
@@ -4364,6 +4399,62 @@ export function createEngine(
           publish({ pressureCurve: Object.freeze(next.map((p) => ({ ...p }))) })
           break
         }
+        case "addGuide": {
+          const document = requireDocument()
+          const before = captureStructure(document)
+          document.guides = addGuide(
+            document.guides,
+            command.axis,
+            command.position
+          ).guides
+          recordOperation("add guide", before)
+          publish(describeLayers(document))
+          break
+        }
+        case "moveGuide": {
+          const document = requireDocument()
+          const guide = document.guides.find((g) => g.id === command.id)
+          if (!guide)
+            throw new Error(`No guide ${command.id} is in this document.`)
+          // Put down where it was picked up is not a step.
+          if (guide.position === command.position) break
+          const before = captureStructure(document)
+          document.guides = moveGuide(
+            document.guides,
+            command.id,
+            command.position
+          )
+          recordOperation("move guide", before)
+          publish(describeLayers(document))
+          break
+        }
+        case "removeGuide": {
+          const document = requireDocument()
+          const next = removeGuide(document.guides, command.id)
+          // Nothing to take away is not a step.
+          if (next.length === document.guides.length) break
+          const before = captureStructure(document)
+          document.guides = next
+          recordOperation("remove guide", before)
+          publish(describeLayers(document))
+          break
+        }
+        case "clearGuides": {
+          const document = requireDocument()
+          if (document.guides.length === 0) break
+          const before = captureStructure(document)
+          document.guides = []
+          recordOperation("clear guides", before)
+          publish(describeLayers(document))
+          break
+        }
+        case "setGuidesVisible":
+          guidesVisible = command.visible !== false
+          publish({ guidesVisible })
+          break
+        case "setRulersVisible":
+          publish({ rulersVisible: command.visible !== false })
+          break
         case "setSnapping":
           snapping = command.enabled !== false
           publish({ snapping })

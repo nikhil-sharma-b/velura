@@ -371,3 +371,71 @@ describe("duplicate", () => {
     ).toEqual(structure)
   })
 })
+
+describe("guides (16)", () => {
+  const flush = (
+    artist: ReturnType<typeof asUser>,
+    documentId: Id<"documents">,
+    structure: unknown
+  ) =>
+    artist.mutation(api.tiles.commitFlush, {
+      documentId,
+      tiles: [],
+      uploaded: [],
+      structure,
+      metrics: { putCount: 0, mutationCount: 1 },
+    })
+
+  test("are saved with the document and read back by the next session", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await createDocument(t, artist)
+    const guides = [
+      { id: "guide-1", axis: "x", position: 128 },
+      { id: "guide-2", axis: "y", position: 64.5 },
+    ]
+    await flush(artist, documentId, {
+      layers: [],
+      activeLayerId: "",
+      paintingMask: false,
+      guides,
+    })
+    const saved = await artist.query(api.documents.get, { documentId })
+    expect((saved.structure as { guides: unknown }).guides).toEqual(guides)
+  })
+
+  test("that are malformed are dropped at the boundary, in the restore point too", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await createDocument(t, artist)
+    await flush(artist, documentId, {
+      layers: [],
+      activeLayerId: "",
+      paintingMask: false,
+      guides: [
+        { id: "guide-1", axis: "x", position: 1 },
+        { id: "guide-2", axis: "diagonal", position: 2 },
+        { id: "guide-3", axis: "y", position: "3" },
+      ],
+    })
+    const saved = await artist.query(api.documents.get, { documentId })
+    expect((saved.structure as { guides: unknown }).guides).toEqual([
+      { id: "guide-1", axis: "x", position: 1 },
+    ])
+    const versions = await t.run((ctx) => ctx.db.query("versions").collect())
+    expect((versions[0].structure as { guides: unknown }).guides).toEqual([
+      { id: "guide-1", axis: "x", position: 1 },
+    ])
+  })
+
+  test("a structure without guides is stored as it came", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const documentId = await createDocument(t, artist)
+    const structure = { layers: [], activeLayerId: "", paintingMask: false }
+    await flush(artist, documentId, structure)
+    expect(
+      (await artist.query(api.documents.get, { documentId })).structure
+    ).toEqual(structure)
+  })
+})
