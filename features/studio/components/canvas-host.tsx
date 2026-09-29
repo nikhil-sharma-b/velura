@@ -87,6 +87,7 @@ import { readTextureFile } from "../lib/texture-import"
 import { BrushEditor } from "./brush-editor"
 import { ImageTransform, LayerTransform } from "./image-transform"
 import { RulersAndGuides } from "./rulers-and-guides"
+import { StraightEdgeOverlay } from "./straight-edge"
 import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor"
 import { BrushIcon, EraserToolIcon } from "./brush-icon"
 import { BrushLibrary } from "./brush-library"
@@ -1674,6 +1675,14 @@ export function CanvasHost({
           )}
           {engine && snapshot.layerTransform && (
             <LayerTransform
+              engine={engine}
+              snapshot={snapshot}
+              canvas={canvasElement}
+            />
+          )}
+
+          {engine && snapshot.straightEdge && (
+            <StraightEdgeOverlay
               engine={engine}
               snapshot={snapshot}
               canvas={canvasElement}

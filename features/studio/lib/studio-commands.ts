@@ -580,6 +580,27 @@ export const studioCommands = createRegistry<StudioContext>([
     run: ({ engine }) => void engine?.dispatch({ type: "clearGuides" }),
   },
   {
+    id: "view.toggleStraightEdge",
+    label: "Place or remove the straight-edge",
+    category: "View",
+    keybinds: ["mod+shift+l"],
+    ...dispatching(({ engine }) => {
+      const snapshot = engine?.getSnapshot()
+      // Laid down level across the middle of the canvas, where it can be
+      // seen and picked up; the artist moves and turns it from there.
+      return {
+        type: "setStraightEdge",
+        edge: snapshot?.straightEdge
+          ? null
+          : {
+              x: (snapshot?.width ?? 0) / 2,
+              y: (snapshot?.height ?? 0) / 2,
+              angle: 0,
+            },
+      }
+    }),
+  },
+  {
     id: "view.fit",
     label: "Fit canvas to window",
     category: "View",

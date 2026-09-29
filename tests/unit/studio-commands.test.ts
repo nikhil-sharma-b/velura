@@ -337,6 +337,23 @@ describe("snapping and alignment", () => {
     ])
   })
 
+  test("the straight-edge toggle lays one across the middle, or lifts it", () => {
+    const none = fakeEngine([raster("a")], "a", {
+      straightEdge: null,
+      width: 200,
+      height: 100,
+    })
+    runStudioCommand("view.toggleStraightEdge", context(none.engine))
+    const placed = fakeEngine([raster("a")], "a", {
+      straightEdge: { x: 1, y: 2, angle: 0.5 },
+    })
+    runStudioCommand("view.toggleStraightEdge", context(placed.engine))
+    expect([...none.sent, ...placed.sent]).toEqual([
+      { type: "setStraightEdge", edge: { x: 100, y: 50, angle: 0 } },
+      { type: "setStraightEdge", edge: null },
+    ])
+  })
+
   test("the ruler and guide toggles flip what the engine holds", () => {
     const shown = fakeEngine([raster("a")], "a", {
       rulersVisible: true,
