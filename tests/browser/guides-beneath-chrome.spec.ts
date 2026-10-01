@@ -123,3 +123,20 @@ test("in zen the guides stay across the whole view, without the rulers", async (
   await page.keyboard.press("f")
   await expect(page.getByTestId("ruler-top")).toBeVisible()
 })
+
+test("a guide over an open transform box can still be taken hold of", async ({
+  page,
+}) => {
+  await openStudio(page)
+  // A stroke picked up as a layer: its box covers the canvas while it is open.
+  await page.mouse.move(400, 300)
+  await page.mouse.down()
+  await page.mouse.move(700, 300, { steps: 12 })
+  await page.mouse.up()
+  await expect(page.getByRole("button", { name: "Undo" })).toBeEnabled()
+  await page.keyboard.press("ControlOrMeta+t")
+  await expect(page.getByTestId("layer-transform")).toBeVisible()
+  await dragGuide(page, "top", { x: 900, y: 450 })
+  await expect(page.getByTestId("guide")).toHaveCount(1)
+  expect(await pressedAt(page, 550, 450)).toBe("guide")
+})
