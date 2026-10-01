@@ -1,4 +1,10 @@
 import {
+  serializeSvg,
+  type SvgExportOptions,
+  type SvgExportResult,
+} from "./store/export-svg"
+import { svgPngImage } from "./store/svg-images"
+import {
   selectObjects,
   objectsBounds,
   objectBounds as vectorObjectBounds,
@@ -1065,6 +1071,8 @@ export interface Engine {
   subscribe(listener: () => void): () => void
   /** Explicit asynchronous readback for tests and future export; never per frame. */
   readPixels(): Promise<RenderedPixels>
+  /** Authored vectors and named layers, with optional raster PNGs and fidelity warnings. */
+  exportSvg(options: SvgExportOptions): Promise<SvgExportResult>
   /** A real ZIP backup containing the complete layer tree and every exact tile. */
   exportDocument(): Promise<Uint8Array>
   /** Validates a backup in full before replacing the open document. */
@@ -5987,6 +5995,53 @@ export function createEngine(
       return data
         ? { width: snapshot.width, height: snapshot.height, data }
         : null
+    },
+    async exportSvg(options) {
+      if (snapshot.status !== "ready" || !history)
+        throw new Error("The graphics device is not ready.")
+      const past = history
+      await past.settle()
+      const document = requireDocument()
+      // Freeze settings before PNG encoding yields to further edits.
+      const copyNodes = (nodes: readonly LayerNode[]): LayerNode[] =>
+        nodes.map((node) => {
+          const mask = node.mask ? { ...node.mask } : undefined
+          return node.kind === "group"
+            ? { ...node, mask, children: copyNodes(node.children) }
+            : { ...node, mask }
+        })
+      const captured = { ...document, layers: copyNodes(document.layers) }
+      const surfaces = new Map(
+        past.tileIndex().map((surface) => [surface.surfaceId, surface])
+      )
+      const images = new Map<string, string>()
+      const prepare = async (nodes: readonly LayerNode[]): Promise<void> => {
+        for (const node of nodes) {
+          if (node.kind === "group") await prepare(node.children)
+          if (node.kind === "raster" && options.raster === "embed")
+            images.set(
+              node.id,
+              await svgPngImage(
+                captured,
+                surfaces.get(node.id),
+                (hash) => past.store.get(hash),
+                false
+              )
+            )
+          if (node.mask?.enabled)
+            images.set(
+              node.mask.id,
+              await svgPngImage(
+                captured,
+                surfaces.get(node.mask.id),
+                (hash) => past.store.get(hash),
+                true
+              )
+            )
+        }
+      }
+      await prepare(captured.layers)
+      return serializeSvg(captured, options, images)
     },
     async exportDocument() {
       if (snapshot.status !== "ready" || !history)
