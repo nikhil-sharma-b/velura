@@ -2,6 +2,7 @@
 
 import {
   ArrowsOutCardinalIcon,
+  BezierCurveIcon,
   CaretUpIcon,
   CopyIcon,
   DotsSixVerticalIcon,
@@ -48,7 +49,7 @@ import {
 
 import { placeImageFile } from "../lib/image-import"
 import { IconButton } from "./icon-button"
-import { findSummary, rasterCount } from "../lib/layer-tree"
+import { findSummary, leafCount } from "../lib/layer-tree"
 
 type LayerPanelProps = {
   engine: Engine
@@ -221,7 +222,7 @@ function LayerRow({
   activeLayerId,
   paintingMask,
   groupHidden,
-  totalRasters,
+  totalLeaves,
   onSelect,
   runCommand,
 }: {
@@ -236,7 +237,7 @@ function LayerRow({
   selected: boolean
   activeLayerId: string
   paintingMask: boolean
-  totalRasters: number
+  totalLeaves: number
   onSelect(id: string): void
   runCommand: RunCommand
 }) {
@@ -250,8 +251,7 @@ function LayerRow({
     setEditing(false)
   }
   const hiddenBy = !layer.visible ? "self" : groupHidden ? "group" : false
-  const removedRasters =
-    layer.kind === "raster" ? 1 : rasterCount(layer.children)
+  const removedLeaves = layer.kind === "group" ? leafCount(layer.children) : 1
   const highlight = (id: string | null) =>
     void engine.dispatch({ type: "highlightLayer", id })
   // A finger has no hover, so a touch picks the layer out by holding still on
@@ -322,7 +322,7 @@ function LayerRow({
             aria-label={`${selected ? "Selected" : "Select"} ${layer.name}`}
             onClick={() => {
               onSelect(layer.id)
-              if (layer.kind === "raster")
+              if (layer.kind !== "group")
                 void engine.dispatch({ type: "selectLayer", id: layer.id })
             }}
             className="flex min-w-0 flex-1 items-center gap-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -343,6 +343,13 @@ function LayerRow({
                 <FolderSimpleIcon
                   aria-hidden
                   weight="fill"
+                  className="absolute -right-1 -bottom-1 size-3 text-muted-foreground"
+                />
+              )}
+              {layer.kind === "vector" && (
+                <BezierCurveIcon
+                  aria-label="Vector layer"
+                  weight="bold"
                   className="absolute -right-1 -bottom-1 size-3 text-muted-foreground"
                 />
               )}
@@ -426,19 +433,21 @@ function LayerRow({
                   <PaintBrushIcon />
                 </IconButton>
               )}
-              <IconButton
-                variant="ghost"
-                size="icon-xs"
-                label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
-                onClick={() => runCommand("layer.toggleLock", layer.id)}
-              >
-                {layer.locked ? <LockIcon /> : <LockOpenIcon />}
-              </IconButton>
             </>
+          )}
+          {layer.kind !== "group" && (
+            <IconButton
+              variant="ghost"
+              size="icon-xs"
+              label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
+              onClick={() => runCommand("layer.toggleLock", layer.id)}
+            >
+              {layer.locked ? <LockIcon /> : <LockOpenIcon />}
+            </IconButton>
           )}
           {(selected || layer.id === activeLayerId) && (
             <>
-              {layer.kind === "raster" && (
+              {layer.kind !== "group" && (
                 <IconButton
                   variant="ghost"
                   size="icon-xs"
@@ -465,7 +474,7 @@ function LayerRow({
                 variant="ghost"
                 size="icon-xs"
                 label={`Delete ${layer.name}`}
-                disabled={totalRasters === removedRasters}
+                disabled={totalLeaves === removedLeaves}
                 onClick={() => runCommand("layer.delete", layer.id)}
               >
                 <TrashIcon />
@@ -484,7 +493,7 @@ function Rows({
   selectedId,
   activeLayerId,
   paintingMask,
-  totalRasters,
+  totalLeaves,
   onSelect,
   runCommand,
 }: {
@@ -493,7 +502,7 @@ function Rows({
   selectedId: string
   activeLayerId: string
   paintingMask: boolean
-  totalRasters: number
+  totalLeaves: number
   onSelect(id: string): void
   runCommand: RunCommand
 }) {
@@ -620,7 +629,7 @@ function Rows({
           activeLayerId={activeLayerId}
           paintingMask={paintingMask}
           groupHidden={groupHidden}
-          totalRasters={totalRasters}
+          totalLeaves={totalLeaves}
           onSelect={onSelect}
         />,
         ...(layer.kind === "group"
@@ -669,7 +678,7 @@ export function LayerPanel({
   const selected =
     findSummary(snapshot.layers, selectedId ?? snapshot.activeLayerId) ??
     findSummary(snapshot.layers, snapshot.activeLayerId)
-  const count = rasterCount(snapshot.layers)
+  const count = leafCount(snapshot.layers)
   // A folded or closed panel cannot leave a layer picked out behind it.
   useEffect(
     () => () => void engine.dispatch({ type: "highlightLayer", id: null }),
@@ -736,6 +745,15 @@ export function LayerPanel({
           <IconButton
             variant="ghost"
             size="icon-sm"
+            label="Add vector layer"
+            command="layer.addVector"
+            onClick={() => runCommand("layer.addVector")}
+          >
+            <BezierCurveIcon />
+          </IconButton>
+          <IconButton
+            variant="ghost"
+            size="icon-sm"
             label="Add layer"
             command="layer.add"
             onClick={() => runCommand("layer.add")}
@@ -783,7 +801,7 @@ export function LayerPanel({
           selectedId={selected?.id ?? snapshot.activeLayerId}
           activeLayerId={snapshot.activeLayerId}
           paintingMask={snapshot.paintingMask}
-          totalRasters={count}
+          totalLeaves={count}
           onSelect={setSelectedId}
         />
       </div>
@@ -803,7 +821,7 @@ export function LayerPanel({
               >
                 <IntersectIcon /> Clip
               </Button>
-              {selected.kind === "raster" && (
+              {selected.kind !== "group" && (
                 <Button
                   variant={snapshot.paintingMask ? "secondary" : "outline"}
                   size="sm"

@@ -5,8 +5,11 @@ import {
   describeEnvironment,
   markActiveLayer,
   runBenchmark,
+  runVectorBenchmark,
   type RunResult,
+  type VectorRunResult,
 } from "../../bench/driver"
+import type { VectorWorkloadOptions } from "../../bench/vector-workload"
 import type { WorkloadOptions } from "../../bench/workload"
 import { BRUSH_COLOR, BRUSH_FEATHER } from "../../engine/brush/round-brush"
 import { createTextureLibrary } from "../../engine/brush/texture"
@@ -81,6 +84,8 @@ declare global {
     probe: StrokeBufferProbe
     /** The performance benchmark (D30), driven by `bench/run.ts`. */
     runBenchmark(options: WorkloadOptions): Promise<RunResult>
+    /** Re-rasterising a vector layer of many paths (19). */
+    runVectorBenchmark(options: VectorWorkloadOptions): Promise<VectorRunResult>
     describeEnvironment: typeof describeEnvironment
     /** A document of `count` layers, each holding a mark, for the compositor tests. */
     buildLayerStack(count: number): Promise<void>
@@ -359,6 +364,8 @@ window.remountEngine = (options) => {
 }
 
 window.runBenchmark = (options) => runBenchmark(window.engine, canvas, options)
+window.runVectorBenchmark = (options) =>
+  runVectorBenchmark(window.engine, canvas, options)
 window.describeEnvironment = describeEnvironment
 // The same pen the benchmark uses, so the compositor's tests and its
 // measurements are driving one routine rather than two that resemble each other.

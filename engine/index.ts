@@ -40,10 +40,12 @@ import {
   addGroup,
   addLayer,
   addMask,
+  addVectorLayer,
   createDocument,
   createBlankDocument,
   duplicateLayer,
   findLayer,
+  findRasterLayer,
   type Layer,
   type LayerGroup,
   type LayerMask,
@@ -52,7 +54,9 @@ import {
   moveLayer,
   findNodeIn,
   groupContents,
-  rasterLayers,
+  leafLayers,
+  type LeafLayer,
+  type VectorLayer,
   makeLayerPaintable,
   type PaintDocument,
   planComposite,
@@ -77,6 +81,7 @@ import { BACKGROUND, WORKSPACE_BACKGROUND } from "./doc/scene"
 import {
   adoptStrandedSurfaces,
   captureStructure,
+  parseSavedScenes,
   type DocumentStructure,
   type NodeStructure,
   restoreStructure,
@@ -84,6 +89,14 @@ import {
   structureAssets,
   structureSurfaceIds,
 } from "./doc/structure"
+import {
+  applySceneEdit,
+  type SceneChange,
+  type SceneCommand,
+  type VectorObject,
+  type VectorScene,
+} from "./doc/vector-scene"
+import { tessellateObject, type Mesh } from "./geom/tessellate"
 import {
   centeredPlacement,
   flippedPlacement,
@@ -114,6 +127,7 @@ import {
   tileIndexForPixel,
   tileKey,
   tilesCoveringRect,
+  unionRect,
 } from "./doc/tile-grid"
 import { decodeFloat16 } from "./doc/float16"
 import {
@@ -183,6 +197,7 @@ import {
   MAX_STAMPS_PER_DRAW,
   type Renderer,
   type ThumbnailSubject,
+  type VectorDraw,
 } from "./gpu/renderer"
 import { createThumbnailScheduler, thumbnailOwners } from "./view/thumbnails"
 import {
@@ -326,6 +341,18 @@ export type { AlignAnchor, Extent, Snap, SnapTargets } from "./doc/snap"
 export { placementExtent, resolveSnap } from "./doc/snap"
 export type { Guide, GuideAxis } from "./doc/guides"
 export type { StraightEdge } from "./geom/stroke-assist"
+export type {
+  FillRule,
+  LineCap,
+  LineJoin,
+  SceneCommand,
+  VectorFill,
+  VectorGeometry,
+  VectorObject,
+  VectorScene,
+  VectorStroke,
+  VectorStyle,
+} from "./doc/vector-scene"
 
 export type PaintTool = "brush" | "eraser"
 /** Tools that draw out a selection (07) instead of making a mark. */
@@ -358,7 +385,31 @@ export const DEFAULT_WAND: WandOptions = Object.freeze({
 
 export const isSelectionTool = (tool: Tool): tool is SelectionTool =>
   (SELECTION_TOOLS as readonly Tool[]).includes(tool)
-export type Tool = PaintTool | SelectionTool
+
+/** Tools that draw shapes onto a vector layer (19) instead of paint. */
+const VECTOR_TOOLS = ["rectangle"] as const
+export type VectorTool = (typeof VECTOR_TOOLS)[number]
+export const isVectorTool = (tool: Tool): tool is VectorTool =>
+  (VECTOR_TOOLS as readonly Tool[]).includes(tool)
+
+export type Tool = PaintTool | SelectionTool | VectorTool
+
+/**
+ * How the shape tools draw (19): filled, outlined, or both, in the current
+ * colour. Per-object styles are the scene's own; this is only what a new
+ * shape is given.
+ */
+export type ShapeStyle = Readonly<{
+  fill: boolean
+  stroke: boolean
+  /** The outline's width in document pixels. */
+  strokeWidth: number
+}>
+export const DEFAULT_SHAPE_STYLE: ShapeStyle = Object.freeze({
+  fill: true,
+  stroke: false,
+  strokeWidth: 4,
+})
 
 /** Display-encoded colour sampled from the composited canvas. */
 export type EngineColor = Readonly<{
@@ -459,6 +510,25 @@ export type EngineCommand =
   | { type: "registerTexture"; id: string; texture: GrayscaleTexture }
   /** Adds an empty layer above the active one and selects it. */
   | { type: "addLayer" }
+  /**
+   * Adds an empty vector layer above the active one and selects it (19): a
+   * layer of shapes that stay editable and are drawn from their geometry
+   * every time they change, composited like any other layer.
+   */
+  | { type: "addVectorLayer" }
+  /**
+   * Edits a vector layer's objects (19): the commands in order, as one undo
+   * step. What the shape tools send when a drag ends, and the seam everything
+   * that edits objects later goes through.
+   */
+  | { type: "editVectorLayer"; id: string; commands: readonly SceneCommand[] }
+  /** How the shape tools draw what comes next; unnamed fields are kept. */
+  | {
+      type: "setShapeStyle"
+      fill?: boolean
+      stroke?: boolean
+      strokeWidth?: number
+    }
   /**
    * Brings an image in on a layer of its own, above the active one, and
    * selects it (D3): a photographed reference, a scan to trace, a plate to
@@ -742,6 +812,8 @@ export type EngineSnapshot = Readonly<{
   straightEdge: StraightEdge | null
   /** The persistent tool in the hand; Alt/Option sampling never changes it. */
   tool: Tool
+  /** What the shape tools give a new shape (19). */
+  shapeStyle: ShapeStyle
   /** Current display-encoded ink, updated by the eyedropper. */
   color: EngineColor
   /** The brush in the hand: serialisable data, never code (D23). */
@@ -837,6 +909,10 @@ export type MaskSummary = Readonly<Omit<LayerMask, "surface">>
 export type RasterLayerSummary = Readonly<
   Omit<Layer, "surface" | "mask"> & { mask?: MaskSummary }
 >
+/** A vector layer without its objects, but with how many it holds. */
+export type VectorLayerSummary = Readonly<
+  Omit<VectorLayer, "scene" | "mask"> & { mask?: MaskSummary; objects: number }
+>
 export type GroupSummary = Readonly<
   Omit<LayerGroup, "children" | "mask"> & {
     mask?: MaskSummary
@@ -844,7 +920,10 @@ export type GroupSummary = Readonly<
   }
 >
 /** The recursive tree as the UI sees it: settings, never pixels. */
-export type LayerSummary = RasterLayerSummary | GroupSummary
+export type LayerSummary =
+  | RasterLayerSummary
+  | VectorLayerSummary
+  | GroupSummary
 
 /**
  * What a host shows before an engine exists. Exported so the React host and
@@ -864,6 +943,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   rulersVisible: false,
   straightEdge: null,
   tool: "brush",
+  shapeStyle: DEFAULT_SHAPE_STYLE,
   color: Object.freeze({
     red: 36 / 255,
     green: 37 / 255,
@@ -1372,8 +1452,9 @@ export function createEngine(
     for (const id of thumbnailViews.keys()) {
       const node = findNodeIn(doc.layers, id)
       if (!node) continue
-      const layers =
-        node.kind === "group" ? rasterLayers(node.children) : [node]
+      const layers = (
+        node.kind === "group" ? leafLayers(node.children) : [node]
+      ).filter((layer) => layer.kind === "raster")
       const held = layers
         .flatMap((layer) =>
           past.occupiedTiles(layer.id).map((tile) => tileKey(tile.x, tile.y))
@@ -1400,20 +1481,29 @@ export function createEngine(
     const framed = (box: PixelRect | undefined) =>
       box ? frameContent(box, extent()) : undefined
     /**
-     * What a set of raster layers holds, from history's index of their tiles:
-     * nothing at all, or the region their marks cover, trimmed to the tiles
-     * still holding something so that erasing shrinks it again.
+     * What a set of layers holds. Raster layers' from history's index of
+     * their tiles: nothing at all, or the region their marks cover, trimmed
+     * to the tiles still holding something so that erasing shrinks it again.
+     * Vector layers' from their objects, which their pixels are drawn from.
      */
-    const holding = (ids: readonly string[]) => {
+    const holding = (layers: readonly LeafLayer[]) => {
+      const ids = layers.map((layer) => layer.id)
       const past = history
       if (!past) return { crop: framed(contentBounds.union(ids)) }
-      const tiles = ids.flatMap((layerId) => past.occupiedTiles(layerId))
-      if (tiles.length === 0) return { empty: true }
-      const held = tileBox(tiles)
-      const marked = contentBounds.union(ids)
-      return {
-        crop: framed((marked && intersectRect(marked, held)) ?? held),
-      }
+      const raster = layers.filter((layer) => layer.kind === "raster")
+      const shapes = layers.filter(
+        (layer) => layer.kind === "vector" && layer.scene.objects.length > 0
+      )
+      const tiles = raster.flatMap((layer) => past.occupiedTiles(layer.id))
+      if (tiles.length === 0 && shapes.length === 0) return { empty: true }
+      const marked = contentBounds.union(raster.map((layer) => layer.id))
+      const painted =
+        tiles.length > 0
+          ? ((marked && intersectRect(marked, tileBox(tiles))) ??
+            tileBox(tiles))
+          : null
+      const drawn = contentBounds.union(shapes.map((layer) => layer.id)) ?? null
+      return { crop: framed(unionOf([painted, drawn]) ?? undefined) }
     }
     const find = (
       nodes: readonly LayerNode[]
@@ -1424,11 +1514,9 @@ export function createEngine(
           return node.kind === "group"
             ? {
                 subject: { kind: "group", item: groupContents(node) },
-                ...holding(
-                  rasterLayers(node.children).map((layer) => layer.id)
-                ),
+                ...holding(leafLayers(node.children)),
               }
-            : { subject: { kind: "layer", id }, ...holding([id]) }
+            : { subject: { kind: "layer", id }, ...holding([node]) }
         if (node.kind === "group") {
           const found = find(node.children)
           if (found) return found
@@ -1503,6 +1591,8 @@ export function createEngine(
     samples.clear()
     renderer?.destroy()
     renderer = undefined
+    drawnScenes.clear()
+    shapeDrag = undefined
     history?.clear()
     history = undefined
     persistence = undefined
@@ -1584,6 +1674,7 @@ export function createEngine(
     doc = createDocument(size)
     contentBounds.clear()
     renderer?.resize(size.width, size.height)
+    drawnScenes.clear()
     resetSelection()
     uploadLayers()
     syncComposition()
@@ -1780,7 +1871,10 @@ export function createEngine(
   function structureForSave(): DocumentStructure {
     const document = requireDocument()
     const surfaces = history?.tileIndex() ?? []
-    const structure = savedStructure(captureStructure(document), surfaces)
+    const structure = savedStructure(
+      captureStructure(document, { scenes: true }),
+      surfaces
+    )
     const session = imageTransform
     if (!session) return structure
     const settle = (nodes: readonly NodeStructure[]): NodeStructure[] =>
@@ -2030,11 +2124,12 @@ export function createEngine(
       height: document.height,
     }
     const others: Extent[] = []
-    for (const layer of rasterLayers(document.layers)) {
+    for (const layer of leafLayers(document.layers)) {
       if (layer.id === id || !layer.visible) continue
-      const box = layer.placed
-        ? placementExtent(layer.placed.placement)
-        : contentBounds.get(layer.id)
+      const box =
+        layer.kind === "raster" && layer.placed
+          ? placementExtent(layer.placed.placement)
+          : contentBounds.get(layer.id)
       const within = box && intersectRect(box, canvas)
       if (within) others.push(within)
     }
@@ -2306,6 +2401,310 @@ export function createEngine(
     publish({ layerTransform: null })
   }
 
+  // Vector layers (19). What each layer's pixels were last drawn from, by
+  // identity: a scene is an immutable value, so "has this layer changed since
+  // it was drawn" is one comparison, and what changed is a diff of two lists
+  // of objects that share everything an edit did not touch.
+  const drawnScenes = new Map<string, VectorScene>()
+  /** Triangles per object, made once for as long as the object exists. */
+  const meshes = new WeakMap<
+    VectorObject,
+    { fill: Mesh | null; stroke: Mesh | null }
+  >()
+  /** A shape being dragged out (19), shown in its layer but not yet in it. */
+  let shapeDrag:
+    | {
+        layerId: string
+        anchor: Point
+        point: Point
+        ended: boolean
+        /** The layer's scene with the shape in it, as last drawn. */
+        preview?: VectorScene
+        /** The point and Shift `preview` was made at; a still pen redraws nothing. */
+        previewAt?: { x: number; y: number; square: boolean }
+      }
+    | undefined
+
+  /** Frees a surface's texture, and forgets what was drawn into it. */
+  function releaseSurface(id: string) {
+    renderer?.releaseLayer(id)
+    drawnScenes.delete(id)
+  }
+
+  function meshesOf(object: VectorObject) {
+    let found = meshes.get(object)
+    if (!found) {
+      found = tessellateObject(object)
+      meshes.set(object, found)
+    }
+    return found
+  }
+
+  /** Whole pixels round an object, a pixel out for its antialiased edge. */
+  function objectBounds(object: VectorObject): PixelRect | null {
+    const { fill, stroke } = meshesOf(object)
+    const boxes = [fill?.bounds, stroke?.bounds].filter((box) => !!box)
+    if (boxes.length === 0) return null
+    const minX = Math.floor(Math.min(...boxes.map((box) => box.minX))) - 1
+    const minY = Math.floor(Math.min(...boxes.map((box) => box.minY))) - 1
+    const maxX = Math.ceil(Math.max(...boxes.map((box) => box.maxX))) + 1
+    const maxY = Math.ceil(Math.max(...boxes.map((box) => box.maxY))) + 1
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+  }
+
+  function unionOf(boxes: readonly (PixelRect | null)[]): PixelRect | null {
+    return boxes.reduce<PixelRect | null>(
+      (sum, box) => (!box ? sum : sum ? unionRect(sum, box) : box),
+      null
+    )
+  }
+
+  /**
+   * Where two scenes can differ in pixels: every object added, removed,
+   * changed or moved in the stack, where it was and where it is.
+   */
+  function changedRegion(
+    before: VectorScene | undefined,
+    after: VectorScene
+  ): PixelRect | null {
+    if (!before) return unionOf(after.objects.map(objectBounds))
+    const was = new Map(before.objects.map((object) => [object.id, object]))
+    const now = new Map(after.objects.map((object) => [object.id, object]))
+    const touched: VectorObject[] = []
+    for (const object of after.objects) {
+      const previous = was.get(object.id)
+      if (previous === object) continue
+      touched.push(object)
+      if (previous) touched.push(previous)
+    }
+    for (const object of before.objects)
+      if (!now.has(object.id)) touched.push(object)
+    // An object moved up or down the stack changes what it overlaps.
+    const kept = (scene: VectorScene) =>
+      scene.objects
+        .filter((object) => was.has(object.id) && now.has(object.id))
+        .map((object) => object.id)
+    const order = kept(after)
+    kept(before).forEach((id, index) => {
+      if (order[index] !== id) touched.push(was.get(id)!)
+    })
+    return unionOf(touched.map(objectBounds))
+  }
+
+  /** Paint as hex and opacity, premultiplied in the working space. */
+  function workingPaint(paint: { color: string; opacity: number }) {
+    const [red, green, blue] = hexToWorking(paint.color)
+    const alpha = paint.opacity
+    return [red * alpha, green * alpha, blue * alpha, alpha] as const
+  }
+
+  /** What the renderer draws of a scene within a region, bottom first. */
+  function vectorDraws(scene: VectorScene, region: PixelRect): VectorDraw[] {
+    const draws: VectorDraw[] = []
+    const add = (
+      mesh: Mesh | null,
+      paint: { color: string; opacity: number }
+    ) => {
+      if (!mesh?.bounds) return
+      const { minX, minY, maxX, maxY } = mesh.bounds
+      if (
+        maxX < region.x ||
+        maxY < region.y ||
+        minX > region.x + region.width ||
+        minY > region.y + region.height
+      )
+        return
+      draws.push({
+        vertices: mesh.vertices,
+        rule: mesh.rule,
+        color: workingPaint(paint),
+        bounds: mesh.bounds,
+      })
+    }
+    for (const object of scene.objects) {
+      const { fill, stroke } = meshesOf(object)
+      if (object.style.fill) add(fill, object.style.fill)
+      if (object.style.stroke) add(stroke, object.style.stroke)
+    }
+    return draws
+  }
+
+  /**
+   * Brings a vector layer's pixels up to `scene`, redrawing only where it
+   * differs from what they were last drawn from.
+   */
+  function drawScene(layerId: string, scene: VectorScene) {
+    if (!renderer) return
+    const before = drawnScenes.get(layerId)
+    if (before === scene) return
+    const region = changedRegion(before, scene)
+    drawnScenes.set(layerId, scene)
+    if (region)
+      renderer.rasterizeVector(layerId, vectorDraws(scene, region), region)
+    // A scene's content box is its objects', and shrinks when they go.
+    contentBounds.forget(layerId)
+    const box = unionOf(scene.objects.map(objectBounds))
+    if (box) contentBounds.grow(layerId, box)
+    invalidateThumbnailsOf(layerId)
+  }
+
+  /**
+   * Edits a vector layer's objects as one undo step: the scene changes now,
+   * and the step keeps the commands both ways rather than the scene.
+   */
+  function editScene(
+    layerId: string,
+    commands: readonly SceneCommand[],
+    label: string
+  ) {
+    const document = requireDocument()
+    const layer = findLayer(document, layerId)
+    if (layer.kind !== "vector")
+      throw new Error(`${layer.name} holds paint, not shapes.`)
+    if (layer.locked) throw new Error(`${layer.name} is locked.`)
+    if (commands.length === 0) return
+    const { scene, inverse } = applySceneEdit(layer.scene, commands)
+    layer.scene = scene
+    recordOperation(label, captureStructure(document), {
+      scenes: [{ layerId, forward: [...commands], inverse }],
+    })
+    applyLayerChange()
+  }
+
+  /** Puts an undo or redo step's scene edits into the layers they name. */
+  function applySceneChanges(
+    document: PaintDocument,
+    changes: readonly SceneChange[],
+    direction: "undo" | "redo"
+  ) {
+    const ordered = direction === "undo" ? [...changes].reverse() : changes
+    for (const change of ordered) {
+      const node = findNodeIn(document.layers, change.layerId)
+      if (node?.kind !== "vector") continue
+      node.scene = applySceneEdit(
+        node.scene,
+        direction === "undo" ? change.inverse : change.forward
+      ).scene
+    }
+  }
+
+  /**
+   * What taking a node out of the tree does to its vector layers' scenes:
+   * nothing going forward — the layers are gone — and every object put back
+   * going back, since the layers return empty with the tree.
+   */
+  function sceneRemovals(node: LayerNode): SceneChange[] {
+    return leafLayers([node]).flatMap((layer) =>
+      layer.kind === "vector" && layer.scene.objects.length > 0
+        ? [
+            {
+              layerId: layer.id,
+              forward: [],
+              inverse: layer.scene.objects.map((object) => ({
+                type: "add" as const,
+                object,
+              })),
+            },
+          ]
+        : []
+    )
+  }
+
+  /** An id no object in `scene` has. */
+  function nextObjectId(scene: VectorScene): string {
+    let highest = 0
+    for (const object of scene.objects) {
+      const sequence = /^shape-(\d+)$/.exec(object.id)
+      if (sequence) highest = Math.max(highest, Number(sequence[1]))
+    }
+    return `shape-${highest + 1}`
+  }
+
+  /**
+   * The rectangle a drag outlines, in the shape style and the current
+   * colour; nothing for a click, or with neither fill nor outline asked for.
+   */
+  function draggedShape(
+    drag: NonNullable<typeof shapeDrag>,
+    scene: VectorScene
+  ): VectorObject | null {
+    const style = snapshot.shapeStyle
+    if (!style.fill && !style.stroke) return null
+    const box = dragRect(drag.anchor, drag.point, constrained())
+    if (box.width < 1 && box.height < 1) return null
+    const paint = { color: snapshot.color.hex, opacity: ink[3] }
+    return {
+      id: nextObjectId(scene),
+      geometry: { kind: "rect", ...box },
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        fill: style.fill ? { ...paint, rule: "nonzero" } : null,
+        stroke: style.stroke
+          ? { ...paint, width: style.strokeWidth, cap: "butt", join: "miter" }
+          : null,
+      },
+    }
+  }
+
+  /** One frame of a shape drag: drawn into its layer, added as the pen lifts. */
+  function drawShapeDrag() {
+    const drag = shapeDrag!
+    samples.drain((x, y) => {
+      drag.point = { x: toDocX(x, y), y: toDocY(x, y) }
+    })
+    const document = requireDocument()
+    const layer = findNodeIn(document.layers, drag.layerId)
+    if (layer?.kind !== "vector") {
+      shapeDrag = undefined
+      return
+    }
+    const at = drag.previewAt
+    const moved =
+      !at ||
+      at.x !== drag.point.x ||
+      at.y !== drag.point.y ||
+      at.square !== constrained()
+    if (!drag.ended && !moved) {
+      frame = requestAnimationFrame(drawFrame)
+      return
+    }
+    const shape = draggedShape(drag, layer.scene)
+    if (drag.ended) {
+      shapeDrag = undefined
+      forgetGestureInput()
+      if (shape)
+        editScene(layer.id, [{ type: "add", object: shape }], "draw rectangle")
+      else {
+        drawScene(layer.id, layer.scene)
+        if (snapshot.status === "ready") render()
+      }
+      return
+    }
+    drag.previewAt = { ...drag.point, square: constrained() }
+    drag.preview = shape
+      ? applySceneEdit(layer.scene, [{ type: "add", object: shape }]).scene
+      : layer.scene
+    drawScene(layer.id, drag.preview)
+    try {
+      if (snapshot.status === "ready") render()
+    } catch (error) {
+      fail(error)
+      return
+    }
+    frame = requestAnimationFrame(drawFrame)
+  }
+
+  /** Drops a shape drag, its layer drawn as it was. */
+  function dropShapeDrag() {
+    const drag = shapeDrag
+    if (!drag) return
+    shapeDrag = undefined
+    forgetGestureInput()
+    const layer = doc && findNodeIn(doc.layers, drag.layerId)
+    if (layer?.kind === "vector") drawScene(layer.id, layer.scene)
+    if (snapshot.status === "ready") render()
+  }
+
   /** Hands the renderer whatever pixels each layer's surface has gained. */
   function uploadLayers() {
     if (!renderer || !doc) return
@@ -2315,6 +2714,16 @@ export function createEngine(
       if (node.mask) target.uploadMask(node.mask.id, node.mask.surface)
       if (node.kind === "group") {
         node.children.forEach(upload)
+        return
+      }
+      if (node.kind === "vector") {
+        // A shape being dragged out is shown in its layer as it goes.
+        drawScene(
+          node.id,
+          shapeDrag?.layerId === node.id && shapeDrag.preview
+            ? shapeDrag.preview
+            : node.scene
+        )
         return
       }
       const layer = node
@@ -2356,6 +2765,14 @@ export function createEngine(
           ...settings,
           ...(mask ? { mask } : {}),
           children: Object.freeze(children.map(describe)),
+        })
+      }
+      if (node.kind === "vector") {
+        const { scene, mask: _mask, ...settings } = node
+        return Object.freeze({
+          ...settings,
+          objects: scene.objects.length,
+          ...(mask ? { mask } : {}),
         })
       }
       const { surface: _surface, mask: _mask, ...settings } = node
@@ -2915,7 +3332,7 @@ export function createEngine(
     if (stored.width !== document.width || stored.height !== document.height) {
       validateDocumentSize(stored)
       for (const id of structureSurfaceIds(captureStructure(document)))
-        target.releaseLayer(id)
+        releaseSurface(id)
       setDocumentSize({ width: stored.width, height: stored.height })
       document = requireDocument()
       applyView()
@@ -2924,10 +3341,12 @@ export function createEngine(
     // that was stored, and neither is the upload that recorded it.
     past.clear()
     for (const id of structureSurfaceIds(captureStructure(document)))
-      target.releaseLayer(id)
+      releaseSurface(id)
     // A document saved with pixels its tree does not name opens with a layer
     // for them, rather than leaving them on disk behind a blank canvas.
-    const structure = adoptStrandedSurfaces(stored.structure, stored.surfaces)
+    const structure = parseSavedScenes(
+      adoptStrandedSurfaces(stored.structure, stored.surfaces)
+    )
     reserveIds(structureSurfaceIds(structure))
     restoreStructure(document, structure)
     // The originals before the pixels: they are small beside a document's
@@ -3012,6 +3431,9 @@ export function createEngine(
       }
     }
     await past.settle()
+    // Vector layers have no tiles to load: they are drawn from their scenes.
+    for (const layer of leafLayers(document.layers))
+      if (layer.kind === "vector") drawScene(layer.id, layer.scene)
     syncComposition()
     publish(describeLayers(document))
     if (background.length > 0) {
@@ -3051,6 +3473,10 @@ export function createEngine(
     const cpuStart = frameObserver ? performance.now() : 0
     frameStamps = 0
     frameOldestSample = null
+    if (shapeDrag) {
+      drawShapeDrag()
+      return
+    }
     if (marquee) {
       drawMarquee()
       return
@@ -3268,12 +3694,27 @@ export function createEngine(
       scheduleFrame()
       return
     }
+    if (isVectorTool(tool)) {
+      // Shapes go onto a vector layer, never into paint or a mask.
+      const layer = activeLayer(doc)
+      if (layer.kind !== "vector" || layer.locked || doc.paintingMask) return
+      const anchor = {
+        x: toDocX(screenX, screenY),
+        y: toDocY(screenX, screenY),
+      }
+      // Shift squares the shape for as long as it is held.
+      shiftLatched = false
+      shapeDrag = { layerId: layer.id, anchor, point: anchor, ended: false }
+      scheduleFrame()
+      return
+    }
     // A locked layer is one the painter has said not to touch, and the pen is
     // the one place that has to be told so.
-    // An image layer refuses it too, unless the stroke is going to its mask.
+    // An image or vector layer refuses it too, unless the stroke is going to
+    // its mask: its pixels are drawn from a picture or from shapes.
     const layer = activeLayer(doc)
-    if (layer.locked || (layer.image && !(doc.paintingMask && layer.mask)))
-      return
+    const drawnFrom = layer.kind === "vector" || layer.image
+    if (layer.locked || (drawnFrom && !(doc.paintingMask && layer.mask))) return
     // The artist is painting, so the canvas shows what they are painting on.
     if (highlight) {
       highlight = undefined
@@ -3320,6 +3761,10 @@ export function createEngine(
    * the canvas, not to leave a dot on it.
    */
   function cancelStroke() {
+    if (shapeDrag) {
+      dropShapeDrag()
+      return
+    }
     if (marquee) {
       // A polygon loses only the vertex the gesture was placing.
       if (marquee.shape === "polygon" && marquee.points.length > 1) {
@@ -3351,6 +3796,11 @@ export function createEngine(
   }
 
   function endStroke() {
+    if (shapeDrag) {
+      shapeDrag.ended = true
+      scheduleFrame()
+      return
+    }
     if (marquee) {
       if (marquee.shape === "polygon") {
         if (marquee.closing) {
@@ -3555,6 +4005,10 @@ export function createEngine(
             tiles: (hash) => past.store.get(hash),
             assets: async (id) => assetFor(id).bytes,
             snapshot: () => {
+              // Scenes travel inside the tree until they have records of
+              // their own (20); a tree without them would hydrate another
+              // session's vector layers empty. Their pixels — a cache of
+              // the scenes — are never in the tile index, so never go up.
               const structure = structureForSave()
               return {
                 structure,
@@ -4008,6 +4462,29 @@ export function createEngine(
           applyLayerChange()
           break
         }
+        case "addVectorLayer": {
+          const before = captureStructure(requireDocument())
+          addVectorLayer(requireDocument())
+          recordOperation("add vector layer", before)
+          applyLayerChange()
+          break
+        }
+        case "editVectorLayer":
+          editScene(command.id, command.commands, "edit shapes")
+          break
+        case "setShapeStyle": {
+          const width = command.strokeWidth ?? snapshot.shapeStyle.strokeWidth
+          if (!Number.isFinite(width) || width <= 0)
+            throw new Error("A stroke width must be positive and finite.")
+          publish({
+            shapeStyle: Object.freeze({
+              fill: command.fill ?? snapshot.shapeStyle.fill,
+              stroke: command.stroke ?? snapshot.shapeStyle.stroke,
+              strokeWidth: width,
+            }),
+          })
+          break
+        }
         case "placeImage": {
           const document = requireDocument()
           const canvas = { width: document.width, height: document.height }
@@ -4019,7 +4496,7 @@ export function createEngine(
           const before = captureStructure(document)
           const id = addLayer(document)
           if (command.name) setLayer(document, id, { name: command.name })
-          const layer = findLayer(document, id)
+          const layer = findRasterLayer(document, id)
           layer.image = true
           const placement = placementFor(command, asset, canvas)
           if (!validPlacement(placement, canvas))
@@ -4109,6 +4586,10 @@ export function createEngine(
             const copy = findLayer(document, copyId)
             renderer?.duplicateLayer(command.id, copyId)
             contentBounds.copy(command.id, copyId)
+            // The copy's pixels were copied with it, so they are already a
+            // drawing of the scene it shares with its source.
+            const drawn = drawnScenes.get(command.id)
+            if (drawn) drawnScenes.set(copyId, drawn)
             if (source.mask && copy.mask)
               renderer?.duplicateLayer(source.mask.id, copy.mask.id)
             // The copy's pixels are the source's, so history holds one copy of
@@ -4120,6 +4601,22 @@ export function createEngine(
                   ? [{ from: source.mask.id, to: copy.mask.id }]
                   : []),
               ],
+              // A copy brought back by redo comes back empty, and is given
+              // its objects again.
+              ...(copy.kind === "vector" && copy.scene.objects.length
+                ? {
+                    scenes: [
+                      {
+                        layerId: copyId,
+                        forward: copy.scene.objects.map((object) => ({
+                          type: "add" as const,
+                          object,
+                        })),
+                        inverse: [],
+                      },
+                    ],
+                  }
+                : {}),
             })
           }
           applyLayerChange()
@@ -4140,8 +4637,11 @@ export function createEngine(
             const ids = nodeIdsOf(removed)
             // Recorded before the textures go: the pixels themselves are in
             // the tile store, which is what putting the layer back reads from.
-            recordOperation("remove layer", before, { removed: ids })
-            for (const id of ids) renderer?.releaseLayer(id)
+            recordOperation("remove layer", before, {
+              removed: ids,
+              scenes: sceneRemovals(removed),
+            })
+            for (const id of ids) releaseSurface(id)
           }
           applyLayerChange()
           break
@@ -4152,7 +4652,7 @@ export function createEngine(
           abandonLayerTransform()
           const previous = requireDocument()
           for (const id of structureSurfaceIds(captureStructure(previous)))
-            renderer?.releaseLayer(id)
+            releaseSurface(id)
           history?.clear()
           doc = createBlankDocument({
             width: previous.width,
@@ -4207,7 +4707,7 @@ export function createEngine(
           const before = captureStructure(document)
           const mask = removeMask(document, command.id)
           recordOperation("remove mask", before, { removed: [mask.id] })
-          renderer?.releaseLayer(mask.id)
+          releaseSurface(mask.id)
           applyLayerChange()
           break
         }
@@ -4271,8 +4771,10 @@ export function createEngine(
           const document = requireDocument()
           const layer = findLayer(document, command.id)
           // A locked layer is not to be touched, and a placed image's pixels
-          // are rendered from its file, so neither is cleared.
-          if (layer.locked || layer.image) break
+          // are rendered from its file, so neither is cleared. A vector
+          // layer's are drawn from its shapes, which clearing does not (yet)
+          // take away.
+          if (layer.kind !== "raster" || layer.locked || layer.image) break
           // Clearing nothing is not a step worth undoing.
           if (!history?.occupiedTiles(layer.id).length) break
           if (selection) {
@@ -4484,6 +4986,10 @@ export function createEngine(
             if (command.type === "undo") dropMarquee()
             break
           }
+          if (shapeDrag) {
+            if (command.type === "undo") dropShapeDrag()
+            break
+          }
           // Undo during a drag means the adjustment being made, not the step
           // underneath it: the picture goes back to where it was picked up
           // and the stack is left alone.
@@ -4498,18 +5004,21 @@ export function createEngine(
           const document = requireDocument()
           const previous = structureSurfaceIds(captureStructure(document))
           let restoredSelection: string | null | undefined
-          const applied = await history[command.type]((structure) => {
-            restoredSelection = structure.selection
-            restoreStructure(document, structure)
-            // Uploaded before the entry's tiles are written, so a layer that
-            // came back cannot have its restored pixels overwritten by the
-            // sparse surface it was originally seeded from.
-            uploadLayers()
-          })
+          const applied = await history[command.type](
+            (structure) => {
+              restoredSelection = structure.selection
+              restoreStructure(document, structure)
+              // Uploaded before the entry's tiles are written, so a layer that
+              // came back cannot have its restored pixels overwritten by the
+              // sparse surface it was originally seeded from.
+              uploadLayers()
+            },
+            (changes, direction) =>
+              applySceneChanges(document, changes, direction)
+          )
           if (!applied) break
           const remaining = structureSurfaceIds(captureStructure(document))
-          for (const id of previous)
-            if (!remaining.has(id)) renderer?.releaseLayer(id)
+          for (const id of previous) if (!remaining.has(id)) releaseSurface(id)
           if (restoredSelection !== undefined) {
             selectionKey = restoredSelection
             showSelection(
@@ -4795,8 +5304,7 @@ export function createEngine(
       if (disposed) return false
 
       const remaining = structureSurfaceIds(captureStructure(document))
-      for (const id of previous)
-        if (!remaining.has(id)) renderer?.releaseLayer(id)
+      for (const id of previous) if (!remaining.has(id)) releaseSurface(id)
       applyLayerChange()
       restoreStep = past.topStep()
       publishHistory()
@@ -4858,7 +5366,7 @@ export function createEngine(
       await history.settle()
       const surfaces = history.tileIndex()
       const exported = savedStructure(
-        captureStructure(requireDocument()),
+        captureStructure(requireDocument(), { scenes: true }),
         surfaces
       )
       const manifest = {
@@ -4887,14 +5395,14 @@ export function createEngine(
       const previous = doc
       if (!previous) throw new Error("The graphics device is not ready.")
       for (const id of structureSurfaceIds(captureStructure(previous)))
-        renderer.releaseLayer(id)
+        releaseSurface(id)
       history.clear()
       doc = createDocument({
         width: imported.manifest.width,
         height: imported.manifest.height,
       })
       for (const id of structureSurfaceIds(captureStructure(doc)))
-        renderer.releaseLayer(id)
+        releaseSurface(id)
       const structure = adoptStrandedSurfaces(
         imported.manifest.structure,
         imported.manifest.surfaces
@@ -4908,6 +5416,7 @@ export function createEngine(
         if (bytes) assets.set(ref.id, Object.freeze({ ...ref, bytes }))
       }
       renderer.resize(imported.manifest.width, imported.manifest.height)
+      drawnScenes.clear()
       const size = {
         width: imported.manifest.width,
         height: imported.manifest.height,

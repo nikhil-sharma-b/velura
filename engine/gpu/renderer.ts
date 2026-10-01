@@ -44,6 +44,8 @@ import { filterShader } from "../shaders/filter"
 import { marchingAntsShader } from "../shaders/marching-ants"
 import { placedImageShader } from "../shaders/placed-image"
 import { thumbnailShader } from "../shaders/thumbnail"
+import { vectorShader } from "../shaders/vector"
+import type { Bounds } from "../geom/tessellate"
 import {
   IDENTITY_MATRIX,
   invertMatrix,
@@ -117,6 +119,25 @@ export type ThumbnailSubject =
   | { kind: "layer"; id: string }
   | { kind: "mask"; id: string }
   | { kind: "group"; item: CompositeItem }
+
+/**
+ * One object's fill or stroke as the renderer draws it (19): triangles from
+ * `engine/geom/tessellate.ts`, the rule that turns them into coverage, and
+ * the paint, premultiplied linear light.
+ */
+export type VectorDraw = {
+  vertices: Float32Array
+  rule: "nonzero" | "evenodd" | "union"
+  color: readonly [number, number, number, number]
+  bounds: Bounds
+}
+
+/**
+ * The edge of the square a vector redraw is done in, a piece at a time. A
+ * multisampled target the size of the document would be four times a
+ * layer's size again; one this size is 32 MB whatever the document is.
+ */
+export const VECTOR_CHUNK = 1024
 
 export interface Renderer {
   /** (Re)allocates every render target; layers must be uploaded again after. */
@@ -238,6 +259,17 @@ export interface Renderer {
   restoreLayerImage(id: string, surfaceId: string): void
   /** Lets go of an original's texture. */
   closePlacedImage(id: string): void
+  /**
+   * Redraws `region` of a vector layer's surface from its objects (19): the
+   * region becomes exactly `draws`, bottom first, antialiased, and the rest
+   * of the surface is left alone. The caller passes what touches the region;
+   * anything else is clipped away.
+   */
+  rasterizeVector(
+    surfaceId: string,
+    draws: readonly VectorDraw[],
+    region: PixelRect
+  ): void
   /**
    * Reads whole tiles back off a surface, zero-filled where they hang past the
    * canvas and where the surface holds nothing. Asynchronous and off the
@@ -917,6 +949,176 @@ export function createRenderer(
   let cachedFrom: string | undefined
   let width = 0
   let height = 0
+  // Vector layers (19): stencil-and-cover into a multisampled chunk, resolved
+  // and copied into the layer. Made on first use; most documents never draw
+  // a shape and should not pay for the targets.
+  const VECTOR_SAMPLES = 4
+  let vector:
+    | {
+        stencil: Record<VectorDraw["rule"], GPURenderPipeline>
+        /** Cover by any count (nonzero, union), or by an odd one (evenodd). */
+        cover: GPURenderPipeline
+        coverOdd: GPURenderPipeline
+        uniform: GPUBuffer
+        bindGroup: GPUBindGroup
+        color: GPUTextureView
+        depth: GPUTextureView
+        resolve: GPUTexture
+        textures: GPUTexture[]
+      }
+    | undefined
+
+  function vectorTargets() {
+    if (vector) return vector
+    const shader = device.createShaderModule({ code: vectorShader })
+    const layout = device.createBindGroupLayout({
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX,
+          buffer: { type: "uniform" },
+        },
+      ],
+    })
+    const pipelineLayout = device.createPipelineLayout({
+      bindGroupLayouts: [layout],
+    })
+    const multisample = { count: VECTOR_SAMPLES }
+    const stencilPipeline = (
+      label: string,
+      face: GPUStencilFaceState,
+      back: GPUStencilFaceState = face
+    ) =>
+      device.createRenderPipeline({
+        label: `vector-stencil:${label}`,
+        layout: pipelineLayout,
+        vertex: {
+          module: shader,
+          entryPoint: "stencilVertex",
+          buffers: [
+            {
+              arrayStride: 8,
+              attributes: [
+                { shaderLocation: 0, offset: 0, format: "float32x2" },
+              ],
+            },
+          ],
+        },
+        fragment: {
+          module: shader,
+          entryPoint: "stencilFragment",
+          targets: [{ format: LAYER_FORMAT, writeMask: 0 }],
+        },
+        primitive: { topology: "triangle-list", cullMode: "none" },
+        depthStencil: {
+          format: "stencil8",
+          stencilFront: face,
+          stencilBack: back,
+        },
+        multisample,
+      })
+    const coverPipeline = (label: string, readMask: number) =>
+      device.createRenderPipeline({
+        label: `vector-cover:${label}`,
+        layout: pipelineLayout,
+        vertex: {
+          module: shader,
+          entryPoint: "coverVertex",
+          buffers: [
+            {
+              arrayStride: 24,
+              attributes: [
+                { shaderLocation: 0, offset: 0, format: "float32x2" },
+                { shaderLocation: 1, offset: 8, format: "float32x4" },
+              ],
+            },
+          ],
+        },
+        fragment: {
+          module: shader,
+          entryPoint: "coverFragment",
+          targets: [
+            {
+              format: LAYER_FORMAT,
+              // Premultiplied "over": each object lands on those below it.
+              blend: {
+                color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+                alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+              },
+            },
+          ],
+        },
+        primitive: { topology: "triangle-list" },
+        depthStencil: {
+          format: "stencil8",
+          // Drawn where the count is not zero; and zeroed under the whole
+          // quad either way, so the next object's count starts from nothing.
+          stencilFront: {
+            compare: "not-equal",
+            passOp: "zero",
+            failOp: "zero",
+          },
+          stencilBack: { compare: "not-equal", passOp: "zero", failOp: "zero" },
+          stencilReadMask: readMask,
+        },
+        multisample,
+      })
+    const size = { width: VECTOR_CHUNK, height: VECTOR_CHUNK }
+    const color = device.createTexture({
+      size,
+      format: LAYER_FORMAT,
+      sampleCount: VECTOR_SAMPLES,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    })
+    const depth = device.createTexture({
+      size,
+      format: "stencil8",
+      sampleCount: VECTOR_SAMPLES,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    })
+    const resolve = device.createTexture({
+      size,
+      format: LAYER_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    })
+    const uniform = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    })
+    vector = {
+      stencil: {
+        // Front faces count up and back faces down: the winding number.
+        nonzero: stencilPipeline(
+          "nonzero",
+          { compare: "always", passOp: "increment-wrap" },
+          { compare: "always", passOp: "decrement-wrap" }
+        ),
+        // Every crossing flips the low bit: the winding number's parity.
+        evenodd: stencilPipeline("evenodd", {
+          compare: "always",
+          passOp: "invert",
+        }),
+        // A stroke's triangles overlap; any of them covering is enough.
+        union: stencilPipeline("union", {
+          compare: "always",
+          passOp: "replace",
+        }),
+      },
+      cover: coverPipeline("any", 0xff),
+      coverOdd: coverPipeline("odd", 1),
+      uniform,
+      bindGroup: device.createBindGroup({
+        layout,
+        entries: [{ binding: 0, resource: { buffer: uniform } }],
+      }),
+      color: color.createView(),
+      depth: depth.createView(),
+      resolve,
+      textures: [color, depth, resolve],
+    }
+    return vector
+  }
+
   /**
    * Bound where a cache does not exist, so the present bind group is always
    * complete. The shader is told not to read it, but a binding must resolve.
@@ -2170,6 +2372,133 @@ export function createRenderer(
       held.lifted?.base.texture.destroy()
       placedImages.delete(id)
     },
+    rasterizeVector(surfaceId, draws, region) {
+      const canvas = { x: 0, y: 0, width, height }
+      const area = intersectRect(
+        {
+          x: Math.floor(region.x),
+          y: Math.floor(region.y),
+          width: Math.ceil(region.width),
+          height: Math.ceil(region.height),
+        },
+        canvas
+      )
+      if (!area) return
+      const targets = vectorTargets()
+      const surface = ensureSurface(surfaceId)
+      const drawn = draws.filter((draw) => draw.vertices.length >= 6)
+      // Every fill's triangles in one buffer, and a covering quad per fill
+      // in another: two uploads however many objects there are.
+      const triangles = new Float32Array(
+        drawn.reduce((total, draw) => total + draw.vertices.length, 0)
+      )
+      const quads = new Float32Array(drawn.length * 6 * 6)
+      const firsts: number[] = []
+      let offset = 0
+      drawn.forEach((draw, index) => {
+        triangles.set(draw.vertices, offset)
+        firsts.push(offset / 2)
+        offset += draw.vertices.length
+        const { minX, minY, maxX, maxY } = draw.bounds
+        const corners = [
+          [minX, minY],
+          [maxX, minY],
+          [maxX, maxY],
+          [minX, minY],
+          [maxX, maxY],
+          [minX, maxY],
+        ]
+        corners.forEach(([x, y], corner) =>
+          quads.set([x, y, ...draw.color], (index * 6 + corner) * 6)
+        )
+      })
+      const buffer = (data: Float32Array) => {
+        const created = device.createBuffer({
+          size: Math.max(16, data.byteLength),
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        })
+        if (data.byteLength) device.queue.writeBuffer(created, 0, data)
+        return created
+      }
+      const triangleBuffer = buffer(triangles)
+      const quadBuffer = buffer(quads)
+      try {
+        for (let y = area.y; y < area.y + area.height; y += VECTOR_CHUNK)
+          for (let x = area.x; x < area.x + area.width; x += VECTOR_CHUNK) {
+            const piece = {
+              x,
+              y,
+              width: Math.min(VECTOR_CHUNK, area.x + area.width - x),
+              height: Math.min(VECTOR_CHUNK, area.y + area.height - y),
+            }
+            // Written before the submit that reads it, and the next chunk's
+            // after: the queue keeps them in that order.
+            device.queue.writeBuffer(
+              targets.uniform,
+              0,
+              new Float32Array([x, y, VECTOR_CHUNK, VECTOR_CHUNK])
+            )
+            const encoder = device.createCommandEncoder()
+            const pass = encoder.beginRenderPass({
+              colorAttachments: [
+                {
+                  view: targets.color,
+                  resolveTarget: targets.resolve.createView(),
+                  clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                  loadOp: "clear",
+                  storeOp: "discard",
+                },
+              ],
+              depthStencilAttachment: {
+                view: targets.depth,
+                stencilClearValue: 0,
+                stencilLoadOp: "clear",
+                stencilStoreOp: "discard",
+              },
+            })
+            pass.setScissorRect(0, 0, piece.width, piece.height)
+            pass.setBindGroup(0, targets.bindGroup)
+            drawn.forEach((draw, index) => {
+              const { minX, minY, maxX, maxY } = draw.bounds
+              if (
+                maxX < piece.x ||
+                maxY < piece.y ||
+                minX > piece.x + piece.width ||
+                minY > piece.y + piece.height
+              )
+                return
+              pass.setPipeline(targets.stencil[draw.rule])
+              pass.setStencilReference(draw.rule === "union" ? 1 : 0)
+              pass.setVertexBuffer(0, triangleBuffer)
+              pass.draw(draw.vertices.length / 2, 1, firsts[index])
+              pass.setPipeline(
+                draw.rule === "evenodd" ? targets.coverOdd : targets.cover
+              )
+              pass.setStencilReference(0)
+              pass.setVertexBuffer(0, quadBuffer)
+              pass.draw(6, 1, index * 6)
+            })
+            pass.end()
+            encoder.copyTextureToTexture(
+              { texture: targets.resolve },
+              { texture: surface.texture, origin: { x: piece.x, y: piece.y } },
+              { width: piece.width, height: piece.height }
+            )
+            device.queue.submit([encoder.finish()])
+          }
+      } finally {
+        // Destroying waits for the work already submitted against them.
+        triangleBuffer.destroy()
+        quadBuffer.destroy()
+      }
+      surface.empty = false
+      // The active layer is read live; any other may be inside a cache that
+      // was flattened before these pixels.
+      if (surface !== active) {
+        composition = undefined
+        cachedFrom = undefined
+      }
+    },
     async readTiles(id, coords) {
       const surface = surfaces.get(id)
       const blank = () => new Uint16Array(TILE_SIZE * TILE_SIZE * TILE_CHANNELS)
@@ -2491,6 +2820,9 @@ export function createRenderer(
     },
     destroy() {
       releaseSelection()
+      vector?.textures.forEach((texture) => texture.destroy())
+      vector?.uniform.destroy()
+      vector = undefined
       antsUniform.destroy()
       thumbnailUniform.destroy()
       for (const surface of surfaces.values()) surface.texture.destroy()

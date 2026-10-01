@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test"
+import { createVectorWorkload } from "../../bench/vector-workload"
 import {
   BENCHMARK_WORKLOAD,
   createWorkload,
   workloadStats,
 } from "../../bench/workload"
+import { parseScene } from "../../engine/doc/vector-scene"
 
 const options = {
   width: 8192,
@@ -94,5 +96,38 @@ describe("BENCHMARK_WORKLOAD", () => {
   test("is the full-size canvas the target is stated against", () => {
     expect(BENCHMARK_WORKLOAD.width).toBe(8192)
     expect(BENCHMARK_WORKLOAD.height).toBe(8192)
+  })
+})
+
+describe("createVectorWorkload", () => {
+  const vector = { width: 4096, height: 4096, paths: 300, seed: 3 }
+
+  test("is deterministic for a seed and differs between seeds", () => {
+    expect(createVectorWorkload(vector)).toEqual(createVectorWorkload(vector))
+    expect(createVectorWorkload({ ...vector, seed: 4 })).not.toEqual(
+      createVectorWorkload(vector)
+    )
+  })
+
+  test("is the paths asked for over a canvas-wide backdrop, every one drawable", () => {
+    const { objects } = createVectorWorkload(vector)
+    expect(objects).toHaveLength(301)
+    expect(objects[0].geometry).toEqual({
+      kind: "rect",
+      x: 0,
+      y: 0,
+      width: 4096,
+      height: 4096,
+    })
+    // A scene the engine would refuse is not a workload.
+    expect(parseScene({ objects }).objects).toHaveLength(301)
+  })
+
+  test("mixes fills, strokes, and both", () => {
+    const { objects } = createVectorWorkload(vector)
+    const kinds = new Set(
+      objects.map((object) => `${!!object.style.fill}:${!!object.style.stroke}`)
+    )
+    expect(kinds).toEqual(new Set(["true:false", "false:true", "true:true"]))
   })
 })

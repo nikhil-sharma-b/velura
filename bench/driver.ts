@@ -9,7 +9,11 @@
  * runs.
  */
 
-import type { Engine, FrameTiming } from "../engine"
+import type { Engine, FrameTiming, SceneCommand } from "../engine"
+import {
+  createVectorWorkload,
+  type VectorWorkloadOptions,
+} from "./vector-workload"
 import { createWorkload, type WorkloadOptions } from "./workload"
 
 export type RunResult = {
@@ -411,5 +415,96 @@ export async function runBenchmark(
     readbacks: readback.count(),
     readbacksTotal: readback.total(),
     elapsedMs: performance.now() - started,
+  }
+}
+
+export type VectorRunResult = {
+  canvas: { width: number; height: number }
+  objects: number
+  /** Adding every object at once: tessellating them all, and the first draw. */
+  firstDrawMs: number
+  /** Edits spanning the layer, each redrawing every object in it. */
+  fullRedrawMs: number[]
+  /** Edits to one object, each redrawing only the region it touched. */
+  localRedrawMs: number[]
+}
+
+/** Redraws timed per edit; few enough to keep a large scene's run short. */
+const VECTOR_REDRAWS = 20
+
+/**
+ * Re-rasterising a vector layer (19), timed from the edit being sent to the
+ * GPU reporting the work done — a fence, as the painting workload's latency
+ * is, so nothing is read back to time it.
+ */
+export async function runVectorBenchmark(
+  engine: Engine,
+  canvas: HTMLCanvasElement,
+  options: VectorWorkloadOptions
+): Promise<VectorRunResult> {
+  const { objects } = createVectorWorkload(options)
+  canvas.style.width = `${VIEWPORT}px`
+  canvas.style.height = `${VIEWPORT}px`
+  await engine.dispatch({
+    type: "resize",
+    width: options.width,
+    height: options.height,
+    devicePixelRatio: 1,
+  })
+  await engine.dispatch({ type: "initialize" })
+  if (engine.getSnapshot().status !== "ready")
+    throw new Error(`The engine is ${engine.getSnapshot().status}, not ready.`)
+  const device = (
+    canvas.getContext("webgpu") as GPUCanvasContext | null
+  )?.getConfiguration()?.device
+  if (!device) throw new Error("The engine's device could not be reached.")
+  await engine.dispatch({ type: "addVectorLayer" })
+  const id = engine.getSnapshot().activeLayerId
+  const timed = async (commands: SceneCommand[]) => {
+    await device.queue.onSubmittedWorkDone()
+    const start = performance.now()
+    await engine.dispatch({ type: "editVectorLayer", id, commands })
+    await device.queue.onSubmittedWorkDone()
+    return performance.now() - start
+  }
+  const firstDrawMs = await timed(
+    objects.map((object) => ({ type: "add", object }))
+  )
+  const backdrop = objects[0]
+  const fullRedrawMs: number[] = []
+  for (let i = 0; i < VECTOR_REDRAWS; i++)
+    fullRedrawMs.push(
+      await timed([
+        {
+          type: "update",
+          id: backdrop.id,
+          patch: {
+            style: {
+              ...backdrop.style,
+              fill: { ...backdrop.style.fill!, opacity: i % 2 ? 1 : 0.9 },
+            },
+          },
+        },
+      ])
+    )
+  const moved = objects[objects.length >> 1]
+  const localRedrawMs: number[] = []
+  for (let i = 0; i < VECTOR_REDRAWS; i++)
+    localRedrawMs.push(
+      await timed([
+        {
+          type: "update",
+          id: moved.id,
+          patch: { transform: [1, 0, 0, 1, i % 2 ? 0 : 12, 0] },
+        },
+      ])
+    )
+  const { width, height } = engine.getSnapshot()
+  return {
+    canvas: { width, height },
+    objects: objects.length,
+    firstDrawMs,
+    fullRedrawMs,
+    localRedrawMs,
   }
 }

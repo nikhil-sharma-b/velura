@@ -4,7 +4,7 @@ import {
   addLayer,
   addMask,
   createDocument,
-  findLayer,
+  findRasterLayer,
   removeLayer,
   setLayer,
 } from "../../engine/doc/document"
@@ -49,7 +49,7 @@ describe("pixels no layer refers to", () => {
     // The selection is the artist's, and recovering pixels does not move it.
     expect(adopted.activeLayerId).toBe(structure.activeLayerId)
     restoreStructure(doc, adopted)
-    expect(findLayer(doc, "layer-9000").kind).toBe("raster")
+    expect(findRasterLayer(doc, "layer-9000").kind).toBe("raster")
   })
 
   test("a surface that holds nothing is not a layer worth recovering", () => {
@@ -90,11 +90,11 @@ describe("structure snapshots", () => {
   test("restoring an unchanged snapshot changes nothing", () => {
     const doc = document()
     const before = captureStructure(doc)
-    const surface = findLayer(doc, doc.activeLayerId).surface
+    const surface = findRasterLayer(doc, doc.activeLayerId).surface
     restoreStructure(doc, before)
     expect(sameStructure(captureStructure(doc), before)).toBe(true)
     // The layer was not rebuilt, so its uploaded pixels are still its own.
-    expect(findLayer(doc, doc.activeLayerId).surface).toBe(surface)
+    expect(findRasterLayer(doc, doc.activeLayerId).surface).toBe(surface)
   })
 
   test("restoring puts back a removed layer, its place and the selection", () => {
@@ -112,14 +112,14 @@ describe("structure snapshots", () => {
   test("restoring undoes a grouping without disturbing the layers' pixels", () => {
     const doc = document()
     const first = doc.activeLayerId
-    const surface = findLayer(doc, first).surface
+    const surface = findRasterLayer(doc, first).surface
     const second = addLayer(doc)
     const before = captureStructure(doc)
     addGroup(doc, [first, second])
     expect(doc.layers).toHaveLength(1)
     restoreStructure(doc, before)
     expect(doc.layers.map((node) => node.id)).toEqual([first, second])
-    expect(findLayer(doc, first).surface).toBe(surface)
+    expect(findRasterLayer(doc, first).surface).toBe(surface)
   })
 
   test("restoring puts settings back", () => {
@@ -127,7 +127,7 @@ describe("structure snapshots", () => {
     const before = captureStructure(doc)
     setLayer(doc, doc.activeLayerId, { name: "Sky", opacity: 0.25 })
     restoreStructure(doc, before)
-    const layer = findLayer(doc, doc.activeLayerId)
+    const layer = findRasterLayer(doc, doc.activeLayerId)
     expect(layer.name).toBe("Layer 1")
     expect(layer.opacity).toBe(1)
   })
@@ -137,10 +137,10 @@ describe("structure snapshots", () => {
     const maskId = addMask(doc, doc.activeLayerId)
     doc.paintingMask = true
     const before = captureStructure(doc)
-    delete findLayer(doc, doc.activeLayerId).mask
+    delete findRasterLayer(doc, doc.activeLayerId).mask
     doc.paintingMask = false
     restoreStructure(doc, before)
-    expect(findLayer(doc, doc.activeLayerId).mask?.id).toBe(maskId)
+    expect(findRasterLayer(doc, doc.activeLayerId).mask?.id).toBe(maskId)
     expect(doc.paintingMask).toBe(true)
   })
 
@@ -160,7 +160,7 @@ describe("image layers", () => {
   test("keep their flag through a save and a restore", () => {
     const doc = document()
     const id = addLayer(doc)
-    findLayer(doc, id).image = true
+    findRasterLayer(doc, id).image = true
     const structure = captureStructure(doc)
     expect(structure.layers[1]).toMatchObject({ id, image: true })
     // An ordinary layer writes nothing, so older saves compare unchanged.
@@ -168,8 +168,8 @@ describe("image layers", () => {
 
     const restored = document()
     restoreStructure(restored, structure)
-    expect(findLayer(restored, id).image).toBe(true)
-    expect(findLayer(restored, structure.layers[0].id).image).toBe(false)
+    expect(findRasterLayer(restored, id).image).toBe(true)
+    expect(findRasterLayer(restored, structure.layers[0].id).image).toBe(false)
   })
 })
 
@@ -191,7 +191,7 @@ describe("a placed image in the tree", () => {
   function withImage(assetId = "asset-1", x = 10) {
     const doc = document()
     const id = addLayer(doc)
-    const layer = findLayer(doc, id)
+    const layer = findRasterLayer(doc, id)
     if (layer.kind !== "raster") throw new Error("expected a raster layer")
     layer.image = true
     layer.placed = placed(assetId, x)
@@ -203,12 +203,12 @@ describe("a placed image in the tree", () => {
     // placement rather than the previous pixels (06).
     const { doc, id } = withImage()
     const before = captureStructure(doc)
-    const layer = findLayer(doc, id)
+    const layer = findRasterLayer(doc, id)
     if (layer.kind !== "raster") throw new Error("expected a raster layer")
     layer.placed = placed("asset-1", 300)
 
     restoreStructure(doc, before)
-    const restored = findLayer(doc, id)
+    const restored = findRasterLayer(doc, id)
     if (restored.kind !== "raster") throw new Error("expected a raster layer")
     expect(restored.placed?.placement.x).toBe(10)
     expect(restored.image).toBe(true)
@@ -217,7 +217,7 @@ describe("a placed image in the tree", () => {
   test("names the originals a save has to keep, once each", () => {
     const { doc } = withImage()
     const second = addLayer(doc)
-    const layer = findLayer(doc, second)
+    const layer = findRasterLayer(doc, second)
     if (layer.kind !== "raster") throw new Error("expected a raster layer")
     layer.image = true
     // The same photograph placed twice is one original to keep.

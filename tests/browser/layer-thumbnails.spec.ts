@@ -198,3 +198,20 @@ test("the active row's clear button empties the layer, and undo refills it", asy
   await layers.getByRole("button", { name: "Lock Layer 2" }).click()
   await expect(clear).toBeDisabled()
 })
+
+test("a vector layer's row shows the shapes on it", async ({ page }) => {
+  const layers = await openStudio(page)
+  await layers.getByRole("button", { name: "Add vector layer" }).click()
+  const row = layers.getByTestId("thumbnail-Vector 2")
+  await expect(row).toHaveAttribute("data-state", "empty")
+
+  await page.keyboard.press("u")
+  const canvas = page.getByRole("img", { name: "Drawing canvas" })
+  const box = (await canvas.boundingBox())!
+  await page.mouse.move(box.x + 200, box.y + 200)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 500, box.y + 400, { steps: 10 })
+  await page.mouse.up()
+  await expect(row).toHaveAttribute("data-state", "shown")
+  await expect.poll(() => colours(row)).toBeGreaterThan(2)
+})

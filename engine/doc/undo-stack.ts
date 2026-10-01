@@ -1,5 +1,6 @@
 import type { TileStore } from "./tile-store"
 import type { DocumentStructure } from "./structure"
+import type { SceneChange } from "./vector-scene"
 
 /**
  * One tile as an operation left it: the hash it held before and the hash it
@@ -23,6 +24,8 @@ export type UndoEntry = {
   label: string
   surfaces: SurfaceChange[]
   structure?: { before: DocumentStructure; after: DocumentStructure }
+  /** Vector layers' edits (19), applied after the structure going either way. */
+  scenes?: readonly SceneChange[]
   /** Set when the step is one a following adjustment may extend. */
   coalesceAs?: string
 }

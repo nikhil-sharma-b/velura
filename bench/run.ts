@@ -15,7 +15,8 @@
  *
  * `--sweep` runs the document-size ladder instead of the two passes, and
  * `--layers` the layer-count one; `--feather` paints inside a large feathered
- * selection against the same painting with none (11). They are how the tables in
+ * selection against the same painting with none (11); `--vector` times
+ * redrawing a vector layer of many paths (19). They are how the tables in
  * `docs/design/benchmark.md` were measured, and they exist so those tables can
  * be reproduced rather than taken on trust.
  */
@@ -28,6 +29,7 @@ import { chromium, type Browser } from "@playwright/test"
 import type { Environment } from "./driver"
 import type { FrameTiming } from "../engine"
 import { judge, PERFORMANCE_TARGET, summarize, type Report } from "./report"
+import { VECTOR_WORKLOAD } from "./vector-workload"
 import {
   BENCHMARK_WORKLOAD,
   createWorkload,
@@ -320,6 +322,50 @@ async function featherSweep(): Promise<void> {
   console.log()
 }
 
+/**
+ * Redrawing a vector layer (19), on the real GPU, at a ladder of path counts:
+ * the first draw of the whole scene, an edit spanning the layer (every path
+ * redrawn), and an edit to one path (only its region redrawn). Re-rasterising
+ * is what a vector layer pays instead of a compositor of its own, so this is
+ * the number that says what that choice costs.
+ */
+const PATH_COUNTS = [500, 2000, 8000]
+
+async function vectorSweep(): Promise<void> {
+  const browser = await launch([])
+  const median = (values: number[]) =>
+    [...values].sort((a, b) => a - b)[values.length >> 1]
+  const p95 = (values: number[]) =>
+    [...values].sort((a, b) => a - b)[Math.floor(values.length * 0.95)]
+  try {
+    console.log(
+      `\n  vector layer, ${VECTOR_WORKLOAD.width}², ms from edit to GPU done` +
+        "\n  paths     first draw   whole layer (median / p95)   one path (median / p95)"
+    )
+    for (const paths of PATH_COUNTS) {
+      const page = await browser.newPage()
+      page.on("pageerror", (error) =>
+        console.error("page error:", error.message)
+      )
+      await page.goto(HARNESS)
+      await page.waitForFunction(() => !!window.runVectorBenchmark)
+      const result = await page.evaluate(
+        (options) => window.runVectorBenchmark(options),
+        { ...VECTOR_WORKLOAD, paths }
+      )
+      console.log(
+        `  ${String(paths).padStart(5)}   ${fixed(result.firstDrawMs).padStart(10)}   ` +
+          `${fixed(median(result.fullRedrawMs)).padStart(12)} / ${fixed(p95(result.fullRedrawMs)).padEnd(12)}   ` +
+          `${fixed(median(result.localRedrawMs), 2).padStart(10)} / ${fixed(p95(result.localRedrawMs), 2)}`
+      )
+      await page.close()
+    }
+    console.log()
+  } finally {
+    await browser.close()
+  }
+}
+
 async function main(): Promise<void> {
   const stop = await serve()
   const ladder = process.argv.includes("--sweep")
@@ -328,7 +374,9 @@ async function main(): Promise<void> {
       ? layerSweep
       : process.argv.includes("--feather")
         ? featherSweep
-        : null
+        : process.argv.includes("--vector")
+          ? vectorSweep
+          : null
   if (ladder) {
     try {
       await ladder()

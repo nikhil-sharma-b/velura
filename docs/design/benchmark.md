@@ -16,6 +16,7 @@ what that means for the design.
 bun run bench                  # records a run
 bun run bench/run.ts --sweep   # the document-size ladder, for diagnosis
 bun run bench/run.ts --layers  # the layer-count ladder, for the compositor
+bun run bench/run.ts --vector  # redrawing a vector layer of many paths (19)
 ```
 
 It is tracked, not gated. The exit status is zero whatever the numbers say,
@@ -238,6 +239,30 @@ the stroke buffer**, and treat that run as the real answer to D30. If a
 viewport-sized present pass and a bounded stroke buffer do not reach the target,
 the problem is the architecture and not the placeholder, and that is the point
 to revisit the design.
+
+## Vector layers: re-rasterising
+
+A vector layer (19) is drawn into the layer's own float pixels, so the
+compositor, blend modes, masks and clipping treat it like paint. The cost of
+that choice is redrawing: an edit re-rasterises the region it changed, and an
+edit that spans the layer redraws every path in it. `--vector` measures that
+on a seeded scene (`bench/vector-workload.ts`) — a canvas-wide backdrop under
+self-crossing polygons, filled, outlined or both — at 4096², timing each edit
+from dispatch to the GPU's fence, so nothing is read back to time it.
+
+Apple GPU (M-series, integrated), Chrome/WebGPU, on top of `6767fe5`, ms:
+
+| paths | first draw | whole layer, median / p95 | one path, median / p95 |
+|---|---|---|---|
+| 500 | 48.1 | 5.5 / 11.4 | 3.0 / 8.6 |
+| 2000 | 36.8 | 8.3 / 10.8 | 4.2 / 4.7 |
+| 8000 | 265.9 | 17.5 / 21.7 | 6.3 / 7.9 |
+
+The first draw is mostly tessellation on the CPU, done once per object and
+cached for as long as the object is unchanged. A whole-layer redraw of two
+thousand paths fits in a frame; an edit to one path redraws only its region,
+and what it costs beyond that is the frame itself and the walk over the
+scene's objects to find what the region touches.
 
 ## Caveats to read the numbers with
 
