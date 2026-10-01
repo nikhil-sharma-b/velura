@@ -57,6 +57,9 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
 }) => {
   // Two strokes and their screenshots: more than CI's default allowance.
   test.slow()
+  // Timers the test can pause while it reads the screen; they run as usual
+  // until then.
+  await page.clock.install()
   const box = await openStudio(page)
   const cx = box.x + box.width / 2
   const cy = box.y + box.height / 2
@@ -90,7 +93,7 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
   // A stroke from well inside the selection to well outside it, measured
   // where it crosses the edge, then taken back.
   // Undone by key rather than by clicking the button: with marching ants
-  // drawing every frame, CI's software WebGPU leaves Playwright no quiet
+  // redrawing on a timer, CI's software WebGPU leaves Playwright no quiet
   // frames to find the button stable in, and a click waits for one.
   const undo = async () => {
     await expect(page.getByRole("button", { name: "Undo" })).toBeEnabled()
@@ -105,6 +108,10 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
     await page.mouse.move(cx + 200, cy, { steps: 12 })
     await page.mouse.up()
     await page.waitForTimeout(200)
+    // Read with the page's timers paused: the marching ants redraw the canvas
+    // on one, and on CI's software WebGPU that leaves no quiet frame for a
+    // screenshot to be taken in.
+    await page.clock.pauseAt(Date.now() + 1000)
     const [inside, edge, beyond, far] = await darknessAlong(page, cy, [
       cx - 60,
       cx + 100,
@@ -117,6 +124,7 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
       beyond: beyond!,
       far: far!,
     }
+    await page.clock.resume()
     await undo()
     return measured
   }
