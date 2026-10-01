@@ -69,6 +69,24 @@ function dispatching(
   }
 }
 
+function onVectorSelection(
+  command: EngineCommand
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    ...dispatching(command),
+    available: ({ engine }) => {
+      if (!engine) return false
+      const snapshot = engine.getSnapshot()
+      const layer = findSummary(snapshot.layers, snapshot.activeLayerId)
+      return (
+        layer?.kind === "vector" &&
+        !layer.locked &&
+        snapshot.vectorSelection.length > 0
+      )
+    },
+  }
+}
+
 /** The layer a layer command acts on, if it is still there. */
 function targetLayer({ engine, layerId }: StudioContext) {
   if (!engine) return
@@ -295,6 +313,48 @@ export const studioCommands = createRegistry<StudioContext>([
     ...dispatching({ type: "setTool", tool: "rectangle" }),
   },
   {
+    id: "tool.ellipse",
+    label: "Ellipse tool",
+    category: "Tools",
+    ...dispatching({ type: "setTool", tool: "ellipse" }),
+  },
+  {
+    id: "tool.line",
+    label: "Line tool",
+    category: "Tools",
+    ...dispatching({ type: "setTool", tool: "line" }),
+  },
+  {
+    id: "tool.polygon",
+    label: "Polygon tool",
+    category: "Tools",
+    ...dispatching({ type: "setTool", tool: "polygon" }),
+  },
+  {
+    id: "tool.objectSelect",
+    label: "Select objects tool",
+    category: "Tools",
+    ...dispatching({ type: "setTool", tool: "objectSelect" }),
+  },
+  {
+    id: "object.transform",
+    label: "Transform objects",
+    category: "Tools",
+    ...onVectorSelection({ type: "beginVectorTransform" }),
+  },
+  {
+    id: "object.duplicate",
+    label: "Duplicate objects",
+    category: "Tools",
+    ...onVectorSelection({ type: "duplicateVectorObjects" }),
+  },
+  {
+    id: "object.delete",
+    label: "Delete objects",
+    category: "Tools",
+    ...onVectorSelection({ type: "deleteVectorObjects" }),
+  },
+  {
     // Escape lets go of an outline half drawn, the polygonal lasso's above
     // all, as it does in every editor with one.
     id: "select.abandonOutline",
@@ -390,7 +450,11 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "layer.clear",
     label: "Clear layer",
     category: "Layers",
-    ...onLayer((layer) => ({ type: "clearLayer", id: layer.id }), isPaintable),
+    ...onLayer(
+      (layer) => ({ type: "clearLayer", id: layer.id }),
+      (layer) =>
+        (layer.kind === "vector" && !layer.locked) || isPaintable(layer)
+    ),
   },
   // Filters (18) open on the layer and wait in a dialog for their settings;
   // the dialog is the engine's open filter, not a state of its own.

@@ -87,7 +87,12 @@ import {
 } from "../lib/image-import"
 import { readTextureFile } from "../lib/texture-import"
 import { BrushEditor } from "./brush-editor"
-import { ImageTransform, LayerTransform } from "./image-transform"
+import {
+  ImageTransform,
+  LayerTransform,
+  VectorTransform,
+  VectorSelection,
+} from "./image-transform"
 import { RulersAndGuides } from "./rulers-and-guides"
 import { StraightEdgeOverlay } from "./straight-edge"
 import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor"
@@ -1235,6 +1240,120 @@ export function CanvasHost({
                         </button>
                       ))}
                     </div>
+                    {(["fillColor", "strokeColor"] as const).map((part) => (
+                      <label key={part} className="block text-xs">
+                        {part === "fillColor" ? "Fill colour" : "Stroke colour"}
+                        <input
+                          type="color"
+                          aria-label={
+                            part === "fillColor"
+                              ? "Fill colour"
+                              : "Stroke colour"
+                          }
+                          value={
+                            snapshot.shapeStyle[part] ?? snapshot.color.hex
+                          }
+                          onChange={(event) =>
+                            void engine?.dispatch({
+                              type: "setShapeStyle",
+                              [part]: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                    ))}
+                    {(["strokeCap", "strokeJoin"] as const).map((part) => (
+                      <label key={part} className="block text-xs">
+                        {part === "strokeCap" ? "Cap" : "Join"}
+                        <select
+                          aria-label={
+                            part === "strokeCap" ? "Stroke cap" : "Stroke join"
+                          }
+                          value={snapshot.shapeStyle[part]}
+                          onChange={(event) =>
+                            void engine?.dispatch(
+                              part === "strokeCap"
+                                ? {
+                                    type: "setShapeStyle",
+                                    strokeCap: event.target.value as
+                                      | "butt"
+                                      | "round"
+                                      | "square",
+                                  }
+                                : {
+                                    type: "setShapeStyle",
+                                    strokeJoin: event.target.value as
+                                      | "miter"
+                                      | "round"
+                                      | "bevel",
+                                  }
+                            )
+                          }
+                        >
+                          {(part === "strokeCap"
+                            ? ["butt", "round", "square"]
+                            : ["miter", "round", "bevel"]
+                          ).map((value) => (
+                            <option key={value}>{value}</option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
+                    {snapshot.vectorSelection.length > 0 && (
+                      <div className="flex flex-wrap gap-1 text-xs">
+                        {(["transform", "duplicate", "delete"] as const).map(
+                          (action) => (
+                            <button
+                              key={action}
+                              onClick={() =>
+                                runStudioCommand(
+                                  `object.${action}`,
+                                  commandContext
+                                )
+                              }
+                            >
+                              {action}
+                            </button>
+                          )
+                        )}
+                        {(["front", "back"] as const).map((to) => (
+                          <button
+                            key={to}
+                            onClick={() =>
+                              void engine?.dispatch({
+                                type: "reorderVectorObjects",
+                                to,
+                              })
+                            }
+                          >
+                            {to}
+                          </button>
+                        ))}
+                        {(
+                          [
+                            "left",
+                            "hcenter",
+                            "right",
+                            "top",
+                            "vcenter",
+                            "bottom",
+                          ] as const
+                        ).map((anchor) => (
+                          <button
+                            key={anchor}
+                            onClick={() =>
+                              void engine?.dispatch({
+                                type: "alignVectorObjects",
+                                anchor,
+                                to: "canvas",
+                              })
+                            }
+                          >
+                            {anchor}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <SliderSetting
                       label="Outline width"
                       value={snapshot.shapeStyle.strokeWidth}
@@ -1547,6 +1666,36 @@ export function CanvasHost({
                 >
                   <RectangleIcon />
                 </RailAction>
+                {(["ellipse", "line", "polygon", "objectSelect"] as const).map(
+                  (tool) => (
+                    <RailAction
+                      key={tool}
+                      label={
+                        tool === "objectSelect"
+                          ? "Select objects"
+                          : `${tool} tool`
+                      }
+                      command={`tool.${tool}`}
+                      variant={snapshot.tool === tool ? "default" : "ghost"}
+                      size="icon"
+                      aria-pressed={snapshot.tool === tool}
+                      onClick={() =>
+                        runStudioCommand(`tool.${tool}`, commandContext)
+                      }
+                    >
+                      <span className="text-xs">
+                        {
+                          {
+                            ellipse: "○",
+                            line: "╱",
+                            polygon: "⬡",
+                            objectSelect: "↖",
+                          }[tool]
+                        }
+                      </span>
+                    </RailAction>
+                  )
+                )}
                 <RailAction
                   label="Colour"
                   variant={colorOpen ? "default" : "ghost"}
@@ -1774,6 +1923,20 @@ export function CanvasHost({
             </TooltipProvider>
           </div>
 
+          {engine && (
+            <VectorSelection
+              engine={engine}
+              snapshot={snapshot}
+              canvas={canvasElement}
+            />
+          )}
+          {engine && snapshot.vectorTransform && (
+            <VectorTransform
+              engine={engine}
+              snapshot={snapshot}
+              canvas={canvasElement}
+            />
+          )}
           {engine && snapshot.imageTransform && (
             <ImageTransform
               engine={engine}

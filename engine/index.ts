@@ -1,3 +1,9 @@
+import {
+  selectObjects,
+  objectsBounds,
+  objectBounds as vectorObjectBounds,
+  transformObjects,
+} from "./doc/vector-objects"
 import { eraserBrush, type EraserKind } from "./brush/eraser"
 import {
   type Brush,
@@ -171,6 +177,7 @@ import {
 } from "./doc/transform-session"
 import { layerStartPlacement, coveredBounds } from "./doc/layer-transform"
 import {
+  resolveSnap,
   alignedPlacement,
   placementExtent,
   snapTargets,
@@ -388,7 +395,13 @@ export const isSelectionTool = (tool: Tool): tool is SelectionTool =>
   (SELECTION_TOOLS as readonly Tool[]).includes(tool)
 
 /** Tools that draw shapes onto a vector layer (19) instead of paint. */
-const VECTOR_TOOLS = ["rectangle"] as const
+const VECTOR_TOOLS = [
+  "rectangle",
+  "ellipse",
+  "line",
+  "polygon",
+  "objectSelect",
+] as const
 export type VectorTool = (typeof VECTOR_TOOLS)[number]
 export const isVectorTool = (tool: Tool): tool is VectorTool =>
   (VECTOR_TOOLS as readonly Tool[]).includes(tool)
@@ -405,11 +418,19 @@ export type ShapeStyle = Readonly<{
   stroke: boolean
   /** The outline's width in document pixels. */
   strokeWidth: number
+  strokeCap: import("./doc/vector-scene").LineCap
+  strokeJoin: import("./doc/vector-scene").LineJoin
+  fillColor: string | null
+  strokeColor: string | null
 }>
 export const DEFAULT_SHAPE_STYLE: ShapeStyle = Object.freeze({
   fill: true,
   stroke: false,
   strokeWidth: 4,
+  strokeCap: "butt",
+  strokeJoin: "miter",
+  fillColor: null,
+  strokeColor: null,
 })
 
 /** Display-encoded colour sampled from the composited canvas. */
@@ -522,6 +543,21 @@ export type EngineCommand =
    * step. What the shape tools send when a drag ends, and the seam everything
    * that edits objects later goes through.
    */
+  | { type: "selectVectorObjects"; ids: readonly string[] }
+  | { type: "selectVectorRegion"; region: Point | Extent; additive?: boolean }
+  | { type: "deleteVectorObjects" }
+  | { type: "duplicateVectorObjects" }
+  | { type: "reorderVectorObjects"; to: "front" | "back" }
+  | { type: "beginVectorTransform" }
+  | { type: "adjustVectorTransform"; matrix: Affine; snap?: boolean }
+  | { type: "adjustVectorPlacement"; placement: ImagePlacement }
+  | { type: "commitVectorTransform" }
+  | { type: "cancelVectorTransform" }
+  | {
+      type: "alignVectorObjects"
+      anchor: AlignAnchor
+      to: "canvas" | "selection"
+    }
   | { type: "editVectorLayer"; id: string; commands: readonly SceneCommand[] }
   /**
    * Turns a vector layer into a paint layer holding exactly what it showed
@@ -535,6 +571,10 @@ export type EngineCommand =
       fill?: boolean
       stroke?: boolean
       strokeWidth?: number
+      strokeCap?: ShapeStyle["strokeCap"]
+      strokeJoin?: ShapeStyle["strokeJoin"]
+      fillColor?: string
+      strokeColor?: string
     }
   /**
    * Brings an image in on a layer of its own, above the active one, and
@@ -821,6 +861,12 @@ export type EngineSnapshot = Readonly<{
   tool: Tool
   /** What the shape tools give a new shape (19). */
   shapeStyle: ShapeStyle
+  vectorSelection: readonly string[]
+  vectorSelectionBounds: Extent | null
+  vectorTransform: {
+    placement: ImagePlacement
+    snapTargets: SnapTargets
+  } | null
   /** Current display-encoded ink, updated by the eyedropper. */
   color: EngineColor
   /** The brush in the hand: serialisable data, never code (D23). */
@@ -951,6 +997,9 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   straightEdge: null,
   tool: "brush",
   shapeStyle: DEFAULT_SHAPE_STYLE,
+  vectorSelection: [],
+  vectorSelectionBounds: null,
+  vectorTransform: null,
   color: Object.freeze({
     red: 36 / 255,
     green: 37 / 255,
@@ -1564,6 +1613,13 @@ export function createEngine(
 
   function publish(update: Partial<EngineSnapshot>) {
     const next = { ...snapshot, ...update }
+    if (update.vectorSelection && doc) {
+      const layer = activeLayer(doc)
+      next.vectorSelectionBounds =
+        layer.kind === "vector"
+          ? objectsBounds(layer.scene, next.vectorSelection)
+          : null
+    }
     if (
       Object.keys(next).every(
         (key) =>
@@ -2058,6 +2114,7 @@ export function createEngine(
 
   /** Picks a placed image up; see `beginImageTransform`. */
   async function beginImageTransformOf(id: string): Promise<void> {
+    commitVectorTransform()
     const document = requireDocument()
     const layer = findLayer(document, id)
     if (layer.kind !== "raster" || !layer.image || !layer.placed)
@@ -2213,6 +2270,7 @@ export function createEngine(
     id: string,
     options: { lift?: boolean } = {}
   ): Promise<void> {
+    commitVectorTransform()
     const document = requireDocument()
     const layer = findLayer(document, id)
     if (layer.kind !== "raster")
@@ -2422,6 +2480,8 @@ export function createEngine(
   let shapeDrag:
     | {
         layerId: string
+        tool: VectorTool
+        points?: Point[]
         anchor: Point
         point: Point
         ended: boolean
@@ -2570,12 +2630,259 @@ export function createEngine(
       throw new Error(`${layer.name} holds paint, not shapes.`)
     if (layer.locked) throw new Error(`${layer.name} is locked.`)
     if (commands.length === 0) return
+    if (vectorTransform?.layerId === layerId) cancelVectorTransform()
     const { scene, inverse } = applySceneEdit(layer.scene, commands)
     layer.scene = scene
     recordOperation(label, captureStructure(document), {
       scenes: [{ layerId, forward: [...commands], inverse }],
     })
     applyLayerChange()
+  }
+
+  let vectorTransform:
+    | {
+        layerId: string
+        scene: VectorScene
+        ids: readonly string[]
+        box: Extent
+        session: TransformSession
+      }
+    | undefined
+
+  function selectedVectorLayer() {
+    const layer = activeLayer(requireDocument())
+    if (layer.kind !== "vector") throw new Error("Select a vector layer first.")
+    return layer
+  }
+
+  function boxSelection(anchor: Point, point: Point): Point | Extent {
+    return Math.hypot(point.x - anchor.x, point.y - anchor.y) <
+      3 / snapshot.view.zoom
+      ? point
+      : dragRect(anchor, point, false)
+  }
+
+  function setVectorSelection(ids: readonly string[]) {
+    const layer = selectedVectorLayer()
+    const object = layer.scene.objects.find((o) => ids.includes(o.id))
+    publish({
+      vectorSelection: ids,
+      ...(object
+        ? {
+            shapeStyle: {
+              ...snapshot.shapeStyle,
+              fill: object.style.fill !== null,
+              stroke: object.style.stroke !== null,
+              fillColor: object.style.fill?.color ?? null,
+              strokeColor: object.style.stroke?.color ?? null,
+              strokeWidth:
+                object.style.stroke?.width ?? snapshot.shapeStyle.strokeWidth,
+              strokeCap:
+                object.style.stroke?.cap ?? snapshot.shapeStyle.strokeCap,
+              strokeJoin:
+                object.style.stroke?.join ?? snapshot.shapeStyle.strokeJoin,
+            },
+          }
+        : {}),
+    })
+  }
+
+  function selectVectorRegion(region: Point | Extent, additive = false) {
+    cancelVectorTransform()
+    const ids = selectObjects(selectedVectorLayer().scene, region)
+    setVectorSelection(
+      additive ? [...new Set([...snapshot.vectorSelection, ...ids])] : ids
+    )
+  }
+
+  function applySelectedStyle(
+    color?: string,
+    change?: Extract<EngineCommand, { type: "setShapeStyle" }>
+  ) {
+    if (!snapshot.vectorSelection.length || !doc) return
+    const layer = activeLayer(doc)
+    if (layer.kind !== "vector" || layer.locked) return
+    cancelVectorTransform()
+    const style = snapshot.shapeStyle
+    const paint = { color: color ?? snapshot.color.hex, opacity: 1 }
+    const commands: SceneCommand[] = layer.scene.objects
+      .filter((o) => snapshot.vectorSelection.includes(o.id))
+      .map((o) => ({
+        type: "update",
+        id: o.id,
+        patch: {
+          style: color
+            ? {
+                fill: o.style.fill ? { ...o.style.fill, color } : null,
+                stroke: o.style.stroke ? { ...o.style.stroke, color } : null,
+              }
+            : {
+                fill:
+                  change?.fill === false
+                    ? null
+                    : o.style.fill || change?.fill === true
+                      ? {
+                          ...(o.style.fill ?? {
+                            ...paint,
+                            rule: "nonzero" as const,
+                          }),
+                          color:
+                            change?.fillColor ??
+                            o.style.fill?.color ??
+                            paint.color,
+                        }
+                      : null,
+                stroke:
+                  change?.stroke === false
+                    ? null
+                    : o.style.stroke || change?.stroke === true
+                      ? {
+                          ...(o.style.stroke ?? paint),
+                          color:
+                            change?.strokeColor ??
+                            o.style.stroke?.color ??
+                            paint.color,
+                          width:
+                            change?.strokeWidth ??
+                            o.style.stroke?.width ??
+                            style.strokeWidth,
+                          cap:
+                            change?.strokeCap ??
+                            o.style.stroke?.cap ??
+                            style.strokeCap,
+                          join:
+                            change?.strokeJoin ??
+                            o.style.stroke?.join ??
+                            style.strokeJoin,
+                        }
+                      : null,
+              },
+        },
+      }))
+    editScene(layer.id, commands, "style objects")
+    if (color)
+      publish({
+        shapeStyle: {
+          ...snapshot.shapeStyle,
+          fillColor: snapshot.shapeStyle.fill
+            ? color
+            : snapshot.shapeStyle.fillColor,
+          strokeColor: snapshot.shapeStyle.stroke
+            ? color
+            : snapshot.shapeStyle.strokeColor,
+        },
+      })
+  }
+
+  async function beginVectorTransform() {
+    await commitTransform()
+    await commitLayerTransform()
+    cancelVectorTransform()
+    const layer = selectedVectorLayer()
+    if (layer.locked) throw new Error(`${layer.name} is locked.`)
+    const ids = [...snapshot.vectorSelection]
+    const box = objectsBounds(layer.scene, ids)
+    if (!box) return
+    const scene = layer.scene
+    const session = beginTransform(
+      {
+        source: {
+          width: Math.max(1, box.width),
+          height: Math.max(1, box.height),
+        },
+        preview(matrix) {
+          drawScene(
+            layer.id,
+            applySceneEdit(scene, transformObjects(scene, ids, matrix)).scene
+          )
+          render()
+        },
+        commit(matrix) {
+          editScene(
+            layer.id,
+            transformObjects(scene, ids, matrix),
+            "transform objects"
+          )
+        },
+        cancel() {
+          drawScene(layer.id, scene)
+          render()
+        },
+      },
+      [1, 0, 0, 1, 0, 0]
+    )
+    vectorTransform = { layerId: layer.id, scene, ids, box, session }
+    const base = snapTargetsBesides(layer.id)
+    const local = snapTargets(
+      requireDocument(),
+      scene.objects
+        .filter((o) => !ids.includes(o.id))
+        .map(vectorObjectBounds)
+        .filter((b) => b != null)
+    )
+    publish({
+      vectorTransform: {
+        placement: {
+          x: box.x + box.width / 2,
+          y: box.y + box.height / 2,
+          width: Math.max(1, box.width),
+          height: Math.max(1, box.height),
+          rotation: 0,
+          flipX: false,
+          flipY: false,
+        },
+        snapTargets: { x: [...base.x, ...local.x], y: [...base.y, ...local.y] },
+      },
+    })
+  }
+
+  function adjustVectorTransform(matrix: Affine, snap: boolean) {
+    const transform = vectorTransform
+    if (!transform) throw new Error("No objects are being transformed.")
+    let next = matrix
+    if (snap) {
+      const scene = applySceneEdit(
+        transform.scene,
+        transformObjects(transform.scene, transform.ids, matrix)
+      ).scene
+      const box = objectsBounds(scene, transform.ids)
+      if (box) {
+        const others = transform.scene.objects
+          .filter((o) => !transform.ids.includes(o.id))
+          .map((o) => vectorObjectBounds(o))
+          .filter((b) => b != null)
+        const base = snapTargetsBesides(transform.layerId)
+        const local = snapTargets(requireDocument(), others)
+        const resolved = resolveSnap(
+          box,
+          { x: [...base.x, ...local.x], y: [...base.y, ...local.y] },
+          6 / snapshot.view.zoom
+        )
+        next = [
+          matrix[0],
+          matrix[1],
+          matrix[2],
+          matrix[3],
+          matrix[4] + resolved.dx,
+          matrix[5] + resolved.dy,
+        ]
+      }
+    }
+    transform.session.update(next)
+  }
+
+  function commitVectorTransform() {
+    const transform = vectorTransform
+    vectorTransform = undefined
+    transform?.session.commit()
+    if (transform) publish({ vectorTransform: null })
+  }
+
+  function cancelVectorTransform() {
+    const transform = vectorTransform
+    vectorTransform = undefined
+    transform?.session.cancel()
+    if (transform) publish({ vectorTransform: null })
   }
 
   /** Puts an undo or redo step's scene edits into the layers they name. */
@@ -2636,19 +2943,55 @@ export function createEngine(
     scene: VectorScene
   ): VectorObject | null {
     const style = snapshot.shapeStyle
-    if (!style.fill && !style.stroke) return null
+    if (!style.fill && !style.stroke && drag.tool !== "line") return null
     const box = dragRect(drag.anchor, drag.point, constrained())
-    if (box.width < 1 && box.height < 1) return null
+    if (drag.tool !== "polygon" && box.width < 1 && box.height < 1) return null
+    if (drag.tool === "polygon" && (drag.points?.length ?? 0) < 2) return null
     const paint = { color: snapshot.color.hex, opacity: ink[3] }
     return {
       id: nextObjectId(scene),
-      geometry: { kind: "rect", ...box },
+      geometry:
+        drag.tool === "ellipse"
+          ? {
+              kind: "ellipse",
+              cx: box.x + box.width / 2,
+              cy: box.y + box.height / 2,
+              rx: box.width / 2,
+              ry: box.height / 2,
+            }
+          : drag.tool === "line"
+            ? {
+                kind: "polygon",
+                points: [drag.anchor, drag.point],
+                closed: false,
+              }
+            : drag.tool === "polygon"
+              ? {
+                  kind: "polygon",
+                  points: [...(drag.points ?? [drag.anchor]), drag.point],
+                  closed: true,
+                }
+              : { kind: "rect", ...box },
       transform: [1, 0, 0, 1, 0, 0],
       style: {
-        fill: style.fill ? { ...paint, rule: "nonzero" } : null,
-        stroke: style.stroke
-          ? { ...paint, width: style.strokeWidth, cap: "butt", join: "miter" }
-          : null,
+        fill:
+          style.fill && drag.tool !== "line"
+            ? {
+                ...paint,
+                color: style.fillColor ?? paint.color,
+                rule: "nonzero",
+              }
+            : null,
+        stroke:
+          style.stroke || drag.tool === "line"
+            ? {
+                ...paint,
+                color: style.strokeColor ?? paint.color,
+                width: style.strokeWidth,
+                cap: style.strokeCap,
+                join: style.strokeJoin,
+              }
+            : null,
       },
     }
   }
@@ -2679,19 +3022,39 @@ export function createEngine(
     if (drag.ended) {
       shapeDrag = undefined
       forgetGestureInput()
-      if (shape)
-        editScene(layer.id, [{ type: "add", object: shape }], "draw rectangle")
-      else {
+      if (drag.tool === "objectSelect") {
+        const region = boxSelection(drag.anchor, drag.point)
+        selectVectorRegion(region, shiftHeld)
+        drawScene(layer.id, layer.scene)
+        showSelection(selection)
+        render()
+        return
+      }
+      if (shape) {
+        editScene(
+          layer.id,
+          [{ type: "add", object: shape }],
+          `draw ${drag.tool}`
+        )
+        publish({ vectorSelection: [] })
+      } else {
         drawScene(layer.id, layer.scene)
         if (snapshot.status === "ready") render()
       }
       return
     }
     drag.previewAt = { ...drag.point, square: constrained() }
-    drag.preview = shape
-      ? applySceneEdit(layer.scene, [{ type: "add", object: shape }]).scene
-      : layer.scene
+    drag.preview =
+      drag.tool === "objectSelect"
+        ? layer.scene
+        : shape
+          ? applySceneEdit(layer.scene, [{ type: "add", object: shape }]).scene
+          : layer.scene
     drawScene(layer.id, drag.preview)
+    if (drag.tool === "objectSelect")
+      renderer?.setSelection(
+        rectSelection(document, dragRect(drag.anchor, drag.point, false))
+      )
     try {
       if (snapshot.status === "ready") render()
     } catch (error) {
@@ -2707,6 +3070,7 @@ export function createEngine(
     if (!drag) return
     shapeDrag = undefined
     forgetGestureInput()
+    if (drag.tool === "objectSelect") showSelection(selection)
     const layer = doc && findNodeIn(doc.layers, drag.layerId)
     if (layer?.kind === "vector") drawScene(layer.id, layer.scene)
     if (snapshot.status === "ready") render()
@@ -2855,7 +3219,14 @@ export function createEngine(
     const document = requireDocument()
     uploadLayers()
     syncComposition()
-    publish(describeLayers(document))
+    const layer = activeLayer(document)
+    const ids =
+      layer.kind === "vector"
+        ? snapshot.vectorSelection.filter((id) =>
+            layer.scene.objects.some((o) => o.id === id)
+          )
+        : []
+    publish({ ...describeLayers(document), vectorSelection: ids })
     if (snapshot.status === "ready") render()
   }
 
@@ -3702,6 +4073,7 @@ export function createEngine(
       return
     }
     if (isVectorTool(tool)) {
+      cancelVectorTransform()
       // Shapes go onto a vector layer, never into paint or a mask.
       const layer = activeLayer(doc)
       if (layer.kind !== "vector" || layer.locked || doc.paintingMask) return
@@ -3711,7 +4083,30 @@ export function createEngine(
       }
       // Shift squares the shape for as long as it is held.
       shiftLatched = false
-      shapeDrag = { layerId: layer.id, anchor, point: anchor, ended: false }
+      if (tool === "polygon" && shapeDrag?.tool === "polygon") {
+        if (
+          Math.hypot(
+            anchor.x - shapeDrag.anchor.x,
+            anchor.y - shapeDrag.anchor.y
+          ) <
+            6 / snapshot.view.zoom &&
+          (shapeDrag.points?.length ?? 0) >= 3
+        ) {
+          shapeDrag.point = shapeDrag.anchor
+          shapeDrag.ended = true
+        } else {
+          shapeDrag.points!.push(anchor)
+          shapeDrag.point = anchor
+        }
+      } else
+        shapeDrag = {
+          layerId: layer.id,
+          tool,
+          points: tool === "polygon" ? [anchor] : undefined,
+          anchor,
+          point: anchor,
+          ended: false,
+        }
       scheduleFrame()
       return
     }
@@ -3804,6 +4199,7 @@ export function createEngine(
 
   function endStroke() {
     if (shapeDrag) {
+      if (shapeDrag.tool === "polygon" && !shapeDrag.ended) return
       shapeDrag.ended = true
       scheduleFrame()
       return
@@ -4188,6 +4584,7 @@ export function createEngine(
         hex: workingToHex(bounded),
       }),
     })
+    applySelectedStyle(snapshot.color.hex)
   }
 
   /**
@@ -4478,17 +4875,174 @@ export function createEngine(
         case "editVectorLayer":
           editScene(command.id, command.commands, "edit shapes")
           break
+        case "selectVectorObjects": {
+          cancelVectorTransform()
+          const layer = selectedVectorLayer()
+          setVectorSelection(
+            layer.scene.objects
+              .filter((o) => command.ids.includes(o.id))
+              .map((o) => o.id)
+          )
+          break
+        }
+        case "selectVectorRegion":
+          selectVectorRegion(command.region, command.additive)
+          break
+        case "deleteVectorObjects":
+          cancelVectorTransform()
+          editScene(
+            selectedVectorLayer().id,
+            snapshot.vectorSelection.map((id) => ({ type: "remove", id })),
+            "delete objects"
+          )
+          publish({ vectorSelection: [] })
+          break
+        case "duplicateVectorObjects": {
+          cancelVectorTransform()
+          const layer = selectedVectorLayer()
+          let scene = layer.scene
+          const commands: SceneCommand[] = []
+          const ids: string[] = []
+          for (const original of layer.scene.objects.filter((o) =>
+            snapshot.vectorSelection.includes(o.id)
+          )) {
+            const id = nextObjectId(scene)
+            const [a, b, c, d, e, f] = original.transform
+            const add: SceneCommand = {
+              type: "add",
+              object: {
+                ...original,
+                id,
+                transform: [a, b, c, d, e + 10, f + 10],
+              },
+            }
+            commands.push(add)
+            ids.push(id)
+            scene = applySceneEdit(scene, [add]).scene
+          }
+          editScene(layer.id, commands, "duplicate objects")
+          publish({ vectorSelection: ids })
+          break
+        }
+        case "reorderVectorObjects": {
+          cancelVectorTransform()
+          const layer = selectedVectorLayer()
+          const chosen = layer.scene.objects.filter((o) =>
+            snapshot.vectorSelection.includes(o.id)
+          )
+          if (command.to === "back") chosen.reverse()
+          editScene(
+            layer.id,
+            chosen.map((o) => ({
+              type: "reorder",
+              id: o.id,
+              index:
+                command.to === "front" ? layer.scene.objects.length - 1 : 0,
+            })),
+            "reorder objects"
+          )
+          break
+        }
+        case "beginVectorTransform":
+          await beginVectorTransform()
+          break
+        case "adjustVectorPlacement": {
+          const transform = vectorTransform
+          if (!transform || !snapshot.vectorTransform)
+            throw new Error("No objects are being transformed.")
+          const box = transform.box
+          const m = affineFromPlacement(command.placement, {
+            width: Math.max(1, box.width),
+            height: Math.max(1, box.height),
+          })
+          adjustVectorTransform(
+            [
+              m[0],
+              m[1],
+              m[2],
+              m[3],
+              m[4] - m[0] * box.x - m[2] * box.y,
+              m[5] - m[1] * box.x - m[3] * box.y,
+            ],
+            false
+          )
+          publish({
+            vectorTransform: {
+              ...snapshot.vectorTransform,
+              placement: command.placement,
+            },
+          })
+          break
+        }
+        case "adjustVectorTransform":
+          adjustVectorTransform(
+            command.matrix,
+            command.snap ?? snapshot.snapping
+          )
+          break
+        case "commitVectorTransform":
+          commitVectorTransform()
+          break
+        case "cancelVectorTransform":
+          cancelVectorTransform()
+          break
+        case "alignVectorObjects": {
+          const document = requireDocument()
+          const layer = selectedVectorLayer()
+          const box = objectsBounds(layer.scene, snapshot.vectorSelection)
+          const within =
+            command.to === "canvas"
+              ? { x: 0, y: 0, width: document.width, height: document.height }
+              : selection?.bounds
+          if (!box || !within) break
+          await beginVectorTransform()
+          const placement = {
+            x: box.x + box.width / 2,
+            y: box.y + box.height / 2,
+            width: box.width,
+            height: box.height,
+            rotation: 0,
+            flipX: false,
+            flipY: false,
+          }
+          const aligned = alignedPlacement(placement, command.anchor, within)
+          adjustVectorTransform(
+            [1, 0, 0, 1, aligned.x - placement.x, aligned.y - placement.y],
+            false
+          )
+          commitVectorTransform()
+          break
+        }
         case "setShapeStyle": {
           const width = command.strokeWidth ?? snapshot.shapeStyle.strokeWidth
           if (!Number.isFinite(width) || width <= 0)
             throw new Error("A stroke width must be positive and finite.")
+          for (const color of [command.fillColor, command.strokeColor])
+            if (color !== undefined && !parseHex(color))
+              throw new Error("A shape colour must be hex.")
+          if (
+            command.strokeCap &&
+            !["butt", "round", "square"].includes(command.strokeCap)
+          )
+            throw new Error("Invalid stroke cap.")
+          if (
+            command.strokeJoin &&
+            !["miter", "round", "bevel"].includes(command.strokeJoin)
+          )
+            throw new Error("Invalid stroke join.")
           publish({
             shapeStyle: Object.freeze({
               fill: command.fill ?? snapshot.shapeStyle.fill,
               stroke: command.stroke ?? snapshot.shapeStyle.stroke,
               strokeWidth: width,
+              strokeCap: command.strokeCap ?? snapshot.shapeStyle.strokeCap,
+              strokeJoin: command.strokeJoin ?? snapshot.shapeStyle.strokeJoin,
+              fillColor: command.fillColor ?? snapshot.shapeStyle.fillColor,
+              strokeColor:
+                command.strokeColor ?? snapshot.shapeStyle.strokeColor,
             }),
           })
+          applySelectedStyle(undefined, command)
           break
         }
         case "placeImage": {
@@ -4628,6 +5182,7 @@ export function createEngine(
           applyLayerChange()
           break
         case "removeLayer":
+          cancelVectorTransform()
           {
             // A picture being moved that is then thrown away: the transform
             // has nowhere to land, and a commit would put the pixels back.
@@ -4652,6 +5207,9 @@ export function createEngine(
           applyLayerChange()
           break
         case "clearDocument": {
+          cancelVectorTransform()
+          dropShapeDrag()
+
           if (imageTransform) closeTransform(imageTransform)
           imageTransform = undefined
           publish({ imageTransform: null })
@@ -4675,6 +5233,8 @@ export function createEngine(
           break
         }
         case "selectLayer":
+          cancelVectorTransform()
+          publish({ vectorSelection: [] })
           selectLayer(requireDocument(), command.id)
           applyLayerChange()
           break
@@ -4776,6 +5336,22 @@ export function createEngine(
         case "clearLayer": {
           const document = requireDocument()
           const layer = findLayer(document, command.id)
+          if (layer.kind === "vector" && !layer.locked) {
+            cancelVectorTransform()
+            const ids =
+              layer.id === snapshot.activeLayerId
+                ? snapshot.vectorSelection
+                : []
+            editScene(
+              layer.id,
+              layer.scene.objects
+                .filter((o) => !ids.length || ids.includes(o.id))
+                .map((o) => ({ type: "remove", id: o.id })),
+              "clear objects"
+            )
+            publish({ vectorSelection: [] })
+            break
+          }
           // A locked layer is not to be touched, and a placed image's pixels
           // are rendered from its file, so neither is cleared. A vector
           // layer's are drawn from its shapes, which clearing does not (yet)
@@ -4810,6 +5386,8 @@ export function createEngine(
           break
         }
         case "rasteriseLayer": {
+          cancelVectorTransform()
+
           if (shapeDrag?.layerId === command.id) dropShapeDrag()
           const document = requireDocument()
           const layer = findLayer(document, command.id)
@@ -4857,6 +5435,8 @@ export function createEngine(
           break
         }
         case "setLayer": {
+          if (command.locked && vectorTransform?.layerId === command.id)
+            cancelVectorTransform()
           const { type: _type, id, ...patch } = command
           const before = captureStructure(requireDocument())
           setLayer(requireDocument(), id, patch)
@@ -4946,6 +5526,9 @@ export function createEngine(
           commitSelection("select all", selectAll(requireDocument()))
           break
         case "abandonSelectionGesture":
+          dropShapeDrag()
+          cancelVectorTransform()
+          publish({ vectorSelection: [] })
           dropMarquee()
           break
         case "deselect":
@@ -5017,6 +5600,10 @@ export function createEngine(
         }
         case "undo":
         case "redo": {
+          if (vectorTransform) {
+            cancelVectorTransform()
+            break
+          }
           if (!history) break
           // See `publishHistory`: only the revert itself may undo a trial.
           if (restoreRevertible() && !revertingRestore) break
@@ -5240,6 +5827,7 @@ export function createEngine(
           cancelStroke()
           // A polygon half clicked out is dropped with the tool drawing it.
           dropMarquee()
+          cancelVectorTransform()
           tool = command.tool
           resampler = createStrokeResampler(brushSpacing(activeBrush()))
           applyBrushTextures()
@@ -5508,6 +6096,7 @@ export function createEngine(
     },
     dispose() {
       if (disposed) return
+      cancelVectorTransform()
       disposed = true
       stopSelection()
       thumbnails.dispose()
