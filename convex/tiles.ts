@@ -2,6 +2,7 @@ import { v } from "convex/values"
 
 import { requireOwnDocument } from "./documents"
 import { withNormalisedGuides } from "./lib/guides"
+import { releaseScenes, storeScenes } from "./sceneRows"
 import { recordVersion } from "./versions"
 import type { Id } from "./_generated/dataModel"
 import {
@@ -77,7 +78,12 @@ export const commitFlush = mutation({
     { documentId, tiles, removed, uploaded, structure: raw, metrics }
   ) => {
     const document = await requireOwnDocument(ctx, documentId)
-    const structure = withNormalisedGuides(raw)
+    // Scenes go to rows of their own and the tree keeps their hashes (20).
+    const structure = await storeScenes(
+      ctx,
+      documentId,
+      withNormalisedGuides(raw)
+    )
 
     for (const tile of tiles) {
       await upsertTile(ctx, documentId, tile)
@@ -115,7 +121,15 @@ export const commitFlush = mutation({
     // The flush payload is the whole document, not a delta, so the restore
     // point is that same tile set written down under a time (§9.4) — no
     // second pass over the tile rows, and no pixels duplicated.
-    await recordVersion(ctx, documentId, { structure, tiles })
+    const ladder = await recordVersion(ctx, documentId, { structure, tiles })
+    // The chunks the previous tree and the thinned points named, less any a
+    // tree still standing names, are named by nothing now.
+    await releaseScenes(
+      ctx,
+      documentId,
+      [document.structure, ...ladder.pruned],
+      ladder.kept
+    )
 
     await ctx.db.insert("syncMetrics", {
       documentId,

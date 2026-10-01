@@ -535,6 +535,15 @@ export const studioCommands = createRegistry<StudioContext>([
     ),
   },
   {
+    id: "layer.rasterise",
+    label: "Rasterise layer",
+    category: "Layers",
+    ...onLayer(
+      (layer) => ({ type: "rasteriseLayer", id: layer.id }),
+      (layer) => layer.kind === "vector"
+    ),
+  },
+  {
     id: "document.clear",
     label: "Clear canvas",
     category: "Document",

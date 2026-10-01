@@ -215,6 +215,63 @@ describe("hydrate", () => {
     expect(presignedHashes).toEqual([])
   })
 
+  test("a document holding only shapes opens with its scene and uploads no tiles", async () => {
+    const cloud = createFakeCloud()
+    const shapes: DocumentStructure = {
+      layers: [
+        {
+          id: "vector-1",
+          kind: "vector",
+          name: "Shapes",
+          opacity: 1,
+          visible: true,
+          blend: "normal",
+          clip: false,
+          locked: false,
+          scene: {
+            objects: [
+              {
+                id: "shape-1",
+                geometry: { kind: "rect", x: 0, y: 0, width: 4, height: 4 },
+                transform: [1, 0, 0, 1, 0, 0],
+                style: {
+                  fill: { color: "#ff0000", opacity: 1, rule: "nonzero" },
+                  stroke: null,
+                },
+              },
+            ],
+          },
+        },
+      ],
+      activeLayerId: "vector-1",
+      paintingMask: false,
+    }
+    const puts: string[] = []
+    const sync = createCloudSync({
+      remote: cloud.remote,
+      // A vector layer's pixels are a local cache of its scene: none of them
+      // are in the tile index a flush is made from.
+      snapshot: () => ({ structure: shapes, surfaces: [] }),
+      tiles: async (hash) => texelsFor(hash),
+      put: async (url, bytes) => {
+        puts.push(url)
+        await cloud.put(url, bytes)
+      },
+    })
+    await sync.flush()
+    expect(puts).toEqual([])
+
+    const local = createDocumentStore(createMemoryBlobStore())
+    const manifest = await hydrateFromRemote({
+      documentId: "doc-1",
+      remote: cloud.remote,
+      local,
+      get: cloud.get,
+    })
+    expect(manifest?.structure).toEqual(shapes)
+    expect((await local.load("doc-1"))?.structure).toEqual(shapes)
+  })
+
   test("a document never flushed returns null rather than an empty document", async () => {
     const cloud = createFakeCloud()
     const local = createDocumentStore(createMemoryBlobStore())

@@ -22,7 +22,11 @@
  */
 
 import type { ImageAssetRef } from "../doc/image-source"
-import { structureAssets, type DocumentStructure } from "../doc/structure"
+import {
+  structureAssets,
+  type DocumentStructure,
+  type NodeStructure,
+} from "../doc/structure"
 import type {
   DocumentManifest,
   DocumentStore,
@@ -380,6 +384,14 @@ export function createCloudSync(options: {
   }
 }
 
+function holdsShapes(nodes: readonly NodeStructure[]): boolean {
+  return nodes.some(
+    (node) =>
+      (node.kind === "vector" && (node.scene?.objects.length ?? 0) > 0) ||
+      holdsShapes(node.children ?? [])
+  )
+}
+
 type Slot = { surfaceId: string; x: number; y: number }
 
 function slotKey(slot: Slot): string {
@@ -486,7 +498,13 @@ export async function hydrateFromRemote(options: {
     options.remote.documentMeta(),
     options.remote.tileIndex(),
   ])
-  if (meta.structure === null || rows.length === 0) return null
+  // A document of shapes alone has no tiles to name — its pixels are drawn
+  // from its scenes — and is still a document worth opening (20).
+  if (
+    meta.structure === null ||
+    (rows.length === 0 && !holdsShapes(meta.structure.layers))
+  )
+    return null
 
   const bySurface = new Map<string, TileRef[]>()
   for (const row of rows) {
