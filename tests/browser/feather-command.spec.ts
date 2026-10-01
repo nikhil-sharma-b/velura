@@ -7,6 +7,11 @@ import { PNG } from "pngjs"
  * fades out rather than stopping dead.
  */
 
+// A smaller window than the default: while there is a selection its ants
+// recomposite the whole canvas on a timer, and on CI's software WebGPU a
+// full-size canvas leaves the page too little time to do anything else.
+test.use({ viewport: { width: 900, height: 500 } })
+
 async function openStudio(page: Page) {
   await page.goto("/")
   await expect(page.getByRole("main")).toHaveAttribute(
@@ -57,12 +62,11 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
 }) => {
   // Two strokes and their screenshots: more than CI's default allowance.
   test.slow()
-  // Timers the test can pause while it reads the screen; they run as usual
-  // until then.
-  await page.clock.install()
   const box = await openStudio(page)
-  const cx = box.x + box.width / 2
-  const cy = box.y + box.height / 2
+  // The selection's right edge, and the line strokes are drawn along: clear
+  // of the rail on the left and the layers panel on the right.
+  const edgeX = box.x + 400
+  const cy = box.y + 260
 
   // Without a selection the command is listed but cannot run.
   const option = await featherInPalette(page)
@@ -72,11 +76,11 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
   // canvas.
   await expect(page.getByRole("dialog")).toHaveCount(0)
 
-  // A rectangle selection, ending 100px right of the middle.
+  // A rectangle selection, ending at `edgeX`.
   await page.keyboard.press("m")
-  await page.mouse.move(cx - 150, cy - 60)
+  await page.mouse.move(edgeX - 250, cy - 60)
   await page.mouse.down()
-  await page.mouse.move(cx + 100, cy + 60, { steps: 8 })
+  await page.mouse.move(edgeX, cy + 60, { steps: 8 })
   await page.mouse.up()
 
   const enabled = await featherInPalette(page)
@@ -87,13 +91,9 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
   const radius = dialog.getByRole("textbox", { name: "Feather radius" })
   await radius.fill("24")
   await radius.press("Enter")
-  // The selection's ants redraw the canvas on a timer, which keeps CI's
-  // software WebGPU too busy to see Apply sit still or the dialog finish
-  // animating out; with the timers paused, both get their turn.
-  await page.clock.pauseAt(Date.now() + 1000)
+  // Pressed without waiting for a still frame, which the ants make rare.
   await dialog.getByRole("button", { name: "Apply" }).dispatchEvent("click")
   await expect(page.getByRole("dialog")).toHaveCount(0)
-  await page.clock.resume()
 
   // A stroke from well inside the selection to well outside it, measured
   // where it crosses the edge, then taken back.
@@ -106,22 +106,18 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
   }
   async function strokeAcross() {
     await page.keyboard.press("b")
-    await page.mouse.move(cx - 100, cy)
+    await page.mouse.move(edgeX - 200, cy)
     await page.mouse.down()
     // Few pointer events: the stroke is resampled between them anyway, and
     // each one is a frame CI's software WebGPU is slow to draw.
-    await page.mouse.move(cx + 200, cy, { steps: 12 })
+    await page.mouse.move(edgeX + 100, cy, { steps: 12 })
     await page.mouse.up()
     await page.waitForTimeout(200)
-    // Read with the page's timers paused: the marching ants redraw the canvas
-    // on one, and on CI's software WebGPU that leaves no quiet frame for a
-    // screenshot to be taken in.
-    await page.clock.pauseAt(Date.now() + 1000)
     const [inside, edge, beyond, far] = await darknessAlong(page, cy, [
-      cx - 60,
-      cx + 100,
-      cx + 112,
-      cx + 180,
+      edgeX - 160,
+      edgeX,
+      edgeX + 12,
+      edgeX + 80,
     ])
     const measured = {
       inside: inside!,
@@ -129,7 +125,6 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
       beyond: beyond!,
       far: far!,
     }
-    await page.clock.resume()
     await undo()
     return measured
   }
