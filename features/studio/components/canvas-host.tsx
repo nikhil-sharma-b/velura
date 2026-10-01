@@ -1109,8 +1109,18 @@ export function CanvasHost({
 
           <TooltipProvider delayDuration={350}>
             {/* One column holds both rails, so the gap between them stays the
-              same however tall the adjustments grow. */}
-            <div className="absolute top-[4.375rem] left-3 flex flex-col gap-3">
+              same however tall the adjustments grow. On a window too short
+              for both (05) the column scrolls, never the studio under it, and
+              ends 12px short of the bottom edge. Its side and bottom padding
+              is the margin the rails had, so their shadows are not cut off;
+              it starts where the rails do, so the canvas above them still
+              takes strokes. It takes the pointer, padding and all, so its
+              scrollbar can be dragged. Its top and its height share one
+              offset. */}
+            <div
+              data-testid="tool-rails"
+              className="absolute top-[4.375rem] left-0 flex max-h-[calc(100%-4.375rem)] flex-col gap-3 overflow-y-auto overscroll-contain px-3 pb-3 [scrollbar-width:thin] *:shrink-0"
+            >
               <div
                 aria-label="Brush adjustments"
                 className="flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"

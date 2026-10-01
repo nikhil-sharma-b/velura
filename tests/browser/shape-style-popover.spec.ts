@@ -7,10 +7,6 @@ import { PNG } from "pngjs"
  * what the shape tools give a new shape.
  */
 
-// Tall enough for the whole tool rail, so reaching the object tool does not
-// scroll the canvas out from under the coordinates the shape was drawn at.
-test.use({ viewport: { width: 1280, height: 1000 } })
-
 async function openStudio(page: Page) {
   await page.goto("/")
   await expect(page.getByRole("main")).toHaveAttribute(
