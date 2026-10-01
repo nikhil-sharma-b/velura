@@ -89,7 +89,13 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
 
   // A stroke from well inside the selection to well outside it, measured
   // where it crosses the edge, then taken back.
-  const undo = page.getByRole("button", { name: "Undo" })
+  // Undone by key rather than by clicking the button: with marching ants
+  // drawing every frame, CI's software WebGPU leaves Playwright no quiet
+  // frames to find the button stable in, and a click waits for one.
+  const undo = async () => {
+    await expect(page.getByRole("button", { name: "Undo" })).toBeEnabled()
+    await page.keyboard.press("ControlOrMeta+z")
+  }
   async function strokeAcross() {
     await page.keyboard.press("b")
     await page.mouse.move(cx - 100, cy)
@@ -111,7 +117,7 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
       beyond: beyond!,
       far: far!,
     }
-    await undo.click()
+    await undo()
     return measured
   }
 
@@ -124,7 +130,7 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
   expect(soft.beyond).toBeGreaterThan(soft.far + 2)
 
   // One step: a single undo puts the hard edge back, selection and all.
-  await undo.click()
+  await undo()
   const hard = await strokeAcross()
   expect(hard.inside).toBeGreaterThan(40)
   expect(hard.beyond).toBeLessThan(2)
