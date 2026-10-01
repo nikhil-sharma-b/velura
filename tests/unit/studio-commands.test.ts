@@ -387,3 +387,38 @@ describe("snapping and alignment", () => {
     expect(some.sent).toEqual([{ type: "clearGuides" }])
   })
 })
+
+describe("filter commands", () => {
+  const kinds = ["hsl", "brightnessContrast", "blur"] as const
+
+  test("each opens its filter on the active paintable layer", () => {
+    const { engine, sent } = fakeEngine([raster("a"), raster("b")], "b")
+    for (const kind of kinds)
+      runStudioCommand(`filter.${kind}`, context(engine))
+    expect(sent).toEqual(
+      kinds.map((kind) => ({ type: "beginFilter", id: "b", kind }))
+    )
+  })
+
+  test("are not offered on a locked layer, an image or a group", () => {
+    const group = {
+      id: "g",
+      kind: "group",
+      name: "g",
+      visible: true,
+      children: [],
+    } as unknown as LayerSummary
+    const { engine } = fakeEngine([
+      raster("locked", { locked: true }),
+      raster("image", { image: {} } as Partial<LayerSummary>),
+      group,
+      raster("ok"),
+    ])
+    for (const kind of kinds) {
+      const command = studioCommands.get(`filter.${kind}`)!
+      for (const id of ["locked", "image", "g"])
+        expect(command.available!(context(engine, id))).toBe(false)
+      expect(command.available!(context(engine, "ok"))).toBe(true)
+    }
+  })
+})

@@ -97,6 +97,7 @@ import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
 import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
+import { FilterDialog } from "./filter-dialog"
 import {
   runStudioCommand,
   PALETTE_COMMAND,
@@ -1764,6 +1765,7 @@ export function CanvasHost({
           </section>
         </div>
       )}
+      {engine && <FilterDialog engine={engine} open={snapshot.filter} />}
       <PreferencesPanel
         defaults={studioCommands}
         open={preferencesOpen}

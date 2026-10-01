@@ -34,6 +34,13 @@ import {
   clearSelectionShader,
   copySelectionShader,
 } from "../shaders/clear-selection"
+import {
+  blurKernel,
+  MAX_BLUR_RADIUS,
+  normalizeFilter,
+  type Filter,
+} from "../filters/filter"
+import { filterShader } from "../shaders/filter"
 import { marchingAntsShader } from "../shaders/marching-ants"
 import { placedImageShader } from "../shaders/placed-image"
 import { thumbnailShader } from "../shaders/thumbnail"
@@ -265,6 +272,22 @@ export interface Renderer {
    * coverage. Returns the region it touched, or null with nothing selected.
    */
   clearSelected(surfaceId: string): PixelRect | null
+  /**
+   * Starts a filter on one surface (18): keeps its pixels as they are, which
+   * every preview starts from and a cancel puts back. False when the surface
+   * holds nothing.
+   */
+  beginFilter(surfaceId: string): boolean
+  /**
+   * Redraws the filtering surface from what it held at the start, through
+   * `filter` and within the selection. Answers the region that can differ.
+   */
+  previewFilter(filter: Filter): PixelRect | null
+  /**
+   * Ends the filter: kept, the surface holds the last preview; not kept, it
+   * holds what it did before the filter began.
+   */
+  endFilter(keep: boolean): void
   /**
    * Draws what the selection covers of one surface into another, in
    * proportion to the coverage (11). Returns the region it wrote, or null
@@ -1004,6 +1027,162 @@ export function createRenderer(
     pass.setScissorRect(region.x, region.y, region.width, region.height)
     pass.draw(3)
     pass.end()
+    device.queue.submit([encoder.finish()])
+    return region
+  }
+
+  // The filter in progress (18): the surface it writes, and that surface as
+  // it was when the filter began.
+  let filtering: { target: Surface; original: Surface } | undefined
+  let blurIntermediate: Surface | undefined
+  const filterLayout = device.createBindGroupLayout({
+    label: "filter",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "read-only-storage" },
+      },
+    ],
+  })
+  const filterModule = device.createShaderModule({ code: filterShader })
+  const filterPipelines = Object.fromEntries(
+    (["colourMain", "blurAcrossMain", "blurDownMain"] as const).map(
+      (entryPoint) => [
+        entryPoint,
+        device.createRenderPipeline({
+          label: `filter:${entryPoint}`,
+          layout: device.createPipelineLayout({
+            bindGroupLayouts: [filterLayout],
+          }),
+          vertex: { module: filterModule, entryPoint: "vertexMain" },
+          fragment: {
+            module: filterModule,
+            entryPoint,
+            targets: [{ format: LAYER_FORMAT }],
+          },
+          primitive: { topology: "triangle-list" },
+        }),
+      ]
+    )
+  ) as Record<
+    "colourMain" | "blurAcrossMain" | "blurDownMain",
+    GPURenderPipeline
+  >
+  const filterUniform = device.createBuffer({
+    size: 32,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
+  const filterKernel = device.createBuffer({
+    size: 4 * (MAX_BLUR_RADIUS + 1),
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  })
+  /** Bound for the selection while nothing is selected; the shader skips it. */
+  const noSelection = device.createTexture({
+    size: { width: 1, height: 1 },
+    format: TEXTURE_FORMAT,
+    usage: GPUTextureUsage.TEXTURE_BINDING,
+  })
+
+  function endFilter(keep: boolean) {
+    if (!filtering) return
+    const { target, original } = filtering
+    if (!keep) copySurface(original, target)
+    original.texture.destroy()
+    blurIntermediate?.texture.destroy()
+    blurIntermediate = undefined
+    filtering = undefined
+  }
+
+  /** The filter's settings and inputs, reading `between` as given. */
+  function filterBindGroup(original: Surface, between: GPUTextureView) {
+    return device.createBindGroup({
+      layout: filterLayout,
+      entries: [
+        { binding: 0, resource: { buffer: filterUniform } },
+        { binding: 1, resource: original.view },
+        { binding: 2, resource: between },
+        {
+          binding: 3,
+          resource: (selection?.texture ?? noSelection).createView(),
+        },
+        { binding: 4, resource: { buffer: filterKernel } },
+      ],
+    })
+  }
+
+  function drawFilter(filter: Filter): PixelRect {
+    const { target, original } = filtering!
+    const f = normalizeFilter(filter)
+    const params = new ArrayBuffer(32)
+    const ints = new Uint32Array(params)
+    const floats = new Float32Array(params)
+    ints[1] = selection ? 1 : 0
+    if (f.kind === "hsl") {
+      ints[0] = 0
+      floats.set([f.hue / 360, f.saturation / 100, f.lightness / 100], 4)
+    } else if (f.kind === "brightnessContrast") {
+      ints[0] = 1
+      floats.set([f.brightness / 200, 1 + f.contrast / 100], 4)
+    } else {
+      const kernel = blurKernel(f.radius)
+      new Int32Array(params)[2] = kernel.length - 1
+      device.queue.writeBuffer(filterKernel, 0, kernel)
+    }
+    device.queue.writeBuffer(filterUniform, 0, params)
+    const region = selection ? selection.bounds : { x: 0, y: 0, width, height }
+    if (f.kind === "blur") blurIntermediate ??= createSurface()
+    const bindGroup = filterBindGroup(
+      original,
+      blurIntermediate?.view ?? placeholderView
+    )
+    const encoder = device.createCommandEncoder()
+    const draw = (
+      pipeline: GPURenderPipeline,
+      view: GPUTextureView,
+      group: GPUBindGroup,
+      scissor: PixelRect
+    ) => {
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{ view, loadOp: "load", storeOp: "store" }],
+      })
+      pass.setPipeline(pipeline)
+      pass.setBindGroup(0, group)
+      pass.setScissorRect(scissor.x, scissor.y, scissor.width, scissor.height)
+      pass.draw(3)
+      pass.end()
+    }
+    if (f.kind === "blur") {
+      // The across pass reaches above and below the region as far as the
+      // down pass will read it.
+      const reach = Math.ceil(f.radius)
+      const top = Math.max(0, region.y - reach)
+      const bottom = Math.min(height, region.y + region.height + reach)
+      // The across pass writes `between`, which it must not also read.
+      const acrossGroup = filterBindGroup(original, placeholderView)
+      draw(
+        filterPipelines.blurAcrossMain,
+        blurIntermediate!.view,
+        acrossGroup,
+        {
+          x: region.x,
+          y: top,
+          width: region.width,
+          height: bottom - top,
+        }
+      )
+      draw(filterPipelines.blurDownMain, target.view, bindGroup, region)
+    } else {
+      draw(filterPipelines.colourMain, target.view, bindGroup, region)
+    }
     device.queue.submit([encoder.finish()])
     return region
   }
@@ -2133,6 +2312,20 @@ export function createRenderer(
       if (!target || target.empty) return null
       return drawClearSelected(target)
     },
+    beginFilter(surfaceId) {
+      const target = surfaces.get(surfaceId)
+      if (!target || target.empty) return false
+      if (filtering) endFilter(false)
+      const original = createSurface()
+      copySurface(target, original)
+      filtering = { target, original }
+      return true
+    },
+    previewFilter(filter) {
+      if (!filtering) return null
+      return drawFilter(filter)
+    },
+    endFilter,
     copySelected(sourceId, targetId) {
       if (!selection) return null
       const source = surfaces.get(sourceId)
