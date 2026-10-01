@@ -61,6 +61,7 @@ import {
   isSelectionTool,
   isVectorTool,
   type SelectionTool,
+  type ShapeStyle,
   type Tool,
   MAX_ZOOM,
   MIN_ZOOM,
@@ -103,6 +104,7 @@ import { TiltToggle } from "./tilt-toggle"
 import { IconButton } from "./icon-button"
 import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
+import { ShapeStylePanel } from "./shape-style-panel"
 import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
 import { FilterDialog } from "./filter-dialog"
@@ -243,6 +245,18 @@ function QuickSetting({
     </PopoverPrimitive.Root>
   )
 }
+
+/** What a shape is given, in words, for the shape options' trigger. */
+function shapeSummary(style: ShapeStyle): string {
+  return (
+    [style.fill && "filled", style.stroke && `${style.strokeWidth}px outline`]
+      .filter(Boolean)
+      .join(", ") || "no paint"
+  )
+}
+
+const shapeReadout = (style: ShapeStyle) =>
+  style.stroke ? `${style.strokeWidth}` : "fill"
 
 const getInitialSnapshot = () => INITIAL_SNAPSHOT
 const subscribeToNothing = () => () => {}
@@ -641,6 +655,18 @@ export function CanvasHost({
     openPreferences: () => setPreferencesOpen(true),
     toggleZen: () => setZen((on) => !on),
   }
+  // The shape options are memoised, so they get one handle on the commands
+  // for good, reading whichever context is current when one runs.
+  const latestContext = useRef(commandContext)
+  useEffect(() => {
+    latestContext.current = commandContext
+  })
+  const runShapeCommand = useCallback(
+    (id: string) => runStudioCommand(id, latestContext.current),
+    []
+  )
+  /** The selection's style while there is one, else what the tools give. */
+  const shapeOptions = snapshot.selectionStyle ?? snapshot.shapeStyle
   // The artist's own keybinds over the defaults. While preferences are open
   // the keys are being rebound, not used.
   const commands = useBoundRegistry(studioCommands)
@@ -1205,168 +1231,16 @@ export function CanvasHost({
                 {isVectorTool(snapshot.tool) && (
                   <QuickSetting
                     label="Shape"
-                    value={`${[
-                      snapshot.shapeStyle.fill && "filled",
-                      snapshot.shapeStyle.stroke &&
-                        `${snapshot.shapeStyle.strokeWidth}px outline`,
-                    ]
-                      .filter(Boolean)
-                      .join(", ")}`}
-                    readout={
-                      snapshot.shapeStyle.stroke
-                        ? `${snapshot.shapeStyle.strokeWidth}`
-                        : "fill"
-                    }
+                    value={shapeSummary(shapeOptions)}
+                    readout={shapeReadout(shapeOptions)}
                     icon={<RectangleIcon />}
                   >
-                    <div
-                      role="group"
-                      aria-label="Shape style"
-                      className="mb-3 grid grid-cols-2 gap-1 text-xs"
-                    >
-                      {(["fill", "stroke"] as const).map((part) => (
-                        <button
-                          key={part}
-                          type="button"
-                          aria-pressed={snapshot.shapeStyle[part]}
-                          className="rounded-md border border-transparent px-2 py-1 hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
-                          onClick={() =>
-                            void engine?.dispatch({
-                              type: "setShapeStyle",
-                              [part]: !snapshot.shapeStyle[part],
-                            })
-                          }
-                        >
-                          {part === "fill" ? "Fill" : "Outline"}
-                        </button>
-                      ))}
-                    </div>
-                    {(["fillColor", "strokeColor"] as const).map((part) => (
-                      <label key={part} className="block text-xs">
-                        {part === "fillColor" ? "Fill colour" : "Stroke colour"}
-                        <input
-                          type="color"
-                          aria-label={
-                            part === "fillColor"
-                              ? "Fill colour"
-                              : "Stroke colour"
-                          }
-                          value={
-                            snapshot.shapeStyle[part] ?? snapshot.color.hex
-                          }
-                          onChange={(event) =>
-                            void engine?.dispatch({
-                              type: "setShapeStyle",
-                              [part]: event.target.value,
-                            })
-                          }
-                        />
-                      </label>
-                    ))}
-                    {(["strokeCap", "strokeJoin"] as const).map((part) => (
-                      <label key={part} className="block text-xs">
-                        {part === "strokeCap" ? "Cap" : "Join"}
-                        <select
-                          aria-label={
-                            part === "strokeCap" ? "Stroke cap" : "Stroke join"
-                          }
-                          value={snapshot.shapeStyle[part]}
-                          onChange={(event) =>
-                            void engine?.dispatch(
-                              part === "strokeCap"
-                                ? {
-                                    type: "setShapeStyle",
-                                    strokeCap: event.target.value as
-                                      | "butt"
-                                      | "round"
-                                      | "square",
-                                  }
-                                : {
-                                    type: "setShapeStyle",
-                                    strokeJoin: event.target.value as
-                                      | "miter"
-                                      | "round"
-                                      | "bevel",
-                                  }
-                            )
-                          }
-                        >
-                          {(part === "strokeCap"
-                            ? ["butt", "round", "square"]
-                            : ["miter", "round", "bevel"]
-                          ).map((value) => (
-                            <option key={value}>{value}</option>
-                          ))}
-                        </select>
-                      </label>
-                    ))}
-                    {snapshot.vectorSelection.length > 0 && (
-                      <div className="flex flex-wrap gap-1 text-xs">
-                        {(["transform", "duplicate", "delete"] as const).map(
-                          (action) => (
-                            <button
-                              key={action}
-                              onClick={() =>
-                                runStudioCommand(
-                                  `object.${action}`,
-                                  commandContext
-                                )
-                              }
-                            >
-                              {action}
-                            </button>
-                          )
-                        )}
-                        {(["front", "back"] as const).map((to) => (
-                          <button
-                            key={to}
-                            onClick={() =>
-                              void engine?.dispatch({
-                                type: "reorderVectorObjects",
-                                to,
-                              })
-                            }
-                          >
-                            {to}
-                          </button>
-                        ))}
-                        {(
-                          [
-                            "left",
-                            "hcenter",
-                            "right",
-                            "top",
-                            "vcenter",
-                            "bottom",
-                          ] as const
-                        ).map((anchor) => (
-                          <button
-                            key={anchor}
-                            onClick={() =>
-                              void engine?.dispatch({
-                                type: "alignVectorObjects",
-                                anchor,
-                                to: "canvas",
-                              })
-                            }
-                          >
-                            {anchor}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    <SliderSetting
-                      label="Outline width"
-                      value={snapshot.shapeStyle.strokeWidth}
-                      min={1}
-                      max={64}
-                      step={1}
-                      onChange={(strokeWidth) =>
-                        void engine?.dispatch({
-                          type: "setShapeStyle",
-                          strokeWidth,
-                        })
-                      }
+                    <ShapeStylePanel
+                      engine={engine}
+                      style={shapeOptions}
+                      selected={snapshot.selectionStyle !== null}
+                      currentColor={snapshot.color.hex}
+                      runCommand={runShapeCommand}
                     />
                   </QuickSetting>
                 )}

@@ -16,7 +16,9 @@ import {
 } from "./store/export-svg"
 import { svgPngImage } from "./store/svg-images"
 import {
+  selectionStyle,
   selectObjects,
+  type ShapeStyle,
   objectsBounds,
   objectBounds as vectorObjectBounds,
   transformObjects,
@@ -434,21 +436,10 @@ export const isVectorTool = (tool: Tool): tool is VectorTool =>
 
 export type Tool = PaintTool | SelectionTool | VectorTool
 
-/**
- * How the shape tools draw (19): filled, outlined, or both, in the current
- * colour. Per-object styles are the scene's own; this is only what a new
- * shape is given.
- */
-export type ShapeStyle = Readonly<{
-  fill: boolean
-  stroke: boolean
-  /** The outline's width in document pixels. */
-  strokeWidth: number
-  strokeCap: import("./doc/vector-scene").LineCap
-  strokeJoin: import("./doc/vector-scene").LineJoin
-  fillColor: string | null
-  strokeColor: string | null
-}>
+export type { ShapeStyle }
+const sameShapeStyle = (a: ShapeStyle, b: ShapeStyle) =>
+  (Object.keys(a) as (keyof ShapeStyle)[]).every((key) => a[key] === b[key])
+
 export const DEFAULT_SHAPE_STYLE: ShapeStyle = Object.freeze({
   fill: true,
   stroke: false,
@@ -891,6 +882,11 @@ export type EngineSnapshot = Readonly<{
   tool: Tool
   /** What the shape tools give a new shape (19). */
   shapeStyle: ShapeStyle
+  /**
+   * The selected objects' own style, which the shape options show and edit
+   * in place of `shapeStyle` while there is one; null with none selected.
+   */
+  selectionStyle: ShapeStyle | null
   vectorSelection: readonly string[]
   vectorPaths: readonly VectorObject[]
   penNodes: readonly PathNode[]
@@ -1030,6 +1026,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   straightEdge: null,
   tool: "brush",
   shapeStyle: DEFAULT_SHAPE_STYLE,
+  selectionStyle: null,
   vectorSelection: [],
   vectorPaths: [],
   penNodes: [],
@@ -1692,6 +1689,28 @@ export function createEngine(
         layer.kind === "vector"
           ? objectsBounds(layer.scene, next.vectorSelection)
           : null
+    }
+    if (
+      doc &&
+      (update.vectorSelection ||
+        update.layers ||
+        update.tool ||
+        update.vectorPaths ||
+        update.shapeStyle)
+    ) {
+      const layer = activeLayer(doc)
+      const style =
+        layer.kind === "vector"
+          ? selectionStyle(layer.scene, next.vectorSelection, next.shapeStyle)
+          : null
+      // Kept by identity while it says the same, so a frame that changed
+      // nothing about it does not re-render the options.
+      next.selectionStyle =
+        style &&
+        snapshot.selectionStyle &&
+        sameShapeStyle(style, snapshot.selectionStyle)
+          ? snapshot.selectionStyle
+          : style && Object.freeze(style)
     }
     if (
       Object.keys(next).every(
@@ -2775,29 +2794,10 @@ export function createEngine(
       : dragRect(anchor, point, false)
   }
 
+  /** The tool's default stays as it was; the selection's own style is
+   * derived from the scene as it is published. */
   function setVectorSelection(ids: readonly string[]) {
-    const layer = selectedVectorLayer()
-    const object = layer.scene.objects.find((o) => ids.includes(o.id))
-    publish({
-      vectorSelection: ids,
-      ...(object
-        ? {
-            shapeStyle: {
-              ...snapshot.shapeStyle,
-              fill: object.style.fill !== null,
-              stroke: object.style.stroke !== null,
-              fillColor: object.style.fill?.color ?? null,
-              strokeColor: object.style.stroke?.color ?? null,
-              strokeWidth:
-                object.style.stroke?.width ?? snapshot.shapeStyle.strokeWidth,
-              strokeCap:
-                object.style.stroke?.cap ?? snapshot.shapeStyle.strokeCap,
-              strokeJoin:
-                object.style.stroke?.join ?? snapshot.shapeStyle.strokeJoin,
-            },
-          }
-        : {}),
-    })
+    publish({ vectorSelection: ids })
   }
 
   function selectVectorRegion(region: Point | Extent, additive = false) {
@@ -2872,19 +2872,9 @@ export function createEngine(
               },
         },
       }))
+    // What a new shape is given is left as it was: the selection's own
+    // style is read back from the scene as it is published.
     editScene(layer.id, commands, "style objects")
-    if (color)
-      publish({
-        shapeStyle: {
-          ...snapshot.shapeStyle,
-          fillColor: snapshot.shapeStyle.fill
-            ? color
-            : snapshot.shapeStyle.fillColor,
-          strokeColor: snapshot.shapeStyle.stroke
-            ? color
-            : snapshot.shapeStyle.strokeColor,
-        },
-      })
   }
 
   async function beginVectorTransform() {
@@ -5532,6 +5522,12 @@ export function createEngine(
             !["miter", "round", "bevel"].includes(command.strokeJoin)
           )
             throw new Error("Invalid stroke join.")
+          // With objects selected, the options edit them, and what the tool
+          // gives a new shape is left as it was.
+          if (snapshot.vectorSelection.length) {
+            applySelectedStyle(undefined, command)
+            break
+          }
           publish({
             shapeStyle: Object.freeze({
               fill: command.fill ?? snapshot.shapeStyle.fill,
@@ -5544,7 +5540,6 @@ export function createEngine(
                 command.strokeColor ?? snapshot.shapeStyle.strokeColor,
             }),
           })
-          applySelectedStyle(undefined, command)
           break
         }
         case "placeImage": {

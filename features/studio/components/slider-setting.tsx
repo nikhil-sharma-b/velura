@@ -26,6 +26,7 @@ export function NumberField({
   label,
   labelledBy,
   className,
+  disabled,
   onCommit,
 }: {
   /** In display units, already scaled. */
@@ -39,6 +40,7 @@ export function NumberField({
   label?: string
   labelledBy?: string
   className?: string
+  disabled?: boolean
   /** Called with a finite value clamped to [min, max], in display units. */
   onCommit(value: number): void
 }) {
@@ -94,6 +96,7 @@ export function NumberField({
         inputMode="decimal"
         aria-label={label}
         aria-labelledby={labelledBy}
+        disabled={disabled}
         value={draft ?? value.toFixed(decimals)}
         onChange={(event) => edit(event.target.value)}
         onBlur={() => commit()}
@@ -141,6 +144,7 @@ export function SliderSetting({
   scale = 1,
   decimals = 0,
   unit,
+  disabled,
   onChange,
 }: {
   label: string
@@ -157,6 +161,7 @@ export function SliderSetting({
   decimals?: number
   /** How the artist reads the number: px, %, °. */
   unit?: string
+  disabled?: boolean
   onChange(value: number): void
 }) {
   // Generated, because the same setting can appear twice on one page: the
@@ -176,6 +181,7 @@ export function SliderSetting({
           decimals={decimals}
           unit={unit}
           label={label}
+          disabled={disabled}
           onCommit={(next) => onChange(next / scale)}
         />
       </div>
@@ -184,6 +190,7 @@ export function SliderSetting({
         min={min}
         max={max}
         step={step}
+        disabled={disabled}
         value={[value]}
         onValueChange={([next]) => onChange(next)}
       />

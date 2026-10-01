@@ -121,7 +121,7 @@ const isLeaf = (layer: LayerSummary) => layer.kind !== "group"
 const isPaintable = (layer: LayerSummary) =>
   layer.kind === "raster" && !layer.locked && !layer.image
 
-const ALIGN_ANCHORS: readonly [AlignAnchor, string][] = [
+export const ALIGN_ANCHORS: readonly [AlignAnchor, string][] = [
   ["left", "left edges"],
   ["hcenter", "horizontal centres"],
   ["right", "right edges"],
