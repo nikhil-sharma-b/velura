@@ -54,7 +54,9 @@ export const get = query({
     const userId = await getAuthUserId(ctx)
     if (userId === null) return null
     const row = await ownRow(ctx, userId)
-    return row ? { keybinds: row.keybinds } : null
+    return row
+      ? { keybinds: row.keybinds, rulersVisible: row.rulersVisible ?? null }
+      : null
   },
 })
 
@@ -80,5 +82,27 @@ export const claimKeybinds = mutation({
     )
     await writeKeybinds(ctx, userId, row, merged)
     return merged
+  },
+})
+
+/**
+ * Whether the rulers are shown (08), an app preference like the keybinds:
+ * kept with them, and created alongside empty keybinds for an artist whose
+ * first preference this is.
+ */
+export const setRulersVisible = mutation({
+  args: { visible: v.boolean() },
+  handler: async (ctx, { visible }) => {
+    const userId = await requireUserId(ctx)
+    const row = await ownRow(ctx, userId)
+    const updatedAt = Date.now()
+    if (row) await ctx.db.patch(row._id, { rulersVisible: visible, updatedAt })
+    else
+      await ctx.db.insert("preferences", {
+        ownerId: userId,
+        keybinds: {},
+        rulersVisible: visible,
+        updatedAt,
+      })
   },
 })

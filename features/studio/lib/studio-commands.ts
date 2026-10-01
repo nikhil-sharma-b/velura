@@ -9,6 +9,7 @@ import {
 import { createRegistry, type Command } from "@/features/commands/lib/registry"
 
 import { findSummary, leafCount } from "./layer-tree"
+import { writeRulersVisible } from "./ruler-preference"
 
 /** One press of a zoom key or button, which is a comfortable step by eye. */
 export const ZOOM_STEP = 1.25
@@ -720,10 +721,13 @@ export const studioCommands = createRegistry<StudioContext>([
     label: "Toggle rulers",
     category: "View",
     keybinds: ["mod+r"],
-    ...dispatching(({ engine }) => ({
-      type: "setRulersVisible",
-      visible: !engine?.getSnapshot().rulersVisible,
-    })),
+    available: hasEngine,
+    // A preference (08), remembered as well as shown, so a reload keeps it.
+    run: ({ engine }) => {
+      const visible = !engine?.getSnapshot().rulersVisible
+      writeRulersVisible(visible)
+      void engine?.dispatch({ type: "setRulersVisible", visible })
+    },
   },
   {
     id: "view.toggleGuides",

@@ -233,6 +233,8 @@ export default defineSchema({
   preferences: defineTable({
     ownerId: v.id("users"),
     keybinds: v.record(v.string(), v.array(v.string())),
+    // Absent until the artist first shows or hides them (08).
+    rulersVisible: v.optional(v.boolean()),
     updatedAt: v.number(),
   }).index("by_owner", ["ownerId"]),
 

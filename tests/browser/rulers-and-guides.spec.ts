@@ -191,3 +191,31 @@ test("the rulers follow the view as it zooms and turns", async ({ page }) => {
   await page.keyboard.press(".")
   await expect.poll(labels).not.toEqual(zoomed)
 })
+
+test("rulers turned on stay on after a reload, and off once turned off", async ({
+  page,
+}) => {
+  const ready = () =>
+    expect(page.getByRole("main")).toHaveAttribute(
+      "data-engine-status",
+      "ready"
+    )
+  await page.goto("/")
+  await ready()
+  const top = page.getByTestId("ruler-top")
+  await expect(top).not.toBeAttached()
+  await page.keyboard.press("ControlOrMeta+r")
+  await expect(top).toBeVisible()
+
+  await page.reload()
+  await ready()
+  await expect(top).toBeVisible()
+
+  await page.keyboard.press("ControlOrMeta+r")
+  await expect(top).not.toBeAttached()
+  await page.reload()
+  await ready()
+  // Given a moment to come back, as a stale preference would.
+  await page.waitForTimeout(300)
+  await expect(top).not.toBeAttached()
+})

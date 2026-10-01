@@ -96,6 +96,7 @@ import {
   VectorNodes,
 } from "./image-transform"
 import { RulersAndGuides } from "./rulers-and-guides"
+import { useRulersVisible } from "../lib/ruler-preference"
 import { StraightEdgeOverlay } from "./straight-edge"
 import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor"
 import { BrushIcon, EraserToolIcon } from "./brush-icon"
@@ -428,6 +429,7 @@ export function CanvasHost({
   // artist had open are open again when they come back.
   const [zen, setZen] = useState(false)
   const [rulerLayer, setRulerLayer] = useState<HTMLDivElement | null>(null)
+  const rulersVisible = useRulersVisible()
   /** The canvas the engine presents into; the transform box sits over it. */
   const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(
     null
@@ -466,6 +468,15 @@ export function CanvasHost({
     setFeatherFor(snapshot.selection)
     if (!snapshot.selection && featherOpen) setFeatherOpen(false)
   }
+
+  // The rulers follow the preference (08): this device's copy as soon as
+  // the engine is ready, so a reload keeps them, and the account's when it
+  // arrives or another tab changes it.
+  useEffect(() => {
+    if (snapshot.status !== "ready" || !engine) return
+    if (engine.getSnapshot().rulersVisible === rulersVisible) return
+    void engine.dispatch({ type: "setRulersVisible", visible: rulersVisible })
+  }, [engine, snapshot.status, rulersVisible])
 
   // React 19 ref cleanup also covers Strict Mode's attach/detach rehearsal.
   const attach = useCallback(
