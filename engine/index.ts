@@ -166,6 +166,11 @@ import {
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
 import {
+  assistLine,
+  createStrokeAssist,
+  type StraightEdge,
+} from "./geom/stroke-assist"
+import {
   createRenderer,
   MAX_STAMPS_PER_DRAW,
   type Renderer,
@@ -288,6 +293,7 @@ export type { ImageAsset, ImageAssetRef, PlacedImage } from "./doc/image-source"
 export type { AlignAnchor, Extent, Snap, SnapTargets } from "./doc/snap"
 export { placementExtent, resolveSnap } from "./doc/snap"
 export type { Guide, GuideAxis } from "./doc/guides"
+export type { StraightEdge } from "./geom/stroke-assist"
 
 export type PaintTool = "brush" | "eraser"
 /** Tools that draw out a selection (07) instead of making a mark. */
@@ -347,6 +353,9 @@ const SAMPLE_CAPACITY = 512
 
 /** Fresh strokes follow the hand directly until the artist asks for smoothing. */
 export const DEFAULT_STABILIZATION = 0
+
+/** How near a guide, in CSS pixels, a stroke opens to be held to it (17). */
+const GUIDE_STROKE_REACH = 8
 
 export type EngineCommand =
   | { type: "initialize" }
@@ -554,6 +563,11 @@ export type EngineCommand =
   /** Whether the rulers are shown along the canvas's edges (16). */
   | { type: "setRulersVisible"; visible: boolean }
   /**
+   * Stroke assist (17): a straight-edge in document pixels, angle in radians,
+   * that every stroke, brush or eraser, is held to; null takes it away.
+   */
+  | { type: "setStraightEdge"; edge: StraightEdge | null }
+  /**
    * A layer's own settings. Every field is optional and unnamed ones are left
    * alone, so a control that owns one property need not know the rest.
    */
@@ -679,6 +693,8 @@ export type EngineSnapshot = Readonly<{
   /** Session view state (16): whether guides are drawn and snapped to. */
   guidesVisible: boolean
   rulersVisible: boolean
+  /** The straight-edge strokes are held to (17), if one is placed. */
+  straightEdge: StraightEdge | null
   /** The persistent tool in the hand; Alt/Option sampling never changes it. */
   tool: Tool
   /** Current display-encoded ink, updated by the eyedropper. */
@@ -799,6 +815,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   guides: Object.freeze([]),
   guidesVisible: true,
   rulersVisible: false,
+  straightEdge: null,
   tool: "brush",
   color: Object.freeze({
     red: 36 / 255,
@@ -1193,6 +1210,15 @@ export function createEngine(
   // a frame of drawing performs no allocation at all (D30).
   const samples = createSampleBuffer(SAMPLE_CAPACITY)
   const stabilizer = createStabilizer()
+  const assist = createStrokeAssist()
+  let straightEdge: StraightEdge | null = null
+  /**
+   * Where the last stroke lifted, in document pixels: what Shift at pen-down
+   * draws a straight line from (17). Session state, like the pen itself.
+   */
+  let lastStrokeEnd: { x: number; y: number } | null = null
+  /** Whether the stroke in flight was asked to start from `lastStrokeEnd`. */
+  let fromLastPoint = false
   // The pen response curve is engine state rather than a sampler argument: it
   // outlives any one attachment, and the sampler reads it back per sample.
   let pressureCurve: Curve = DEFAULT_PRESSURE_CURVE
@@ -1576,6 +1602,18 @@ export function createEngine(
     if (!Number.isFinite(occludedRight) || occludedRight < 0)
       throw new Error("Occlusion must be a non-negative, finite width.")
     return toBackingX(occludedRight)
+  }
+
+  /**
+   * How near a guide, in document pixels, a stroke has to open to be caught
+   * by it: a fixed reach on screen, whatever the zoom.
+   */
+  function guideReach(): number {
+    return (
+      GUIDE_STROKE_REACH *
+      viewport.devicePixelRatio *
+      Math.hypot(toDoc[0], toDoc[1])
+    )
   }
 
   /**
@@ -2691,8 +2729,32 @@ export function createEngine(
     // stabilizer, the resampler, the dabs — works in document pixels, so the
     // view is inverted here and nowhere else. This is what puts the mark
     // under the pen at any zoom, rotation and flip.
-    const x = toDocX(screenX, screenY)
-    const y = toDocY(screenX, screenY)
+    let x = toDocX(screenX, screenY)
+    let y = toDocY(screenX, screenY)
+    if (opening) {
+      // The line is chosen once, where the pen lands, and holds for the
+      // whole stroke however far the hand wanders from it.
+      const chosen = assistLine({
+        x,
+        y,
+        guides: guidesVisible && snapping ? requireDocument().guides : [],
+        guideReach: guideReach(),
+        edge: straightEdge,
+        fromLast: fromLastPoint ? lastStrokeEnd : null,
+      })
+      assist.begin(chosen?.line ?? null)
+      if (chosen) {
+        x = chosen.start.x
+        y = chosen.start.y
+      }
+    } else {
+      // Before the stabilizer, so the string is pulled along the line and
+      // not across it. Only position moves: pressure and tilt stay the
+      // pen's own (17).
+      const onLine = assist.filter(x, y)
+      x = onLine.x
+      y = onLine.y
+    }
     rawX = x
     rawY = y
     rawPressure = pressure
@@ -2731,6 +2793,8 @@ export function createEngine(
     if (!target || !past || !document || !store) return true
     cloudBehind = false
     fullyLoaded = Promise.resolve()
+    // A line from the last point means one in this document.
+    lastStrokeEnd = null
     pendingTiles.clear()
     unsyncedWhileLoading = false
     // Bound once, here, so the batch loader below reads a hash and writes a
@@ -2947,6 +3011,7 @@ export function createEngine(
       )
       resampler.end(emitStamp)
       flushStamps()
+      lastStrokeEnd = { x: rawX, y: rawY }
       // The whole mark is in the buffer now, so it goes into the layer once,
       // at the stroke's opacity (D27).
       const region = renderer?.endStroke()
@@ -3181,6 +3246,8 @@ export function createEngine(
     })
     stroking = true
     opening = true
+    // Shift at pen-down rules a line on from where the last stroke lifted.
+    fromLastPoint = shiftHeld
     // Pushed as the pen reported it: the buffer carries screen pixels and the
     // frame loop maps every sample the same way.
     samples.push(screenX, screenY, pressure, tiltX, tiltY, time)
@@ -4455,6 +4522,21 @@ export function createEngine(
         case "setRulersVisible":
           publish({ rulersVisible: command.visible !== false })
           break
+        case "setStraightEdge": {
+          const edge = command.edge
+          if (
+            edge &&
+            ![edge.x, edge.y, edge.angle].every((value) =>
+              Number.isFinite(value)
+            )
+          )
+            throw new Error("A straight-edge must sit at a finite place.")
+          straightEdge = edge
+            ? Object.freeze({ x: edge.x, y: edge.y, angle: edge.angle })
+            : null
+          publish({ straightEdge })
+          break
+        }
         case "setSnapping":
           snapping = command.enabled !== false
           publish({ snapping })
