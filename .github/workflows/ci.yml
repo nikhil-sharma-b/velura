@@ -3,8 +3,11 @@ on:
   pull_request:
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  check:
+  static:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -16,12 +19,83 @@ jobs:
       - run: bun run lint
       - run: bun run format:check
       - run: bun run typecheck
+
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run test:unit
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
       - run: bun run build
-      - run: bunx playwright install --with-deps chromium
-      - run: bun run test
+      # Shards serve this build with `next start` instead of rebuilding.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: next-build
+          path: |
+            .next/
+            !.next/cache/
+          include-hidden-files: true
+          retention-days: 1
+
+  browser:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: next-build
+          path: .next/
+      - id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: bunx playwright install --with-deps chromium
+      # The cache holds the browser only; system libraries still need installing.
+      - if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: bunx playwright install-deps chromium
+      - run: bun run test:browser --shard=${{ matrix.shard }}/${{ strategy.job-total }}
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: browser-test-results
+          name: browser-test-results-${{ matrix.shard }}
           path: test-results/
           retention-days: 7
+
+  # Branch protection requires this one check, so the job list can change
+  # without touching repository settings.
+  ci:
+    if: always()
+    needs: [static, unit, build, browser]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: exit 1
