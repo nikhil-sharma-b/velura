@@ -51,6 +51,8 @@ export function ExportDialog({
   /** Runs a studio command, so clearing goes the same way as every action. */
   runCommand(id: string): void
 }) {
+  const [raster, setRaster] = useState<"embed" | "omit">("embed")
+  const [warnings, setWarnings] = useState<string[]>([])
   const [quality, setQuality] = useState(82)
   const [busy, setBusy] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
@@ -58,6 +60,7 @@ export function ExportDialog({
 
   async function runOperation(label: string, work: () => Promise<void>) {
     setProblem(null)
+    setWarnings([])
     setBusy(label)
     try {
       await work()
@@ -168,6 +171,47 @@ export function ExportDialog({
           >
             Export editable .velura backup
           </Button>
+          <div className="grid gap-2 border p-3">
+            <Label htmlFor="svg-raster">Raster layers in SVG</Label>
+            <select
+              id="svg-raster"
+              value={raster}
+              disabled={busy !== null}
+              onChange={(event) =>
+                setRaster(event.target.value as "embed" | "omit")
+              }
+            >
+              <option value="embed">Embed as PNG images</option>
+              <option value="omit">Omit raster layers</option>
+            </select>
+            <Button
+              variant="outline"
+              disabled={busy !== null}
+              onClick={() =>
+                void runOperation("SVG", async () => {
+                  const result = await engine.exportSvg({ raster })
+                  setWarnings(result.warnings)
+                  download(
+                    new Blob([result.svg], { type: "image/svg+xml" }),
+                    "untitled-artwork.svg"
+                  )
+                })
+              }
+            >
+              Export SVG
+            </Button>
+          </div>
+          {warnings.length > 0 && (
+            <Alert>
+              <AlertDescription>
+                <ul>
+                  {warnings.map((warning, index) => (
+                    <li key={index}>{warning}</li>
+                  ))}
+                </ul>
+              </AlertDescription>
+            </Alert>
+          )}
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="destructive" disabled={busy !== null}>
