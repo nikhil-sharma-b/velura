@@ -24,6 +24,7 @@ import {
   MagicWandIcon,
   PaletteIcon,
   PolygonIcon,
+  RectangleIcon,
   SelectionIcon,
   SlidersIcon,
   StackIcon,
@@ -58,6 +59,7 @@ import {
   type Engine,
   INITIAL_SNAPSHOT,
   isSelectionTool,
+  isVectorTool,
   type SelectionTool,
   type Tool,
   MAX_ZOOM,
@@ -818,7 +820,36 @@ export function CanvasHost({
           const selected = findLayer(snapshot.layers, snapshot.activeLayerId)
           // The engine refuses these strokes without a word, so the refusal
           // is said here. Fixed ids keep repeated taps to one toast each.
-          if (selected?.kind !== "raster") return
+          if (!selected || selected.kind === "group") return
+          // Shapes go on a vector layer (19), and paint does not.
+          const shapes = isVectorTool(snapshot.tool)
+          if (shapes && selected.kind !== "vector") {
+            toast.info("Shapes are drawn on a vector layer.", {
+              id: "shape-layer",
+              action: {
+                label: "Add vector layer",
+                onClick: () =>
+                  runStudioCommand("layer.addVector", commandContext),
+              },
+            })
+            return
+          }
+          if (
+            !shapes &&
+            selected.kind === "vector" &&
+            !selected.locked &&
+            !isSelectionTool(snapshot.tool) &&
+            !(snapshot.paintingMask && selected.mask)
+          ) {
+            toast.info(
+              <>
+                <strong className="font-semibold">{selected.name}</strong> holds
+                shapes. Draw on it with the rectangle tool.
+              </>,
+              { id: "vector-layer" }
+            )
+            return
+          }
           if (selected.locked)
             toast.info(
               <>
@@ -827,7 +858,11 @@ export function CanvasHost({
               </>,
               { id: "locked-layer" }
             )
-          else if (selected.image && !(snapshot.paintingMask && selected.mask))
+          else if (
+            selected.kind === "raster" &&
+            selected.image &&
+            !(snapshot.paintingMask && selected.mask)
+          )
             // The refusal is where most artists meet this, so it carries the
             // way through rather than only naming the wall. The mask is named
             // too: it is the undoable way to hide part of a picture, and the
@@ -863,7 +898,7 @@ export function CanvasHost({
             ? SAMPLING_CURSOR
             : snapshot.tool === "moveSelection"
               ? "move"
-              : isSelectionTool(snapshot.tool)
+              : isSelectionTool(snapshot.tool) || isVectorTool(snapshot.tool)
                 ? "crosshair"
                 : TOOL_CURSOR,
         }}
@@ -1158,6 +1193,63 @@ export function CanvasHost({
                     </PopoverPrimitive.Portal>
                   </PopoverPrimitive.Root>
                 )}
+                {/* What a new shape is given (19), shown while a shape tool
+                is in the hand: filled, outlined, or both, in the current
+                colour. */}
+                {isVectorTool(snapshot.tool) && (
+                  <QuickSetting
+                    label="Shape"
+                    value={`${[
+                      snapshot.shapeStyle.fill && "filled",
+                      snapshot.shapeStyle.stroke &&
+                        `${snapshot.shapeStyle.strokeWidth}px outline`,
+                    ]
+                      .filter(Boolean)
+                      .join(", ")}`}
+                    readout={
+                      snapshot.shapeStyle.stroke
+                        ? `${snapshot.shapeStyle.strokeWidth}`
+                        : "fill"
+                    }
+                    icon={<RectangleIcon />}
+                  >
+                    <div
+                      role="group"
+                      aria-label="Shape style"
+                      className="mb-3 grid grid-cols-2 gap-1 text-xs"
+                    >
+                      {(["fill", "stroke"] as const).map((part) => (
+                        <button
+                          key={part}
+                          type="button"
+                          aria-pressed={snapshot.shapeStyle[part]}
+                          className="rounded-md border border-transparent px-2 py-1 hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
+                          onClick={() =>
+                            void engine?.dispatch({
+                              type: "setShapeStyle",
+                              [part]: !snapshot.shapeStyle[part],
+                            })
+                          }
+                        >
+                          {part === "fill" ? "Fill" : "Outline"}
+                        </button>
+                      ))}
+                    </div>
+                    <SliderSetting
+                      label="Outline width"
+                      value={snapshot.shapeStyle.strokeWidth}
+                      min={1}
+                      max={64}
+                      step={1}
+                      onChange={(strokeWidth) =>
+                        void engine?.dispatch({
+                          type: "setShapeStyle",
+                          strokeWidth,
+                        })
+                      }
+                    />
+                  </QuickSetting>
+                )}
                 {/* The wand's own options (10), shown while it is in the hand:
                 how far a colour may stray, and whether it reads the layer
                 or the picture as a whole. */}
@@ -1440,6 +1532,21 @@ export function CanvasHost({
                     }}
                   />
                 ))}
+                <RailAction
+                  label="Rectangle tool"
+                  command="tool.rectangle"
+                  variant={snapshot.tool === "rectangle" ? "default" : "ghost"}
+                  size="icon"
+                  aria-pressed={snapshot.tool === "rectangle"}
+                  onClick={() => {
+                    setLibraryOpen(false)
+                    setEraserOpen(false)
+                    runStudioCommand("tool.rectangle", commandContext)
+                  }}
+                  className="rounded-lg"
+                >
+                  <RectangleIcon />
+                </RailAction>
                 <RailAction
                   label="Colour"
                   variant={colorOpen ? "default" : "ghost"}

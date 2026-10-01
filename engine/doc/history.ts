@@ -11,6 +11,7 @@ import {
   tilesCoveringRect,
 } from "./tile-grid"
 import { createTileStore, type TileStore } from "./tile-store"
+import type { SceneChange } from "./vector-scene"
 import {
   createUndoStack,
   type SurfaceChange,
@@ -71,7 +72,22 @@ export type OperationPixels = {
    * sharing a key extend the step already on the stack.
    */
   coalesceAs?: string
+  /**
+   * What the operation did to vector layers' scenes (19), as the commands
+   * that did it and the ones that undo it. The scenes are already changed;
+   * the step only has to know how to go back and forth.
+   */
+  scenes?: readonly SceneChange[]
 }
+
+/**
+ * Puts scene edits into effect, for undo (`inverse`) or redo (`forward`).
+ * Called after the step's structure is back, so the layers exist to edit.
+ */
+export type ApplyScenes = (
+  changes: readonly SceneChange[],
+  direction: "undo" | "redo"
+) => void
 
 /** Texels for one tile, or null where the tile holds nothing at all. */
 export type TileWrite = TileCoord & { texels: Uint16Array | null }
@@ -125,8 +141,14 @@ export interface DocumentHistory {
     }[],
     canvas: { width: number; height: number }
   ): void
-  undo(applyStructure: (structure: DocumentStructure) => void): Promise<boolean>
-  redo(applyStructure: (structure: DocumentStructure) => void): Promise<boolean>
+  undo(
+    applyStructure: (structure: DocumentStructure) => void,
+    applyScenes?: ApplyScenes
+  ): Promise<boolean>
+  redo(
+    applyStructure: (structure: DocumentStructure) => void,
+    applyScenes?: ApplyScenes
+  ): Promise<boolean>
   canUndo(): boolean
   canRedo(): boolean
   depth(): number
@@ -293,6 +315,7 @@ export function createDocumentHistory(options: {
     // a slider nudged back to where it started must not cost an undo.
     const empty =
       entry.surfaces.every((surface) => surface.tiles.length === 0) &&
+      !entry.scenes?.some((change) => change.forward.length > 0) &&
       (!entry.structure ||
         sameStructure(entry.structure.before, entry.structure.after))
     if (!empty) stack.push(entry)
@@ -543,32 +566,42 @@ export function createDocumentHistory(options: {
         if (written.length > 0)
           await writePixels({ label, surfaces: written }, "after")
         const key = operation?.coalesceAs
+        const scenes = operation?.scenes?.length ? operation.scenes : undefined
         // Extending the step in place keeps the state it started from, which
         // is where undoing the whole run has to land.
         if (
           key &&
           surfaces.length === 0 &&
+          !scenes &&
           stack.extendTop(key, structure.after)
         )
           return
-        pushEntry({ label, surfaces, structure, coalesceAs: key })
+        pushEntry({
+          label,
+          surfaces,
+          structure,
+          coalesceAs: key,
+          ...(scenes ? { scenes } : {}),
+        })
       })
     },
-    async undo(applyStructure) {
+    async undo(applyStructure, applyScenes) {
       await this.settle()
       const entry = stack.undo()
       if (!entry) return false
       if (entry.structure) applyStructure(entry.structure.before)
+      if (entry.scenes) applyScenes?.(entry.scenes, "undo")
       await applyPixels(entry, "before")
       options.onChange?.()
       options.onCommit?.()
       return true
     },
-    async redo(applyStructure) {
+    async redo(applyStructure, applyScenes) {
       await this.settle()
       const entry = stack.redo()
       if (!entry) return false
       if (entry.structure) applyStructure(entry.structure.after)
+      if (entry.scenes) applyScenes?.(entry.scenes, "redo")
       await applyPixels(entry, "after")
       options.onChange?.()
       options.onCommit?.()

@@ -6,6 +6,7 @@ import type { ImagePlacement } from "./image-placement"
 import type { PlacedImage } from "./image-source"
 export type { PlacedImage } from "./image-source"
 import { seedScene } from "./scene"
+import { EMPTY_SCENE, type VectorScene } from "./vector-scene"
 import { cloneTiledMask, createTiledMask, type TiledMask } from "./tiled-mask"
 import {
   cloneTiledLayer,
@@ -49,19 +50,34 @@ export type Layer = NodeSettings & {
   surface: TiledLayer
 }
 
+/**
+ * Holds a scene of shapes rather than paint (19). Its pixels are drawn from
+ * the scene by the renderer whenever the scene changes, so they are a cache
+ * of it: undo records the scene's edits, a save writes the scene, and the
+ * pen is refused here as it is on an image layer — a mask still takes paint.
+ */
+export type VectorLayer = NodeSettings & {
+  readonly kind: "vector"
+  locked: boolean
+  scene: VectorScene
+}
+
+/** A node with pixels of its own for the compositor: anything but a group. */
+export type LeafLayer = Layer | VectorLayer
+
 export type LayerGroup = NodeSettings & {
   readonly kind: "group"
   children: LayerNode[]
 }
 
-export type LayerNode = Layer | LayerGroup
+export type LayerNode = Layer | VectorLayer | LayerGroup
 
 export type PaintDocument = {
   width: number
   height: number
   /** Bottom to top at every level. */
   layers: LayerNode[]
-  /** Always a raster layer: groups organise paint targets but are not one. */
+  /** Always a leaf: groups organise paint targets but are not one. */
   activeLayerId: string
   paintingMask: boolean
   /** Lines laid over the canvas from the rulers (16), in document pixels. */
@@ -70,7 +86,10 @@ export type PaintDocument = {
 
 export type CompositeItem = {
   id: string
-  /** Omitted by older direct renderer probes, where raster is the default. */
+  /**
+   * Omitted by older direct renderer probes, and for every leaf: a vector
+   * layer's pixels composite exactly as a raster layer's do.
+   */
   kind?: "raster" | "group"
   opacity: number
   blend: BlendMode
@@ -183,37 +202,69 @@ export function findNode(doc: PaintDocument, id: string): LayerNode {
   return requireNode(doc, id).node
 }
 
-export function findLayer(doc: PaintDocument, id: string): Layer {
+export function findLayer(doc: PaintDocument, id: string): LeafLayer {
   const node = findNode(doc, id)
-  if (node.kind !== "raster") throw new Error(`${id} is a group, not a layer.`)
+  if (node.kind === "group") throw new Error(`${id} is a group, not a layer.`)
   return node
 }
 
-export function activeLayer(doc: PaintDocument): Layer {
+/** The layer as a raster one, or the failure of asking a vector layer for paint. */
+export function findRasterLayer(doc: PaintDocument, id: string): Layer {
+  const layer = findLayer(doc, id)
+  if (layer.kind !== "raster")
+    throw new Error(`${layer.name} holds shapes, not paint.`)
+  return layer
+}
+
+export function activeLayer(doc: PaintDocument): LeafLayer {
   return findLayer(doc, doc.activeLayerId)
 }
 
-export function rasterLayers(nodes: readonly LayerNode[]): Layer[] {
+/** Every layer with pixels of its own, raster and vector, bottom to top. */
+export function leafLayers(nodes: readonly LayerNode[]): LeafLayer[] {
   return nodes.flatMap((node) =>
-    node.kind === "raster" ? [node] : rasterLayers(node.children)
+    node.kind === "group" ? leafLayers(node.children) : [node]
   )
 }
 
-export function addLayer(doc: PaintDocument): string {
+export function rasterLayers(nodes: readonly LayerNode[]): Layer[] {
+  return leafLayers(nodes).filter((node) => node.kind === "raster")
+}
+
+function insertAboveActive(doc: PaintDocument, layer: LeafLayer): string {
   const active = requireNode(doc, doc.activeLayerId)
-  const layer = createLayer(
-    doc.width,
-    doc.height,
-    `Layer ${rasterLayers(doc.layers).length + 1}`
-  )
   active.siblings.splice(active.index + 1, 0, layer)
   doc.activeLayerId = layer.id
   doc.paintingMask = false
   return layer.id
 }
 
-function cloneLayer(node: Layer): Layer {
-  const id = `layer-${++nextId}`
+export function addLayer(doc: PaintDocument): string {
+  return insertAboveActive(
+    doc,
+    createLayer(
+      doc.width,
+      doc.height,
+      `Layer ${leafLayers(doc.layers).length + 1}`
+    )
+  )
+}
+
+/** Adds an empty vector layer above the active one and selects it (19). */
+export function addVectorLayer(doc: PaintDocument): string {
+  const sequence = ++nextId
+  return insertAboveActive(doc, {
+    ...base(
+      `Vector ${leafLayers(doc.layers).length + 1}`,
+      `vector-${sequence}`
+    ),
+    kind: "vector",
+    locked: false,
+    scene: EMPTY_SCENE,
+  })
+}
+
+function cloneLayer(node: LeafLayer): LeafLayer {
   const mask = node.mask
     ? {
         ...node.mask,
@@ -221,10 +272,14 @@ function cloneLayer(node: Layer): Layer {
         surface: cloneTiledMask(node.mask.surface),
       }
     : undefined
+  const name = `${node.name} copy`
+  // A scene is an immutable value, so the copy shares it until either edits.
+  if (node.kind === "vector")
+    return { ...node, id: `vector-${++nextId}`, name, mask }
   return {
     ...node,
-    id,
-    name: `${node.name} copy`,
+    id: `layer-${++nextId}`,
+    name,
     mask,
     surface: cloneTiledLayer(node.surface),
   }
@@ -232,7 +287,7 @@ function cloneLayer(node: Layer): Layer {
 
 export function duplicateLayer(doc: PaintDocument, id: string): string {
   const source = requireNode(doc, id)
-  if (source.node.kind !== "raster")
+  if (source.node.kind === "group")
     throw new Error("Groups cannot be duplicated as layers.")
   const copy = cloneLayer(source.node)
   source.siblings.splice(source.index + 1, 0, copy)
@@ -265,30 +320,30 @@ export function addGroup(
   return group.id
 }
 
-function nearestRaster(
+function nearestLeaf(
   nodes: readonly LayerNode[],
   before: number
-): Layer | undefined {
+): LeafLayer | undefined {
   for (let index = Math.min(before, nodes.length - 1); index >= 0; index--) {
     const node = nodes[index]
-    if (node.kind === "raster") return node
-    const child = rasterLayers(node.children).at(-1)
+    if (node.kind !== "group") return node
+    const child = leafLayers(node.children).at(-1)
     if (child) return child
   }
 }
 
 export function removeLayer(doc: PaintDocument, id: string): LayerNode {
   const found = requireNode(doc, id)
-  if (rasterLayers(doc.layers).length - rasterLayers([found.node]).length < 1)
+  if (leafLayers(doc.layers).length - leafLayers([found.node]).length < 1)
     throw new Error("A document must keep at least one layer.")
   found.siblings.splice(found.index, 1)
   if (
-    rasterLayers([found.node]).some((layer) => layer.id === doc.activeLayerId)
+    leafLayers([found.node]).some((layer) => layer.id === doc.activeLayerId)
   ) {
     const replacement =
-      nearestRaster(found.siblings, found.index - 1) ??
-      nearestRaster(found.siblings, found.index) ??
-      rasterLayers(doc.layers)[0]
+      nearestLeaf(found.siblings, found.index - 1) ??
+      nearestLeaf(found.siblings, found.index) ??
+      leafLayers(doc.layers)[0]
     doc.activeLayerId = replacement.id
     doc.paintingMask = false
   }
@@ -358,7 +413,7 @@ export function setLayer(
   if (patch.blend !== undefined) node.blend = patch.blend
   if (patch.clip !== undefined) node.clip = patch.clip
   if (patch.locked !== undefined) {
-    if (node.kind !== "raster") throw new Error("Groups cannot be locked.")
+    if (node.kind === "group") throw new Error("Groups cannot be locked.")
     node.locked = patch.locked
   }
 }
@@ -448,12 +503,15 @@ export function resizeDocument(
     const mask = node.mask
       ? { ...node.mask, surface: createTiledMask({ width, height }) }
       : undefined
-    return node.kind === "raster"
-      ? { ...node, mask, surface: createTiledLayer({ width, height }) }
-      : { ...node, mask, children: node.children.map(resize) }
+    if (node.kind === "group")
+      return { ...node, mask, children: node.children.map(resize) }
+    // A scene is in document pixels, and keeps them across a new size.
+    if (node.kind === "vector") return { ...node, mask }
+    return { ...node, mask, surface: createTiledLayer({ width, height }) }
   }
   doc.layers = doc.layers.map(resize)
-  seedScene(rasterLayers(doc.layers)[0].surface)
+  const first = rasterLayers(doc.layers)[0]
+  if (first) seedScene(first.surface)
 }
 
 const contributes = (node: LayerNode) => node.visible && node.opacity > 0
@@ -465,11 +523,11 @@ const contributes = (node: LayerNode) => node.visible && node.opacity > 0
 export const HIGHLIGHT_DIM = 0.15
 
 /**
- * `lit`, when given, is the raster layers picked out; every other raster
- * layer is dimmed. Groups keep their own opacity, so nothing is dimmed twice.
+ * `lit`, when given, is the leaf layers picked out; every other leaf is
+ * dimmed. Groups keep their own opacity, so nothing is dimmed twice.
  */
 function item(node: LayerNode, lit?: ReadonlySet<string>): CompositeItem {
-  const dim = node.kind === "raster" && lit && !lit.has(node.id)
+  const dim = node.kind !== "group" && lit && !lit.has(node.id)
   return {
     id: node.id,
     ...(node.kind === "group" ? { kind: "group" as const } : {}),
@@ -533,10 +591,9 @@ export function planComposite(
     : undefined
   const lit = picked
     ? new Set(
-        (picked.kind === "group"
-          ? rasterLayers(picked.children)
-          : [picked]
-        ).map((layer) => layer.id)
+        (picked.kind === "group" ? leafLayers(picked.children) : [picked]).map(
+          (layer) => layer.id
+        )
       )
     : undefined
   const itemOf = (node: LayerNode) => item(node, lit)

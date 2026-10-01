@@ -84,7 +84,7 @@ const SPEED_SWING = 0.45
  * Mulberry32. Small, fast, and — the only property that matters here — the
  * same sequence everywhere, which a benchmark's comparability rests on.
  */
-function createRandom(seed: number): () => number {
+export function createRandom(seed: number): () => number {
   let state = seed >>> 0
   return () => {
     state = (state + 0x6d2b79f5) >>> 0

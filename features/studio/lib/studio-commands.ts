@@ -8,7 +8,7 @@ import {
 } from "@/engine"
 import { createRegistry, type Command } from "@/features/commands/lib/registry"
 
-import { findSummary, rasterCount } from "./layer-tree"
+import { findSummary, leafCount } from "./layer-tree"
 
 /** One press of a zoom key or button, which is a comfortable step by eye. */
 export const ZOOM_STEP = 1.25
@@ -97,6 +97,8 @@ function onLayer(
 }
 
 const isRaster = (layer: LayerSummary) => layer.kind === "raster"
+/** A layer with pixels of its own, raster or vector: anything but a group. */
+const isLeaf = (layer: LayerSummary) => layer.kind !== "group"
 /** A layer whose own pixels the artist may change: not locked, not an image. */
 const isPaintable = (layer: LayerSummary) =>
   layer.kind === "raster" && !layer.locked && !layer.image
@@ -285,6 +287,14 @@ export const studioCommands = createRegistry<StudioContext>([
     ...dispatching({ type: "setTool", tool: "moveSelection" }),
   },
   {
+    // U, the shape tool in every editor the hand learned on.
+    id: "tool.rectangle",
+    label: "Rectangle tool",
+    category: "Tools",
+    keybinds: ["u"],
+    ...dispatching({ type: "setTool", tool: "rectangle" }),
+  },
+  {
     // Escape lets go of an outline half drawn, the polygonal lasso's above
     // all, as it does in every editor with one.
     id: "select.abandonOutline",
@@ -359,6 +369,12 @@ export const studioCommands = createRegistry<StudioContext>([
     ...dispatching({ type: "addLayer" }),
   },
   {
+    id: "layer.addVector",
+    label: "Add vector layer",
+    category: "Layers",
+    ...dispatching({ type: "addVectorLayer" }),
+  },
+  {
     id: "layer.group",
     label: "Group active layer",
     category: "Layers",
@@ -368,7 +384,7 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "layer.duplicate",
     label: "Duplicate layer",
     category: "Layers",
-    ...onLayer((layer) => ({ type: "duplicateLayer", id: layer.id }), isRaster),
+    ...onLayer((layer) => ({ type: "duplicateLayer", id: layer.id }), isLeaf),
   },
   {
     id: "layer.clear",
@@ -398,9 +414,8 @@ export const studioCommands = createRegistry<StudioContext>([
     ...onLayer(
       (layer) => ({ type: "removeLayer", id: layer.id }),
       (layer, { engine }) => {
-        const removed =
-          layer.kind === "raster" ? 1 : rasterCount(layer.children)
-        return rasterCount(engine!.getSnapshot().layers) > removed
+        const removed = layer.kind === "group" ? leafCount(layer.children) : 1
+        return leafCount(engine!.getSnapshot().layers) > removed
       }
     ),
   },
@@ -422,9 +437,9 @@ export const studioCommands = createRegistry<StudioContext>([
       (layer) => ({
         type: "setLayer",
         id: layer.id,
-        locked: !(layer.kind === "raster" && layer.locked),
+        locked: !(layer.kind !== "group" && layer.locked),
       }),
-      isRaster
+      isLeaf
     ),
   },
   {
@@ -447,7 +462,7 @@ export const studioCommands = createRegistry<StudioContext>([
         type: layer.mask ? "selectMask" : "addMask",
         id: layer.id,
       }),
-      isRaster
+      isLeaf
     ),
   },
   {

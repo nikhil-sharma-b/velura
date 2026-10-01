@@ -13,10 +13,10 @@ export function findSummary(
   }
 }
 
-export function rasterCount(nodes: readonly LayerSummary[]): number {
+export function leafCount(nodes: readonly LayerSummary[]): number {
   return nodes.reduce(
     (count, node) =>
-      count + (node.kind === "raster" ? 1 : rasterCount(node.children)),
+      count + (node.kind === "group" ? leafCount(node.children) : 1),
     0
   )
 }

@@ -9,6 +9,7 @@ import type { BlendMode } from "../shaders/blend-modes"
 import type { ImageAssetRef, PlacedImage } from "./image-source"
 import { createTiledMask } from "./tiled-mask"
 import { createTiledLayer } from "./tiled-layer"
+import { EMPTY_SCENE, parseScene, type VectorScene } from "./vector-scene"
 
 /**
  * The layer tree without its pixels: what an undo entry needs to put the
@@ -18,7 +19,7 @@ import { createTiledLayer } from "./tiled-layer"
  */
 export type NodeStructure = {
   id: string
-  kind: "raster" | "group"
+  kind: "raster" | "vector" | "group"
   name: string
   opacity: number
   visible: boolean
@@ -35,6 +36,13 @@ export type NodeStructure = {
   placed?: PlacedImage
   mask?: { id: string; enabled: boolean }
   children?: NodeStructure[]
+  /**
+   * A vector layer's objects (19), in a save only. Undo carries a scene's
+   * edits rather than copies of it, so the tree an undo step compares and
+   * keeps leaves the scene out; a save has to write it, because it is the
+   * whole of what the layer holds.
+   */
+  scene?: VectorScene
 }
 
 export type DocumentStructure = {
@@ -55,7 +63,7 @@ export type DocumentStructure = {
   selection?: string | null
 }
 
-function captureNode(node: LayerNode): NodeStructure {
+function captureNode(node: LayerNode, scenes: boolean): NodeStructure {
   return {
     id: node.id,
     kind: node.kind,
@@ -64,7 +72,7 @@ function captureNode(node: LayerNode): NodeStructure {
     visible: node.visible,
     blend: node.blend,
     clip: node.clip,
-    ...(node.kind === "raster" ? { locked: node.locked } : {}),
+    ...(node.kind !== "group" ? { locked: node.locked } : {}),
     // Only written when set, so structures saved before image layers existed
     // read back unchanged.
     ...(node.kind === "raster" && node.image ? { image: true } : {}),
@@ -72,19 +80,50 @@ function captureNode(node: LayerNode): NodeStructure {
     ...(node.mask
       ? { mask: { id: node.mask.id, enabled: node.mask.enabled } }
       : {}),
+    ...(node.kind === "vector" && scenes ? { scene: node.scene } : {}),
     ...(node.kind === "group"
-      ? { children: node.children.map(captureNode) }
+      ? { children: node.children.map((child) => captureNode(child, scenes)) }
       : {}),
   }
 }
 
-export function captureStructure(doc: PaintDocument): DocumentStructure {
+/**
+ * The tree as it stands. `scenes` writes vector layers' objects into it, for
+ * a save; undo leaves them out (see `NodeStructure.scene`).
+ */
+export function captureStructure(
+  doc: PaintDocument,
+  options: { scenes?: boolean } = {}
+): DocumentStructure {
   return {
-    layers: doc.layers.map(captureNode),
+    layers: doc.layers.map((node) => captureNode(node, !!options.scenes)),
     activeLayerId: doc.activeLayerId,
     paintingMask: doc.paintingMask,
     ...(doc.guides.length ? { guides: [...doc.guides] } : {}),
   }
+}
+
+/**
+ * A saved tree with every vector layer's scene checked and copied clean.
+ * Throws on one that cannot be read: a document whose shapes did not come
+ * back must not be opened as if it had none, and then saved over.
+ */
+export function parseSavedScenes(
+  structure: DocumentStructure
+): DocumentStructure {
+  const parse = (nodes: readonly NodeStructure[]): NodeStructure[] =>
+    nodes.map((node) => {
+      if (node.children) return { ...node, children: parse(node.children) }
+      if (node.kind !== "vector") return node
+      try {
+        return { ...node, scene: parseScene(node.scene ?? EMPTY_SCENE) }
+      } catch (error) {
+        throw new Error(
+          `Vector layer ${node.id} is unreadable: ${(error as Error).message}`
+        )
+      }
+    })
+  return { ...structure, layers: parse(structure.layers) }
 }
 
 /** Every surface id a structure mentions: layers first, then their masks. */
@@ -92,7 +131,7 @@ export function structureSurfaceIds(structure: DocumentStructure): Set<string> {
   const ids = new Set<string>()
   const walk = (nodes: readonly NodeStructure[]) => {
     for (const node of nodes) {
-      if (node.kind === "raster") ids.add(node.id)
+      if (node.kind !== "group") ids.add(node.id)
       if (node.mask) ids.add(node.mask.id)
       if (node.children) walk(node.children)
     }
@@ -247,6 +286,20 @@ export function restoreStructure(
       }
       if (mask) group.mask = mask
       return group
+    }
+    if (snapshot.kind === "vector") {
+      // A saved tree carries the scene; an undo step's does not, and the
+      // scene's own edits are put back after it (see `NodeStructure.scene`).
+      const layer: LayerNode = {
+        ...settings,
+        kind: "vector",
+        locked: snapshot.locked ?? false,
+        scene:
+          snapshot.scene ??
+          (found?.kind === "vector" ? found.scene : EMPTY_SCENE),
+      }
+      if (mask) layer.mask = mask
+      return layer
     }
     const layer: LayerNode = {
       ...settings,
