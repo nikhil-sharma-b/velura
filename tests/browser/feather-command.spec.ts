@@ -44,6 +44,8 @@ async function darkness(page: Page, x: number, y: number) {
 test("feather selection runs from the palette, asks a radius, and softens a stroke's edge", async ({
   page,
 }) => {
+  // Two strokes and a dozen screenshots: more than CI's default allowance.
+  test.slow()
   const box = await openStudio(page)
   const cx = box.x + box.width / 2
   const cy = box.y + box.height / 2
@@ -81,7 +83,9 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
     await page.keyboard.press("b")
     await page.mouse.move(cx - 100, cy)
     await page.mouse.down()
-    await page.mouse.move(cx + 200, cy, { steps: 40 })
+    // Few pointer events: the stroke is resampled between them anyway, and
+    // each one is a frame CI's software WebGPU is slow to draw.
+    await page.mouse.move(cx + 200, cy, { steps: 12 })
     await page.mouse.up()
     await page.waitForTimeout(200)
     const measured = {
