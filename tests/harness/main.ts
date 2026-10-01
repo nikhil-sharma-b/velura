@@ -108,10 +108,13 @@ declare global {
      * its tiles stay listed: pixels on disk that no layer will load into.
      */
     strandLayer(documentId: string, layerId: string): Promise<void>
+    createLocalBlobStore: typeof createLocalBlobStore
     encodePreview: typeof encodePreview
     encodeExportImage: typeof encodeExportImage
   }
 }
+
+window.createLocalBlobStore = createLocalBlobStore
 
 window.storedPlacement = async (documentId) => {
   const store = createDocumentStore(createLocalBlobStore())

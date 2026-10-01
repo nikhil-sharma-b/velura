@@ -1,4 +1,6 @@
 import type { PaintDocument, LayerNode } from "../doc/document"
+import type { BezierPath } from "../doc/vector-path"
+import { tessellateObject, type Mesh } from "../geom/tessellate"
 import type { VectorObject } from "../doc/vector-scene"
 
 export type SvgExportOptions = { raster: "embed" | "omit" }
@@ -23,9 +25,47 @@ const escape = (value: string) =>
         })[char]!
     )
 
+/** Keep authored anchors and handles as native SVG cubic segments. */
+function pathData(path: BezierPath): string {
+  const first = path.nodes[0]
+  const commands = [`M${first.x} ${first.y}`]
+  const segments = path.closed ? path.nodes.length : path.nodes.length - 1
+  for (let i = 0; i < segments; i++) {
+    const a = path.nodes[i],
+      b = path.nodes[(i + 1) % path.nodes.length]
+    if (a.out || b.in) {
+      const out = a.out ?? a,
+        incoming = b.in ?? b
+      commands.push(
+        `C${out.x} ${out.y} ${incoming.x} ${incoming.y} ${b.x} ${b.y}`
+      )
+    } else commands.push(`L${b.x} ${b.y}`)
+  }
+  if (path.closed) commands.push("Z")
+  return commands.join(" ")
+}
+
+/** One nonzero fill unions the renderer's stroke triangles without repeatedly
+ * applying opacity where bands overlap. Give every triangle the same winding. */
+function strokeOutline(mesh: Mesh): string {
+  const commands: string[] = [],
+    v = mesh.vertices
+  for (let i = 0; i < v.length; i += 6) {
+    const [ax, ay, bx, by, cx, cy] = v.subarray(i, i + 6)
+    const cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    if (!cross) continue
+    commands.push(
+      cross > 0
+        ? `M${ax} ${ay} L${bx} ${by} L${cx} ${cy} Z`
+        : `M${ax} ${ay} L${cx} ${cy} L${bx} ${by} Z`
+    )
+  }
+  return commands.join(" ")
+}
+
 function shape(object: VectorObject): string {
   const { geometry: g, style, transform } = object
-  const fill = style.fill
+  const fill = g.kind === "path" && !g.closed ? null : style.fill
   const stroke = style.stroke
   const attrs = `transform="matrix(${transform.join(" ")})" fill="${escape(fill?.color ?? "none")}"${fill ? ` fill-opacity="${fill.opacity}" fill-rule="${fill.rule}"` : ""} stroke="${escape(stroke?.color ?? "none")}"${stroke ? ` stroke-opacity="${stroke.opacity}" stroke-width="${stroke.width}" stroke-linecap="${stroke.cap}" stroke-linejoin="${stroke.join}"` : ""}`
   switch (g.kind) {
@@ -33,6 +73,21 @@ function shape(object: VectorObject): string {
       return `<rect x="${g.x}" y="${g.y}" width="${g.width}" height="${g.height}" ${attrs}/>`
     case "ellipse":
       return `<ellipse cx="${g.cx}" cy="${g.cy}" rx="${g.rx}" ry="${g.ry}" ${attrs}/>`
+    case "path": {
+      const d = pathData(g)
+      if (g.nodes[0].width === undefined) return `<path d="${d}" ${attrs}/>`
+      // Pressure widths are already placed by the same mesh the canvas draws,
+      // so the outline must not receive the object's transform a second time.
+      const mesh = tessellateObject(object).stroke
+      const filled = fill
+        ? `<path d="${d}" transform="matrix(${transform.join(" ")})" fill="${escape(fill.color)}" fill-opacity="${fill.opacity}" fill-rule="${fill.rule}"/>`
+        : ""
+      const outline =
+        mesh && stroke
+          ? `<path d="${strokeOutline(mesh)}" fill="${escape(stroke.color)}" fill-opacity="${stroke.opacity}" fill-rule="nonzero" stroke="none"/>`
+          : ""
+      return `<g>${filled}${outline}</g>`
+    }
     case "polygon":
       return `<${g.closed ? "polygon" : "polyline"} points="${g.points.map((p) => `${p.x},${p.y}`).join(" ")}" ${attrs}/>`
   }

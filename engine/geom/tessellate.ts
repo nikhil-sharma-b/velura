@@ -18,6 +18,7 @@
  * a point can be hit-tested against an object without drawing it.
  */
 
+import { flattenPath } from "../doc/vector-path"
 import type {
   FillRule,
   Point,
@@ -68,7 +69,11 @@ function arcSegments(radius: number, sweep: number): number {
 }
 
 /** The object's outline in its own coordinates, and whether it closes. */
-function outline(object: VectorObject): { points: Point[]; closed: boolean } {
+function outline(object: VectorObject): {
+  points: Point[]
+  closed: boolean
+  widths?: number[] | null
+} {
   const geometry = object.geometry
   switch (geometry.kind) {
     case "rect": {
@@ -99,6 +104,8 @@ function outline(object: VectorObject): { points: Point[]; closed: boolean } {
       }
       return { points, closed: true }
     }
+    case "path":
+      return flattenPath(geometry, Math.hypot(...object.transform.slice(0, 4)))
     case "polygon":
       return { points: [...geometry.points], closed: geometry.closed }
   }
@@ -168,8 +175,8 @@ function direction(from: Point, to: Point): Vector {
 const normal = (v: Vector): Vector => ({ x: -v.y, y: v.x })
 
 /** Consecutive repeats dropped, and a closing repeat of the first point. */
-function distinct(points: readonly Point[], closed: boolean): Point[] {
-  const kept: Point[] = []
+function distinct<T extends Point>(points: readonly T[], closed: boolean): T[] {
+  const kept: T[] = []
   for (const point of points) {
     const last = kept.at(-1)
     if (!last || last.x !== point.x || last.y !== point.y) kept.push(point)
@@ -188,18 +195,20 @@ function distinct(points: readonly Point[], closed: boolean): Point[] {
 export function tessellateStroke(
   input: readonly Point[],
   closed: boolean,
-  stroke: Pick<VectorStroke, "width" | "cap" | "join">
+  stroke: Pick<VectorStroke, "width" | "cap" | "join">,
+  widths?: readonly number[] | null
 ): Mesh {
   const mesh = createBuilder("union")
-  const points = distinct(input, closed)
-  const half = stroke.width / 2
-  if (points.length < 2 || !(half > 0)) return mesh.finish()
+  const points = distinct(
+    input.map((p, i) => ({ ...p, width: widths?.[i] ?? stroke.width })),
+    closed
+  )
   const segments = closed ? points.length : points.length - 1
   const edge = (i: number) =>
     direction(points[i % points.length], points[(i + 1) % points.length])
 
   // An arc of triangles round `center`, from `start` turning by `sweep`.
-  const fan = (center: Point, start: number, sweep: number) => {
+  const fan = (center: Point, start: number, sweep: number, half: number) => {
     const count = arcSegments(half, sweep)
     let previous = add(center, { x: Math.cos(start), y: Math.sin(start) }, half)
     for (let i = 1; i <= count; i++) {
@@ -210,14 +219,19 @@ export function tessellateStroke(
     }
   }
 
+  if (points.length < 2) {
+    if (points.length && stroke.cap === "round")
+      fan(points[0], 0, Math.PI * 2, points[0].width / 2)
+    return mesh.finish()
+  }
   for (let i = 0; i < segments; i++) {
     const a = points[i]
     const b = points[(i + 1) % points.length]
     const side = normal(edge(i))
-    const a1 = add(a, side, half)
-    const b1 = add(b, side, half)
-    const b2 = add(b, side, -half)
-    const a2 = add(a, side, -half)
+    const a1 = add(a, side, a.width / 2)
+    const b1 = add(b, side, b.width / 2)
+    const b2 = add(b, side, -b.width / 2)
+    const a2 = add(a, side, -a.width / 2)
     mesh.triangle(a1, b1, b2)
     mesh.triangle(a1, b2, a2)
   }
@@ -229,6 +243,7 @@ export function tessellateStroke(
   const lastJoin = closed ? points.length - 1 : points.length - 2
   for (let i = firstJoin; i <= lastJoin; i++) {
     const center = points[i]
+    const half = center.width / 2
     const incoming = edge((i - 1 + points.length) % points.length)
     const outgoing = edge(i)
     const turn = incoming.x * outgoing.y - incoming.y * outgoing.x
@@ -245,7 +260,7 @@ export function tessellateStroke(
       let sweep = Math.atan2(to.y, to.x) - start
       if (sweep > Math.PI) sweep -= Math.PI * 2
       if (sweep < -Math.PI) sweep += Math.PI * 2
-      fan(center, start, sweep)
+      fan(center, start, sweep, half)
       continue
     }
     // cos of half the angle between the two outer edges.
@@ -271,12 +286,13 @@ export function tessellateStroke(
       { at: points.at(-1)!, out: edge(segments - 1), sign: 1 },
     ]
     for (const { at, out, sign } of ends) {
+      const half = at.width / 2
       const forward = { x: out.x * sign, y: out.y * sign }
       const side = normal(out)
       if (stroke.cap === "round") {
         // From one side, round through the end, to the other.
         const start = Math.atan2(side.y * -sign, side.x * -sign)
-        fan(at, start, Math.PI)
+        fan(at, start, Math.PI, half)
         continue
       }
       const s1 = add(at, side, half)
@@ -301,10 +317,15 @@ export function tessellateObject(object: VectorObject): {
   return {
     fill: fill && shape.closed ? tessellateFill([points], fill.rule) : null,
     stroke: stroke
-      ? tessellateStroke(points, shape.closed, {
-          ...stroke,
-          width: stroke.width * lengthScale(object.transform),
-        })
+      ? tessellateStroke(
+          points,
+          shape.closed,
+          {
+            ...stroke,
+            width: stroke.width * lengthScale(object.transform),
+          },
+          shape.widths?.map((w) => w * lengthScale(object.transform))
+        )
       : null,
   }
 }

@@ -331,6 +331,47 @@ export const studioCommands = createRegistry<StudioContext>([
     ...dispatching({ type: "setTool", tool: "polygon" }),
   },
   {
+    id: "tool.pen",
+    label: "Pen tool",
+    category: "Tools",
+    keybinds: ["p"],
+    ...dispatching({ type: "setTool", tool: "pen" }),
+  },
+  {
+    id: "tool.node",
+    label: "Node tool",
+    category: "Tools",
+    ...dispatching({ type: "setTool", tool: "node" }),
+  },
+  {
+    id: "tool.pressure",
+    label: "Vector pressure tool",
+    category: "Tools",
+    ...dispatching({ type: "setTool", tool: "pressure" }),
+  },
+  {
+    id: "path.finish",
+    label: "Finish open pen path",
+    category: "Tools",
+    ...dispatching({ type: "finishPenPath" }),
+    available: ({ engine }) =>
+      !!engine &&
+      engine.getSnapshot().tool === "pen" &&
+      engine.getSnapshot().penNodes.length >= 2,
+  },
+  {
+    id: "node.delete",
+    label: "Delete selected anchor",
+    category: "Tools",
+    ...dispatching({ type: "deleteVectorNode" }),
+  },
+  {
+    id: "node.toggle",
+    label: "Toggle smooth or corner anchor",
+    category: "Tools",
+    ...dispatching({ type: "toggleVectorNode" }),
+  },
+  {
     id: "tool.objectSelect",
     label: "Select objects tool",
     category: "Tools",

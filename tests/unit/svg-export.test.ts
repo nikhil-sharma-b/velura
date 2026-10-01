@@ -147,3 +147,50 @@ test("SVG replaces invalid XML characters in names and warns the artist", () => 
     result.warnings.some((warning) => warning.includes("invalid in XML"))
   ).toBe(true)
 })
+
+test("SVG preserves cubic handles and closing segments, but does not fill open paths", () => {
+  const doc = createBlankDocument({ width: 80, height: 60 })
+  const node = findNode(doc, addVectorLayer(doc))
+  if (node.kind !== "vector") throw new Error("Expected vector")
+  const geometry = {
+    kind: "path" as const,
+    closed: false,
+    nodes: [
+      {
+        x: 10,
+        y: 20,
+        in: { x: 5, y: 30 },
+        out: { x: 15, y: 0 },
+        smooth: false,
+      },
+      {
+        x: 40,
+        y: 20,
+        in: { x: 35, y: 0 },
+        out: { x: 45, y: 30 },
+        smooth: false,
+      },
+    ],
+  }
+  const object = {
+    id: "open",
+    geometry,
+    transform: [1, 0, 0, 1, 3, 4] as const,
+    style: {
+      fill: { color: "#ff0000", opacity: 0.5, rule: "evenodd" as const },
+      stroke: null,
+    },
+  }
+  node.scene = {
+    objects: [
+      object,
+      { ...object, id: "closed", geometry: { ...geometry, closed: true } },
+    ],
+  }
+  const { svg } = serializeSvg(doc, { raster: "omit" })
+  expect(svg).toContain(
+    'd="M10 20 C15 0 35 0 40 20" transform="matrix(1 0 0 1 3 4)" fill="none"'
+  )
+  expect(svg).toContain('d="M10 20 C15 0 35 0 40 20 C45 30 5 30 10 20 Z"')
+  expect(svg).toContain('fill-opacity="0.5" fill-rule="evenodd"')
+})

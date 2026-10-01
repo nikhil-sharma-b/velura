@@ -331,33 +331,56 @@ test("a change made while tiles are still loading is saved, with every tile it h
     documentId
   )
 
-  // Reopen, and the moment the canvas is usable with tiles still arriving,
-  // change the document and leave: the change is kept, and the save names
-  // the tiles still on their way as well as the ones already in.
-  await page.evaluate(
-    ([width, height, id]) =>
-      new Promise<void>((resolve) => {
-        window.remountEngine({ persistence: { documentId: id as string } })
-        let acted = false
-        window.engine.subscribe(() => {
-          const snapshot = window.engine.getSnapshot()
-          if (acted || snapshot.status !== "ready" || !snapshot.loading) return
-          acted = true
-          void window.engine.dispatch({ type: "addLayer" }).then(() => {
-            window.engine.dispose()
-            setTimeout(resolve, 500)
-          })
-        })
-        void window.engine
-          .dispatch({
-            type: "resize",
-            width: width as number,
-            height: height as number,
-            devicePixelRatio: 1,
-          })
-          .then(() => window.engine.dispatch({ type: "initialize" }))
-      }),
+  // Hold background reads so "ready while loading" is a controlled state,
+  // rather than a race between local I/O and GPU initialization on CI.
+  const blockedReads = await page.evaluate(
+    async ([width, height, id]) => {
+      const blobs = window.createLocalBlobStore()
+      let releaseReads!: () => void
+      const pendingReads = new Promise<void>((resolve) => {
+        releaseReads = resolve
+      })
+      let blocked = 0
+      const gated = {
+        ...blobs,
+        async get(key: string) {
+          if (key.startsWith("tiles/") && window.engine.getSnapshot().loading) {
+            blocked++
+            await pendingReads
+          }
+          return blobs.get(key)
+        },
+      }
+      window.remountEngine({
+        persistence: { documentId: id as string, blobs: gated },
+      })
+      await window.engine.dispatch({
+        type: "resize",
+        width: width as number,
+        height: height as number,
+        devicePixelRatio: 1,
+      })
+      await window.engine.dispatch({ type: "initialize" })
+      const snapshot = window.engine.getSnapshot()
+      if (snapshot.status !== "ready" || !snapshot.loading || blocked === 0) {
+        releaseReads()
+        throw new Error(
+          "The fixture must be ready with background tile reads pending."
+        )
+      }
+      // Change the document and leave while those reads are pending. Disposal
+      // must save the new structure and retain every tile it has not loaded.
+      await window.engine.dispatch({ type: "addLayer" })
+      window.engine.dispose()
+      releaseReads()
+      return blocked
+    },
     [size.width, size.height, documentId] as const
+  )
+  expect(blockedReads).toBeGreaterThan(0)
+  await page.waitForFunction(
+    async ({ id, layers }) => (await window.layerCountFor(id)) === layers + 1,
+    { id: documentId, layers }
   )
 
   expect(await page.evaluate((id) => window.tileCountFor(id), documentId)).toBe(

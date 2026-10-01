@@ -92,6 +92,7 @@ import {
   LayerTransform,
   VectorTransform,
   VectorSelection,
+  VectorNodes,
 } from "./image-transform"
 import { RulersAndGuides } from "./rulers-and-guides"
 import { StraightEdgeOverlay } from "./straight-edge"
@@ -1666,36 +1667,47 @@ export function CanvasHost({
                 >
                   <RectangleIcon />
                 </RailAction>
-                {(["ellipse", "line", "polygon", "objectSelect"] as const).map(
-                  (tool) => (
-                    <RailAction
-                      key={tool}
-                      label={
-                        tool === "objectSelect"
-                          ? "Select objects"
-                          : `${tool} tool`
-                      }
-                      command={`tool.${tool}`}
-                      variant={snapshot.tool === tool ? "default" : "ghost"}
-                      size="icon"
-                      aria-pressed={snapshot.tool === tool}
-                      onClick={() =>
-                        runStudioCommand(`tool.${tool}`, commandContext)
-                      }
-                    >
-                      <span className="text-xs">
+                {(
+                  [
+                    "ellipse",
+                    "line",
+                    "polygon",
+                    "objectSelect",
+                    "pen",
+                    "node",
+                    "pressure",
+                  ] as const
+                ).map((tool) => (
+                  <RailAction
+                    key={tool}
+                    label={
+                      tool === "objectSelect"
+                        ? "Select objects"
+                        : `${tool} tool`
+                    }
+                    command={`tool.${tool}`}
+                    variant={snapshot.tool === tool ? "default" : "ghost"}
+                    size="icon"
+                    aria-pressed={snapshot.tool === tool}
+                    onClick={() =>
+                      runStudioCommand(`tool.${tool}`, commandContext)
+                    }
+                  >
+                    <span className="text-xs">
+                      {
                         {
-                          {
-                            ellipse: "○",
-                            line: "╱",
-                            polygon: "⬡",
-                            objectSelect: "↖",
-                          }[tool]
-                        }
-                      </span>
-                    </RailAction>
-                  )
-                )}
+                          ellipse: "○",
+                          line: "╱",
+                          polygon: "⬡",
+                          objectSelect: "↖",
+                          pen: "✒",
+                          node: "◇",
+                          pressure: "〰",
+                        }[tool]
+                      }
+                    </span>
+                  </RailAction>
+                ))}
                 <RailAction
                   label="Colour"
                   variant={colorOpen ? "default" : "ghost"}
@@ -1924,11 +1936,18 @@ export function CanvasHost({
           </div>
 
           {engine && (
-            <VectorSelection
-              engine={engine}
-              snapshot={snapshot}
-              canvas={canvasElement}
-            />
+            <>
+              <VectorNodes
+                engine={engine}
+                snapshot={snapshot}
+                canvas={canvasElement}
+              />
+              <VectorSelection
+                engine={engine}
+                snapshot={snapshot}
+                canvas={canvasElement}
+              />
+            </>
           )}
           {engine && snapshot.vectorTransform && (
             <VectorTransform

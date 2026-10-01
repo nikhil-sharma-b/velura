@@ -690,3 +690,137 @@ function PlacementFields({
     </div>
   )
 }
+
+/** The engine owns pointer input; this overlay only displays editable nodes. */
+export function VectorNodes({
+  engine,
+  snapshot,
+  canvas,
+}: {
+  engine: Engine
+  snapshot: EngineSnapshot
+  canvas: HTMLCanvasElement | null
+}) {
+  const { toCss } = useDocumentToCss(canvas, snapshot)
+  const overlay = useRef<SVGSVGElement>(null)
+  useEffect(() => {
+    return engine.observeVectorControls((objects, penNodes) => {
+      const svg = overlay.current
+      if (!svg) return
+      const paths =
+        snapshot.tool === "pen"
+          ? [
+              {
+                id: "draft",
+                transform: [1, 0, 0, 1, 0, 0] as const,
+                nodes: penNodes,
+              },
+            ]
+          : objects.flatMap((o) =>
+              o.geometry.kind === "path"
+                ? [
+                    {
+                      id: o.id,
+                      transform: o.transform,
+                      nodes: o.geometry.nodes,
+                    },
+                  ]
+                : []
+            )
+      const fragment = document.createDocumentFragment()
+      const element = (
+        tag: "line" | "circle" | "rect",
+        attributes: Record<string, string | number>
+      ) => {
+        const node = document.createElementNS("http://www.w3.org/2000/svg", tag)
+        for (const [key, value] of Object.entries(attributes))
+          node.setAttribute(key, String(value))
+        fragment.appendChild(node)
+      }
+      for (const path of paths) {
+        const [a, b, c, d, e, f] = path.transform
+        const screen = (p: { x: number; y: number }) =>
+          toCss({ x: a * p.x + c * p.y + e, y: b * p.x + d * p.y + f })
+        path.nodes.forEach((node, index) => {
+          const anchor = screen(node)
+          for (const handle of [node.in, node.out]) {
+            if (!handle) continue
+            const point = screen(handle)
+            element("line", {
+              x1: anchor.x,
+              y1: anchor.y,
+              x2: point.x,
+              y2: point.y,
+              stroke: "var(--primary)",
+              "stroke-width": 1,
+            })
+            element("circle", {
+              cx: point.x,
+              cy: point.y,
+              r: 3,
+              fill: "var(--background)",
+              stroke: "var(--primary)",
+            })
+          }
+          const selected =
+            snapshot.vectorNode?.objectId === path.id &&
+            snapshot.vectorNode.index === index
+          element("rect", {
+            x: anchor.x - 4,
+            y: anchor.y - 4,
+            width: 8,
+            height: 8,
+            fill: selected ? "var(--primary)" : "var(--background)",
+            stroke: "var(--primary)",
+          })
+        })
+      }
+      svg.replaceChildren(fragment)
+    })
+  }, [engine, snapshot.tool, snapshot.vectorNode, toCss])
+  if (snapshot.tool !== "node" && snapshot.tool !== "pen") return null
+  return (
+    <>
+      <svg
+        ref={overlay}
+        className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+        aria-label="Path anchors and handles"
+      />
+      <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-lg border bg-background/95 p-2 text-xs shadow-lg">
+        {snapshot.tool === "pen" ? (
+          <>
+            <span>Click anchors · drag handles · click first to close</span>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={snapshot.penNodes.length < 2}
+              onClick={() => void engine.dispatch({ type: "finishPenPath" })}
+            >
+              Finish open path
+            </Button>
+          </>
+        ) : (
+          <>
+            <span>Drag nodes or handles · double-click a segment to add</span>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!snapshot.vectorNode}
+              onClick={() => void engine.dispatch({ type: "toggleVectorNode" })}
+            >
+              Smooth / corner
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!snapshot.vectorNode}
+              onClick={() => void engine.dispatch({ type: "deleteVectorNode" })}
+            >
+              Delete anchor
+            </Button>
+          </>
+        )}
+      </div>
+    </>
+  )
+}
