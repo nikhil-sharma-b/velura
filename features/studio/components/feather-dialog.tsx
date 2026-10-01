@@ -40,16 +40,17 @@ export function FeatherDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        {open && (
-          <FeatherSettings
-            initial={radius}
-            onApply={(next) => {
-              onApply(next)
-              onOpenChange(false)
-            }}
-            onCancel={() => onOpenChange(false)}
-          />
-        )}
+        {/* Kept while it animates out, so it does not empty first; each
+            opening starts afresh from the radius last applied. */}
+        <FeatherSettings
+          key={`${open}`}
+          initial={radius}
+          onApply={(next) => {
+            onApply(next)
+            onOpenChange(false)
+          }}
+          onCancel={() => onOpenChange(false)}
+        />
       </DialogContent>
     </Dialog>
   )

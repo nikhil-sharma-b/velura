@@ -9,6 +9,9 @@ export default defineConfig({
   // CI rasterizes WebGPU on two CPU cores, so pointer-driven tests on the
   // full-size canvas take several times longer than on a real GPU.
   timeout: process.env.CI ? 60_000 : 30_000,
+  // The same reason stretches each wait: an engine starting after a reload,
+  // or a dialog animating out, can take longer than the default 5s there.
+  expect: { timeout: process.env.CI ? 15_000 : 5_000 },
   use: {
     baseURL: "http://localhost:3000",
     trace: "retain-on-failure",
