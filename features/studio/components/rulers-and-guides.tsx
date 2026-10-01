@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 
 import type { Engine, EngineSnapshot, GuideAxis } from "@/engine"
 
@@ -42,10 +43,18 @@ export function RulersAndGuides({
   engine,
   snapshot,
   canvas,
+  rulerLayer,
 }: {
   engine: Engine
   snapshot: EngineSnapshot
   canvas: HTMLCanvasElement | null
+  /**
+   * Where the rulers are drawn: a layer over the studio's controls, as they
+   * are controls themselves, while the guides stay beneath them with the
+   * canvas (07). A drag out of a ruler still reaches this component, as
+   * React carries a portal's events up its own tree. None, and no rulers.
+   */
+  rulerLayer: HTMLElement | null
 }) {
   const { toCss, toDoc } = useDocumentToCss(canvas, snapshot)
   const size = useCssSize(canvas)
@@ -162,7 +171,7 @@ export function RulersAndGuides({
     >
       <svg className="absolute inset-0 size-full overflow-visible" aria-hidden>
         {shown.map((guide) => (
-          <g key={guide.id}>
+          <g key={guide.id} data-guide>
             <line
               {...endpoints(guide.axis, guide.position)}
               className="stroke-sky-500"
@@ -201,40 +210,43 @@ export function RulersAndGuides({
         )}
       </svg>
 
-      {snapshot.rulersVisible && (
-        <>
-          <Ruler
-            side="top"
-            length={size.width}
-            docAt={(s) => toDoc({ x: s, y: 0 })[topAxis]}
-            onPointerDown={(event) => {
-              const point = local(event)
-              begin(event, {
-                axis: other(topAxis),
-                position: Math.round(toDoc(point)[other(topAxis)]),
-                overRuler: true,
-              })
-            }}
-          />
-          <Ruler
-            side="left"
-            length={size.height}
-            docAt={(s) => toDoc({ x: 0, y: s })[leftAxis]}
-            onPointerDown={(event) => {
-              const point = local(event)
-              begin(event, {
-                axis: other(leftAxis),
-                position: Math.round(toDoc(point)[other(leftAxis)]),
-                overRuler: true,
-              })
-            }}
-          />
-          <div
-            className="absolute top-0 left-0 border-r border-b border-studio-edge bg-studio-surface"
-            style={{ width: RULER_SIZE, height: RULER_SIZE }}
-          />
-        </>
-      )}
+      {rulerLayer &&
+        snapshot.rulersVisible &&
+        createPortal(
+          <>
+            <Ruler
+              side="top"
+              length={size.width}
+              docAt={(s) => toDoc({ x: s, y: 0 })[topAxis]}
+              onPointerDown={(event) => {
+                const point = local(event)
+                begin(event, {
+                  axis: other(topAxis),
+                  position: Math.round(toDoc(point)[other(topAxis)]),
+                  overRuler: true,
+                })
+              }}
+            />
+            <Ruler
+              side="left"
+              length={size.height}
+              docAt={(s) => toDoc({ x: 0, y: s })[leftAxis]}
+              onPointerDown={(event) => {
+                const point = local(event)
+                begin(event, {
+                  axis: other(leftAxis),
+                  position: Math.round(toDoc(point)[other(leftAxis)]),
+                  overRuler: true,
+                })
+              }}
+            />
+            <div
+              className="absolute top-0 left-0 border-r border-b border-studio-edge bg-studio-surface"
+              style={{ width: RULER_SIZE, height: RULER_SIZE }}
+            />
+          </>,
+          rulerLayer
+        )}
     </div>
   )
 }

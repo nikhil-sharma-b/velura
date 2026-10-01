@@ -427,6 +427,7 @@ export function CanvasHost({
   // Zen hides the controls rather than unmounting them, so the panels the
   // artist had open are open again when they come back.
   const [zen, setZen] = useState(false)
+  const [rulerLayer, setRulerLayer] = useState<HTMLDivElement | null>(null)
   /** The canvas the engine presents into; the transform box sits over it. */
   const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(
     null
@@ -945,6 +946,27 @@ export function CanvasHost({
                 : TOOL_CURSOR,
         }}
       />
+      {/* Guides and the straight-edge (16, 17) are drawn with the canvas, so
+          before the controls: every panel and rail sits over them (07), and
+          they stay when zen puts the controls away. The rulers are controls,
+          drawn into a layer after them, and go with zen. */}
+      {snapshot.status === "ready" && engine && (
+        <>
+          <RulersAndGuides
+            engine={engine}
+            snapshot={snapshot}
+            canvas={canvasElement}
+            rulerLayer={rulerLayer}
+          />
+          {snapshot.straightEdge && (
+            <StraightEdgeOverlay
+              engine={engine}
+              snapshot={snapshot}
+              canvas={canvasElement}
+            />
+          )}
+        </>
+      )}
       {snapshot.status === "ready" && (
         <div className="contents" hidden={zen} data-testid="studio-chrome">
           <div className="pointer-events-none absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-studio-edge bg-studio-surface/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
@@ -1854,22 +1876,6 @@ export function CanvasHost({
             />
           )}
 
-          {engine && snapshot.straightEdge && (
-            <StraightEdgeOverlay
-              engine={engine}
-              snapshot={snapshot}
-              canvas={canvasElement}
-            />
-          )}
-
-          {engine && (
-            <RulersAndGuides
-              engine={engine}
-              snapshot={snapshot}
-              canvas={canvasElement}
-            />
-          )}
-
           {imageOverCanvas && (
             <div
               role="status"
@@ -1891,6 +1897,12 @@ export function CanvasHost({
           )}
         </div>
       )}
+      {/* The rulers' own layer, over the controls; see the guides above. */}
+      <div
+        ref={setRulerLayer}
+        className="pointer-events-none absolute inset-0"
+        hidden={zen || snapshot.status !== "ready"}
+      />
       {snapshot.status !== "ready" && (
         <div className="absolute inset-0 grid place-items-center bg-background p-6">
           <section
