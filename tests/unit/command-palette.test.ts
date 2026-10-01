@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
+  closesPalette,
   fuzzyScore,
   paletteEntries,
   rememberRecent,
@@ -84,5 +85,40 @@ describe("rememberRecent", () => {
     expect(rememberRecent(["a", "b"], "b")).toEqual(["b", "a"])
     const long = rememberRecent(["1", "2", "3", "4", "5"], "6")
     expect(long).toEqual(["6", "1", "2", "3", "4"])
+  })
+})
+
+describe("closesPalette", () => {
+  const registry = (keybinds: string[]) =>
+    createRegistry([command("palette.toggle", "Command palette", { keybinds })])
+
+  test("a modifier chord bound to the toggle closes it from the search", () => {
+    expect(closesPalette(registry(["mod+k"]), "mod+k", "palette.toggle")).toBe(
+      true
+    )
+    expect(closesPalette(registry(["alt+p"]), "alt+p", "palette.toggle")).toBe(
+      true
+    )
+  })
+
+  test("a plain letter bound to the toggle is typed, not a close", () => {
+    expect(closesPalette(registry(["l"]), "l", "palette.toggle")).toBe(false)
+    // Shift only makes it a capital: still typing.
+    expect(
+      closesPalette(registry(["shift+l"]), "shift+l", "palette.toggle")
+    ).toBe(false)
+    expect(closesPalette(registry(["space"]), "space", "palette.toggle")).toBe(
+      false
+    )
+  })
+
+  test("a key that types nothing still closes", () => {
+    expect(closesPalette(registry(["f1"]), "f1", "palette.toggle")).toBe(true)
+  })
+
+  test("a chord bound to something else does not close it", () => {
+    expect(closesPalette(registry(["mod+k"]), "mod+j", "palette.toggle")).toBe(
+      false
+    )
   })
 })

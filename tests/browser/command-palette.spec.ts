@@ -97,3 +97,35 @@ test("the palette takes typing again after preferences opened from it closes", a
   await page.keyboard.press("Escape")
   await expect(again).toBeHidden()
 })
+
+test("a palette key that is a plain letter is typed into the search, not a close", async ({
+  page,
+}) => {
+  await openStudio(page)
+  // Bound to Q as well as its default, from preferences.
+  const search = await openPalette(page)
+  await search.fill("preferences")
+  await page.keyboard.press("Enter")
+  const preferences = page.getByRole("dialog", { name: "Preferences" })
+  await preferences
+    .getByRole("button", { name: "Add a shortcut for Command palette" })
+    .click()
+  await page.keyboard.press("q")
+  await page.keyboard.press("Escape")
+  await expect(preferences).toBeHidden()
+
+  // Q opens it from the canvas, and is then a letter like any other.
+  await page.keyboard.press("q")
+  await expect(search).toBeFocused()
+  await page.keyboard.type("quick q")
+  await expect(search).toHaveValue("quick q")
+  await expect(search).toBeVisible()
+
+  // The modifier chord still closes it from the search, and so does Escape.
+  await page.keyboard.press("ControlOrMeta+k")
+  await expect(search).toBeHidden()
+  await page.keyboard.press("q")
+  await expect(search).toBeFocused()
+  await page.keyboard.press("Escape")
+  await expect(search).toBeHidden()
+})

@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from "bun:test"
 import {
   chordFromEvent,
   formatChord,
+  isFieldKey,
   normaliseChord,
 } from "../../features/commands/lib/chord"
 import {
@@ -91,6 +92,39 @@ function setup(extra: Command<null>[] = []) {
   const resolver = createKeybindResolver(registry, () => null)
   return { ran, registry, resolver }
 }
+
+describe("isFieldKey", () => {
+  test("a character, capital or not, is typed", () => {
+    for (const chord of ["l", "shift+l", "shift+!", "+", "space", "ß", "й"])
+      expect(isFieldKey(chord)).toBe(true)
+    // One character that is two UTF-16 units is still one character.
+    expect(isFieldKey("𝑥")).toBe(true)
+  })
+
+  test("keys a field edits or moves with are the field's", () => {
+    for (const chord of [
+      "backspace",
+      "delete",
+      "arrowleft",
+      "arrowdown",
+      "home",
+      "end",
+      "enter",
+      "shift+arrowleft",
+    ])
+      expect(isFieldKey(chord)).toBe(true)
+  })
+
+  test("a dead key, or a modifier alone, is on its way to a character", () => {
+    expect(isFieldKey("dead")).toBe(true)
+    expect(isFieldKey("shift")).toBe(true)
+  })
+
+  test("Cmd, Ctrl or Alt, or a key that types nothing, is not", () => {
+    for (const chord of ["mod+k", "alt+p", "mod+shift+l", "alt+shift+x", "f1"])
+      expect(isFieldKey(chord)).toBe(false)
+  })
+})
 
 describe("resolution", () => {
   test("a bound chord runs its command and is consumed", () => {

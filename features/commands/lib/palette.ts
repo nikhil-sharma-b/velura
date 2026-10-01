@@ -1,4 +1,4 @@
-import type { Chord } from "./chord"
+import { isFieldKey, type Chord } from "./chord"
 import type { Command, Registry } from "./registry"
 
 /** How many commands the palette remembers having run. */
@@ -80,4 +80,20 @@ export function rememberRecent(
   id: string
 ): string[] {
   return [id, ...recent.filter((other) => other !== id)].slice(0, RECENT_LIMIT)
+}
+
+/**
+ * Whether a key pressed in the palette's search field closes it: it is the
+ * toggle's chord, and not one the field needs for itself. A toggle rebound to
+ * a plain letter (or a shifted one, which is its capital) is a letter there
+ * like any other, so a search can hold it; one with Cmd, Ctrl or Alt, or a
+ * key that a field has no use for, still closes. Escape is the dialog's own
+ * and always does.
+ */
+export function closesPalette<Context>(
+  registry: Registry<Context>,
+  chord: Chord,
+  toggleId: string
+): boolean {
+  return registry.lookup(chord)?.id === toggleId && !isFieldKey(chord)
 }
