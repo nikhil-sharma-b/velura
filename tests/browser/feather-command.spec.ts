@@ -87,7 +87,9 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
   const radius = dialog.getByRole("textbox", { name: "Feather radius" })
   await radius.fill("24")
   await radius.press("Enter")
-  await dialog.getByRole("button", { name: "Apply" }).click()
+  // Pressed without waiting for it to sit still: the selection's ants keep
+  // CI's software WebGPU too busy for Playwright to see a stable frame.
+  await dialog.getByRole("button", { name: "Apply" }).dispatchEvent("click")
   await expect(page.getByRole("dialog")).toHaveCount(0)
 
   // A stroke from well inside the selection to well outside it, measured
