@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test"
-import { fitPressureStroke } from "../../engine/doc/vector-path"
+import { describe, expect, test } from "bun:test"
+import { fitPressureStroke, pickPathNode } from "../../engine/doc/vector-path"
 
 test("pressure fitting retains the centre line endpoints and pressure extrema", () => {
   const path = fitPressureStroke(
@@ -140,4 +140,96 @@ test("pressure outlines taper and honor butt, square, round caps and corner join
     style: { fill: null, stroke: { ...object.style.stroke, join: "miter" } },
   }).stroke!
   expect(covers(miter, 35, 15)).toBe(true)
+})
+
+describe("pickPathNode", () => {
+  const identity = [1, 0, 0, 1, 0, 0] as const
+  const corner = (x: number, y: number) => ({
+    x,
+    y,
+    in: null,
+    out: null,
+    smooth: false,
+  })
+  const square = {
+    kind: "path" as const,
+    closed: true,
+    nodes: [corner(0, 0), corner(100, 0), corner(100, 100), corner(0, 100)],
+  }
+
+  test("picks the anchor under the point", () => {
+    expect(pickPathNode(square, { x: 101, y: 2 }, identity, 6)).toMatchObject({
+      index: 1,
+      part: "anchor",
+      at: { x: 100, y: 0 },
+    })
+  })
+
+  test("is null away from every node", () => {
+    expect(pickPathNode(square, { x: 50, y: 50 }, identity, 6)).toBeNull()
+  })
+
+  test("a handle sitting on its anchor never wins over the anchor", () => {
+    // A pen click without a drag can leave zero-length handles behind.
+    const path = {
+      ...square,
+      nodes: square.nodes.map((node) => ({
+        ...node,
+        in: { x: node.x, y: node.y },
+        out: { x: node.x + 2, y: node.y },
+      })),
+    }
+    expect(pickPathNode(path, { x: 102, y: 0 }, identity, 6)).toMatchObject({
+      index: 1,
+      part: "anchor",
+    })
+  })
+
+  test("a handle pulled clear of its anchor is picked", () => {
+    const path = {
+      ...square,
+      nodes: [
+        { ...square.nodes[0], out: { x: 30, y: -20 } },
+        ...square.nodes.slice(1),
+      ],
+    }
+    expect(pickPathNode(path, { x: 31, y: -19 }, identity, 6)).toMatchObject({
+      index: 0,
+      part: "out",
+      at: { x: 30, y: -20 },
+    })
+  })
+
+  test("the nearer of an anchor and a pulled-out handle wins", () => {
+    const path = {
+      ...square,
+      nodes: [
+        { ...square.nodes[0], out: { x: 8, y: 0 } },
+        ...square.nodes.slice(1),
+      ],
+    }
+    expect(pickPathNode(path, { x: 1, y: 0 }, identity, 6)?.part).toBe("anchor")
+    expect(pickPathNode(path, { x: 9, y: 0 }, identity, 6)?.part).toBe("out")
+  })
+
+  test("handles can be left out, as for a path not yet selected", () => {
+    const path = {
+      ...square,
+      nodes: [
+        { ...square.nodes[0], out: { x: 30, y: -20 } },
+        ...square.nodes.slice(1),
+      ],
+    }
+    expect(
+      pickPathNode(path, { x: 30, y: -20 }, identity, 6, { handles: false })
+    ).toBeNull()
+  })
+
+  test("measures in document space, through the object's transform", () => {
+    const moved = [2, 0, 0, 2, 10, 10] as const
+    expect(pickPathNode(square, { x: 210, y: 12 }, moved, 6)).toMatchObject({
+      index: 1,
+      part: "anchor",
+    })
+  })
 })

@@ -115,6 +115,118 @@ test("pen drag handles, closing, node edits, and undo through the facade", async
   })
 })
 
+/**
+ * A filled triangle drawn with the pen, closed on its first anchor with a
+ * click, as an artist would: every anchor a corner.
+ */
+async function penTriangle(page: Page, box: { x: number; y: number }) {
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setShapeStyle", fill: true })
+    await window.engine.dispatch({ type: "setTool", tool: "pen" })
+  })
+  await page.mouse.click(box.x + 30, box.y + 95)
+  await page.mouse.click(box.x + 100, box.y + 20)
+  await page.mouse.click(box.x + 170, box.y + 95)
+  await page.mouse.click(box.x + 30, box.y + 95)
+  await waitForObject(page)
+  return (await path(page))!
+}
+
+test("the node tool drags a corner anchor of a closed pen path, as one step", async ({
+  page,
+}) => {
+  const box = await open(page)
+  const object = await penTriangle(page, box)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "node" })
+  )
+  // Every corner, selected or not, moves where it is dragged.
+  for (const [index, from] of [
+    [2, { x: 170, y: 95 }],
+    [0, { x: 30, y: 95 }],
+    [1, { x: 100, y: 20 }],
+  ] as const) {
+    const before = await page.evaluate(() => window.engine.historyUsage().steps)
+    await page.mouse.move(box.x + from.x, box.y + from.y)
+    await page.mouse.down()
+    await page.mouse.move(box.x + from.x - 10, box.y + from.y + 10, {
+      steps: 5,
+    })
+    await page.mouse.up()
+    await page.waitForFunction(
+      (n) => window.engine.historyUsage().steps === n + 1,
+      before
+    )
+    const geometry = (await path(page))!.geometry
+    if (geometry.kind !== "path") throw new Error("A pen path is a path")
+    expect(geometry.nodes[index]).toMatchObject({
+      x: from.x - 10,
+      y: from.y + 10,
+    })
+  }
+  for (let undo = 0; undo < 3; undo++)
+    await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await path(page)).toEqual(object)
+})
+
+test("a handle pulled out with the pen still reshapes the curve", async ({
+  page,
+}) => {
+  const box = await open(page)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "pen" })
+  )
+  await page.mouse.click(box.x + 30, box.y + 85)
+  await page.mouse.move(box.x + 90, box.y + 25)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 125, box.y + 25, { steps: 8 })
+  await page.mouse.up()
+  await page.mouse.click(box.x + 170, box.y + 85)
+  await page.mouse.click(box.x + 30, box.y + 85)
+  await waitForObject(page)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "node" })
+  )
+  // Selected by a click on its outline, so its handles can be taken.
+  await page.mouse.click(box.x + 30, box.y + 85)
+  const before = await page.evaluate(() => window.engine.historyUsage().steps)
+  await page.mouse.move(box.x + 125, box.y + 25)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 125, box.y + 45, { steps: 5 })
+  await page.mouse.up()
+  await page.waitForFunction(
+    (n) => window.engine.historyUsage().steps === n + 1,
+    before
+  )
+  const geometry = (await path(page))!.geometry
+  if (geometry.kind !== "path") throw new Error("A pen path is a path")
+  expect(geometry.nodes[1]).toMatchObject({
+    x: 90,
+    y: 25,
+    out: { x: 125, y: 45 },
+  })
+})
+
+test("clicking inside a filled path with the node tool selects it", async ({
+  page,
+}) => {
+  const box = await open(page)
+  const object = await penTriangle(page, box)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setTool", tool: "node" })
+  })
+  // Off the shape, nothing is selected.
+  await page.mouse.click(box.x + 190, box.y + 10)
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().vectorSelection)
+  ).toEqual([])
+  // Well inside the fill, far from the outline.
+  await page.mouse.click(box.x + 100, box.y + 70)
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().vectorSelection)
+  ).toEqual([object.id])
+})
+
 /** Tablet input enters the same sampler as real pointer input, including force. */
 async function pressureStroke(page: Page) {
   await page.locator("canvas").evaluate((canvas) => {

@@ -2,9 +2,11 @@ import {
   editPathNode,
   fitPressureStroke,
   nearestPathSegment,
+  pickPathNode,
   type PathNode,
   type PressurePoint,
   type NodeEdit,
+  type NodePart,
 } from "./doc/vector-path"
 import { applyAffine } from "./doc/transform-session"
 import {
@@ -2577,7 +2579,7 @@ export function createEngine(
         node?: {
           object: VectorObject
           index: number
-          part: "anchor" | "in" | "out"
+          part: NodePart
         }
         anchor: Point
         point: Point
@@ -4296,32 +4298,40 @@ export function createEngine(
   function beginNodeDrag(layer: VectorLayer, point: Point, time: number) {
     const reach = 6 / snapshot.view.zoom
     const paths = layer.scene.objects.filter((o) => o.geometry.kind === "path")
-    // Handles of selected objects have priority over an anchor beneath them.
-    for (const object of paths
-      .filter((o) => snapshot.vectorSelection.includes(o.id))
-      .reverse()) {
+    // Selected paths first, top down, then the rest: a node of what is
+    // being edited wins over one beneath it. Only a selected path shows its
+    // handles, so only a selected path's handles can be taken hold of.
+    const selected = (o: VectorObject) =>
+      snapshot.vectorSelection.includes(o.id)
+    const order = [
+      ...paths.filter(selected).reverse(),
+      ...paths.filter((o) => !selected(o)).reverse(),
+    ]
+    for (const object of order) {
       if (object.geometry.kind !== "path") continue
-      for (let index = 0; index < object.geometry.nodes.length; index++) {
-        const node = object.geometry.nodes[index]
-        for (const part of ["in", "out", "anchor"] as const) {
-          const local = part === "anchor" ? node : node[part]
-          if (!local) continue
-          const at = applyAffine(object.transform, local)
-          if (Math.hypot(point.x - at.x, point.y - at.y) <= reach) {
-            publish({ vectorNode: { objectId: object.id, index } })
-            shapeDrag = {
-              layerId: layer.id,
-              tool: "node",
-              anchor: point,
-              point: at,
-              ended: false,
-              node: { object, index, part },
-            }
-            scheduleFrame()
-            return
-          }
-        }
+      const picked = pickPathNode(
+        object.geometry,
+        point,
+        object.transform,
+        reach,
+        { handles: selected(object) }
+      )
+      if (!picked) continue
+      const { index, part, at } = picked
+      // Taking hold of a node of another path makes that path the one being
+      // edited, in the same press.
+      if (!selected(object)) setVectorSelection([object.id])
+      publish({ vectorNode: { objectId: object.id, index } })
+      shapeDrag = {
+        layerId: layer.id,
+        tool: "node",
+        anchor: point,
+        point: at,
+        ended: false,
+        node: { object, index, part },
       }
+      scheduleFrame()
+      return
     }
     const hit = [...paths]
       .reverse()
@@ -4359,7 +4369,11 @@ export function createEngine(
         })
       }
     } else {
-      setVectorSelection([])
+      // Inside a filled path is on it too, as with the object tool.
+      const [inside] = selectObjects(layer.scene, point).filter((id) =>
+        paths.some((o) => o.id === id)
+      )
+      setVectorSelection(inside ? [inside] : [])
       publish({ vectorNode: null })
     }
     lastNodeClick = { point, time }
