@@ -375,8 +375,13 @@ test("SVG facade preserves pen curves and transformed pressure outlines without 
   expect(result.errors).toBe(0)
   expect(result.images).toBe(0)
   expect(result.pen).toEqual([0, 0, 255, 255])
-  expect(result.overlap).toEqual([255, 0, 0, 128])
+  // Chromium's SVG backends quantize 0.5 alpha to either adjacent byte.
+  // Both remain half opaque; repeated blending would be around 192.
+  for (const pixel of [result.overlap, result.wide]) {
+    expect(pixel.slice(0, 3)).toEqual([255, 0, 0])
+    expect(pixel[3]).toBeGreaterThanOrEqual(127)
+    expect(pixel[3]).toBeLessThanOrEqual(128)
+  }
   expect(result.thin).toEqual([0, 0, 0, 0])
-  expect(result.wide).toEqual([255, 0, 0, 128])
   expect(result.outside).toEqual([0, 0, 0, 0])
 })
