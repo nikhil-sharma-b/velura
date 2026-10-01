@@ -190,7 +190,12 @@ import {
   type Affine,
   type TransformSession,
 } from "./doc/transform-session"
-import { layerStartPlacement, coveredBounds } from "./doc/layer-transform"
+import {
+  layerStartPlacement,
+  coveredBounds,
+  liftsAnything,
+  type TileTexels,
+} from "./doc/layer-transform"
 import {
   resolveSnap,
   alignedPlacement,
@@ -2316,6 +2321,16 @@ export function createEngine(
   /** Layer transforms hold their snapshot under an id no asset can have. */
   const layerImageId = (layerId: string) => `layer-transform:${layerId}`
 
+  /** A surface's tiles read back, each with its coordinate. */
+  async function readTileTexels(
+    id: string,
+    coords: readonly TileCoord[]
+  ): Promise<TileTexels[]> {
+    if (!renderer) throw new Error("The canvas is not ready.")
+    const texels = await renderer.readTiles(id, coords)
+    return coords.map(({ x, y }, index) => ({ x, y, texels: texels[index]! }))
+  }
+
   function describeLayerTransform(): LayerTransformState | null {
     if (!layerTransform) return null
     const { layerId, placement, source, lifted, snapTargets } = layerTransform
@@ -2350,15 +2365,12 @@ export function createEngine(
       await commitLayerTransform()
     }
     if (!renderer) throw new Error("The canvas is not ready.")
-    const held = contentBounds.get(id)
     const canvasRect = {
       x: 0,
       y: 0,
       width: document.width,
       height: document.height,
     }
-    const area = held && intersectRect(held, canvasRect)
-    const coords = area ? tilesCoveringRect(area) : []
     // With a selection, only what it covers is lifted (14), and the handles
     // sit on the selection rather than on the layer's content.
     const lifted =
@@ -2367,17 +2379,17 @@ export function createEngine(
         : undefined
     let region: PixelRect | null
     if (lifted) {
-      // Nothing painted under the selection is nothing to lift.
-      region =
-        held && intersectRect(held, lifted.mask.bounds)
-          ? lifted.mask.bounds
-          : null
+      // Nothing painted under the selection is nothing to lift. Asked of the
+      // pixels under the mask rather than of the content box, which only
+      // grows and so says yes wherever a cancelled preview once reached.
+      const tiles = await readTileTexels(id, lifted.mask.tiles())
+      region = liftsAnything(tiles, lifted.mask) ? lifted.mask.bounds : null
     } else {
-      const texels = await renderer.readTiles(id, coords)
+      const held = contentBounds.get(id)
+      const area = held && intersectRect(held, canvasRect)
+      const coords = area ? tilesCoveringRect(area) : []
       // Whole tiles overhang the canvas's edge; the surface does not.
-      const covered = coveredBounds(
-        coords.map((coord, index) => ({ ...coord, texels: texels[index]! }))
-      )
+      const covered = coveredBounds(await readTileTexels(id, coords))
       region = covered && intersectRect(covered, canvasRect)
     }
     if (!region) throw new Error("There is nothing on this layer to transform.")
