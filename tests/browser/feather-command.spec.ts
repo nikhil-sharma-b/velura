@@ -26,25 +26,36 @@ async function featherInPalette(page: Page) {
 }
 
 /**
- * How dark an 8×5 patch of the screen is on average: 0 for white, 255 for
- * black. Wide enough to even out the brush's grain.
+ * How dark the stroke is at each of `xs`, along the line `y`: 0 for white,
+ * 255 for black, each averaged over an 8×5 patch to even out the brush's
+ * grain. One screenshot for them all, since on CI's software WebGPU each one
+ * is a frame that takes seconds.
  */
-async function darkness(page: Page, x: number, y: number) {
+async function darknessAlong(page: Page, y: number, xs: readonly number[]) {
+  const left = Math.round(Math.min(...xs)) - 4
+  const right = Math.round(Math.max(...xs)) + 4
+  const top = Math.round(y) - 2
   const shot = PNG.sync.read(
     await page.screenshot({
-      clip: { x: Math.round(x) - 4, y: Math.round(y) - 2, width: 8, height: 5 },
+      clip: { x: left, y: top, width: right - left, height: 5 },
     })
   )
-  let sum = 0
-  for (let at = 0; at < shot.data.length; at += 4)
-    sum += 255 - (shot.data[at]! + shot.data[at + 1]! + shot.data[at + 2]!) / 3
-  return sum / (shot.data.length / 4)
+  return xs.map((x) => {
+    let sum = 0
+    for (let row = 0; row < 5; row++)
+      for (let column = 0; column < 8; column++) {
+        const at = (row * shot.width + (Math.round(x) - 4 - left + column)) * 4
+        sum +=
+          255 - (shot.data[at]! + shot.data[at + 1]! + shot.data[at + 2]!) / 3
+      }
+    return sum / 40
+  })
 }
 
 test("feather selection runs from the palette, asks a radius, and softens a stroke's edge", async ({
   page,
 }) => {
-  // Two strokes and a dozen screenshots: more than CI's default allowance.
+  // Two strokes and their screenshots: more than CI's default allowance.
   test.slow()
   const box = await openStudio(page)
   const cx = box.x + box.width / 2
@@ -88,11 +99,17 @@ test("feather selection runs from the palette, asks a radius, and softens a stro
     await page.mouse.move(cx + 200, cy, { steps: 12 })
     await page.mouse.up()
     await page.waitForTimeout(200)
+    const [inside, edge, beyond, far] = await darknessAlong(page, cy, [
+      cx - 60,
+      cx + 100,
+      cx + 112,
+      cx + 180,
+    ])
     const measured = {
-      inside: await darkness(page, cx - 60, cy),
-      edge: await darkness(page, cx + 100, cy),
-      beyond: await darkness(page, cx + 112, cy),
-      far: await darkness(page, cx + 180, cy),
+      inside: inside!,
+      edge: edge!,
+      beyond: beyond!,
+      far: far!,
     }
     await undo.click()
     return measured
