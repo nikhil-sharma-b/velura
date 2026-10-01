@@ -189,6 +189,75 @@ export function LayerTransform({
   )
 }
 
+/** The selected objects stay visible before their transform is opened. */
+export function VectorSelection({
+  engine,
+  snapshot,
+  canvas,
+}: {
+  engine: Engine
+  snapshot: EngineSnapshot
+  canvas: HTMLCanvasElement | null
+}) {
+  const { toCss } = useDocumentToCss(canvas, snapshot)
+  const box = snapshot.vectorSelectionBounds
+  if (!box || snapshot.vectorTransform || snapshot.tool !== "objectSelect")
+    return null
+  const points = [
+    toCss({ x: box.x, y: box.y }),
+    toCss({ x: box.x + box.width, y: box.y }),
+    toCss({ x: box.x + box.width, y: box.y + box.height }),
+    toCss({ x: box.x, y: box.y + box.height }),
+  ]
+  return (
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+      aria-label="Selected vector objects"
+    >
+      <polygon
+        points={points.map((p) => `${p.x},${p.y}`).join(" ")}
+        fill="none"
+        stroke="var(--primary)"
+        strokeWidth={1}
+        strokeDasharray="4 3"
+      />
+      <circle
+        cx={points[0].x}
+        cy={points[0].y}
+        r={5}
+        fill="var(--primary)"
+        className="pointer-events-auto cursor-move"
+        aria-label="Transform selected objects"
+        onPointerDown={() =>
+          void engine.dispatch({ type: "beginVectorTransform" })
+        }
+      />
+    </svg>
+  )
+}
+
+export function VectorTransform(props: {
+  engine: Engine
+  snapshot: EngineSnapshot
+  canvas: HTMLCanvasElement | null
+}) {
+  const transform = props.snapshot.vectorTransform
+  if (!transform) return null
+  return (
+    <TransformBox
+      {...props}
+      placement={transform.placement}
+      snapTargets={transform.snapTargets}
+      subject="objects"
+      commands={{
+        adjust: "adjustVectorPlacement",
+        commit: "commitVectorTransform",
+        cancel: "cancelVectorTransform",
+      }}
+    />
+  )
+}
+
 function TransformBox({
   engine,
   snapshot,
@@ -204,11 +273,20 @@ function TransformBox({
   canvas: HTMLCanvasElement | null
   placement: ImagePlacement
   snapTargets: SnapTargets
-  subject: "image" | "layer" | "selection"
+  subject: "image" | "layer" | "selection" | "objects"
   commands: {
-    adjust: "adjustImageTransform" | "adjustLayerTransform"
-    commit: "commitImageTransform" | "commitLayerTransform"
-    cancel: "cancelImageTransform" | "cancelLayerTransform"
+    adjust:
+      | "adjustImageTransform"
+      | "adjustLayerTransform"
+      | "adjustVectorPlacement"
+    commit:
+      | "commitImageTransform"
+      | "commitLayerTransform"
+      | "commitVectorTransform"
+    cancel:
+      | "cancelImageTransform"
+      | "cancelLayerTransform"
+      | "cancelVectorTransform"
   }
   status?: string
 }) {

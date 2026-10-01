@@ -528,3 +528,224 @@ test("shapes stay exactly as sharp after zooming, and redrawing loses nothing", 
     await edit(page, id, [{ type: "update", id: "a", patch: { transform } }])
   expect(await pixels(page)).toEqual(drawn)
 })
+
+test("object selection styles, duplicate, reorder, transform and clear undo through the facade", async ({
+  page,
+}) => {
+  await openCanvas(page)
+  const id = await addVectorLayer(page)
+  await edit(page, id, [
+    { type: "add", object: rect("a", { x: 20, y: 20, width: 40, height: 40 }) },
+    {
+      type: "add",
+      object: rect("b", { x: 100, y: 20, width: 40, height: 40 }),
+    },
+  ])
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "selectVectorRegion",
+      region: { x: 30, y: 30 },
+    })
+    await window.engine.dispatch({ type: "setColor", hex: "#2a6ad0" })
+  })
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().vectorSelection)
+  ).toEqual(["a"])
+  expect(at(await pixels(page), 30, 30)).toEqual([42, 106, 208, 255])
+  expect(at(await pixels(page), 110, 30)).toEqual([208, 64, 42, 255])
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "duplicateVectorObjects" })
+    await window.engine.dispatch({ type: "reorderVectorObjects", to: "back" })
+    await window.engine.dispatch({ type: "beginVectorTransform" })
+    await window.engine.dispatch({
+      type: "adjustVectorTransform",
+      matrix: [1, 0, 0, 1, 0, 50],
+      snap: false,
+    })
+    await window.engine.dispatch({ type: "commitVectorTransform" })
+  })
+  expect(at(await pixels(page), 40, 90)).toEqual([42, 106, 208, 255])
+  const beforeClear = await pixels(page)
+  await page.evaluate(
+    (id) => window.engine.dispatch({ type: "clearLayer", id }),
+    id
+  )
+  expect(at(await pixels(page), 40, 90)).toEqual([255, 255, 255, 255])
+  expect(at(await pixels(page), 30, 30)).toEqual([42, 106, 208, 255])
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await pixels(page)).toEqual(beforeClear)
+})
+
+test("ellipse, line and polygon tools render independent fill and stroke styles", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addVectorLayer(page)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "setShapeStyle",
+      fillColor: "#2a6ad0",
+      strokeColor: "#d0402a",
+      stroke: true,
+      strokeWidth: 6,
+      strokeCap: "round",
+      strokeJoin: "bevel",
+    })
+    await window.engine.dispatch({ type: "setTool", tool: "ellipse" })
+  })
+  await drag(page, origin, [10, 10], [70, 80])
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "line" })
+  )
+  await drag(page, origin, [90, 15], [170, 15])
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "polygon" })
+  )
+  for (const [x, y] of [
+    [100, 45],
+    [175, 45],
+    [140, 100],
+    [100, 45],
+  ]) {
+    await page.mouse.click(origin.x + x, origin.y + y)
+    await page.waitForTimeout(50)
+  }
+  const image = await pixels(page)
+  expect(at(image, 40, 40)).toEqual([42, 106, 208, 255])
+  expect(at(image, 120, 15)).toEqual([208, 64, 42, 255])
+  expect(at(image, 140, 65)).toEqual([42, 106, 208, 255])
+  await expect(page.locator("canvas")).toHaveScreenshot(
+    "vector-shape-styles.png"
+  )
+})
+
+test("click and marquee select objects; shared snapping, alignment and cancelled transforms keep geometry", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const id = await addVectorLayer(page)
+  await edit(page, id, [
+    { type: "add", object: rect("a", { x: 20, y: 20, width: 40, height: 40 }) },
+    {
+      type: "add",
+      object: rect("b", { x: 100, y: 20, width: 40, height: 40 }),
+    },
+  ])
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "objectSelect" })
+  )
+  await page.mouse.click(origin.x + 30, origin.y + 30)
+  await page.waitForFunction(
+    () => window.engine.getSnapshot().vectorSelection[0] === "a"
+  )
+  await page.mouse.move(origin.x + 10, origin.y + 10)
+  await page.mouse.down()
+  await page.mouse.move(origin.x + 150, origin.y + 70, { steps: 8 })
+  await page.mouse.up()
+  await page.waitForFunction(
+    () => window.engine.getSnapshot().vectorSelection.length === 2
+  )
+  const original = await pixels(page)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "beginVectorTransform" })
+    await window.engine.dispatch({
+      type: "adjustVectorTransform",
+      matrix: [1, 0, 0, 1, 10, 40],
+      snap: false,
+    })
+    await window.engine.dispatch({ type: "cancelVectorTransform" })
+  })
+  expect(await pixels(page)).toEqual(original)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "selectVectorObjects", ids: ["a"] })
+    await window.engine.dispatch({ type: "beginVectorTransform" })
+    if (
+      !window.engine.getSnapshot().vectorTransform?.snapTargets.x.includes(100)
+    )
+      throw new Error("Object snap targets must use the painted edge at 100.")
+    await window.engine.dispatch({
+      type: "adjustVectorTransform",
+      matrix: [1, 0, 0, 1, -18, 0],
+      snap: true,
+    })
+    await window.engine.dispatch({ type: "commitVectorTransform" })
+  })
+  expect(at(await pixels(page), 1, 30)).toEqual([208, 64, 42, 255])
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "alignVectorObjects",
+      anchor: "bottom",
+      to: "canvas",
+    })
+    await window.engine.dispatch({
+      type: "setShapeStyle",
+      fill: false,
+      stroke: true,
+      strokeWidth: 4,
+      strokeColor: "#2a6ad0",
+      strokeCap: "square",
+      strokeJoin: "round",
+    })
+  })
+  expect(at(await pixels(page), 20, 100)).toEqual([255, 255, 255, 255])
+  expect(at(await pixels(page), 0, 100)).toEqual([42, 106, 208, 255])
+  await expect(page.locator("canvas")).toHaveScreenshot(
+    "vector-selected-outline.png"
+  )
+})
+
+test("undo abandons an object transform; target removal and rasterisation close its session", async ({
+  page,
+}) => {
+  await openCanvas(page)
+  const id = await addVectorLayer(page)
+  await edit(page, id, [
+    { type: "add", object: rect("a", { x: 20, y: 20, width: 40, height: 40 }) },
+  ])
+  const original = await pixels(page)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "selectVectorObjects", ids: ["a"] })
+    await window.engine.dispatch({ type: "beginVectorTransform" })
+    await window.engine.dispatch({
+      type: "adjustVectorTransform",
+      matrix: [1, 0, 0, 1, 50, 0],
+      snap: false,
+    })
+    await window.engine.dispatch({ type: "undo" })
+  })
+  expect(await pixels(page)).toEqual(original)
+  await page.evaluate(async (id) => {
+    await window.engine.dispatch({ type: "beginVectorTransform" })
+    await window.engine.dispatch({
+      type: "adjustVectorTransform",
+      matrix: [1, 0, 0, 1, 50, 0],
+      snap: false,
+    })
+    await window.engine.dispatch({ type: "setLayer", id, locked: true })
+    await window.engine.dispatch({ type: "commitVectorTransform" })
+  }, id)
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().vectorTransform)
+  ).toBeNull()
+  expect(await pixels(page)).toEqual(original)
+  await page.evaluate(
+    (id) => window.engine.dispatch({ type: "setLayer", id, locked: false }),
+    id
+  )
+  await page.evaluate(async (id) => {
+    await window.engine.dispatch({ type: "beginVectorTransform" })
+    await window.engine.dispatch({ type: "rasteriseLayer", id })
+  }, id)
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().vectorTransform)
+  ).toBeNull()
+  await page.evaluate(async (id) => {
+    await window.engine.dispatch({ type: "undo" })
+    await window.engine.dispatch({ type: "selectVectorObjects", ids: ["a"] })
+    await window.engine.dispatch({ type: "beginVectorTransform" })
+    await window.engine.dispatch({ type: "removeLayer", id })
+  }, id)
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().vectorTransform)
+  ).toBeNull()
+})
