@@ -1,4 +1,11 @@
-import type { AlignAnchor, Engine, EngineCommand, LayerSummary } from "@/engine"
+import {
+  FILTER_LABELS,
+  type AlignAnchor,
+  type Engine,
+  type EngineCommand,
+  type FilterKind,
+  type LayerSummary,
+} from "@/engine"
 import { createRegistry, type Command } from "@/features/commands/lib/registry"
 
 import { findSummary, rasterCount } from "./layer-tree"
@@ -369,6 +376,19 @@ export const studioCommands = createRegistry<StudioContext>([
     category: "Layers",
     ...onLayer((layer) => ({ type: "clearLayer", id: layer.id }), isPaintable),
   },
+  // Filters (18) open on the layer and wait in a dialog for their settings;
+  // the dialog is the engine's open filter, not a state of its own.
+  ...(Object.keys(FILTER_LABELS) as FilterKind[]).map(
+    (kind): StudioCommand => ({
+      id: `filter.${kind}`,
+      label: `${FILTER_LABELS[kind]}…`,
+      category: "Filters",
+      ...onLayer(
+        (layer) => ({ type: "beginFilter", id: layer.id, kind }),
+        isPaintable
+      ),
+    })
+  ),
   {
     // The document keeps at least one layer to paint on, so the last one
     // left — alone or inside a group — cannot go.

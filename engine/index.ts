@@ -116,6 +116,14 @@ import {
   tilesCoveringRect,
 } from "./doc/tile-grid"
 import { decodeFloat16 } from "./doc/float16"
+import {
+  defaultFilter,
+  FILTER_LABELS,
+  isIdentityFilter,
+  normalizeFilter,
+  type Filter,
+  type FilterKind,
+} from "./filters/filter"
 import type { SurfaceTiles, TileRef } from "./store/document-store"
 import { type BlobStore, createLocalBlobStore } from "./store/blob-store"
 import { createDocumentStore, type DocumentStore } from "./store/document-store"
@@ -232,6 +240,30 @@ export {
   type ViewMatrix,
 } from "./view/view-transform"
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
+export {
+  defaultFilter,
+  FILTER_LABELS,
+  MAX_BLUR_RADIUS,
+  type Filter,
+  type FilterKind,
+} from "./filters/filter"
+
+/**
+ * What may be sent with a filter open without closing it (18): the filter's
+ * own commands, and moving the view to look at the preview.
+ */
+const FILTER_PASSTHROUGH: ReadonlySet<EngineCommand["type"]> = new Set([
+  "previewFilter",
+  "applyFilter",
+  "cancelFilter",
+  "resize",
+  "panView",
+  "zoomView",
+  "rotateView",
+  "flipView",
+  "fitView",
+  "resetView",
+])
 export {
   encodeExportImage,
   type ImageExportOptions,
@@ -473,6 +505,19 @@ export type EngineCommand =
   | { type: "clearLayer"; id: string }
   /** Starts a blank artwork at the current document size. */
   | { type: "clearDocument" }
+  /**
+   * Filters (18): hue/saturation, brightness/contrast and Gaussian blur on a
+   * paintable layer's own pixels, in linear light. `beginFilter` keeps the
+   * pixels as they are; each `previewFilter` redraws them from that, at its
+   * settings and within the selection, feather and all; `applyFilter` makes
+   * the last preview one undo step and `cancelFilter` puts every pixel back.
+   * Anything else sent while a filter is open cancels it first, except
+   * moving the view.
+   */
+  | { type: "beginFilter"; id: string; kind: FilterKind }
+  | { type: "previewFilter"; filter: Filter }
+  | { type: "applyFilter" }
+  | { type: "cancelFilter" }
   /** Chooses where the pen paints, which is what the caches are built around. */
   | { type: "selectLayer"; id: string }
   /** Moves a layer to a position in the stack, counted from the bottom. */
@@ -729,6 +774,8 @@ export type EngineSnapshot = Readonly<{
    * a placement, and the size of the snapshot it is drawn from.
    */
   layerTransform: LayerTransformState | null
+  /** The filter open on a layer, at the settings last previewed (18). */
+  filter: { layerId: string; filter: Filter } | null
   /**
    * The document's selection (07), or null when nothing is selected. It
    * belongs to the document, not a layer, so it stays as layers are switched.
@@ -835,6 +882,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   view: DEFAULT_VIEW,
   imageTransform: null,
   layerTransform: null,
+  filter: null,
   selection: null,
   wand: DEFAULT_WAND,
   canUndo: false,
@@ -2235,6 +2283,18 @@ export function createEngine(
     renderer?.closePlacedImage(layerImageId(session.layerId))
     publish({ layerTransform: null })
     applyLayerChange()
+  }
+
+  /** The filter open on a layer (18), if one is. */
+  let filterSession: { layerId: string; filter: Filter } | undefined
+
+  /** Closes the open filter, putting back every pixel it previewed. */
+  function cancelFilter() {
+    if (!filterSession) return
+    filterSession = undefined
+    renderer?.endFilter(false)
+    publish({ filter: null })
+    if (snapshot.status === "ready") render()
   }
 
   /** Drops a layer transform whose layer is going away, recording nothing. */
@@ -3806,6 +3866,7 @@ export function createEngine(
     },
     async dispatch(command) {
       if (disposed) return
+      if (filterSession && !FILTER_PASSTHROUGH.has(command.type)) cancelFilter()
       switch (command.type) {
         case "initialize":
           if (snapshot.status === "ready") return
@@ -4150,6 +4211,62 @@ export function createEngine(
           applyLayerChange()
           break
         }
+        case "beginFilter": {
+          const document = requireDocument()
+          const layer = findLayer(document, command.id)
+          if (layer.kind !== "raster" || layer.locked || layer.image) break
+          if (!history?.occupiedTiles(layer.id).length) break
+          // The layer's own pixels are what is filtered, so it is made the
+          // pen's target: the compositor then reads its surface live, and
+          // every preview shows without rebuilding a cache.
+          selectLayer(document, layer.id)
+          applyLayerChange()
+          if (!renderer?.beginFilter(layer.id)) break
+          filterSession = {
+            layerId: layer.id,
+            filter: defaultFilter(command.kind),
+          }
+          publish({ filter: { ...filterSession } })
+          break
+        }
+        case "previewFilter": {
+          if (!filterSession) break
+          filterSession.filter = normalizeFilter(command.filter)
+          renderer?.previewFilter(filterSession.filter)
+          publish({ filter: { ...filterSession } })
+          if (snapshot.status === "ready") render()
+          break
+        }
+        case "applyFilter": {
+          const session = filterSession
+          if (!session) break
+          if (isIdentityFilter(session.filter)) {
+            cancelFilter()
+            break
+          }
+          filterSession = undefined
+          // The preview already is the result: drawn once more so what is
+          // kept is these settings even if the last preview was skipped.
+          const region = renderer?.previewFilter(session.filter)
+          renderer?.endFilter(true)
+          publish({ filter: null })
+          if (!region) break
+          const document = requireDocument()
+          recordOperation(
+            FILTER_LABELS[session.filter.kind].toLowerCase(),
+            captureStructure(document),
+            {
+              readback: [{ surfaceId: session.layerId, region }],
+            }
+          )
+          await history?.settle()
+          invalidateThumbnailsOf(session.layerId)
+          applyLayerChange()
+          break
+        }
+        case "cancelFilter":
+          cancelFilter()
+          break
         case "clearLayer": {
           const document = requireDocument()
           const layer = findLayer(document, command.id)
