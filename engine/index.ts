@@ -1,4 +1,13 @@
 import {
+  editPathNode,
+  fitPressureStroke,
+  nearestPathSegment,
+  type PathNode,
+  type PressurePoint,
+  type NodeEdit,
+} from "./doc/vector-path"
+import { applyAffine } from "./doc/transform-session"
+import {
   selectObjects,
   objectsBounds,
   objectBounds as vectorObjectBounds,
@@ -248,6 +257,7 @@ import {
   fitView as fitCanvasView,
   flipView,
   IDENTITY_MATRIX,
+  invertMatrix,
   panView,
   rotateView,
   screenToDoc,
@@ -401,6 +411,9 @@ const VECTOR_TOOLS = [
   "line",
   "polygon",
   "objectSelect",
+  "pen",
+  "node",
+  "pressure",
 ] as const
 export type VectorTool = (typeof VECTOR_TOOLS)[number]
 export const isVectorTool = (tool: Tool): tool is VectorTool =>
@@ -558,6 +571,10 @@ export type EngineCommand =
       anchor: AlignAnchor
       to: "canvas" | "selection"
     }
+  | { type: "finishPenPath" }
+  | { type: "editVectorNode"; objectId: string; edit: NodeEdit }
+  | { type: "deleteVectorNode" }
+  | { type: "toggleVectorNode" }
   | { type: "editVectorLayer"; id: string; commands: readonly SceneCommand[] }
   /**
    * Turns a vector layer into a paint layer holding exactly what it showed
@@ -862,6 +879,9 @@ export type EngineSnapshot = Readonly<{
   /** What the shape tools give a new shape (19). */
   shapeStyle: ShapeStyle
   vectorSelection: readonly string[]
+  vectorPaths: readonly VectorObject[]
+  penNodes: readonly PathNode[]
+  vectorNode: { objectId: string; index: number } | null
   vectorSelectionBounds: Extent | null
   vectorTransform: {
     placement: ImagePlacement
@@ -998,6 +1018,9 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   tool: "brush",
   shapeStyle: DEFAULT_SHAPE_STYLE,
   vectorSelection: [],
+  vectorPaths: [],
+  penNodes: [],
+  vectorNode: null,
   vectorSelectionBounds: null,
   vectorTransform: null,
   color: Object.freeze({
@@ -1086,6 +1109,13 @@ export interface Engine {
    * detaches. Attaching one adds a promise per frame, so it is off by default
    * and never on in the product.
    */
+  /** Live path controls bypass React snapshots during gestures. */
+  observeVectorControls(
+    observer: (
+      objects: readonly VectorObject[],
+      penNodes: readonly PathNode[]
+    ) => void
+  ): () => void
   observeFrames(observer: ((frame: FrameTiming) => void) | null): void
   /**
    * What the session's history is holding: how many steps it can take back, the
@@ -1241,6 +1271,9 @@ export function createEngine(
   } = {}
 ): Engine {
   let snapshot: EngineSnapshot = INITIAL_SNAPSHOT
+  const vectorControlObservers = new Set<
+    (objects: readonly VectorObject[], penNodes: readonly PathNode[]) => void
+  >()
   const listeners = new Set<() => void>()
   let device: GPUDevice | undefined
   let context: GPUCanvasContext | null = null
@@ -1613,8 +1646,33 @@ export function createEngine(
 
   function publish(update: Partial<EngineSnapshot>) {
     const next = { ...snapshot, ...update }
-    if (update.vectorSelection && doc) {
+    if (
+      doc &&
+      (update.vectorSelection ||
+        update.layers ||
+        update.tool ||
+        update.vectorPaths)
+    ) {
       const layer = activeLayer(doc)
+      next.vectorPaths =
+        update.vectorPaths ??
+        (layer.kind === "vector"
+          ? layer.scene.objects.filter(
+              (o) =>
+                next.vectorSelection.includes(o.id) &&
+                o.geometry.kind === "path"
+            )
+          : [])
+      if (
+        next.vectorNode &&
+        !next.vectorPaths.some(
+          (o) =>
+            o.id === next.vectorNode!.objectId &&
+            o.geometry.kind === "path" &&
+            o.geometry.nodes[next.vectorNode!.index]
+        )
+      )
+        next.vectorNode = null
       next.vectorSelectionBounds =
         layer.kind === "vector"
           ? objectsBounds(layer.scene, next.vectorSelection)
@@ -1635,6 +1693,7 @@ export function createEngine(
     if ((update.layers || update.status === "ready") && thumbnailViews.size)
       thumbnails.invalidate(thumbnailViews.keys())
     listeners.forEach((listener) => listener())
+    notifyVectorControls()
   }
 
   /** Re-reads `cloudSync`'s genuine status into the snapshot (18). */
@@ -2482,6 +2541,24 @@ export function createEngine(
         layerId: string
         tool: VectorTool
         points?: Point[]
+        nodes?: PathNode[]
+        placing?: boolean
+        closed?: boolean
+        pressurePoints?: PressurePoint[]
+        pressureTail?: {
+          x: number
+          y: number
+          pressure: number
+          tiltX: number
+          tiltY: number
+          time: number
+        }
+        pressureResampler?: ReturnType<typeof createStrokeResampler>
+        node?: {
+          object: VectorObject
+          index: number
+          part: "anchor" | "in" | "out"
+        }
         anchor: Point
         point: Point
         ended: boolean
@@ -2491,6 +2568,19 @@ export function createEngine(
         previewAt?: { x: number; y: number; square: boolean }
       }
     | undefined
+
+  function notifyVectorControls() {
+    if (!vectorControlObservers.size) return
+    const objects =
+      shapeDrag?.node && shapeDrag.preview
+        ? shapeDrag.preview.objects.filter((o) =>
+            snapshot.vectorSelection.includes(o.id)
+          )
+        : snapshot.vectorPaths
+    const nodes =
+      shapeDrag?.tool === "pen" ? shapeDrag.nodes! : snapshot.penNodes
+    vectorControlObservers.forEach((observer) => observer(objects, nodes))
+  }
 
   /** Frees a surface's texture, and forgets what was drawn into it. */
   function releaseSurface(id: string) {
@@ -2630,6 +2720,7 @@ export function createEngine(
       throw new Error(`${layer.name} holds paint, not shapes.`)
     if (layer.locked) throw new Error(`${layer.name} is locked.`)
     if (commands.length === 0) return
+    if (shapeDrag?.layerId === layerId) dropShapeDrag()
     if (vectorTransform?.layerId === layerId) cancelVectorTransform()
     const { scene, inverse } = applySceneEdit(layer.scene, commands)
     layer.scene = scene
@@ -2943,39 +3034,79 @@ export function createEngine(
     scene: VectorScene
   ): VectorObject | null {
     const style = snapshot.shapeStyle
-    if (!style.fill && !style.stroke && drag.tool !== "line") return null
+    if (drag.node && drag.node.object.geometry.kind === "path") {
+      const local = applyAffine(
+        invertMatrix(drag.node.object.transform),
+        drag.point
+      )
+      const original = drag.node.object.geometry.nodes[drag.node.index]
+      const at =
+        drag.node.part === "anchor" ? original : original[drag.node.part]
+      if (at && at.x === local.x && at.y === local.y) return drag.node.object
+      return {
+        ...drag.node.object,
+        geometry: editPathNode(drag.node.object.geometry, {
+          type: "move",
+          index: drag.node.index,
+          part: drag.node.part,
+          point: local,
+        }),
+      }
+    }
+    if (drag.tool === "node") return null
+    if (
+      !style.fill &&
+      !style.stroke &&
+      drag.tool !== "line" &&
+      drag.tool !== "pressure"
+    )
+      return null
     const box = dragRect(drag.anchor, drag.point, constrained())
-    if (drag.tool !== "polygon" && box.width < 1 && box.height < 1) return null
+    if (drag.tool === "pen" && (drag.nodes?.length ?? 0) < 2) return null
+    if (
+      !["polygon", "pen", "pressure"].includes(drag.tool) &&
+      box.width < 1 &&
+      box.height < 1
+    )
+      return null
     if (drag.tool === "polygon" && (drag.points?.length ?? 0) < 2) return null
     const paint = { color: snapshot.color.hex, opacity: ink[3] }
     return {
       id: nextObjectId(scene),
       geometry:
-        drag.tool === "ellipse"
+        drag.tool === "pen"
           ? {
-              kind: "ellipse",
-              cx: box.x + box.width / 2,
-              cy: box.y + box.height / 2,
-              rx: box.width / 2,
-              ry: box.height / 2,
+              kind: "path",
+              nodes: [...drag.nodes!],
+              closed: drag.closed ?? false,
             }
-          : drag.tool === "line"
-            ? {
-                kind: "polygon",
-                points: [drag.anchor, drag.point],
-                closed: false,
-              }
-            : drag.tool === "polygon"
+          : drag.tool === "pressure"
+            ? fitPressureStroke(drag.pressurePoints!, style.strokeWidth)
+            : drag.tool === "ellipse"
               ? {
-                  kind: "polygon",
-                  points: [...(drag.points ?? [drag.anchor]), drag.point],
-                  closed: true,
+                  kind: "ellipse",
+                  cx: box.x + box.width / 2,
+                  cy: box.y + box.height / 2,
+                  rx: box.width / 2,
+                  ry: box.height / 2,
                 }
-              : { kind: "rect", ...box },
+              : drag.tool === "line"
+                ? {
+                    kind: "polygon",
+                    points: [drag.anchor, drag.point],
+                    closed: false,
+                  }
+                : drag.tool === "polygon"
+                  ? {
+                      kind: "polygon",
+                      points: [...(drag.points ?? [drag.anchor]), drag.point],
+                      closed: true,
+                    }
+                  : { kind: "rect", ...box },
       transform: [1, 0, 0, 1, 0, 0],
       style: {
         fill:
-          style.fill && drag.tool !== "line"
+          style.fill && drag.tool !== "line" && drag.tool !== "pressure"
             ? {
                 ...paint,
                 color: style.fillColor ?? paint.color,
@@ -2983,7 +3114,10 @@ export function createEngine(
               }
             : null,
         stroke:
-          style.stroke || drag.tool === "line"
+          style.stroke ||
+          drag.tool === "line" ||
+          drag.tool === "pressure" ||
+          (drag.tool === "pen" && !drag.closed)
             ? {
                 ...paint,
                 color: style.strokeColor ?? paint.color,
@@ -2999,13 +3133,76 @@ export function createEngine(
   /** One frame of a shape drag: drawn into its layer, added as the pen lifts. */
   function drawShapeDrag() {
     const drag = shapeDrag!
-    samples.drain((x, y) => {
-      drag.point = { x: toDocX(x, y), y: toDocY(x, y) }
+    const pressureSink = (x: number, y: number, pressure: number) => {
+      if (drag.pressurePoints!.length < 100_000)
+        drag.pressurePoints!.push({ x, y, pressure })
+    }
+    samples.drain((x, y, pressure, tiltX, tiltY, time) => {
+      const point = { x: toDocX(x, y), y: toDocY(x, y) }
+      drag.point =
+        drag.tool === "pressure" ? point : snapVectorPoint(point, drag.layerId)
+      if (drag.tool === "pen" && drag.placing && !drag.ended) {
+        const at = drag.nodes!.length - 1,
+          node = drag.nodes![at]
+        const dx = drag.point.x - node.x,
+          dy = drag.point.y - node.y
+        drag.nodes![at] = {
+          ...node,
+          in: { x: node.x - dx, y: node.y - dy },
+          out: drag.point,
+          smooth: Math.hypot(dx, dy) > 0,
+        }
+      }
+      if (drag.tool === "pressure") {
+        drag.pressureTail = { ...point, pressure, tiltX, tiltY, time }
+        const filtered = stabilizer.filter(point.x, point.y)
+        drag.pressureResampler!.extend(
+          filtered.x,
+          filtered.y,
+          pressure,
+          tiltX,
+          tiltY,
+          time,
+          pressureSink
+        )
+      }
     })
+    if (drag.ended && drag.tool === "pressure") {
+      const tail = drag.pressureTail!
+      drag.pressureResampler!.extend(
+        tail.x,
+        tail.y,
+        tail.pressure,
+        tail.tiltX,
+        tail.tiltY,
+        tail.time,
+        pressureSink
+      )
+      drag.pressureResampler!.end(pressureSink)
+      // Arc-length stamps can stop short by one spacing; editable paths
+      // retain the exact lift position and its pressure.
+      const last = drag.pressurePoints!.at(-1)
+      if (
+        !last ||
+        last.x !== tail.x ||
+        last.y !== tail.y ||
+        last.pressure !== tail.pressure
+      )
+        drag.pressurePoints!.push({
+          x: tail.x,
+          y: tail.y,
+          pressure: tail.pressure,
+        })
+    }
     const document = requireDocument()
     const layer = findNodeIn(document.layers, drag.layerId)
-    if (layer?.kind !== "vector") {
-      shapeDrag = undefined
+    if (
+      layer?.kind !== "vector" ||
+      layer.locked ||
+      document.activeLayerId !== drag.layerId ||
+      document.paintingMask
+    ) {
+      dropShapeDrag()
       return
     }
     const at = drag.previewAt
@@ -3014,7 +3211,7 @@ export function createEngine(
       at.x !== drag.point.x ||
       at.y !== drag.point.y ||
       at.square !== constrained()
-    if (!drag.ended && !moved) {
+    if (!drag.ended && !moved && !["pen", "pressure"].includes(drag.tool)) {
       frame = requestAnimationFrame(drawFrame)
       return
     }
@@ -3022,6 +3219,7 @@ export function createEngine(
     if (drag.ended) {
       shapeDrag = undefined
       forgetGestureInput()
+      publish({ penNodes: [] })
       if (drag.tool === "objectSelect") {
         const region = boxSelection(drag.anchor, drag.point)
         selectVectorRegion(region, shiftHeld)
@@ -3030,13 +3228,26 @@ export function createEngine(
         render()
         return
       }
-      if (shape) {
+      if (shape && (!drag.node || shape !== drag.node.object)) {
         editScene(
           layer.id,
-          [{ type: "add", object: shape }],
-          `draw ${drag.tool}`
+          drag.node
+            ? [
+                {
+                  type: "update",
+                  id: shape.id,
+                  patch: { geometry: shape.geometry },
+                },
+              ]
+            : [{ type: "add", object: shape }],
+          drag.node ? "move node" : `draw ${drag.tool}`
         )
-        publish({ vectorSelection: [] })
+        publish({
+          vectorSelection:
+            drag.node || drag.tool === "pen" || drag.tool === "pressure"
+              ? [shape.id]
+              : [],
+        })
       } else {
         drawScene(layer.id, layer.scene)
         if (snapshot.status === "ready") render()
@@ -3048,9 +3259,21 @@ export function createEngine(
       drag.tool === "objectSelect"
         ? layer.scene
         : shape
-          ? applySceneEdit(layer.scene, [{ type: "add", object: shape }]).scene
+          ? applySceneEdit(
+              layer.scene,
+              drag.node
+                ? [
+                    {
+                      type: "update",
+                      id: shape.id,
+                      patch: { geometry: shape.geometry },
+                    },
+                  ]
+                : [{ type: "add", object: shape }]
+            ).scene
           : layer.scene
     drawScene(layer.id, drag.preview)
+    notifyVectorControls()
     if (drag.tool === "objectSelect")
       renderer?.setSelection(
         rectSelection(document, dragRect(drag.anchor, drag.point, false))
@@ -3061,7 +3284,8 @@ export function createEngine(
       fail(error)
       return
     }
-    frame = requestAnimationFrame(drawFrame)
+    if (drag.tool !== "pen" || drag.placing)
+      frame = requestAnimationFrame(drawFrame)
   }
 
   /** Drops a shape drag, its layer drawn as it was. */
@@ -3070,6 +3294,7 @@ export function createEngine(
     if (!drag) return
     shapeDrag = undefined
     forgetGestureInput()
+    publish({ penNodes: [], vectorSelection: snapshot.vectorSelection })
     if (drag.tool === "objectSelect") showSelection(selection)
     const layer = doc && findNodeIn(doc.layers, drag.layerId)
     if (layer?.kind === "vector") drawScene(layer.id, layer.scene)
@@ -3217,6 +3442,16 @@ export function createEngine(
    */
   function applyLayerChange() {
     const document = requireDocument()
+    if (shapeDrag) {
+      const target = findNodeIn(document.layers, shapeDrag.layerId)
+      if (
+        target?.kind !== "vector" ||
+        target.locked ||
+        document.activeLayerId !== shapeDrag.layerId ||
+        document.paintingMask
+      )
+        dropShapeDrag()
+    }
     uploadLayers()
     syncComposition()
     const layer = activeLayer(document)
@@ -3859,6 +4094,10 @@ export function createEngine(
       drawMarquee()
       return
     }
+    if (isVectorTool(tool)) {
+      samples.clear()
+      return
+    }
     samples.drain(consumeSample)
     // A stroke that ended before its opening sample was drained drew nothing.
     if (!stroking && !opening) {
@@ -3937,6 +4176,11 @@ export function createEngine(
    * What the pen reported for a gesture that has ended is not a stroke's to
    * draw, and a frame still waiting for it would take it for one.
    */
+  function forgetGestureInputFrame() {
+    if (frame !== undefined) cancelAnimationFrame(frame)
+    frame = undefined
+  }
+
   function forgetGestureInput() {
     samples.clear()
     if (frame !== undefined) cancelAnimationFrame(frame)
@@ -4017,6 +4261,90 @@ export function createEngine(
       frame = requestAnimationFrame(drawFrame)
   }
 
+  let lastNodeClick: { point: Point; time: number } | undefined
+
+  function snapVectorPoint(point: Point, layerId: string): Point {
+    if (!snapping || altHeld) return point
+    const snap = resolveSnap(
+      { ...point, width: 0, height: 0 },
+      snapTargetsBesides(layerId),
+      6 / snapshot.view.zoom
+    )
+    return { x: point.x + snap.dx, y: point.y + snap.dy }
+  }
+
+  function beginNodeDrag(layer: VectorLayer, point: Point, time: number) {
+    const reach = 6 / snapshot.view.zoom
+    const paths = layer.scene.objects.filter((o) => o.geometry.kind === "path")
+    // Handles of selected objects have priority over an anchor beneath them.
+    for (const object of paths
+      .filter((o) => snapshot.vectorSelection.includes(o.id))
+      .reverse()) {
+      if (object.geometry.kind !== "path") continue
+      for (let index = 0; index < object.geometry.nodes.length; index++) {
+        const node = object.geometry.nodes[index]
+        for (const part of ["in", "out", "anchor"] as const) {
+          const local = part === "anchor" ? node : node[part]
+          if (!local) continue
+          const at = applyAffine(object.transform, local)
+          if (Math.hypot(point.x - at.x, point.y - at.y) <= reach) {
+            publish({ vectorNode: { objectId: object.id, index } })
+            shapeDrag = {
+              layerId: layer.id,
+              tool: "node",
+              anchor: point,
+              point: at,
+              ended: false,
+              node: { object, index, part },
+            }
+            scheduleFrame()
+            return
+          }
+        }
+      }
+    }
+    const hit = [...paths]
+      .reverse()
+      .map((object) => ({
+        object,
+        hit:
+          object.geometry.kind === "path"
+            ? nearestPathSegment(object.geometry, point, object.transform)
+            : null,
+      }))
+      .find((entry) => entry.hit && entry.hit.distance <= reach)
+    if (hit?.hit) {
+      const doubleClick =
+        lastNodeClick &&
+        time - lastNodeClick.time < 400 &&
+        Math.hypot(
+          point.x - lastNodeClick.point.x,
+          point.y - lastNodeClick.point.y
+        ) <= reach
+      setVectorSelection([hit.object.id])
+      publish({ vectorNode: null })
+      if (doubleClick && hit.object.geometry.kind === "path") {
+        const geometry = editPathNode(hit.object.geometry, {
+          type: "split",
+          index: hit.hit.index,
+          t: hit.hit.t,
+        })
+        editScene(
+          layer.id,
+          [{ type: "update", id: hit.object.id, patch: { geometry } }],
+          "add node"
+        )
+        publish({
+          vectorNode: { objectId: hit.object.id, index: hit.hit.index + 1 },
+        })
+      }
+    } else {
+      setVectorSelection([])
+      publish({ vectorNode: null })
+    }
+    lastNodeClick = { point, time }
+  }
+
   function beginStroke(
     screenX: number,
     screenY: number,
@@ -4080,6 +4408,72 @@ export function createEngine(
       const anchor = {
         x: toDocX(screenX, screenY),
         y: toDocY(screenX, screenY),
+      }
+      if (tool === "node") {
+        beginNodeDrag(layer, anchor, origin)
+        return
+      }
+      if (tool === "pen") {
+        const point = snapVectorPoint(anchor, layer.id)
+        if (shapeDrag?.tool === "pen") {
+          const first = shapeDrag.nodes![0]
+          if (
+            shapeDrag.nodes!.length >= 2 &&
+            Math.hypot(anchor.x - first.x, anchor.y - first.y) <
+              6 / snapshot.view.zoom
+          ) {
+            shapeDrag.closed = true
+            shapeDrag.ended = true
+            shapeDrag.placing = false
+          } else {
+            shapeDrag.nodes!.push({
+              ...point,
+              in: null,
+              out: null,
+              smooth: false,
+            })
+            shapeDrag.placing = true
+            shapeDrag.point = point
+          }
+        } else
+          shapeDrag = {
+            layerId: layer.id,
+            tool,
+            anchor: point,
+            point,
+            nodes: [{ ...point, in: null, out: null, smooth: false }],
+            placing: true,
+            ended: false,
+          }
+        publish({ penNodes: [...shapeDrag.nodes!] })
+        scheduleFrame()
+        return
+      }
+      if (tool === "pressure") {
+        stabilizer.begin(anchor.x, anchor.y)
+        const points: PressurePoint[] = []
+        const path = createStrokeResampler(2)
+        path.begin(
+          anchor.x,
+          anchor.y,
+          pressure,
+          tiltX,
+          tiltY,
+          time,
+          (x, y, pressure) => points.push({ x, y, pressure })
+        )
+        shapeDrag = {
+          layerId: layer.id,
+          tool,
+          anchor,
+          point: anchor,
+          ended: false,
+          pressurePoints: points,
+          pressureResampler: path,
+          pressureTail: { ...anchor, pressure, tiltX, tiltY, time },
+        }
+        scheduleFrame()
+        return
       }
       // Shift squares the shape for as long as it is held.
       shiftLatched = false
@@ -4199,6 +4593,17 @@ export function createEngine(
 
   function endStroke() {
     if (shapeDrag) {
+      if (shapeDrag.tool === "pen" && !shapeDrag.ended) {
+        // Drain the final drag samples before the next click changes its anchor.
+        forgetGestureInputFrame()
+        drawShapeDrag()
+        if (shapeDrag) {
+          shapeDrag.placing = false
+          publish({ penNodes: [...shapeDrag.nodes!] })
+        }
+        forgetGestureInput()
+        return
+      }
       if (shapeDrag.tool === "polygon" && !shapeDrag.ended) return
       shapeDrag.ended = true
       scheduleFrame()
@@ -4515,7 +4920,7 @@ export function createEngine(
             tiltEnabled: () => tiltEnabled,
             // With a selection tool, Alt/Option subtracts (09) rather than
             // sampling.
-            altSamples: () => !isSelectionTool(tool),
+            altSamples: () => !isSelectionTool(tool) && !isVectorTool(tool),
           }
         )
         // Navigation is input too, and it belongs to the same canvas. Holding
@@ -4870,6 +5275,69 @@ export function createEngine(
           addVectorLayer(requireDocument())
           recordOperation("add vector layer", before)
           applyLayerChange()
+          break
+        }
+        case "finishPenPath":
+          if (shapeDrag?.tool === "pen") {
+            shapeDrag.ended = true
+            shapeDrag.placing = false
+            scheduleFrame()
+          }
+          break
+        case "editVectorNode": {
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const object = layer.scene.objects.find(
+            (o) => o.id === command.objectId
+          )
+          if (!object || object.geometry.kind !== "path")
+            throw new Error("Select an editable path.")
+          const geometry = editPathNode(object.geometry, command.edit)
+          editScene(
+            layer.id,
+            [{ type: "update", id: object.id, patch: { geometry } }],
+            "edit node"
+          )
+          publish({
+            vectorNode: {
+              objectId: object.id,
+              index: Math.min(
+                command.edit.type === "split"
+                  ? command.edit.index + 1
+                  : command.edit.index,
+                geometry.nodes.length - 1
+              ),
+            },
+          })
+          break
+        }
+        case "deleteVectorNode":
+        case "toggleVectorNode": {
+          const node = snapshot.vectorNode
+          if (node) {
+            dropShapeDrag()
+            const layer = selectedVectorLayer(),
+              object = layer.scene.objects.find((o) => o.id === node.objectId)
+            if (object?.geometry.kind === "path") {
+              if (
+                command.type === "deleteVectorNode" &&
+                object.geometry.nodes.length <= 2
+              )
+                break
+              const geometry = editPathNode(object.geometry, {
+                type: command.type === "deleteVectorNode" ? "delete" : "toggle",
+                index: node.index,
+              })
+              editScene(
+                layer.id,
+                [{ type: "update", id: object.id, patch: { geometry } }],
+                "edit node"
+              )
+              publish({
+                vectorNode: command.type === "deleteVectorNode" ? null : node,
+              })
+            }
+          }
           break
         }
         case "editVectorLayer":
@@ -5842,6 +6310,13 @@ export function createEngine(
         }
       }
     },
+    observeVectorControls(observer) {
+      vectorControlObservers.add(observer)
+      notifyVectorControls()
+      return () => {
+        vectorControlObservers.delete(observer)
+      }
+    },
     observeFrames(observer) {
       frameObserver = observer
     },
@@ -6143,6 +6618,7 @@ export function createEngine(
         })().finally(release)
       } else release()
       publish({ status: "disposed" })
+      vectorControlObservers.clear()
       listeners.clear()
     },
   }

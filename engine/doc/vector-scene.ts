@@ -8,6 +8,7 @@
  * diff — the commands that put the scene back — instead of a copy of it.
  */
 
+import type { BezierPath } from "./vector-path"
 import { parseHex } from "../color/hex"
 import type { Affine } from "./transform-session"
 
@@ -43,6 +44,7 @@ export type Point = Readonly<{ x: number; y: number }>
 
 /** The shape, in the object's own coordinates; the transform places it. */
 export type VectorGeometry =
+  | BezierPath
   | Readonly<{
       kind: "rect"
       x: number
@@ -121,6 +123,26 @@ function checkGeometry(geometry: VectorGeometry): void {
         geometry.ry < 0
       )
         throw new Error("An ellipse needs a finite centre and radii.")
+      return
+    case "path":
+      if (
+        !Array.isArray(geometry.nodes) ||
+        geometry.nodes.length < 2 ||
+        geometry.nodes.length > MAX_POLYGON_POINTS ||
+        typeof geometry.closed !== "boolean" ||
+        !geometry.nodes.every(
+          (n) =>
+            finite(n?.x, n?.y) &&
+            typeof n.smooth === "boolean" &&
+            [n.in, n.out].every((h) => h === null || (h && finite(h.x, h.y))) &&
+            (n.width === undefined || (finite(n.width) && n.width >= 0))
+        ) ||
+        (geometry.nodes.some((n) => n.width !== undefined) &&
+          !geometry.nodes.every((n) => n.width !== undefined))
+      )
+        throw new Error(
+          "A path needs finite anchors, handles and consistent widths."
+        )
       return
     case "polygon":
       if (
