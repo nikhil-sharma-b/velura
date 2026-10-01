@@ -48,6 +48,12 @@ export interface StudioContext {
   openPreferences: () => void
   /** Hides every control so only the canvas is left, or brings them back. */
   toggleZen: () => void
+  /**
+   * Opens the feather dialog (04), which asks how far to feather the
+   * selection and feathers it once the artist says; cancelling asks nothing
+   * of the engine.
+   */
+  openFeather: () => void
 }
 
 type StudioCommand = Command<StudioContext>
@@ -424,6 +430,14 @@ export const studioCommands = createRegistry<StudioContext>([
     category: "Select",
     keybinds: ["mod+shift+i"],
     ...dispatching({ type: "invertSelection" }),
+  },
+  {
+    // Unbound by default: shift+f6 elsewhere, which no hand reaches for.
+    id: "select.feather",
+    label: "Feather selection",
+    category: "Select",
+    available: ({ engine }) => !!engine?.getSnapshot().selection,
+    run: (context) => context.openFeather(),
   },
   {
     // Layer via copy, on the key every editor the hand learned on gives it.

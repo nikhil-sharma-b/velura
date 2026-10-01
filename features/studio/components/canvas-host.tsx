@@ -107,6 +107,7 @@ import { LayerPanel } from "./layer-panel"
 import { ShapeStylePanel } from "./shape-style-panel"
 import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
+import { FeatherDialog } from "./feather-dialog"
 import { FilterDialog } from "./filter-dialog"
 import {
   runStudioCommand,
@@ -402,6 +403,7 @@ export function CanvasHost({
   const layersToggled = useRef(false)
   const [eraserOpen, setEraserOpen] = useState(false)
   const [featherRadius, setFeatherRadius] = useState(10)
+  const [featherOpen, setFeatherOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [pressureOpen, setPressureOpen] = useState(false)
   /**
@@ -456,6 +458,13 @@ export function CanvasHost({
     engine?.getSnapshot ?? getInitialSnapshot,
     getInitialSnapshot
   )
+  // A selection that goes while the dialog is up (an undo by key) takes the
+  // question with it, rather than leaving it to reappear with the next one.
+  const [featherFor, setFeatherFor] = useState(snapshot.selection)
+  if (featherFor !== snapshot.selection) {
+    setFeatherFor(snapshot.selection)
+    if (!snapshot.selection && featherOpen) setFeatherOpen(false)
+  }
 
   // React 19 ref cleanup also covers Strict Mode's attach/detach rehearsal.
   const attach = useCallback(
@@ -654,6 +663,7 @@ export function CanvasHost({
     togglePalette: () => setPaletteOpen((open) => !open),
     openPreferences: () => setPreferencesOpen(true),
     toggleZen: () => setZen((on) => !on),
+    openFeather: () => setFeatherOpen(true),
   }
   // The shape options are memoised, so they get one handle on the commands
   // for good, reading whichever context is current when one runs.
@@ -1300,26 +1310,15 @@ export function CanvasHost({
                     readout={`${featherRadius}`}
                     icon={<DropHalfIcon />}
                   >
-                    <SliderSetting
-                      label="Feather radius"
-                      value={featherRadius}
-                      min={1}
-                      max={200}
-                      step={1}
-                      onChange={setFeatherRadius}
-                    />
-                    <div className="mt-3 grid grid-cols-2 gap-1 text-xs">
+                    <div className="grid grid-cols-2 gap-1 text-xs">
                       <button
                         type="button"
                         className="rounded-md border border-studio-edge px-2 py-1 hover:bg-muted"
                         onClick={() =>
-                          void engine?.dispatch({
-                            type: "featherSelection",
-                            radius: featherRadius,
-                          })
+                          runStudioCommand("select.feather", commandContext)
                         }
                       >
-                        Feather
+                        Feather…
                       </button>
                       <button
                         type="button"
@@ -1929,6 +1928,15 @@ export function CanvasHost({
         </div>
       )}
       {engine && <FilterDialog engine={engine} open={snapshot.filter} />}
+      <FeatherDialog
+        open={featherOpen}
+        radius={featherRadius}
+        onOpenChange={setFeatherOpen}
+        onApply={(radius) => {
+          setFeatherRadius(radius)
+          void engine?.dispatch({ type: "featherSelection", radius })
+        }}
+      />
       <PreferencesPanel
         defaults={studioCommands}
         open={preferencesOpen}
