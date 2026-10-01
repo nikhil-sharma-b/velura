@@ -16,6 +16,8 @@ import {
   normaliseDocumentName,
 } from "./lib/documents"
 import { isAnonymousDocumentId } from "../lib/anonymous-document-id"
+import { sceneChunkHashes } from "./lib/scenes"
+import { readScenes, sceneRowsOf } from "./sceneRows"
 
 async function requireUserId(
   ctx: QueryCtx | MutationCtx
@@ -60,8 +62,16 @@ export const list = query({
 
 export const get = query({
   args: { documentId: v.id("documents") },
-  handler: async (ctx, { documentId }) =>
-    await requireOwnDocument(ctx, documentId),
+  handler: async (ctx, { documentId }) => {
+    const document = await requireOwnDocument(ctx, documentId)
+    // The tree as a session reads it: scenes back inside their layers (20).
+    return document.structure === undefined
+      ? document
+      : {
+          ...document,
+          structure: await readScenes(ctx, documentId, document.structure),
+        }
+  },
 })
 
 export const create = mutation({
@@ -209,6 +219,13 @@ export const duplicate = mutation({
         hash,
         updatedAt: now,
       })
+    // Scene rows belong to one document, so the copy gets its own — only
+    // those its tree names, since its history starts empty and nothing would
+    // ever let go of the rest.
+    const named = sceneChunkHashes(source.structure)
+    for (const { hash, data } of await sceneRowsOf(ctx, documentId))
+      if (named.has(hash))
+        await ctx.db.insert("sceneChunks", { documentId: copyId, hash, data })
     // Older previews still use the source's mutable document key. Copy that
     // legacy object to a new immutable key in an action; until it lands the
     // copy shows as blank, and the first open repairs it if it never does.
@@ -227,6 +244,8 @@ export const remove = mutation({
   args: { documentId: v.id("documents") },
   handler: async (ctx, { documentId }) => {
     await requireOwnDocument(ctx, documentId)
+    for (const row of await sceneRowsOf(ctx, documentId))
+      await ctx.db.delete(row._id)
     await ctx.db.delete(documentId)
   },
 })

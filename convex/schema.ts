@@ -114,6 +114,20 @@ export default defineSchema({
     ),
   }).index("by_document_created", ["documentId", "createdAt"]),
 
+  // A piece of a vector layer's scene (20), by the hash of its text. The
+  // document's `structure` and each restore point's name a scene as a list of
+  // these hashes instead of holding its objects, so a large scene cannot push
+  // either row past the document limit, and a restore point costs hashes, not
+  // a copy of every shape. Rows are per document rather than shared: a scene
+  // is Convex data, not an R2 object, so there is no upload to save, and a
+  // document owning its rows can drop them without asking any other.
+  // See convex/lib/scenes.ts.
+  sceneChunks: defineTable({
+    documentId: v.id("documents"),
+    hash: v.string(),
+    data: v.string(),
+  }).index("by_document_hash", ["documentId", "hash"]),
+
   // Per-flush R2 operation counts, so the free-tier Class A budget (the
   // binding cost constraint per architecture.md §9.6) has a real number
   // behind it instead of an estimate.

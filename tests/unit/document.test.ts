@@ -3,6 +3,7 @@ import {
   addGroup,
   addLayer,
   addMask,
+  addVectorLayer,
   cacheKey,
   compositionKey,
   createDocument,
@@ -13,6 +14,7 @@ import {
   makeLayerPaintable,
   moveLayer,
   planComposite,
+  rasteriseLayer,
   removeLayer,
   removeMask,
   resizeDocument,
@@ -364,6 +366,49 @@ describe("resizing", () => {
       findRasterLayer(doc, doc.layers[0].id).surface.tileCount()
     ).toBeGreaterThan(0)
     expect(doc.activeLayerId).toBe(top)
+  })
+})
+
+describe("rasterising a vector layer", () => {
+  test("puts a paint layer in its place, under the same id and settings", () => {
+    const doc = document()
+    const id = addVectorLayer(doc)
+    setLayer(doc, id, { name: "Shapes", opacity: 0.5, blend: "multiply" })
+    addMask(doc, id)
+    const mask = findNode(doc, id).mask
+    const index = doc.layers.findIndex((layer) => layer.id === id)
+
+    rasteriseLayer(doc, id)
+
+    const layer = findRasterLayer(doc, id)
+    expect(doc.layers[index]).toBe(layer)
+    expect(layer).toMatchObject({
+      name: "Shapes",
+      opacity: 0.5,
+      blend: "multiply",
+      image: false,
+      locked: false,
+    })
+    expect(layer.mask).toBe(mask)
+    expect(layer.surface.tileCount()).toBe(0)
+    expect(doc.activeLayerId).toBe(id)
+  })
+
+  test("works inside a group", () => {
+    const doc = document()
+    const id = addVectorLayer(doc)
+    const group = addGroup(doc, [id])
+    rasteriseLayer(doc, id)
+    const parent = findNode(doc, group)
+    expect(parent.kind === "group" && parent.children[0]?.kind).toBe("raster")
+  })
+
+  test("refuses anything that is not a vector layer", () => {
+    const doc = document()
+    const id = addLayer(doc)
+    expect(() => rasteriseLayer(doc, id)).toThrow()
+    const group = addGroup(doc, [id])
+    expect(() => rasteriseLayer(doc, group)).toThrow()
   })
 })
 

@@ -439,6 +439,28 @@ export function makeLayerPaintable(doc: PaintDocument, id: string): void {
 }
 
 /**
+ * Turns a vector layer into a paint layer in the same place, under the same
+ * id and settings (20). The new surface starts empty: the layer's pixels are
+ * already on the GPU, drawn from its scene, and the caller records them from
+ * there — which is what makes the conversion one undo step with its pixels.
+ */
+export function rasteriseLayer(doc: PaintDocument, id: string): Layer {
+  const found = requireNode(doc, id)
+  const node = found.node
+  if (node.kind !== "vector")
+    throw new Error(`${node.name} is not a vector layer.`)
+  const { scene: _scene, kind: _kind, ...settings } = node
+  const layer: Layer = {
+    ...settings,
+    kind: "raster",
+    image: false,
+    surface: createTiledLayer({ width: doc.width, height: doc.height }),
+  }
+  found.siblings[found.index] = layer
+  return layer
+}
+
+/**
  * Moves a placed image to a placement (06). The original and everything else
  * about the layer are untouched: a transform says where the picture sits, and
  * the pixels are made from that wherever they are made.

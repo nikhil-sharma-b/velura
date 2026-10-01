@@ -340,6 +340,56 @@ test("a document's shapes come back when it is reopened on this device", async (
   expect(await pixels(page)).toEqual(drawn)
 })
 
+test("rasterising turns shapes into paint as one step, and undo brings them back", async ({
+  page,
+}) => {
+  const documentId = `rasterise-${Date.now()}`
+  await openCanvas(page, documentId)
+  const saved = async () =>
+    page.evaluate(async (documentId) => {
+      await window.engine.save()
+      return window.tileCountFor(documentId)
+    }, documentId)
+  const id = await addVectorLayer(page)
+  await edit(page, id, shapes)
+  const drawn = await pixels(page)
+  const vectorTiles = await saved()
+  const layer = () =>
+    page.evaluate(
+      (id) => window.engine.getSnapshot().layers.find((node) => node.id === id),
+      id
+    )
+
+  const before = await steps(page)
+  await page.evaluate(
+    (id) => window.engine.dispatch({ type: "rasteriseLayer", id }),
+    id
+  )
+  await page.waitForFunction(
+    (n) => window.engine.historyUsage().steps === n + 1,
+    before
+  )
+  expect(await layer()).toMatchObject({ kind: "raster", image: false })
+  expect(await pixels(page)).toEqual(drawn)
+  // Paint now: its pixels are the layer, saved as tiles like any paint.
+  expect(await saved()).toBeGreaterThan(vectorTiles)
+
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await layer()).toMatchObject({ kind: "vector", objects: 1 })
+  expect(await pixels(page)).toEqual(drawn)
+  expect(await saved()).toBe(vectorTiles)
+
+  await page.evaluate(() => window.engine.dispatch({ type: "redo" }))
+  expect(await layer()).toMatchObject({ kind: "raster" })
+  expect(await pixels(page)).toEqual(drawn)
+
+  // Reopened, the paint is what was saved.
+  await saved()
+  await openCanvas(page, documentId)
+  expect(await layer()).toMatchObject({ kind: "raster" })
+  expect(await pixels(page)).toEqual(drawn)
+})
+
 /** Paint across the canvas on the layer below: what the shapes meet. */
 async function paintBelow(page: Page, origin: { x: number; y: number }) {
   await page.evaluate(async () => {

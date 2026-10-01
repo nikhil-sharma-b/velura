@@ -58,6 +58,7 @@ import {
   type LeafLayer,
   type VectorLayer,
   makeLayerPaintable,
+  rasteriseLayer,
   type PaintDocument,
   planComposite,
   removeLayer,
@@ -522,6 +523,12 @@ export type EngineCommand =
    * that edits objects later goes through.
    */
   | { type: "editVectorLayer"; id: string; commands: readonly SceneCommand[] }
+  /**
+   * Turns a vector layer into a paint layer holding exactly what it showed
+   * (20), as one undo step. The shapes stop being shapes: undo is the way
+   * back to them.
+   */
+  | { type: "rasteriseLayer"; id: string }
   /** How the shape tools draw what comes next; unnamed fields are kept. */
   | {
       type: "setShapeStyle"
@@ -4005,10 +4012,9 @@ export function createEngine(
             tiles: (hash) => past.store.get(hash),
             assets: async (id) => assetFor(id).bytes,
             snapshot: () => {
-              // Scenes travel inside the tree until they have records of
-              // their own (20); a tree without them would hydrate another
-              // session's vector layers empty. Their pixels — a cache of
-              // the scenes — are never in the tile index, so never go up.
+              // Scenes travel inside the tree; the backend files them as
+              // records of their own (20). Their pixels — a cache of the
+              // scenes — are never in the tile index, so never go up.
               const structure = structureForSave()
               return {
                 structure,
@@ -4800,6 +4806,40 @@ export function createEngine(
           // History empties the GPU tiles from its queue, so the frame that
           // shows the clear has to wait for it or it draws the marks again.
           await history.settle()
+          applyLayerChange()
+          break
+        }
+        case "rasteriseLayer": {
+          if (shapeDrag?.layerId === command.id) dropShapeDrag()
+          const document = requireDocument()
+          const layer = findLayer(document, command.id)
+          if (layer.kind !== "vector")
+            throw new Error(`${layer.name} is not a vector layer.`)
+          const before = captureStructure(document)
+          // The GPU already holds the scene drawn; that drawing is what the
+          // paint layer starts as, read back into history as the step's
+          // pixels so it is saved and synced like any paint.
+          drawScene(layer.id, layer.scene)
+          const drawn = unionOf(layer.scene.objects.map(objectBounds))
+          const region =
+            drawn &&
+            intersectRect(drawn, {
+              x: 0,
+              y: 0,
+              width: document.width,
+              height: document.height,
+            })
+          // Undo brings the vector layer back empty with the tree, then puts
+          // its objects back; redo has nothing to do to a scene that is gone.
+          const scenes = sceneRemovals(layer)
+          rasteriseLayer(document, layer.id)
+          drawnScenes.delete(layer.id)
+          recordOperation("rasterise layer", before, {
+            scenes,
+            ...(region ? { readback: [{ surfaceId: layer.id, region }] } : {}),
+          })
+          await history?.settle()
+          invalidateThumbnailsOf(layer.id)
           applyLayerChange()
           break
         }
