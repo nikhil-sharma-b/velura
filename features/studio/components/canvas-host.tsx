@@ -146,6 +146,8 @@ function RailAction({
 type FamilyMember = {
   tool: SelectionTool
   label: string
+  /** How a sibling's tooltip names it, mid-sentence. */
+  name: string
   icon: React.ReactNode
 }
 
@@ -173,27 +175,36 @@ const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
     {
       tool: "rectSelect",
       label: "Rectangle select tool",
+      name: "rectangle select",
       icon: <SelectionIcon />,
     },
     {
       tool: "ellipseSelect",
       label: "Ellipse select tool",
+      name: "ellipse select",
       icon: <CircleDashedIcon />,
     },
   ],
   [
-    { tool: "lasso", label: "Lasso tool", icon: <LassoIcon /> },
+    { tool: "lasso", label: "Lasso tool", name: "lasso", icon: <LassoIcon /> },
     {
       tool: "polygonLasso",
       label: "Polygonal lasso tool",
+      name: "polygonal lasso",
       icon: <PolygonIcon />,
     },
   ],
   [
-    { tool: "magicWand", label: "Magic wand tool", icon: <MagicWandIcon /> },
+    {
+      tool: "magicWand",
+      label: "Magic wand tool",
+      name: "magic wand",
+      icon: <MagicWandIcon />,
+    },
     {
       tool: "moveSelection",
       label: "Move selection outline tool",
+      name: "move selection outline",
       icon: <ArrowsOutCardinalIcon />,
     },
   ],
@@ -226,7 +237,7 @@ function ToolFamilySlot({
       variant={held ? "default" : "ghost"}
       size="icon"
       aria-pressed={!!held}
-      detail={`Press again for ${sibling.label.replace(/ tool$/, "").toLowerCase()}`}
+      detail={`Press again for ${sibling.name}`}
       onClick={() => onPick(held ? sibling.tool : shown.tool)}
       className="relative"
     >
