@@ -95,7 +95,7 @@ import {
   VectorSelection,
   VectorNodes,
 } from "./image-transform"
-import { RulersAndGuides } from "./rulers-and-guides"
+import { RULER_SIZE, RulersAndGuides } from "./rulers-and-guides"
 import { useRulersVisible } from "../lib/ruler-preference"
 import { StraightEdgeOverlay } from "./straight-edge"
 import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor"
@@ -1023,7 +1023,18 @@ export function CanvasHost({
         </>
       )}
       {snapshot.status === "ready" && (
-        <div className="contents" hidden={zen} data-testid="studio-chrome">
+        // The controls float in a box that steps in past the rulers while
+        // they show, so nothing sits under them; only the controls move, never
+        // the canvas. The box itself lets the pointer through to the canvas.
+        <div
+          className="pointer-events-none absolute right-0 bottom-0 motion-safe:transition-[top,left] motion-safe:duration-150 motion-safe:ease-out [&>*:not(.pointer-events-none)]:pointer-events-auto"
+          style={{
+            top: snapshot.rulersVisible ? RULER_SIZE : 0,
+            left: snapshot.rulersVisible ? RULER_SIZE : 0,
+          }}
+          hidden={zen}
+          data-testid="studio-chrome"
+        >
           <div className="pointer-events-none absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-studio-edge bg-studio-surface/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
             <span>{documentName || DEFAULT_DOCUMENT_NAME}</span>
             {snapshot.loading && (
