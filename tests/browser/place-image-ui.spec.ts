@@ -233,3 +233,35 @@ test("a placed photo dims the brush and eraser until it is painted on", async ({
   await expect(brush).toHaveCSS("opacity", "1")
   await expect(eraser).toHaveCSS("opacity", "1")
 })
+
+test("a locked layer dims every tool but the selection tools", async ({
+  page,
+}) => {
+  await openStudio(page)
+  const dim = async (name: string, opacity: string) =>
+    expect(page.getByRole("button", { name, exact: true })).toHaveCSS(
+      "opacity",
+      opacity
+    )
+  const palette = async (command: string) => {
+    await page.keyboard.press("ControlOrMeta+k")
+    await page.getByRole("combobox", { name: "Search commands" }).fill(command)
+    await page.keyboard.press("Enter")
+  }
+
+  await palette("Lock or unlock layer")
+  await dim("Brush tool", "0.4")
+  await dim("Eraser tool", "0.4")
+  await expect(page.getByRole("group", { name: "Vector tools" })).toHaveCSS(
+    "opacity",
+    "0.4"
+  )
+  await expect(page.getByRole("group", { name: "Selection tools" })).toHaveCSS(
+    "opacity",
+    "1"
+  )
+
+  await palette("Lock or unlock layer")
+  await dim("Brush tool", "1")
+  await dim("Eraser tool", "1")
+})

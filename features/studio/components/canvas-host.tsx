@@ -850,16 +850,21 @@ export function CanvasHost({
   )
   const shapeOptions = snapshot.selectionStyle ?? toolStyle
   // The layer in hand decides which kinds of tool can act on it, as the
-  // engine does: shapes go only onto a vector layer; paint never does, and a
-  // placed photo takes neither brush nor eraser until it is painted on, save
-  // into either's mask.
+  // engine does: a locked layer or a group takes no tool but a selection;
+  // shapes go only onto a vector layer; paint never does, and a placed photo
+  // takes neither brush nor eraser until it is painted on, save into either's
+  // mask.
   const handLayer = findLayer(snapshot.layers, snapshot.activeLayerId)
+  const untouchable =
+    !handLayer || handLayer.kind === "group" || !!handLayer.locked
   const onVectorLayer = handLayer?.kind === "vector"
   const intoMask = snapshot.paintingMask && !!handLayer?.mask
   const onPlacedPhoto =
     handLayer?.kind === "raster" && handLayer.image && !intoMask
-  const brushDimmed = (onVectorLayer && !intoMask) || onPlacedPhoto
-  const eraserDimmed = onPlacedPhoto
+  const brushDimmed =
+    untouchable || (onVectorLayer && !intoMask) || onPlacedPhoto
+  const eraserDimmed = untouchable || onPlacedPhoto
+  const vectorDimmed = untouchable || !onVectorLayer
   // The artist's own keybinds over the defaults. While preferences are open
   // the keys are being rebound, not used.
   const commands = useBoundRegistry(studioCommands)
@@ -1716,7 +1721,7 @@ export function CanvasHost({
                     ))}
                   </ToolGroup>
                   <RailDivider />
-                  <ToolGroup label="Vector tools" dimmed={!onVectorLayer}>
+                  <ToolGroup label="Vector tools" dimmed={vectorDimmed}>
                     <RailAction
                       label="Rectangle tool"
                       detail={WORKS_ON.vector}
