@@ -221,4 +221,9 @@ test("a vector layer's row shows the shapes on it", async ({ page }) => {
   await page.mouse.up()
   await expect(row).toHaveAttribute("data-state", "shown")
   await expect.poll(() => colours(row)).toBeGreaterThan(2)
+
+  // Its shapes clear as a raster layer's pixels do, once confirmed.
+  await layers.getByRole("button", { name: "Clear Vector 2" }).click()
+  await page.getByRole("button", { name: "Clear layer" }).click()
+  await expect(row).toHaveAttribute("data-state", "empty")
 })

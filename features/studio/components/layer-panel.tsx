@@ -464,8 +464,9 @@ function LayerRow({
                 </IconButton>
               )}
               {/* A placed image's pixels come from its file, so it has none
-                  of its own to clear. */}
-              {layer.kind === "raster" && !layer.image && (
+                  of its own to clear; a vector layer clears its shapes. */}
+              {(layer.kind === "vector" ||
+                (layer.kind === "raster" && !layer.image)) && (
                 <IconButton
                   variant="ghost"
                   size="icon-xs"
