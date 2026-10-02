@@ -139,7 +139,7 @@ test("the tool rail switches between brush and eraser", async ({ page }) => {
     "data-engine-status",
     "ready"
   )
-  const brush = page.getByRole("button", { name: "Brush tool" })
+  const brush = page.getByRole("button", { name: "Brush tool", exact: true })
   const eraser = page.getByRole("button", { name: "Eraser tool" })
   await expect(brush).toHaveAttribute("aria-pressed", "true")
   await eraser.click()

@@ -16,7 +16,7 @@ async function openStudio(page: Page) {
 
 test("tool keys switch the tool in the hand", async ({ page }) => {
   await openStudio(page)
-  const brush = page.getByRole("button", { name: "Brush tool" })
+  const brush = page.getByRole("button", { name: "Brush tool", exact: true })
   const eraser = page.getByRole("button", { name: "Eraser tool" })
   await expect(brush).toHaveAttribute("aria-pressed", "true")
 
@@ -58,7 +58,7 @@ test("keys typed into a field do not reach the studio", async ({ page }) => {
   await expect(name).toBeFocused()
   await page.keyboard.type("be")
   await expect(
-    page.getByRole("button", { name: "Brush tool" })
+    page.getByRole("button", { name: "Brush tool", exact: true })
   ).toHaveAttribute("aria-pressed", "true")
 })
 
