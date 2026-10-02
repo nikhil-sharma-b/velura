@@ -1027,9 +1027,10 @@ export function CanvasHost({
           they stay when zen puts the controls away. The rulers are controls,
           drawn into a layer after them, and go with zen. */}
       {/* What is on the canvas itself, selection and transform boxes, comes
-          first, so the guides are over it and can be taken hold of there. */}
+          first, so the guides are over it and can be taken hold of there. It
+          is the artwork's, not a control, so it stays in zen. */}
       {snapshot.status === "ready" && (
-        <div className="contents" hidden={zen}>
+        <>
           {engine && (
             <>
               <VectorNodes
@@ -1065,7 +1066,7 @@ export function CanvasHost({
               canvas={canvasElement}
             />
           )}
-        </div>
+        </>
       )}
       {snapshot.status === "ready" && engine && (
         <>
