@@ -1,22 +1,22 @@
-"use client";
+"use client"
 
-import { PlusIcon, TrashIcon, XIcon } from "@phosphor-icons/react";
-import { useState } from "react";
+import { PlusIcon, TrashIcon, XIcon } from "@phosphor-icons/react"
+import { useState } from "react"
 
-import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { PressureCurve } from "@/components/ui/pressure-curve";
+import { Button } from "@/components/ui/button"
+import { Label } from "@/components/ui/label"
+import { PressureCurve } from "@/components/ui/pressure-curve"
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { Brush } from "@/engine/brush/brush";
-import { LINEAR_CURVE } from "@/engine/brush/curve";
+} from "@/components/ui/select"
+import { Slider } from "@/components/ui/slider"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import type { Brush } from "@/engine/brush/brush"
+import { LINEAR_CURVE } from "@/engine/brush/curve"
 import {
   type DynamicsMix,
   type DynamicsSource,
@@ -24,7 +24,7 @@ import {
   isOffsetTarget,
   type Modulator,
   targetLimit,
-} from "@/engine/brush/dynamics";
+} from "@/engine/brush/dynamics"
 
 import {
   type BrushEdit,
@@ -32,10 +32,10 @@ import {
   featherOf,
   hardnessOf,
   newModulator,
-} from "../lib/brush-draft";
-import { BrushPreview } from "./brush-preview";
-import { SliderSetting } from "./slider-setting";
-import { IconButton } from "./icon-button";
+} from "../lib/brush-draft"
+import { BrushPreview } from "./brush-preview"
+import { SliderSetting } from "./slider-setting"
+import { IconButton } from "./icon-button"
 
 /**
  * The brush editor (D32): the dynamics graph of ticket 05 as a tool rather
@@ -66,7 +66,7 @@ const SOURCE_LABELS: Record<DynamicsSource, string> = {
   direction: "Direction",
   random: "Randomness",
   strokeProgress: "Stroke progress",
-};
+}
 
 /**
  * The targets, as the editor shows them.
@@ -87,18 +87,18 @@ const TARGETS: Record<DynamicsTarget, { label: string; drawn: boolean }> = {
   grainDepth: { label: "Grain depth", drawn: true },
   scatter: { label: "Scatter", drawn: false },
   hue: { label: "Hue", drawn: false },
-};
+}
 
 function targetLabel(target: DynamicsTarget): string {
-  const { label, drawn } = TARGETS[target];
-  return drawn ? label : `${label} (not drawn yet)`;
+  const { label, drawn } = TARGETS[target]
+  return drawn ? label : `${label} (not drawn yet)`
 }
 
 const MIX_LABELS: Record<DynamicsMix, string> = {
   multiply: "Scales it",
   add: "Adds to it",
   replace: "Replaces it",
-};
+}
 
 /**
  * The mixes a target accepts. An offset target refuses a multiply, so it is
@@ -107,7 +107,7 @@ const MIX_LABELS: Record<DynamicsMix, string> = {
 function mixesFor(target: DynamicsTarget): DynamicsMix[] {
   return isOffsetTarget(target)
     ? ["add", "replace"]
-    : ["multiply", "add", "replace"];
+    : ["multiply", "add", "replace"]
 }
 
 function TextureSelect({
@@ -118,15 +118,15 @@ function TextureSelect({
   onChange,
   onImport,
 }: {
-  label: string;
-  value: string | null;
-  textures: readonly string[];
-  noneLabel: string;
-  onChange(id: string | null): void;
+  label: string
+  value: string | null
+  textures: readonly string[]
+  noneLabel: string
+  onChange(id: string | null): void
   /** Brings a texture in from a file and selects it (24/25). */
-  onImport?(file: File): void;
+  onImport?(file: File): void
 }) {
-  const NONE = "__none__";
+  const NONE = "__none__"
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
@@ -143,11 +143,11 @@ function TextureSelect({
               aria-label={`Import a ${label.toLowerCase()} texture`}
               className="sr-only"
               onChange={(event) => {
-                const file = event.target.files?.[0];
+                const file = event.target.files?.[0]
                 // Cleared, so importing the same file twice in a row is a
                 // change the input reports rather than silently swallows.
-                event.target.value = "";
-                if (file) onImport(file);
+                event.target.value = ""
+                if (file) onImport(file)
               }}
             />
           </label>
@@ -170,7 +170,7 @@ function TextureSelect({
         </SelectContent>
       </Select>
     </div>
-  );
+  )
 }
 
 function Mapping({
@@ -179,15 +179,15 @@ function Mapping({
   onChange,
   onRemove,
 }: {
-  modulator: Modulator;
-  index: number;
-  onChange(next: Modulator): void;
-  onRemove(): void;
+  modulator: Modulator
+  index: number
+  onChange(next: Modulator): void
+  onRemove(): void
 }) {
   // The engine's own limits for this target, so the control offers exactly
   // what the graph accepts — no value it would clamp away, and none withheld.
-  const [low, high] = targetLimit(modulator.target);
-  const step = (high - low) / 100;
+  const [low, high] = targetLimit(modulator.target)
+  const step = (high - low) / 100
   return (
     <section
       className="space-y-3 border border-border/70 p-3"
@@ -218,22 +218,22 @@ function Mapping({
         <Select
           value={modulator.target}
           onValueChange={(value) => {
-            const target = value as DynamicsTarget;
+            const target = value as DynamicsTarget
             // A target the current mix is invalid on takes the mix a new
             // mapping onto it would have had, rather than being rejected by
             // the engine the moment the artist chooses it.
             const mix = mixesFor(target).includes(modulator.mix)
               ? modulator.mix
-              : newModulator(target).mix;
+              : newModulator(target).mix
             // The range is in the target's units, so it moves with it — onto
             // the neutral-to-full span, which is what a new mapping starts at.
-            const limit = targetLimit(target);
+            const limit = targetLimit(target)
             onChange({
               ...modulator,
               target,
               mix,
               range: [limit[0], Math.min(1, limit[1])],
-            });
+            })
           }}
         >
           <SelectTrigger
@@ -304,7 +304,7 @@ function Mapping({
         onChange={(curve) => onChange({ ...modulator, curve })}
       />
     </section>
-  );
+  )
 }
 
 export function BrushEditor({
@@ -319,29 +319,29 @@ export function BrushEditor({
   onRevert,
 }: {
   /** The working brush: what the pen is painting with right now. */
-  brush: Brush;
+  brush: Brush
   /** Texture ids the engine can resolve, so a brush cannot name a missing one. */
-  textures: readonly string[];
+  textures: readonly string[]
   /** Whether the working brush has moved away from the saved one. */
-  edited: boolean;
+  edited: boolean
   /** Why keeping the brush failed, if it did. A brush is an hour's work. */
-  problem?: string | null;
+  problem?: string | null
   /** Dismisses the editor; Escape inside it does the same. */
-  onClose(): void;
-  onEdit(next: Brush): void;
+  onClose(): void
+  onEdit(next: Brush): void
   /**
    * Brings a texture in from a file and resolves with the id it is stored
    * under, so the brush can name it. Absent in a host with nowhere to keep
    * one, and then no import is offered rather than one that loses the file.
    */
-  onImportTexture?(file: File, name: string): Promise<string>;
-  onSave(): void;
-  onRevert(): void;
+  onImportTexture?(file: File, name: string): Promise<string>
+  onSave(): void
+  onRevert(): void
 }) {
-  const apply = (edit: BrushEdit) => onEdit(editBrush(brush, edit));
-  const dynamics = brush.dynamics;
-  const grain = brush.grain;
-  const [importProblem, setImportProblem] = useState<string | null>(null);
+  const apply = (edit: BrushEdit) => onEdit(editBrush(brush, edit))
+  const dynamics = brush.dynamics
+  const grain = brush.grain
+  const [importProblem, setImportProblem] = useState<string | null>(null)
 
   /**
    * Imports a file and puts the result where it was asked for. The texture is
@@ -349,18 +349,18 @@ export function BrushEditor({
    * had it would be a brush pointing at nothing on the next machine.
    */
   const importTexture = (file: File, select: (id: string) => void) => {
-    if (!onImportTexture) return;
-    setImportProblem(null);
+    if (!onImportTexture) return
+    setImportProblem(null)
     void onImportTexture(file, file.name.replace(/\.[^.]+$/, "")).then(
       select,
       (error: unknown) =>
         setImportProblem(
           error instanceof Error
             ? error.message
-            : "That image could not be imported.",
-        ),
-    );
-  };
+            : "That image could not be imported."
+        )
+    )
+  }
 
   return (
     <section
@@ -373,9 +373,9 @@ export function BrushEditor({
           event.key !== "Escape" ||
           !event.currentTarget.contains(event.target as Node)
         )
-          return;
-        event.preventDefault();
-        onClose();
+          return
+        event.preventDefault()
+        onClose()
       }}
     >
       <header className="flex items-center justify-between gap-2">
@@ -420,7 +420,7 @@ export function BrushEditor({
               onImportTexture &&
               ((file) =>
                 importTexture(file, (tipTextureId) =>
-                  apply({ shape: { tipTextureId } }),
+                  apply({ shape: { tipTextureId } })
                 ))
             }
           />
@@ -496,7 +496,7 @@ export function BrushEditor({
                       movement: grain?.movement ?? 0,
                       textureId,
                     },
-                  }),
+                  })
                 ))
             }
             onChange={(textureId) =>
@@ -623,7 +623,7 @@ export function BrushEditor({
               onChange={(next) =>
                 apply({
                   dynamics: dynamics.map((existing, at) =>
-                    at === index ? next : existing,
+                    at === index ? next : existing
                   ),
                 })
               }
@@ -662,5 +662,5 @@ export function BrushEditor({
         </Button>
       </footer>
     </section>
-  );
+  )
 }

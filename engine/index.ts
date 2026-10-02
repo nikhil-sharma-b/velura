@@ -3191,8 +3191,7 @@ export function createEngine(
     const erase = vectorErase!
     let took = false
     samples.drain((x, y) => {
-      if (erase.eraser.moveTo({ x: toDocX(x, y), y: toDocY(x, y) }))
-        took = true
+      if (erase.eraser.moveTo({ x: toDocX(x, y), y: toDocY(x, y) })) took = true
     })
     const { hit } = erase.eraser
     if (erase.ended) {

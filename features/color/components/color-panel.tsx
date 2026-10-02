@@ -1,13 +1,13 @@
-"use client";
+"use client"
 
-import { PlusIcon, TrashIcon, XIcon } from "@phosphor-icons/react";
-import { useMemo, useState } from "react";
+import { PlusIcon, TrashIcon, XIcon } from "@phosphor-icons/react"
+import { useMemo, useState } from "react"
 
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Kbd } from "@/components/ui/kbd";
-import { Label } from "@/components/ui/label";
-import { Slider } from "@/components/ui/slider";
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Kbd } from "@/components/ui/kbd"
+import { Label } from "@/components/ui/label"
+import { Slider } from "@/components/ui/slider"
 import {
   clampChromaToSrgb,
   maxSrgbChroma,
@@ -17,14 +17,14 @@ import {
   workingToHex,
   workingToOklch,
   hexToWorking,
-} from "@/engine/color/oklch";
-import type { Engine, EngineSnapshot } from "@/engine";
-import { useKeybindLabel } from "@/features/commands/hooks/use-keybinds";
-import { studioCommands } from "@/features/studio/lib/studio-commands";
-import { useBoundRegistry } from "@/features/commands/hooks/use-keybind-overrides";
+} from "@/engine/color/oklch"
+import type { Engine, EngineSnapshot } from "@/engine"
+import { useKeybindLabel } from "@/features/commands/hooks/use-keybinds"
+import { studioCommands } from "@/features/studio/lib/studio-commands"
+import { useBoundRegistry } from "@/features/commands/hooks/use-keybind-overrides"
 
-import type { PaletteRecord, PaletteStore } from "../lib/palette-store";
-import { IconButton } from "@/features/studio/components/icon-button";
+import type { PaletteRecord, PaletteStore } from "../lib/palette-store"
+import { IconButton } from "@/features/studio/components/icon-button"
 
 /**
  * How the artist holds a colour while choosing it: lightness and hue as OKLCH
@@ -33,27 +33,27 @@ import { IconButton } from "@/features/studio/components/icon-button";
  * chroma itself, so dragging lightness or hue keeps a colour as saturated as
  * it was instead of quietly desaturating it against a ceiling that moved.
  */
-type Choice = { lightness: number; saturation: number; hue: number };
+type Choice = { lightness: number; saturation: number; hue: number }
 
 function toOklch({ lightness, saturation, hue }: Choice): Oklch {
-  return { lightness, chroma: saturation * maxSrgbChroma(lightness, hue), hue };
+  return { lightness, chroma: saturation * maxSrgbChroma(lightness, hue), hue }
 }
 
 function toChoice(color: Oklch): Choice {
-  const ceiling = maxSrgbChroma(color.lightness, color.hue);
+  const ceiling = maxSrgbChroma(color.lightness, color.hue)
   return {
     lightness: color.lightness,
     saturation: ceiling > 0 ? Math.min(1, color.chroma / ceiling) : 0,
     hue: color.hue,
-  };
+  }
 }
 
 function choiceFromHex(hex: string): Choice {
-  return toChoice(clampChromaToSrgb(workingToOklch(hexToWorking(hex))));
+  return toChoice(clampChromaToSrgb(workingToOklch(hexToWorking(hex))))
 }
 
 function hexFor(choice: Choice): string {
-  return workingToHex(oklchToWorking(toOklch(choice)));
+  return workingToHex(oklchToWorking(toOklch(choice)))
 }
 
 /**
@@ -63,7 +63,7 @@ function hexFor(choice: Choice): string {
  * moved — which matters, because each stop costs a gamut search.
  */
 function ramp(axis: keyof Choice, held: Partial<Choice>, stops = 12): string {
-  const range = axis === "hue" ? 360 : 1;
+  const range = axis === "hue" ? 360 : 1
   const colors = Array.from({ length: stops + 1 }, (_, step) =>
     hexFor({
       lightness: 0,
@@ -71,9 +71,9 @@ function ramp(axis: keyof Choice, held: Partial<Choice>, stops = 12): string {
       hue: 0,
       ...held,
       [axis]: (step / stops) * range,
-    }),
-  );
-  return `linear-gradient(to right, ${colors.join(", ")})`;
+    })
+  )
+  return `linear-gradient(to right, ${colors.join(", ")})`
 }
 
 function ColorSlider({
@@ -85,15 +85,15 @@ function ColorSlider({
   onChange,
   onCommit,
 }: {
-  label: string;
-  value: number;
-  max: number;
-  gradient: string;
-  format: string;
-  onChange(value: number): void;
-  onCommit(): void;
+  label: string
+  value: number
+  max: number
+  gradient: string
+  format: string
+  onChange(value: number): void
+  onCommit(): void
 }) {
-  const id = `colour-${label.toLowerCase()}`;
+  const id = `colour-${label.toLowerCase()}`
   return (
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between">
@@ -122,7 +122,7 @@ function ColorSlider({
         />
       </div>
     </div>
-  );
+  )
 }
 
 function Swatch({
@@ -134,13 +134,13 @@ function Swatch({
   onDragStart,
   onDrop,
 }: {
-  hex: string;
-  label: string;
-  onClick(): void;
-  onRemove?(): void;
-  draggable?: boolean;
-  onDragStart?(): void;
-  onDrop?(): void;
+  hex: string
+  label: string
+  onClick(): void
+  onRemove?(): void
+  draggable?: boolean
+  onDragStart?(): void
+  onDrop?(): void
 }) {
   return (
     <div className="group/swatch relative">
@@ -150,19 +150,19 @@ function Swatch({
         title={hex}
         draggable={draggable}
         onDragStart={(event) => {
-          event.dataTransfer.effectAllowed = "move";
-          event.dataTransfer.setData("text/plain", hex);
-          onDragStart?.();
+          event.dataTransfer.effectAllowed = "move"
+          event.dataTransfer.setData("text/plain", hex)
+          onDragStart?.()
         }}
         onDragOver={(event) => {
-          if (!onDrop) return;
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "move";
+          if (!onDrop) return
+          event.preventDefault()
+          event.dataTransfer.dropEffect = "move"
         }}
         onDrop={(event) => {
-          if (!onDrop) return;
-          event.preventDefault();
-          onDrop();
+          if (!onDrop) return
+          event.preventDefault()
+          onDrop()
         }}
         onClick={onClick}
         className="size-7 rounded-md border border-border/70 shadow-sm transition hover:scale-105"
@@ -181,7 +181,7 @@ function Swatch({
         </button>
       )}
     </div>
-  );
+  )
 }
 
 function PaletteSection({
@@ -192,30 +192,30 @@ function PaletteSection({
   onRun,
   startNamed,
 }: {
-  palette: PaletteRecord;
-  store: PaletteStore;
-  currentHex: string;
-  onPick(hex: string): void;
-  onRun(work: Promise<unknown>): void;
+  palette: PaletteRecord
+  store: PaletteStore
+  currentHex: string
+  onPick(hex: string): void
+  onRun(work: Promise<unknown>): void
   /** True for a palette just created, which opens waiting for its name. */
-  startNamed: boolean;
+  startNamed: boolean
 }) {
-  const [dragging, setDragging] = useState<number | null>(null);
-  const [name, setName] = useState(palette.name);
-  const [editing, setEditing] = useState(startNamed);
+  const [dragging, setDragging] = useState<number | null>(null)
+  const [name, setName] = useState(palette.name)
+  const [editing, setEditing] = useState(startNamed)
   // The palette appears in the list before `create` resolves with its id, so
   // this section usually mounts a moment before it is told it is the new one.
-  const [wasNamed, setWasNamed] = useState(startNamed);
+  const [wasNamed, setWasNamed] = useState(startNamed)
   if (startNamed !== wasNamed) {
-    setWasNamed(startNamed);
-    if (startNamed) setEditing(true);
+    setWasNamed(startNamed)
+    if (startNamed) setEditing(true)
   }
   // Adjusting state during render rather than in an effect: React re-runs this
   // component before touching the DOM, so the field never paints a stale name.
-  const [lastName, setLastName] = useState(palette.name);
+  const [lastName, setLastName] = useState(palette.name)
   if (lastName !== palette.name) {
-    setLastName(palette.name);
-    setName(palette.name);
+    setLastName(palette.name)
+    setName(palette.name)
   }
 
   return (
@@ -228,15 +228,15 @@ function PaletteSection({
             value={name}
             onChange={(event) => setName(event.target.value)}
             onBlur={() => {
-              setEditing(false);
+              setEditing(false)
               if (name.trim() && name !== palette.name)
-                onRun(store.rename(palette.id, name));
+                onRun(store.rename(palette.id, name))
             }}
             onKeyDown={(event) => {
-              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Enter") event.currentTarget.blur()
               if (event.key === "Escape") {
-                setName(palette.name);
-                setEditing(false);
+                setName(palette.name)
+                setEditing(false)
               }
             }}
             className="h-7 text-xs"
@@ -287,8 +287,8 @@ function PaletteSection({
               onDragStart={() => setDragging(index)}
               onDrop={() => {
                 if (dragging !== null && dragging !== index)
-                  onRun(store.reorder(palette.id, dragging, index));
-                setDragging(null);
+                  onRun(store.reorder(palette.id, dragging, index))
+                setDragging(null)
               }}
               onClick={() => onPick(hex)}
               onRemove={() => onRun(store.removeColorAt(palette.id, index))}
@@ -297,7 +297,7 @@ function PaletteSection({
         </div>
       )}
     </section>
-  );
+  )
 }
 
 /**
@@ -312,16 +312,16 @@ export function ColorPanel({
   store,
   onClose,
 }: {
-  engine: Engine;
-  snapshot: EngineSnapshot;
-  store: PaletteStore;
-  onClose(): void;
+  engine: Engine
+  snapshot: EngineSnapshot
+  store: PaletteStore
+  onClose(): void
 }) {
-  const state = store.usePaletteState();
-  const [problem, setProblem] = useState<string | null>(null);
+  const state = store.usePaletteState()
+  const [problem, setProblem] = useState<string | null>(null)
   // A palette just created, so it opens with its name selected rather than
   // leaving the artist to find the rename affordance for it.
-  const [naming, setNaming] = useState<string | null>(null);
+  const [naming, setNaming] = useState<string | null>(null)
 
   /**
    * Runs a store change and says so when it fails. Saving a colour is a small
@@ -329,35 +329,35 @@ export function ColorPanel({
    * palette or a dropped connection has to reach them as words.
    */
   const run = (work: Promise<unknown>) => {
-    setProblem(null);
+    setProblem(null)
     void work.catch((error: unknown) =>
       setProblem(
         error instanceof Error
           ? error.message
-          : "That change could not be saved.",
-      ),
-    );
-  };
+          : "That change could not be saved."
+      )
+    )
+  }
   const [choice, setChoice] = useState<Choice>(() =>
-    choiceFromHex(snapshot.color.hex),
-  );
-  const [hexText, setHexText] = useState(snapshot.color.hex);
-  const hex = useMemo(() => hexFor(choice), [choice]);
+    choiceFromHex(snapshot.color.hex)
+  )
+  const [hexText, setHexText] = useState(snapshot.color.hex)
+  const hex = useMemo(() => hexFor(choice), [choice])
   // Each ramp costs a gamut search per stop, so each is rebuilt only when the
   // axes it is drawn against move — dragging hue does not redraw the hue ramp.
-  const { lightness, saturation, hue } = choice;
+  const { lightness, saturation, hue } = choice
   const hueRamp = useMemo(
     () => ramp("hue", { lightness, saturation }, 24),
-    [lightness, saturation],
-  );
+    [lightness, saturation]
+  )
   const saturationRamp = useMemo(
     () => ramp("saturation", { lightness, hue }),
-    [lightness, hue],
-  );
+    [lightness, hue]
+  )
   const lightnessRamp = useMemo(
     () => ramp("lightness", { saturation, hue }),
-    [saturation, hue],
-  );
+    [saturation, hue]
+  )
 
   // The engine owns the ink, and the eyedropper changes it without going
   // through this panel. When it does, the sliders follow the canvas — adjusted
@@ -368,32 +368,32 @@ export function ColorPanel({
   // the keyboard in front of the artist (⌥ on a Mac, Alt elsewhere).
   const altLabel = useKeybindLabel(
     useBoundRegistry(studioCommands),
-    "tool.eyedropper",
-  );
+    "tool.eyedropper"
+  )
 
-  const [sentHex, setSentHex] = useState(snapshot.color.hex);
+  const [sentHex, setSentHex] = useState(snapshot.color.hex)
   if (snapshot.color.hex !== sentHex) {
-    setSentHex(snapshot.color.hex);
-    setChoice(choiceFromHex(snapshot.color.hex));
-    setHexText(snapshot.color.hex);
+    setSentHex(snapshot.color.hex)
+    setChoice(choiceFromHex(snapshot.color.hex))
+    setHexText(snapshot.color.hex)
   }
 
   const apply = (next: Choice) => {
-    setChoice(next);
-    const nextHex = hexFor(next);
-    setHexText(nextHex);
-    setSentHex(nextHex);
-    void engine.dispatch({ type: "setColor", hex: nextHex });
-  };
+    setChoice(next)
+    const nextHex = hexFor(next)
+    setHexText(nextHex)
+    setSentHex(nextHex)
+    void engine.dispatch({ type: "setColor", hex: nextHex })
+  }
 
   /** A colour the artist has settled on, rather than dragged through. */
   const commitColor = (nextHex: string) => {
-    setChoice(choiceFromHex(nextHex));
-    setHexText(nextHex);
-    setSentHex(nextHex);
-    void engine.dispatch({ type: "setColor", hex: nextHex });
-    run(store.recordUsed(nextHex));
-  };
+    setChoice(choiceFromHex(nextHex))
+    setHexText(nextHex)
+    setSentHex(nextHex)
+    void engine.dispatch({ type: "setColor", hex: nextHex })
+    run(store.recordUsed(nextHex))
+  }
 
   return (
     <div
@@ -433,18 +433,18 @@ export function ColorPanel({
           value={hexText}
           spellCheck={false}
           onChange={(event) => {
-            const text = event.target.value;
-            setHexText(text);
+            const text = event.target.value
+            setHexText(text)
             // Typed hex applies as soon as it is a colour, so the canvas keeps
             // up with the field; the field keeps whatever was typed until it
             // is committed, so a half-typed value is not rewritten underneath.
-            if (parseHex(text)) apply(choiceFromHex(text));
+            if (parseHex(text)) apply(choiceFromHex(text))
           }}
           onBlur={() =>
             parseHex(hexText) ? commitColor(hexFor(choice)) : setHexText(hex)
           }
           onKeyDown={(event) => {
-            if (event.key === "Enter") event.currentTarget.blur();
+            if (event.key === "Enter") event.currentTarget.blur()
           }}
           className="h-9 font-mono text-sm"
         />
@@ -516,7 +516,7 @@ export function ColorPanel({
               void store
                 .create("Untitled palette", [hex])
                 .then(setNaming, () =>
-                  setProblem("That palette could not be created."),
+                  setProblem("That palette could not be created.")
                 )
             }
             className="h-7 rounded-md text-xs"
@@ -542,5 +542,5 @@ export function ColorPanel({
         )}
       </div>
     </div>
-  );
+  )
 }

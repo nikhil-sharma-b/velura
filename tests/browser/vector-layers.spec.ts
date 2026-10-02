@@ -816,8 +816,7 @@ test("a polygon is closed by leaving the tool, by Enter, or by a double-click, a
   const id = await addVectorLayer(page)
   const objects = () =>
     page.evaluate(
-      (id) =>
-        window.engine.getSnapshot().layers.find((node) => node.id === id),
+      (id) => window.engine.getSnapshot().layers.find((node) => node.id === id),
       id
     )
   const corners = async (points: number[][]) => {

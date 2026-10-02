@@ -1,32 +1,32 @@
-"use client";
+"use client"
 
-import { Button } from "@/components/ui/button";
-import { DialogTitle } from "@/components/ui/dialog";
-import { DEFAULT_PRESSURE_CURVE } from "@/components/ui/pressure-curve";
+import { Button } from "@/components/ui/button"
+import { DialogTitle } from "@/components/ui/dialog"
+import { DEFAULT_PRESSURE_CURVE } from "@/components/ui/pressure-curve"
 import {
   ResponsiveDialog,
   ResponsiveDialogContent,
   ResponsiveDialogFooter,
   ResponsiveDialogHeader,
   ResponsiveDialogTrigger,
-} from "@/components/ui/responsive-dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { GeneralForm } from "@/features/topbar/components/forms/general";
-import { InputForm } from "@/features/topbar/components/forms/input";
-import { APP_SETTINGS_ITEMS } from "@/features/topbar/lib/constants";
+} from "@/components/ui/responsive-dialog"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { GeneralForm } from "@/features/topbar/components/forms/general"
+import { InputForm } from "@/features/topbar/components/forms/input"
+import { APP_SETTINGS_ITEMS } from "@/features/topbar/lib/constants"
 import {
   generalFormSchema,
   GeneralFormValues,
-} from "@/features/topbar/lib/schemas";
-import { useIsMobile } from "@/hooks/use-mobile";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { GearIcon } from "@phosphor-icons/react";
-import { FormProvider, useForm } from "react-hook-form";
-import { IconButton } from "@/features/studio/components/icon-button";
+} from "@/features/topbar/lib/schemas"
+import { useIsMobile } from "@/hooks/use-mobile"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { GearIcon } from "@phosphor-icons/react"
+import { FormProvider, useForm } from "react-hook-form"
+import { IconButton } from "@/features/studio/components/icon-button"
 
 export function AppSettingsDialog() {
-  const isMobile = useIsMobile();
+  const isMobile = useIsMobile()
   const form = useForm<GeneralFormValues>({
     defaultValues: {
       appearance: "system",
@@ -37,11 +37,11 @@ export function AppSettingsDialog() {
       pressure: DEFAULT_PRESSURE_CURVE,
     },
     resolver: zodResolver(generalFormSchema),
-  });
+  })
 
   const onSubmit = (data: GeneralFormValues) => {
-    console.log(data);
-  };
+    console.log(data)
+  }
 
   return (
     <ResponsiveDialog>
@@ -101,5 +101,5 @@ export function AppSettingsDialog() {
         </ResponsiveDialogFooter>
       </ResponsiveDialogContent>
     </ResponsiveDialog>
-  );
+  )
 }
