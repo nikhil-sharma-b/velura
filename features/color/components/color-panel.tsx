@@ -5,6 +5,7 @@ import { useMemo, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Kbd } from "@/components/ui/kbd"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import {
@@ -499,9 +500,7 @@ export function ColorPanel({
             colour, so it is where the way to take one off the canvas belongs. */}
         <p className="text-xs text-muted-foreground">
           Hold{" "}
-          <kbd className="rounded border border-border/70 px-1 font-mono text-[0.65rem]">
-            {altLabel}
-          </kbd>{" "}
+          <Kbd>{altLabel}</Kbd>{" "}
           and click the canvas to pick a colour from it.
         </p>
       </section>
