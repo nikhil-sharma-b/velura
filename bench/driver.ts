@@ -427,6 +427,11 @@ export type VectorRunResult = {
   fullRedrawMs: number[]
   /** Edits to one object, each redrawing only the region it touched. */
   localRedrawMs: number[]
+  /**
+   * Pans and zooms at high magnification, each drawing the layer from its
+   * geometry into the screen (sharp-zoom 02), command to GPU done.
+   */
+  navigateMs: number[]
 }
 
 /** Redraws timed per edit; few enough to keep a large scene's run short. */
@@ -499,6 +504,25 @@ export async function runVectorBenchmark(
         },
       ])
     )
+  // Magnified past the layer's pixels, where the screen draws its paths
+  // through the view rather than sampling them; then navigated as the
+  // navigation workload is.
+  await engine.dispatch({ type: "zoomView", factor: 8 })
+  await nextFrame()
+  await device.queue.onSubmittedWorkDone()
+  const navigateMs: number[] = []
+  for (let i = 0; i < NAVIGATION_STEPS; i++) {
+    const frameStart = nextFrame().then(() => performance.now())
+    await engine.dispatch(
+      i % 2
+        ? { type: "panView", dx: i % 4 === 1 ? 37 : -37, dy: 11 }
+        : { type: "zoomView", factor: i % 4 === 0 ? 1.25 : 0.8 }
+    )
+    const start = await frameStart
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await device.queue.onSubmittedWorkDone()
+    navigateMs.push(performance.now() - start)
+  }
   const { width, height } = engine.getSnapshot()
   return {
     canvas: { width, height },
@@ -506,6 +530,7 @@ export async function runVectorBenchmark(
     firstDrawMs,
     fullRedrawMs,
     localRedrawMs,
+    navigateMs,
   }
 }
 

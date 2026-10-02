@@ -9,21 +9,26 @@
  * stencil under the whole quad on the way so the next object starts clean.
  * Antialiasing is the multisampling: each sample is counted on its own.
  *
- * Everything is in document pixels; `chunk` says which part of the document
- * this pass covers, so a large redraw is done a piece at a time into one
- * fixed-size multisampled target.
+ * Geometry is in document pixels; `chunk` says where it lands in the target
+ * and which piece of the target this pass covers, so a large redraw is done
+ * a piece at a time into one fixed-size multisampled target. The target is
+ * the layer's own pixels, or the screen through the view (sharp-zoom 02),
+ * where the shapes are drawn from their geometry at whatever magnification
+ * rather than sampled from those pixels. Nothing lands off the document.
  */
 export const vectorShader = /* wgsl */ `
 struct Chunk {
-  // Top-left of the region drawn, in document pixels, and the target's size.
-  origin: vec2<f32>,
+  // Document pixels -> pixels of the piece drawn.
+  toPiece: mat3x3<f32>,
+  // The multisampled target's size, and the document's.
   size: vec2<f32>,
+  docSize: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> chunk: Chunk;
 
 fn toClip(position: vec2<f32>) -> vec4<f32> {
-  let local = (position - chunk.origin) / chunk.size;
+  let local = (chunk.toPiece * vec3<f32>(position, 1.0)).xy / chunk.size;
   // y is down in the document and up in clip space.
   return vec4<f32>(local.x * 2.0 - 1.0, 1.0 - local.y * 2.0, 0.0, 1.0);
 }
@@ -44,6 +49,9 @@ struct Covered {
   @builtin(position) position: vec4<f32>,
   // Premultiplied linear light, as every layer holds it.
   @location(0) color: vec4<f32>,
+  // Where this is in the document: the map is affine, so interpolating the
+  // corners' is exact.
+  @location(1) document: vec2<f32>,
 }
 
 @vertex
@@ -51,11 +59,14 @@ fn coverVertex(
   @location(0) position: vec2<f32>,
   @location(1) color: vec4<f32>,
 ) -> Covered {
-  return Covered(toClip(position), color);
+  return Covered(toClip(position), color, position);
 }
 
 @fragment
 fn coverFragment(input: Covered) -> @location(0) vec4<f32> {
+  if (any(input.document < vec2<f32>(0.0)) || any(input.document >= chunk.docSize)) {
+    discard;
+  }
   return input.color;
 }
 `

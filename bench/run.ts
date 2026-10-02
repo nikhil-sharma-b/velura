@@ -329,7 +329,9 @@ async function featherSweep(): Promise<void> {
  * the first draw of the whole scene, an edit spanning the layer (every path
  * redrawn), and an edit to one path (only its region redrawn). Re-rasterising
  * is what a vector layer pays instead of a compositor of its own, so this is
- * the number that says what that choice costs.
+ * the number that says what that choice costs. Beside them, navigating at
+ * high zoom, where every step draws the paths into the screen through the
+ * view (sharp-zoom 02).
  */
 const PATH_COUNTS = [500, 2000, 8000]
 
@@ -342,7 +344,7 @@ async function vectorSweep(): Promise<void> {
   try {
     console.log(
       `\n  vector layer, ${VECTOR_WORKLOAD.width}², ms from edit to GPU done` +
-        "\n  paths     first draw   whole layer (median / p95)   one path (median / p95)"
+        "\n  paths     first draw   whole layer (median / p95)   one path (median / p95)   navigating at 8× (median / p95)"
     )
     for (const paths of PATH_COUNTS) {
       const page = await browser.newPage()
@@ -358,7 +360,8 @@ async function vectorSweep(): Promise<void> {
       console.log(
         `  ${String(paths).padStart(5)}   ${fixed(result.firstDrawMs).padStart(10)}   ` +
           `${fixed(median(result.fullRedrawMs)).padStart(12)} / ${fixed(p95(result.fullRedrawMs)).padEnd(12)}   ` +
-          `${fixed(median(result.localRedrawMs), 2).padStart(10)} / ${fixed(p95(result.localRedrawMs), 2)}`
+          `${fixed(median(result.localRedrawMs), 2).padStart(10)} / ${fixed(p95(result.localRedrawMs), 2).padEnd(10)}   ` +
+          `${fixed(median(result.navigateMs), 2).padStart(10)} / ${fixed(p95(result.navigateMs), 2)}`
       )
       await page.close()
     }

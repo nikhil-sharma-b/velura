@@ -100,6 +100,8 @@ const TEXTURE_FORMAT: GPUTextureFormat = "r8unorm"
  * (`engine/shaders/composite-space.wgsl`).
  */
 const COMPOSITE_UNIFORM_BYTES = 96
+/** The vector shader's chunk: a mat3x3 and two vec2s (`engine/shaders/vector.ts`). */
+const VECTOR_UNIFORM_BYTES = 64
 /**
  * Dabs of one stroke the buffer can replay. A long stroke at a quarter-tip
  * spacing is a few thousand; past this the stroke still draws, but discarding
@@ -274,6 +276,14 @@ export interface Renderer {
     draws: readonly VectorDraw[],
     region: PixelRect
   ): void
+  /**
+   * Keeps a vector layer's whole scene as geometry, bottom first, or forgets
+   * it with null (sharp-zoom 02). The screen draws the layer from this
+   * through the view rather than sampling its pixels, so its edges are sharp
+   * at any zoom; the pixels stay the document's own, and what export,
+   * thumbnails and rasterising read.
+   */
+  setVectorScene(surfaceId: string, draws: readonly VectorDraw[] | null): void
   /**
    * Reads whole tiles back off a surface, zero-filled where they hang past the
    * canvas and where the surface holds nothing. Asynchronous and off the
@@ -963,7 +973,7 @@ export function createRenderer(
       entries: [
         {
           binding: 0,
-          visibility: GPUShaderStage.VERTEX,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
           buffer: { type: "uniform" },
         },
       ],
@@ -1070,7 +1080,7 @@ export function createRenderer(
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     })
     const uniform = device.createBuffer({
-      size: 16,
+      size: VECTOR_UNIFORM_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     })
     vector = {
@@ -1105,6 +1115,183 @@ export function createRenderer(
       textures: [color, depth, resolve],
     }
     return vector
+  }
+
+  /** A scene's draws on the GPU: every fill's triangles, and its cover quad. */
+  type VectorBuffers = {
+    draws: readonly VectorDraw[]
+    triangles: GPUBuffer
+    quads: GPUBuffer
+    firsts: number[]
+  }
+
+  function uploadVectorDraws(draws: readonly VectorDraw[]): VectorBuffers {
+    const drawn = draws.filter((draw) => draw.vertices.length >= 6)
+    // Every fill's triangles in one buffer, and a covering quad per fill
+    // in another: two uploads however many objects there are.
+    const triangles = new Float32Array(
+      drawn.reduce((total, draw) => total + draw.vertices.length, 0)
+    )
+    const quads = new Float32Array(drawn.length * 6 * 6)
+    const firsts: number[] = []
+    let offset = 0
+    drawn.forEach((draw, index) => {
+      triangles.set(draw.vertices, offset)
+      firsts.push(offset / 2)
+      offset += draw.vertices.length
+      const { minX, minY, maxX, maxY } = draw.bounds
+      const corners = [
+        [minX, minY],
+        [maxX, minY],
+        [maxX, maxY],
+        [minX, minY],
+        [maxX, maxY],
+        [minX, maxY],
+      ]
+      corners.forEach(([x, y], corner) =>
+        quads.set([x, y, ...draw.color], (index * 6 + corner) * 6)
+      )
+    })
+    const buffer = (data: Float32Array) => {
+      const created = device.createBuffer({
+        size: Math.max(16, data.byteLength),
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      })
+      if (data.byteLength) device.queue.writeBuffer(created, 0, data)
+      return created
+    }
+    return {
+      draws: drawn,
+      triangles: buffer(triangles),
+      quads: buffer(quads),
+      firsts,
+    }
+  }
+
+  function releaseVectorDraws(buffers: VectorBuffers) {
+    // Destroying waits for the work already submitted against them.
+    buffers.triangles.destroy()
+    buffers.quads.destroy()
+  }
+
+  /**
+   * Draws a scene into `area` of `texture` through `toTarget`, document
+   * pixels to the texture's, a chunk at a time. `area` becomes exactly the
+   * scene; the rest of the texture is left alone.
+   */
+  function drawVector(
+    buffers: VectorBuffers,
+    texture: GPUTexture,
+    toTarget: ViewMatrix,
+    area: PixelRect
+  ) {
+    const targets = vectorTargets()
+    const [a, b, c, d, e, f] = toTarget
+    // Where each draw's bounds land in the target: a box around the four
+    // corners, which is the whole of it under rotation.
+    const boxes = buffers.draws.map(({ bounds }) => {
+      const xs: number[] = []
+      const ys: number[] = []
+      for (const x of [bounds.minX, bounds.maxX])
+        for (const y of [bounds.minY, bounds.maxY]) {
+          xs.push(a * x + c * y + e)
+          ys.push(b * x + d * y + f)
+        }
+      return {
+        minX: Math.min(...xs),
+        minY: Math.min(...ys),
+        maxX: Math.max(...xs),
+        maxY: Math.max(...ys),
+      }
+    })
+    for (let y = area.y; y < area.y + area.height; y += VECTOR_CHUNK)
+      for (let x = area.x; x < area.x + area.width; x += VECTOR_CHUNK) {
+        const piece = {
+          x,
+          y,
+          width: Math.min(VECTOR_CHUNK, area.x + area.width - x),
+          height: Math.min(VECTOR_CHUNK, area.y + area.height - y),
+        }
+        // Written before the submit that reads it, and the next chunk's
+        // after: the queue keeps them in that order.
+        device.queue.writeBuffer(
+          targets.uniform,
+          0,
+          new Float32Array([
+            ...packMatrix([a, b, c, d, e - x, f - y]),
+            VECTOR_CHUNK,
+            VECTOR_CHUNK,
+            width,
+            height,
+          ])
+        )
+        const encoder = device.createCommandEncoder()
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [
+            {
+              view: targets.color,
+              resolveTarget: targets.resolve.createView(),
+              clearValue: { r: 0, g: 0, b: 0, a: 0 },
+              loadOp: "clear",
+              storeOp: "discard",
+            },
+          ],
+          depthStencilAttachment: {
+            view: targets.depth,
+            stencilClearValue: 0,
+            stencilLoadOp: "clear",
+            stencilStoreOp: "discard",
+          },
+        })
+        pass.setScissorRect(0, 0, piece.width, piece.height)
+        pass.setBindGroup(0, targets.bindGroup)
+        buffers.draws.forEach((draw, index) => {
+          const box = boxes[index]
+          if (
+            box.maxX < piece.x ||
+            box.maxY < piece.y ||
+            box.minX > piece.x + piece.width ||
+            box.minY > piece.y + piece.height
+          )
+            return
+          pass.setPipeline(targets.stencil[draw.rule])
+          pass.setStencilReference(draw.rule === "union" ? 1 : 0)
+          pass.setVertexBuffer(0, buffers.triangles)
+          pass.draw(draw.vertices.length / 2, 1, buffers.firsts[index])
+          pass.setPipeline(
+            draw.rule === "evenodd" ? targets.coverOdd : targets.cover
+          )
+          pass.setStencilReference(0)
+          pass.setVertexBuffer(0, buffers.quads)
+          pass.draw(6, 1, index * 6)
+        })
+        pass.end()
+        encoder.copyTextureToTexture(
+          { texture: targets.resolve },
+          { texture, origin: { x: piece.x, y: piece.y } },
+          { width: piece.width, height: piece.height }
+        )
+        device.queue.submit([encoder.finish()])
+      }
+  }
+
+  /**
+   * Vector layers' scenes as geometry (sharp-zoom 02), by surface id, and a
+   * version that moves whenever one is replaced, so a compositor can tell a
+   * drawing of it is stale.
+   */
+  const vectorScenes = new Map<
+    string,
+    { buffers: VectorBuffers; version: number }
+  >()
+  let nextVectorVersion = 0
+
+  function forgetVectorScene(id: string): boolean {
+    const held = vectorScenes.get(id)
+    if (!held) return false
+    releaseVectorDraws(held.buffers)
+    vectorScenes.delete(id)
+    return true
   }
 
   /**
@@ -1440,10 +1627,20 @@ export function createRenderer(
    * the document at its own size, which export and group thumbnails read.
    * Layers, masks and the stroke are the document's and shared; everything a
    * compositor flattens is its own, in its own target, and is rebuilt when
-   * its space moves as well as when the plan does.
+   * its space moves as well as when the plan does. With `geometry`, vector
+   * layers are drawn into it from their scenes wherever it is not the
+   * document texel for texel (sharp-zoom 02); without, from their pixels.
    */
-  function createCompositor() {
+  function createCompositor({ geometry }: { geometry: boolean }) {
     let space: Space = { width: 0, height: 0, toDoc: IDENTITY_MATRIX }
+    /** Whether document surfaces are resampled into this target. */
+    let resampling = false
+    // Vector layers drawn from their geometry into this target, and the
+    // version of the scene each was drawn from: -1 once the space moves.
+    const vectorSurfaces = new Map<
+      string,
+      { surface: Surface; version: number }
+    >()
     const presentUniform = device.createBuffer({
       size: UNIFORM_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -1509,6 +1706,7 @@ export function createRenderer(
         f !== 0 ||
         space.width !== width ||
         space.height !== height
+      resampling = resample
       compositeValues[5] = resample ? 1 : 0
       compositeValues.set(packMatrix(space.toDoc), 8)
       compositeValues[20] = width
@@ -1532,6 +1730,8 @@ export function createRenderer(
       validGroupCaches.clear()
       for (const surface of coverageCaches.values()) surface.texture.destroy()
       coverageCaches.clear()
+      for (const held of vectorSurfaces.values()) held.surface.texture.destroy()
+      vectorSurfaces.clear()
       below?.texture.destroy()
       above?.texture.destroy()
       blendScratch?.texture.destroy()
@@ -1696,8 +1896,45 @@ export function createRenderer(
       destination.empty = false
     }
 
+    /** Whether a layer is drawn into this target from its geometry. */
+    function fromGeometry(id: string): boolean {
+      return geometry && resampling && vectorScenes.has(id)
+    }
+
+    /**
+     * What a layer is composited from: its own pixels, or for a vector layer
+     * on a magnified screen its scene drawn into this target through the
+     * view, redrawn only when the scene or the view has moved since.
+     */
+    function layerSurface(id: string): Surface | undefined {
+      const surface = surfaces.get(id)
+      const scene = vectorScenes.get(id)
+      if (!surface || !scene || !fromGeometry(id)) return surface
+      let held = vectorSurfaces.get(id)
+      if (!held) {
+        held = { surface: createTarget(), version: -1 }
+        vectorSurfaces.set(id, held)
+      }
+      if (held.version !== scene.version) {
+        drawVector(
+          scene.buffers,
+          held.surface.texture,
+          invertMatrix(space.toDoc),
+          { x: 0, y: 0, width: space.width, height: space.height }
+        )
+        held.version = scene.version
+        held.surface.empty = false
+      }
+      return held.surface
+    }
+
+    /** The active layer as it is composited. */
+    function activeSource(): Surface {
+      return (activeItem && layerSurface(activeItem.id)) ?? active!
+    }
+
     function itemSurface(item: CompositeItem): Surface | undefined {
-      if (item.kind !== "group") return surfaces.get(item.id)
+      if (item.kind !== "group") return layerSurface(item.id)
       const children = item.children ?? []
       const target = groupCaches.get(item.id) ?? createTarget()
       groupCaches.set(item.id, target)
@@ -1898,7 +2135,7 @@ export function createRenderer(
         while (stageFrames.length < complexStages!.length)
           stageFrames.push(createTarget())
         complexOutput = stageFrames[complexStages!.length - 1]
-        let source = active
+        let source = activeSource()
         let sourceItem = activeItem
         for (let index = 0; index < complexStages!.length; index++) {
           const clipBase = sourceItem!.clip ? stageClipBase[index] : undefined
@@ -1936,10 +2173,14 @@ export function createRenderer(
       // goes into it: fading the active layer or selecting nothing new leaves
       // both caches exactly as they are.
       activeItem = { ...next.active }
-      liveAbove = next.above.some((item) => item.blend !== "normal")
-        ? next.above.map((item) => ({ ...item }))
-        : []
-      if (liveAbove.length) frame ??= createTarget()
+      // A vector layer drawn from its geometry is in this target, where the
+      // present pass cannot read it, so it is composited into the frame.
+      const activeInTarget = fromGeometry(next.active.id)
+      liveAbove =
+        activeInTarget || next.above.some((item) => item.blend !== "normal")
+          ? next.above.map((item) => ({ ...item }))
+          : []
+      if (liveAbove.length || activeInTarget) frame ??= createTarget()
       else {
         frame?.texture.destroy()
         frame = undefined
@@ -1979,7 +2220,7 @@ export function createRenderer(
       if (!presentBindGroup || !pipeline)
         throw new Error("No composition has been set to present.")
       if (complexStages) {
-        let current = active!
+        let current = activeSource()
         let currentItem = activeItem!
         for (let index = 0; index < complexStages.length; index++) {
           const target = stageFrames[index]
@@ -2014,9 +2255,9 @@ export function createRenderer(
       } else if (frame) {
         clearSurface(frame)
         if (below) compositeSurface(below, frame, 1)
-        blendSurface(active!, frame, activeItem!, true)
+        blendSurface(activeSource(), frame, activeItem!, true)
         for (const item of liveAbove) {
-          const source = surfaces.get(item.id)
+          const source = itemSurface(item)
           if (source) blendSurface(source, frame, item)
         }
       }
@@ -2066,7 +2307,10 @@ export function createRenderer(
         space = next
         writeSpace()
         if (resized) releaseTargets()
-        else if (moved) invalidate()
+        else if (moved) {
+          for (const held of vectorSurfaces.values()) held.version = -1
+          invalidate()
+        }
       },
       /** Rewritten when the document is resized, which every space reads. */
       writeSpace,
@@ -2078,13 +2322,16 @@ export function createRenderer(
       forget(id: string): boolean {
         const group = groupCaches.get(id)
         const coverage = coverageCaches.get(id)
+        const drawn = vectorSurfaces.get(id)?.surface
         group?.texture.destroy()
         coverage?.texture.destroy()
+        drawn?.texture.destroy()
         groupCaches.delete(id)
         validGroupCaches.delete(id)
         coverageCaches.delete(id)
-        if (group || coverage) forgetBindGroups()
-        return !!group || !!coverage
+        vectorSurfaces.delete(id)
+        if (group || coverage || drawn) forgetBindGroups()
+        return !!group || !!coverage || !!drawn
       },
       forgetBindGroups,
       destroy() {
@@ -2211,12 +2458,12 @@ export function createRenderer(
   }
 
   /** The screen, through the view: what the artist sees. */
-  const screen = createCompositor()
+  const screen = createCompositor({ geometry: true })
   /**
    * The document at its own size: the artwork as it exports, and where a group's
    * thumbnail is flattened in. It keeps nothing between uses.
    */
-  const artwork = createCompositor()
+  const artwork = createCompositor({ geometry: false })
   const compositors = [screen, artwork]
   /** The window the screen compositor fills, once one has been given. */
   let viewport: { width: number; height: number } | undefined
@@ -2243,6 +2490,7 @@ export function createRenderer(
       releaseSelection()
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
+      for (const id of [...vectorScenes.keys()]) forgetVectorScene(id)
       stroke?.texture.destroy()
       active = undefined
       paintTarget = undefined
@@ -2353,6 +2601,7 @@ export function createRenderer(
       copy.empty = source.empty
     },
     releaseLayer(id) {
+      forgetVectorScene(id)
       surfaces.get(id)?.texture.destroy()
       const releasedSurface = surfaces.delete(id)
       let releasedCache = false
@@ -2662,112 +2911,12 @@ export function createRenderer(
         canvas
       )
       if (!area) return
-      const targets = vectorTargets()
       const surface = ensureSurface(surfaceId)
-      const drawn = draws.filter((draw) => draw.vertices.length >= 6)
-      // Every fill's triangles in one buffer, and a covering quad per fill
-      // in another: two uploads however many objects there are.
-      const triangles = new Float32Array(
-        drawn.reduce((total, draw) => total + draw.vertices.length, 0)
-      )
-      const quads = new Float32Array(drawn.length * 6 * 6)
-      const firsts: number[] = []
-      let offset = 0
-      drawn.forEach((draw, index) => {
-        triangles.set(draw.vertices, offset)
-        firsts.push(offset / 2)
-        offset += draw.vertices.length
-        const { minX, minY, maxX, maxY } = draw.bounds
-        const corners = [
-          [minX, minY],
-          [maxX, minY],
-          [maxX, maxY],
-          [minX, minY],
-          [maxX, maxY],
-          [minX, maxY],
-        ]
-        corners.forEach(([x, y], corner) =>
-          quads.set([x, y, ...draw.color], (index * 6 + corner) * 6)
-        )
-      })
-      const buffer = (data: Float32Array) => {
-        const created = device.createBuffer({
-          size: Math.max(16, data.byteLength),
-          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-        })
-        if (data.byteLength) device.queue.writeBuffer(created, 0, data)
-        return created
-      }
-      const triangleBuffer = buffer(triangles)
-      const quadBuffer = buffer(quads)
+      const buffers = uploadVectorDraws(draws)
       try {
-        for (let y = area.y; y < area.y + area.height; y += VECTOR_CHUNK)
-          for (let x = area.x; x < area.x + area.width; x += VECTOR_CHUNK) {
-            const piece = {
-              x,
-              y,
-              width: Math.min(VECTOR_CHUNK, area.x + area.width - x),
-              height: Math.min(VECTOR_CHUNK, area.y + area.height - y),
-            }
-            // Written before the submit that reads it, and the next chunk's
-            // after: the queue keeps them in that order.
-            device.queue.writeBuffer(
-              targets.uniform,
-              0,
-              new Float32Array([x, y, VECTOR_CHUNK, VECTOR_CHUNK])
-            )
-            const encoder = device.createCommandEncoder()
-            const pass = encoder.beginRenderPass({
-              colorAttachments: [
-                {
-                  view: targets.color,
-                  resolveTarget: targets.resolve.createView(),
-                  clearValue: { r: 0, g: 0, b: 0, a: 0 },
-                  loadOp: "clear",
-                  storeOp: "discard",
-                },
-              ],
-              depthStencilAttachment: {
-                view: targets.depth,
-                stencilClearValue: 0,
-                stencilLoadOp: "clear",
-                stencilStoreOp: "discard",
-              },
-            })
-            pass.setScissorRect(0, 0, piece.width, piece.height)
-            pass.setBindGroup(0, targets.bindGroup)
-            drawn.forEach((draw, index) => {
-              const { minX, minY, maxX, maxY } = draw.bounds
-              if (
-                maxX < piece.x ||
-                maxY < piece.y ||
-                minX > piece.x + piece.width ||
-                minY > piece.y + piece.height
-              )
-                return
-              pass.setPipeline(targets.stencil[draw.rule])
-              pass.setStencilReference(draw.rule === "union" ? 1 : 0)
-              pass.setVertexBuffer(0, triangleBuffer)
-              pass.draw(draw.vertices.length / 2, 1, firsts[index])
-              pass.setPipeline(
-                draw.rule === "evenodd" ? targets.coverOdd : targets.cover
-              )
-              pass.setStencilReference(0)
-              pass.setVertexBuffer(0, quadBuffer)
-              pass.draw(6, 1, index * 6)
-            })
-            pass.end()
-            encoder.copyTextureToTexture(
-              { texture: targets.resolve },
-              { texture: surface.texture, origin: { x: piece.x, y: piece.y } },
-              { width: piece.width, height: piece.height }
-            )
-            device.queue.submit([encoder.finish()])
-          }
+        drawVector(buffers, surface.texture, IDENTITY_MATRIX, area)
       } finally {
-        // Destroying waits for the work already submitted against them.
-        triangleBuffer.destroy()
-        quadBuffer.destroy()
+        releaseVectorDraws(buffers)
       }
       surface.empty = false
       // The active layer is read live; any other may be inside a cache that
@@ -2775,6 +2924,20 @@ export function createRenderer(
       if (surface !== active) {
         invalidateCaches()
       }
+    },
+    setVectorScene(surfaceId, draws) {
+      const had = forgetVectorScene(surfaceId)
+      if (draws)
+        vectorScenes.set(surfaceId, {
+          buffers: uploadVectorDraws(draws),
+          version: ++nextVectorVersion,
+        })
+      if (!had && !draws) return
+      // The active layer's drawing is checked each frame; any other may be
+      // inside a cache, and one gaining or losing its scene changes how the
+      // plan is composited.
+      if (surfaces.get(surfaceId) !== active || had !== !!draws)
+        invalidateCaches()
     },
     async readTiles(id, coords) {
       const surface = surfaces.get(id)
@@ -3051,6 +3214,7 @@ export function createRenderer(
       thumbnailUniform.destroy()
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
+      for (const id of [...vectorScenes.keys()]) forgetVectorScene(id)
       stroke?.texture.destroy()
       stroke = undefined
       active = undefined

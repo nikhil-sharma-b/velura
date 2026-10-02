@@ -265,6 +265,27 @@ thousand paths fits in a frame; an edit to one path redraws only its region,
 and what it costs beyond that is the frame itself and the walk over the
 scene's objects to find what the region touches.
 
+On screen the layer is not sampled from those pixels: wherever the view
+resamples, it is drawn from its cached meshes straight into the screen
+through the view (sharp-zoom 02), so it is sharp at any zoom. Every pan or
+zoom redraws it so. The same run then zooms to 8× and alternates a pan and a
+zoom as `--navigate` does, timing each step from the start of its frame to
+the GPU's fence (1024² viewport):
+
+| paths | whole layer, median / p95 | one path, median / p95 | navigating at 8×, median / p95 |
+|---|---|---|---|
+| 500 | 6.7 / 9.5 | 4.5 / 4.9 | 2.4 / 5.8 |
+| 2000 | 11.3 / 13.4 | 6.2 / 7.5 | 2.4 / 8.1 |
+| 8000 | 26.0 / 38.9 | 13.3 / 16.4 | 2.1 / 6.8 |
+
+Navigating costs little whatever the path count: at 8× only the paths whose
+bounds reach the window are drawn, and the window is a fraction of the
+document. The p95 is the step that zooms out, where more of the scene is on
+screen. An edit now also hands the renderer the whole scene's meshes, uploaded
+afresh, and the screen redraws the layer from them, so an edit's cost grows
+with the scene on top of the region it re-rasterises; the one-path column
+includes it.
+
 ## Navigating: caches rebuilt per view
 
 The screen is composited at the window's resolution through the view

@@ -1,6 +1,12 @@
 import { expect, test, type Page } from "@playwright/test"
 
+import { PNG } from "pngjs"
 import type { SceneCommand, VectorObject } from "../../engine"
+import {
+  applyMatrix,
+  type CanvasView,
+  docToScreen,
+} from "../../engine/view/view-transform"
 
 /**
  * Vector layers (19), through the engine's command seam and the pixels it
@@ -545,7 +551,57 @@ test("a vector layer clips to the layer below", async ({ page }) => {
   await expect(page.locator("canvas")).toHaveScreenshot("vector-clip.png")
 })
 
-test("shapes stay exactly as sharp after zooming, and redrawing loses nothing", async ({
+/**
+ * How far the edge through `point` (document pixels) spreads on screen,
+ * walked along its normal `normal` (document direction): the screen distance
+ * from where the paper starts to darken to where the ink is solid. One
+ * pixel of antialiasing is at most √2 of it, along a diagonal; a layer
+ * sampled from its pixels spreads over two document pixels' worth of screen.
+ */
+async function edgeSpread(
+  page: Page,
+  point: { x: number; y: number },
+  normal: { x: number; y: number }
+): Promise<number> {
+  await pixels(page)
+  const screen = PNG.sync.read(await page.locator("canvas").screenshot())
+  const view = await page.evaluate(
+    () => window.engine.getSnapshot().view as CanvasView
+  )
+  const matrix = docToScreen(
+    view,
+    { width: WIDTH, height: HEIGHT },
+    { width: screen.width, height: screen.height }
+  )
+  const centre = applyMatrix(matrix, point.x, point.y)
+  const ahead = applyMatrix(matrix, point.x + normal.x, point.y + normal.y)
+  const length = Math.hypot(ahead.x - centre.x, ahead.y - centre.y)
+  const step = {
+    x: (ahead.x - centre.x) / length,
+    y: (ahead.y - centre.y) / length,
+  }
+  const red = (t: number) => {
+    const x = Math.floor(centre.x + step.x * t)
+    const y = Math.floor(centre.y + step.y * t)
+    expect(x >= 0 && y >= 0 && x < screen.width && y < screen.height).toBe(true)
+    return screen.data[(y * screen.width + x) * 4]
+  }
+  let first = Infinity
+  let last = -Infinity
+  for (let t = -12; t <= 12; t += 0.25) {
+    const value = red(t)
+    if (value < 235 && value > 20) {
+      first = Math.min(first, t)
+      last = Math.max(last, t)
+    }
+  }
+  // Paper on one side, ink on the other: the walk crossed the edge.
+  expect(red(-12)).toBeGreaterThan(235)
+  expect(red(12)).toBeLessThan(20)
+  return first === Infinity ? 0 : last - first
+}
+
+test("shapes stay sharp at any zoom, rotation and flip, and redrawing loses nothing", async ({
   page,
 }) => {
   await openCanvas(page)
@@ -573,11 +629,46 @@ test("shapes stay exactly as sharp after zooming, and redrawing loses nothing", 
   expect(red(130)).toBeGreaterThan(0)
   expect(red(130)).toBeLessThan(255)
   expect(red(131)).toBe(255)
-  await page.evaluate(async () => {
-    for (const factor of [4, 4, 0.5, 2, 1 / 32])
-      await window.engine.dispatch({ type: "zoomView", factor })
-    await window.engine.dispatch({ type: "resetView" })
-  })
+  const left = { x: box.x, y: 50 }
+  const top = { x: 80, y: box.y }
+  const views: { name: string; commands: object[]; zoom: number }[] = [
+    { name: "4x", commands: [], zoom: 4 },
+    { name: "16x", commands: [], zoom: 16 },
+    {
+      name: "rotated 4x",
+      commands: [{ type: "rotateView", radians: 0.5, absolute: true }],
+      zoom: 4,
+    },
+    { name: "flipped 4x", commands: [{ type: "flipView" }], zoom: 4 },
+  ]
+  for (const view of views)
+    for (const [edge, normal] of [
+      [left, { x: 1, y: 0 }],
+      [top, { x: 0, y: 1 }],
+    ] as const) {
+      const view0 = await page.evaluate(async (commands) => {
+        await window.engine.dispatch({ type: "resetView" })
+        for (const command of commands)
+          await window.engine.dispatch(
+            command as Parameters<typeof window.engine.dispatch>[0]
+          )
+        return window.engine.getSnapshot().view as CanvasView
+      }, view.commands)
+      // Magnified about the edge, so it stays on screen.
+      const size = { width: WIDTH, height: HEIGHT }
+      const anchor = applyMatrix(docToScreen(view0, size, size), edge.x, edge.y)
+      await page.evaluate(
+        ([factor, anchor]) =>
+          window.engine.dispatch({ type: "zoomView", factor, anchor }),
+        [view.zoom, anchor] as const
+      )
+      const spread = await edgeSpread(page, edge, normal)
+      expect(
+        spread,
+        `${view.name} ${normal.x ? "left" : "top"}`
+      ).toBeLessThanOrEqual(1.5)
+    }
+  await page.evaluate(() => window.engine.dispatch({ type: "resetView" }))
   expect(await pixels(page)).toEqual(drawn)
   // Moved away and back is drawn again from the geometry, not resampled.
   for (const transform of [
@@ -586,6 +677,30 @@ test("shapes stay exactly as sharp after zooming, and redrawing loses nothing", 
   ] as const)
     await edit(page, id, [{ type: "update", id: "a", patch: { transform } }])
   expect(await pixels(page)).toEqual(drawn)
+})
+
+test("a shape being dragged out previews sharp on a magnified view", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addVectorLayer(page)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setTool", tool: "rectangle" })
+    await window.engine.dispatch({ type: "setColor", hex: "#000000" })
+    await window.engine.dispatch({
+      type: "zoomView",
+      factor: 4,
+      anchor: { x: 100, y: 60 },
+    })
+  })
+  // Screen (60, 40) to (140, 80) is document (90, 55) to (110, 65) at 4x
+  // about the centre: the left edge lies at document x = 90.
+  await page.mouse.move(origin.x + 60, origin.y + 40)
+  await page.mouse.down()
+  await page.mouse.move(origin.x + 140, origin.y + 80, { steps: 10 })
+  const spread = await edgeSpread(page, { x: 90, y: 60 }, { x: 1, y: 0 })
+  await page.mouse.up()
+  expect(spread).toBeLessThanOrEqual(1.5)
 })
 
 test("object selection styles, duplicate, reorder, transform and clear undo through the facade", async ({

@@ -2712,8 +2712,11 @@ export function createEngine(
     return [red * alpha, green * alpha, blue * alpha, alpha] as const
   }
 
-  /** What the renderer draws of a scene within a region, bottom first. */
-  function vectorDraws(scene: VectorScene, region: PixelRect): VectorDraw[] {
+  /**
+   * What the renderer draws of a scene within a region, bottom first: all of
+   * it without one.
+   */
+  function vectorDraws(scene: VectorScene, region?: PixelRect): VectorDraw[] {
     const draws: VectorDraw[] = []
     const add = (
       mesh: Mesh | null,
@@ -2722,10 +2725,11 @@ export function createEngine(
       if (!mesh?.bounds) return
       const { minX, minY, maxX, maxY } = mesh.bounds
       if (
-        maxX < region.x ||
-        maxY < region.y ||
-        minX > region.x + region.width ||
-        minY > region.y + region.height
+        region &&
+        (maxX < region.x ||
+          maxY < region.y ||
+          minX > region.x + region.width ||
+          minY > region.y + region.height)
       )
         return
       draws.push({
@@ -2755,6 +2759,9 @@ export function createEngine(
     drawnScenes.set(layerId, scene)
     if (region)
       renderer.rasterizeVector(layerId, vectorDraws(scene, region), region)
+    // The screen draws the layer from its geometry, sharp at any zoom
+    // (sharp-zoom 02); the pixels above stay what everything else reads.
+    renderer.setVectorScene(layerId, vectorDraws(scene))
     // A scene's content box is its objects', and shrinks when they go.
     contentBounds.forget(layerId)
     const box = unionOf(scene.objects.map(objectBounds))
@@ -3445,6 +3452,8 @@ export function createEngine(
         return
       }
       const layer = node
+      // A layer rasterised, by command or by redo, is drawn from its pixels.
+      target.setVectorScene(layer.id, null)
       // Hashed before the upload clears the mark: these texels are exactly
       // what the GPU is about to hold, so the first stroke over them knows
       // what it covered without reading anything back.
@@ -5810,7 +5819,10 @@ export function createEngine(
             // The copy's pixels were copied with it, so they are already a
             // drawing of the scene it shares with its source.
             const drawn = drawnScenes.get(command.id)
-            if (drawn) drawnScenes.set(copyId, drawn)
+            if (drawn) {
+              drawnScenes.set(copyId, drawn)
+              renderer?.setVectorScene(copyId, vectorDraws(drawn))
+            }
             if (source.mask && copy.mask)
               renderer?.duplicateLayer(source.mask.id, copy.mask.id)
             // The copy's pixels are the source's, so history holds one copy of
