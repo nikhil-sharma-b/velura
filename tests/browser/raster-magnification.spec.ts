@@ -16,7 +16,8 @@ const HEIGHT = 120
 const EDGE = 100
 const ROW = 60
 
-async function openCanvas(page: Page) {
+/** A raster layer, red from `left` to the right edge, white beside it. */
+async function openCanvas(page: Page, left = EDGE) {
   await page.goto("http://127.0.0.1:3101/tests/harness/")
   await page.waitForFunction(() => !!window.engine)
   await page.evaluate(
@@ -58,7 +59,7 @@ async function openCanvas(page: Page) {
       // Pixels now, with the edge between two whole columns of them.
       await engine.dispatch({ type: "rasteriseLayer", id })
     },
-    [WIDTH, HEIGHT, EDGE] as const
+    [WIDTH, HEIGHT, left] as const
   )
 }
 
@@ -87,10 +88,17 @@ async function between(page: Page): Promise<number> {
   const red = (x: number) => image.data[(y * image.width + x) * 4]
   const green = (x: number) => image.data[(y * image.width + x) * 4 + 1]
   let count = 0
+  let white = 0
+  let reds = 0
   for (let x = 1; x < image.width - 1; x++) {
     // White is 255 in green, the red side near 32: anything well between.
     if (green(x) > 60 && green(x) < 220 && red(x) > 150) count++
+    if (green(x) >= 250 && red(x) >= 250) white++
+    if (green(x) <= 40 && red(x) > 150) reds++
   }
+  // Both sides on screen, so no blended pixels means a hard edge, not no edge.
+  expect(white, "white beside the edge").toBeGreaterThan(0)
+  expect(reds, "red beside the edge").toBeGreaterThan(0)
   return count
 }
 
@@ -229,3 +237,58 @@ test("vector layers look the same in either mode", async ({ page }) => {
   const pixels = PNG.sync.read(await page.locator("canvas").screenshot())
   expect(Buffer.compare(pixels.data, smooth.data)).toBe(0)
 })
+
+/** A blank raster layer to paint on, the view zoomed 4× about the edge. */
+async function openBlank(page: Page, mode: "pixels" | "smooth") {
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.engine)
+  await page.evaluate(
+    async ([width, height]) => {
+      const engine = window.engine
+      await engine.dispatch({
+        type: "resize",
+        width,
+        height,
+        devicePixelRatio: 1,
+      })
+      await engine.dispatch({ type: "initialize" })
+      await engine.dispatch({ type: "setStabilization", strength: 0 })
+      await engine.dispatch({ type: "setBrush", radius: 40 })
+      await engine.dispatch({ type: "setColor", hex: "#d02020" })
+    },
+    [WIDTH, HEIGHT] as const
+  )
+  await view(page, 4, mode)
+  return (await page.locator("canvas").boundingBox())!
+}
+
+/** Selects the document right of the edge, so a mark stops hard on it. */
+async function selectRight(page: Page) {
+  await page.evaluate(
+    ([edge, width, height]) =>
+      window.engine.dispatch({
+        type: "selectShape",
+        shape: "rect",
+        x: edge,
+        y: 0,
+        width: width - edge,
+        height,
+      }),
+    [EDGE, WIDTH, HEIGHT] as const
+  )
+}
+
+for (const mode of ["pixels", "smooth"] as const)
+  test(`the stroke in flight follows ${mode} at 4×`, async ({ page }) => {
+    const box = await openBlank(page, mode)
+    await selectRight(page)
+    // Across the edge, which sits at the canvas's centre at this zoom.
+    await page.mouse.move(box.x + 40, box.y + 60)
+    await page.mouse.down()
+    await page.mouse.move(box.x + 160, box.y + 60, { steps: 20 })
+    await page.waitForTimeout(150)
+    const count = await between(page)
+    await page.mouse.up()
+    if (mode === "pixels") expect(count).toBe(0)
+    else expect(count).toBeGreaterThan(1)
+  })
