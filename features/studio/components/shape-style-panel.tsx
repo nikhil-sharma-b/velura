@@ -22,7 +22,6 @@ import { cn } from "@/lib/utils"
 
 import { ALIGN_ANCHORS } from "../lib/studio-commands"
 import { IconButton } from "./icon-button"
-import { SliderSetting } from "./slider-setting"
 
 const ALIGN_ICONS: Record<AlignAnchor, ReactNode> = {
   left: <AlignLeftIcon />,
@@ -105,16 +104,14 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
           onColor={(strokeColor) => setStyle({ strokeColor })}
         />
       </div>
-      <SliderSetting
-        label="Outline width"
-        value={style.strokeWidth}
-        min={1}
-        max={64}
-        step={1}
-        unit="px"
-        disabled={!outlined}
-        onChange={(strokeWidth) => setStyle({ strokeWidth })}
-      />
+      {/* The width is the size setting on the rail, as a brush's size is:
+          the adjustment made between one stroke and the next, a click away
+          rather than in here. */}
+      <p className="text-xs text-muted-foreground">
+        Outline width is set with{" "}
+        <strong className="font-semibold text-foreground">Width</strong> in the
+        rail.
+      </p>
       <Choice
         label="Line ends"
         options={CAPS}
@@ -273,7 +270,12 @@ function PaintRow({
     element.addEventListener("input", moved)
     return () => {
       element.removeEventListener("input", moved)
-      cancelAnimationFrame(frame)
+      // A colour still waiting on its frame when the options close is the
+      // last one chosen, so it lands now rather than being dropped.
+      if (frame) {
+        cancelAnimationFrame(frame)
+        latest.current(element.value)
+      }
     }
   }, [])
   // Uncontrolled between choices, since the picker owns its value while it

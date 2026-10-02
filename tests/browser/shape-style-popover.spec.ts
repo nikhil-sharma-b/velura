@@ -80,45 +80,91 @@ test("a selected object's fill colour and outline width change from the shape op
     options.getByRole("group", { name: "Align to canvas" }).getByRole("button")
   ).toHaveCount(6)
 
-  // A new fill colour lands on the object.
   // A new fill colour lands on the object as it is picked, and a run of
   // picks is one step to take back.
   const original = await screenPixel(page, cx, cy)
   await options.getByLabel("Fill colour").fill("#c0c000")
   await expect.poll(() => screenPixel(page, cx, cy)).toEqual([192, 192, 0])
+  // Closed at once, before the pick's frame: the colour still lands.
   await options.getByLabel("Fill colour").fill("#00c040")
-  await expect.poll(() => screenPixel(page, cx, cy)).toEqual([0, 192, 64])
   await page.keyboard.press("Escape")
+  await expect.poll(() => screenPixel(page, cx, cy)).toEqual([0, 192, 64])
   await page.keyboard.press("ControlOrMeta+z")
   await expect.poll(() => screenPixel(page, cx, cy)).toEqual(original)
   await page.keyboard.press("ControlOrMeta+Shift+z")
   await expect.poll(() => screenPixel(page, cx, cy)).toEqual([0, 192, 64])
   await trigger.click()
 
-  // A fill-only object has no outline to size or colour until it has one.
-  const width = options.getByRole("textbox", { name: "Outline width" })
-  await expect(width).toBeDisabled()
+  // A fill-only object has no outline to colour until it has one.
   await expect(options.getByLabel("Outline colour")).toBeDisabled()
 
-  // An outline, widened, reaches past the edge the fill stopped at.
+  // An outline, widened from the rail's width, reaches past the edge the fill
+  // stopped at.
   await options.getByRole("switch", { name: "Outline", exact: true }).click()
+  await page.keyboard.press("Escape")
+  const sizeSetting = page.getByRole("button", { name: /^Width:/ })
+  await sizeSetting.click()
+  const width = page
+    .getByRole("dialog", { name: "Width adjustment" })
+    .getByRole("textbox", { name: "Outline width" })
   await expect(width).toBeEnabled()
-  await options.getByLabel("Outline colour").fill("#c02000")
   await width.fill("24")
   await width.press("Enter")
+  await expect(width).toHaveValue("24")
+  await sizeSetting.click()
+  await expect(sizeSetting).toHaveAccessibleName("Width: 24 px")
+
+  // The colour last, with the options left open: a colour lands on the next
+  // frame, and closing the options first would drop it.
+  await trigger.click()
+  await expect(
+    options.getByRole("switch", { name: "Outline", exact: true })
+  ).toHaveAttribute("aria-checked", "true")
+  await options.getByLabel("Outline colour").fill("#c02000")
   await expect
     .poll(() => screenPixel(page, outside.x, outside.y))
     .toEqual([192, 32, 0])
   expect(paper).not.toEqual([192, 32, 0])
 
-  // The options read back what the object now has.
-  await expect(width).toHaveValue("24")
-  await expect(
-    options.getByRole("switch", { name: "Outline", exact: true })
-  ).toHaveAttribute("aria-checked", "true")
-
   // Delete takes the selected object away, as in every vector app.
   await page.keyboard.press("Escape")
   await page.keyboard.press("Delete")
   await expect.poll(() => screenPixel(page, cx, cy)).toEqual(paper)
+})
+
+test("with a vector tool in hand the size setting is the outline width", async ({
+  page,
+}) => {
+  await openStudio(page)
+  await page.getByRole("button", { name: "Vector brush tool" }).click()
+
+  // The size setting now reads the width a vector stroke is drawn at.
+  const size = page.getByRole("button", { name: /^Width:/ })
+  await expect(size).toHaveAccessibleName("Width: 4 px")
+  await size.click()
+  const field = page
+    .getByRole("dialog", { name: "Width adjustment" })
+    .getByRole("textbox", { name: "Outline width" })
+  await field.fill("9")
+  await field.press("Enter")
+  await page.keyboard.press("Escape")
+  await expect(size).toHaveAccessibleName("Width: 9 px")
+
+  // The shape options read the same width, and send the artist to the rail.
+  await expect(
+    page.getByRole("button", { name: /^Shape:/ })
+  ).toHaveAccessibleName("Shape: 9px outline")
+  await page.getByRole("button", { name: /^Shape:/ }).click()
+  const options = page.getByRole("dialog", { name: "Shape adjustment" })
+  await expect(
+    options.getByText("Outline width is set with Width in the rail.")
+  ).toBeVisible()
+  await expect(
+    options.getByRole("textbox", { name: "Outline width" })
+  ).toHaveCount(0)
+  await page.keyboard.press("Escape")
+
+  // Back to the pixel brush, the setting is its size again.
+  await page.getByRole("button", { name: "Brush tool", exact: true }).click()
+  await expect(page.getByRole("button", { name: /^Size:/ })).toBeVisible()
 })

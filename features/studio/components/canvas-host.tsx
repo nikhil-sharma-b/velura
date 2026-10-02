@@ -849,6 +849,8 @@ export function CanvasHost({
     [snapshot.tool, snapshot.shapeStyle]
   )
   const shapeOptions = snapshot.selectionStyle ?? toolStyle
+  // With a vector tool in the hand, the size setting is the outline width.
+  const vectorWidth = isVectorTool(snapshot.tool)
   // The layer in hand decides which kinds of tool can act on it, as the
   // engine does: a locked layer or a group takes no tool but a selection;
   // shapes go only onto a vector layer; paint never does, and a placed photo
@@ -986,6 +988,10 @@ export function CanvasHost({
   const saved = savedBrush ?? INITIAL_SNAPSHOT.brush
   const activeTip =
     snapshot.tool === "eraser" ? snapshot.eraser : snapshot.brush
+  /** Half the size setting, as a brush's radius or half an outline's width. */
+  const sizeRadius = vectorWidth
+    ? shapeOptions.strokeWidth / 2
+    : activeTip.shape.radius
   const brushEdited = isBrushEdited(saved, snapshot.brush)
 
   const unavailable = snapshot.status === "unavailable"
@@ -1519,39 +1525,63 @@ export function CanvasHost({
                   {/* Size and opacity are the two a hand reaches for mid-piece, so
                 they stay on the canvas: the editor is for shaping a brush,
                 not for the adjustment made between one stroke and the next. */}
+                  {/* One size for whatever is in the hand: a brush's tip, or the
+                  width a vector tool outlines with — the same width the shape
+                  options set, so the two are one control, not two. */}
                   <QuickSetting
-                    label="Size"
-                    value={`${(activeTip.shape.radius * 2).toFixed(1)} px`}
-                    readout={`${Math.round(activeTip.shape.radius * 2)}`}
+                    label={vectorWidth ? "Width" : "Size"}
+                    value={
+                      vectorWidth
+                        ? `${shapeOptions.strokeWidth} px`
+                        : `${(activeTip.shape.radius * 2).toFixed(1)} px`
+                    }
+                    readout={`${Math.round(sizeRadius * 2)}`}
                     icon={
                       // The dot grows with the brush, up to the icon's own size.
                       <CircleIcon
                         weight="fill"
                         style={{
-                          transform: `scale(${Math.min(1, 0.45 + activeTip.shape.radius / 40)})`,
+                          transform: `scale(${Math.min(1, 0.45 + sizeRadius / 40)})`,
                         }}
                       />
                     }
                   >
-                    <SliderSetting
-                      label="Size"
-                      value={activeTip.shape.radius}
-                      min={0.5}
-                      max={200}
-                      step={0.5}
-                      scale={2}
-                      decimals={1}
-                      unit="px"
-                      onChange={(radius) =>
-                        void engine?.dispatch({
-                          type:
-                            snapshot.tool === "eraser"
-                              ? "setEraser"
-                              : "setBrush",
-                          radius,
-                        })
-                      }
-                    />
+                    {vectorWidth ? (
+                      <SliderSetting
+                        label="Outline width"
+                        value={shapeOptions.strokeWidth}
+                        min={1}
+                        max={64}
+                        step={1}
+                        unit="px"
+                        disabled={!shapeOptions.stroke}
+                        onChange={(strokeWidth) =>
+                          void engine
+                            ?.dispatch({ type: "setShapeStyle", strokeWidth })
+                            .catch(() => {})
+                        }
+                      />
+                    ) : (
+                      <SliderSetting
+                        label="Size"
+                        value={activeTip.shape.radius}
+                        min={0.5}
+                        max={200}
+                        step={0.5}
+                        scale={2}
+                        decimals={1}
+                        unit="px"
+                        onChange={(radius) =>
+                          void engine?.dispatch({
+                            type:
+                              snapshot.tool === "eraser"
+                                ? "setEraser"
+                                : "setBrush",
+                            radius,
+                          })
+                        }
+                      />
+                    )}
                   </QuickSetting>
                   <QuickSetting
                     label="Opacity"
