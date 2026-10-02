@@ -730,7 +730,7 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "view.toggleRulers",
     label: "Toggle rulers",
     category: "View",
-    keybinds: ["mod+r"],
+    keybinds: ["shift+r"],
     available: hasEngine,
     // A preference (08), remembered as well as shown, so a reload keeps it.
     run: ({ engine }) => {

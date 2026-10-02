@@ -12,7 +12,7 @@ async function openStudio(page: Page) {
     "data-engine-status",
     "ready"
   )
-  await page.keyboard.press("ControlOrMeta+r")
+  await page.keyboard.press("Shift+R")
   await expect(page.getByTestId("ruler-top")).toBeVisible()
 }
 
