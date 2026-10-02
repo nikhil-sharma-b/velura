@@ -226,7 +226,7 @@ function ToolFamilySlot({
       variant={held ? "default" : "ghost"}
       size="icon"
       aria-pressed={!!held}
-      detail={`Press again for ${sibling.label.toLowerCase()}`}
+      detail={`Press again for ${sibling.label.replace(/ tool$/, "").toLowerCase()}`}
       onClick={() => onPick(held ? sibling.tool : shown.tool)}
       className="relative"
     >

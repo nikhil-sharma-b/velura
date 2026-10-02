@@ -52,12 +52,24 @@ export function IconButton({
             {children}
           </Button>
         </TooltipTrigger>
-        <TooltipContent side={side} sideOffset={sideOffset}>
-          {label}
-          {command && <KeybindHint registry={commands} id={command} />}
-          {detail && (
-            <span className="block text-[11px] opacity-70">{detail}</span>
-          )}
+        <TooltipContent
+          side={side}
+          sideOffset={sideOffset}
+          className={detail ? "pr-3" : undefined}
+        >
+          {/* The name keeps to one line with its keybind at the far end, and
+            the detail sits under both, so neither breaks the other's line. */}
+          <span className="flex flex-col gap-0.5">
+            <span className="flex items-center justify-between gap-3 whitespace-nowrap">
+              {label}
+              {command && <KeybindHint registry={commands} id={command} />}
+            </span>
+            {detail && (
+              <span className="max-w-52 text-[11px] leading-snug text-tooltip-foreground/70">
+                {detail}
+              </span>
+            )}
+          </span>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>

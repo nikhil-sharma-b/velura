@@ -19,7 +19,7 @@ export function KeybindHint<Context>({
   return (
     <kbd
       data-slot="kbd"
-      className="ml-1 font-mono text-[0.65rem] text-tooltip-foreground/70"
+      className="ml-1 font-mono text-[0.65rem] leading-none text-tooltip-foreground/70 [text-box:trim-both_cap_alphabetic]"
     >
       {label}
     </kbd>
