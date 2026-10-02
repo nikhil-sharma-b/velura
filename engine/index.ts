@@ -4871,7 +4871,8 @@ export function createEngine(
    * Lands a lifted stroke now rather than on the frame it waits for, so a
    * command sent as the pen lifts — dropping the selection, switching layer —
    * applies after the stroke, as the artist made them. The frame already
-   * scheduled still presents it.
+   * scheduled still presents it. The one place the stroke pipeline draws
+   * outside the frame (architecture §6.2).
    */
   function landLiftedStroke() {
     if (!landing) return

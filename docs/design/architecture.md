@@ -187,6 +187,8 @@ pointerup
   → mark tiles dirty for flush
 ```
 
+The tail after `pointerup` (the stamps between the last drawn sample and where the pen lifted, then the composite into the layer) normally runs on the next rAF tick. One exception: if a command is dispatched, or the pen goes down again, before that tick, the engine lands the stroke there and then, so nothing overtakes the stroke the artist already made. A `deselect` sent as the pen lifts would otherwise leave the tail unclipped. Only drawing into the stroke buffer and the layer happens early; presenting still waits for the tick.
+
 The **stroke buffer** is a separate tiled surface covering the stroke's bounding region. Two accumulation modes, selected per brush:
 
 - **Coverage** (`max` alpha): overlapping stamps within one stroke do not darken each other. Airbrush and marker behavior.
