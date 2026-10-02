@@ -30,7 +30,16 @@ test("the eraser leaves a trail while it is down, and the trail fades once it li
   await page.mouse.move(x, y + 60)
   await page.mouse.down()
   for (let i = 1; i <= 6; i++) await page.mouse.move(x + i * 15, y + 60)
-  await expect.poll(drawn).toBe(true)
+  // The trail lives only 180ms behind the pen, and a frame on CI's software
+  // WebGPU can take longer than that, so each look moves the pen first.
+  let step = 6
+  await expect
+    .poll(async () => {
+      step = step >= 12 ? 1 : step + 1
+      await page.mouse.move(x + step * 15, y + 60)
+      return drawn()
+    })
+    .toBe(true)
   await page.mouse.up()
   await expect.poll(drawn).toBe(false)
 })
