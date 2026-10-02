@@ -292,3 +292,44 @@ for (const mode of ["pixels", "smooth"] as const)
     if (mode === "pixels") expect(count).toBe(0)
     else expect(count).toBeGreaterThan(1)
   })
+
+for (const mode of ["pixels", "smooth"] as const)
+  test(`a mask follows ${mode} at 4×`, async ({ page }) => {
+    // Red edge to edge, then paint on the mask hides what is left of the edge.
+    await openCanvas(page, 0)
+    await page.evaluate(
+      async ([edge, height]) => {
+        const engine = window.engine
+        const id = engine.getSnapshot().activeLayerId
+        await engine.dispatch({ type: "addMask", id })
+        await engine.dispatch({ type: "selectMask", id })
+        await engine.dispatch({
+          type: "selectShape",
+          shape: "rect",
+          x: 0,
+          y: 0,
+          width: edge,
+          height,
+        })
+        await engine.dispatch({ type: "setStabilization", strength: 0 })
+        await engine.dispatch({ type: "setBrush", radius: 60 })
+      },
+      [EDGE, HEIGHT] as const
+    )
+    const box = (await page.locator("canvas").boundingBox())!
+    const before = await page.evaluate(() => window.engine.historyUsage().steps)
+    await page.mouse.move(box.x + 5, box.y + ROW)
+    await page.mouse.down()
+    await page.mouse.move(box.x + 95, box.y + ROW, { steps: 10 })
+    await page.mouse.up()
+    // The mark lands before the selection goes, or it would not be clipped.
+    await page.waitForFunction(
+      (before) => window.engine.historyUsage().steps > before,
+      before
+    )
+    await page.evaluate(() => window.engine.dispatch({ type: "deselect" }))
+    await view(page, 4, mode)
+    const count = await between(page)
+    if (mode === "pixels") expect(count).toBe(0)
+    else expect(count).toBeGreaterThan(1)
+  })
