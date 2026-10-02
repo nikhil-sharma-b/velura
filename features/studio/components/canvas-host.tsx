@@ -13,6 +13,11 @@ import {
   CopySimpleIcon,
   CornersOutIcon,
   CircleIcon,
+  CursorIcon,
+  HexagonIcon,
+  LineSegmentIcon,
+  PaintBrushIcon,
+  PenNibIcon,
   CircleDashedIcon,
   DropHalfIcon,
   WaveSineIcon,
@@ -22,7 +27,6 @@ import {
   MagnifyingGlassPlusIcon,
   LassoIcon,
   MagicWandIcon,
-  PaletteIcon,
   PolygonIcon,
   RectangleIcon,
   SelectionIcon,
@@ -60,6 +64,7 @@ import {
   INITIAL_SNAPSHOT,
   isSelectionTool,
   isVectorTool,
+  type VectorTool,
   type SelectionTool,
   type ShapeStyle,
   type Tool,
@@ -135,6 +140,24 @@ type FamilyMember = {
   label: string
   icon: React.ReactNode
 }
+
+/**
+ * The vector tools' rail buttons, drawn as the vector apps artists know draw
+ * them: a solid arrow picks objects and a hollow one their points, as in
+ * Illustrator, and a pressure stroke is a paintbrush.
+ */
+const VECTOR_TOOL_RAIL = {
+  ellipse: { label: "Ellipse tool", icon: <CircleIcon /> },
+  line: { label: "Line tool", icon: <LineSegmentIcon /> },
+  polygon: { label: "Polygon tool", icon: <HexagonIcon /> },
+  objectSelect: { label: "Select objects", icon: <CursorIcon weight="fill" /> },
+  pen: { label: "Pen tool", icon: <PenNibIcon /> },
+  node: { label: "Edit points tool", icon: <CursorIcon /> },
+  pressure: { label: "Pressure stroke tool", icon: <PaintBrushIcon /> },
+} satisfies Record<
+  Exclude<VectorTool, "rectangle">,
+  { label: string; icon: React.ReactNode }
+>
 
 /** The selection tools, by the rail slot each pair shares (09). */
 const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
@@ -1651,11 +1674,7 @@ export function CanvasHost({
                 ).map((tool) => (
                   <RailAction
                     key={tool}
-                    label={
-                      tool === "objectSelect"
-                        ? "Select objects"
-                        : `${tool} tool`
-                    }
+                    label={VECTOR_TOOL_RAIL[tool].label}
                     command={`tool.${tool}`}
                     variant={snapshot.tool === tool ? "default" : "ghost"}
                     size="icon"
@@ -1663,20 +1682,9 @@ export function CanvasHost({
                     onClick={() =>
                       runStudioCommand(`tool.${tool}`, commandContext)
                     }
+                    className="rounded-lg"
                   >
-                    <span className="text-xs">
-                      {
-                        {
-                          ellipse: "○",
-                          line: "╱",
-                          polygon: "⬡",
-                          objectSelect: "↖",
-                          pen: "✒",
-                          node: "◇",
-                          pressure: "〰",
-                        }[tool]
-                      }
-                    </span>
+                    {VECTOR_TOOL_RAIL[tool].icon}
                   </RailAction>
                 ))}
                 <RailAction
@@ -1700,7 +1708,13 @@ export function CanvasHost({
                   }}
                   className="rounded-lg"
                 >
-                  <PaletteIcon />
+                  {/* The colour in the hand, as painting apps show it, rather
+                      than a picture of a palette. */}
+                  <span
+                    aria-hidden
+                    className="size-4.5 rounded-full border border-studio-edge shadow-[inset_0_0_0_1px_rgb(255_255_255/0.25)]"
+                    style={{ backgroundColor: snapshot.color.hex }}
+                  />
                 </RailAction>
                 <RailAction
                   label="Brush editor"
