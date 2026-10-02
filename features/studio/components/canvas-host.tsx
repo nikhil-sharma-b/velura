@@ -243,7 +243,7 @@ function ToolFamilySlot({
       variant={held ? "default" : "ghost"}
       size="icon"
       aria-pressed={!!held}
-      detail={`Press again for ${sibling.name}`}
+      detail={`${WORKS_ON.selection}. Press again for ${sibling.name}`}
       onClick={() => onPick(held ? sibling.tool : shown.tool)}
       className="relative"
     >
@@ -308,6 +308,49 @@ function ShapePaintIcon({ style }: { style: ShapeStyle }) {
     </svg>
   )
 }
+
+/**
+ * One kind of tool in the rail: the paint tools, the selection tools, or the
+ * vector tools. A kind that cannot act on the layer in hand is dimmed, not
+ * hidden, so the rail keeps its shape and the tools stay where the hand knows
+ * them; pointing at one brings it back up to be read.
+ */
+function ToolGroup({
+  label,
+  dimmed = false,
+  children,
+}: {
+  label: string
+  dimmed?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={label}
+      className={cn("flex flex-col items-center gap-1", dimmed && DIMMED_TOOL)}
+    >
+      {children}
+    </div>
+  )
+}
+
+/** A tool that cannot act on the layer in hand, brought up when pointed at. */
+const DIMMED_TOOL =
+  "opacity-40 motion-safe:transition-opacity focus-within:opacity-100 hover:opacity-100"
+
+/** The rule between two kinds of tool. */
+const RailDivider = () => (
+  <span aria-hidden className="my-0.5 h-px w-5 shrink-0 bg-studio-edge" />
+)
+
+/** Which layers each kind of tool works on, as its tooltip says. */
+const WORKS_ON = {
+  paint: "Works on paint layers",
+  eraser: "Works on paint and vector layers",
+  selection: "Works on any layer",
+  vector: "Works on vector layers",
+} as const
 
 /** Compact triggers keep adjustments close without covering the artwork. */
 function QuickSetting({
@@ -514,9 +557,7 @@ export function CanvasHost({
   const [eraserOpen, setEraserOpen] = useState(false)
   const [featherRadius, setFeatherRadius] = useState(10)
   const [featherOpen, setFeatherOpen] = useState(false)
-  const [confirming, setConfirming] = useState<LayerConfirmation | null>(
-    null
-  )
+  const [confirming, setConfirming] = useState<LayerConfirmation | null>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [pressureOpen, setPressureOpen] = useState(false)
   /**
@@ -808,6 +849,17 @@ export function CanvasHost({
     [snapshot.tool, snapshot.shapeStyle]
   )
   const shapeOptions = snapshot.selectionStyle ?? toolStyle
+  // The layer in hand decides which kinds of tool can act on it, as the
+  // engine does: shapes go only onto a vector layer; paint never does, and a
+  // placed photo takes neither brush nor eraser until it is painted on, save
+  // into either's mask.
+  const handLayer = findLayer(snapshot.layers, snapshot.activeLayerId)
+  const onVectorLayer = handLayer?.kind === "vector"
+  const intoMask = snapshot.paintingMask && !!handLayer?.mask
+  const onPlacedPhoto =
+    handLayer?.kind === "raster" && handLayer.image && !intoMask
+  const brushDimmed = (onVectorLayer && !intoMask) || onPlacedPhoto
+  const eraserDimmed = onPlacedPhoto
   // The artist's own keybinds over the defaults. While preferences are open
   // the keys are being rebound, not used.
   const commands = useBoundRegistry(studioCommands)
@@ -1606,99 +1658,112 @@ export function CanvasHost({
                   </PopoverPrimitive.Root>
                 </div>
                 <div className="flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl">
-                  <RailAction
-                    label="Brush tool"
-                    command="tool.brush"
-                    variant={snapshot.tool === "brush" ? "default" : "ghost"}
-                    size="icon"
-                    aria-pressed={snapshot.tool === "brush"}
-                    onClick={() => {
-                      setEraserOpen(false)
-                      if (snapshot.tool === "brush")
-                        setLibraryOpen((open) => !open)
-                      runStudioCommand("tool.brush", commandContext)
-                    }}
-                    className="rounded-lg"
-                  >
-                    <BrushIcon id={snapshot.brush.id} />
-                  </RailAction>
-                  <RailAction
-                    label="Eraser tool"
-                    command="tool.eraser"
-                    variant={snapshot.tool === "eraser" ? "default" : "ghost"}
-                    size="icon"
-                    aria-pressed={snapshot.tool === "eraser"}
-                    onClick={() => {
-                      setLibraryOpen(false)
-                      if (snapshot.tool === "eraser")
-                        setEraserOpen((open) => !open)
-                      runStudioCommand("tool.eraser", commandContext)
-                    }}
-                    className="rounded-lg"
-                  >
-                    <EraserToolIcon
-                      kind={
-                        snapshot.eraser.id === "eraser:pressure"
-                          ? "pressure"
-                          : "solid"
+                  <ToolGroup label="Paint tools">
+                    <RailAction
+                      label="Brush tool"
+                      detail={WORKS_ON.paint}
+                      command="tool.brush"
+                      variant={snapshot.tool === "brush" ? "default" : "ghost"}
+                      size="icon"
+                      aria-pressed={snapshot.tool === "brush"}
+                      onClick={() => {
+                        setEraserOpen(false)
+                        if (snapshot.tool === "brush")
+                          setLibraryOpen((open) => !open)
+                        runStudioCommand("tool.brush", commandContext)
+                      }}
+                      className={cn("rounded-lg", brushDimmed && DIMMED_TOOL)}
+                    >
+                      <BrushIcon id={snapshot.brush.id} />
+                    </RailAction>
+                    <RailAction
+                      label="Eraser tool"
+                      detail={WORKS_ON.eraser}
+                      command="tool.eraser"
+                      variant={snapshot.tool === "eraser" ? "default" : "ghost"}
+                      size="icon"
+                      aria-pressed={snapshot.tool === "eraser"}
+                      onClick={() => {
+                        setLibraryOpen(false)
+                        if (snapshot.tool === "eraser")
+                          setEraserOpen((open) => !open)
+                        runStudioCommand("tool.eraser", commandContext)
+                      }}
+                      className={cn("rounded-lg", eraserDimmed && DIMMED_TOOL)}
+                    >
+                      <EraserToolIcon
+                        kind={
+                          snapshot.eraser.id === "eraser:pressure"
+                            ? "pressure"
+                            : "solid"
+                        }
+                      />
+                    </RailAction>
+                  </ToolGroup>
+                  <RailDivider />
+                  <ToolGroup label="Selection tools">
+                    {SELECTION_FAMILIES.map((members) => (
+                      <ToolFamilySlot
+                        key={members[0].tool}
+                        members={members}
+                        tool={snapshot.tool}
+                        onPick={(tool) => {
+                          setLibraryOpen(false)
+                          setEraserOpen(false)
+                          runStudioCommand(`tool.${tool}`, commandContext)
+                        }}
+                      />
+                    ))}
+                  </ToolGroup>
+                  <RailDivider />
+                  <ToolGroup label="Vector tools" dimmed={!onVectorLayer}>
+                    <RailAction
+                      label="Rectangle tool"
+                      detail={WORKS_ON.vector}
+                      command="tool.rectangle"
+                      variant={
+                        snapshot.tool === "rectangle" ? "default" : "ghost"
                       }
-                    />
-                  </RailAction>
-                  {SELECTION_FAMILIES.map((members) => (
-                    <ToolFamilySlot
-                      key={members[0].tool}
-                      members={members}
-                      tool={snapshot.tool}
-                      onPick={(tool) => {
+                      size="icon"
+                      aria-pressed={snapshot.tool === "rectangle"}
+                      onClick={() => {
                         setLibraryOpen(false)
                         setEraserOpen(false)
-                        runStudioCommand(`tool.${tool}`, commandContext)
+                        runStudioCommand("tool.rectangle", commandContext)
                       }}
-                    />
-                  ))}
-                  <RailAction
-                    label="Rectangle tool"
-                    command="tool.rectangle"
-                    variant={
-                      snapshot.tool === "rectangle" ? "default" : "ghost"
-                    }
-                    size="icon"
-                    aria-pressed={snapshot.tool === "rectangle"}
-                    onClick={() => {
-                      setLibraryOpen(false)
-                      setEraserOpen(false)
-                      runStudioCommand("tool.rectangle", commandContext)
-                    }}
-                    className="rounded-lg"
-                  >
-                    <RectangleIcon />
-                  </RailAction>
-                  {(
-                    [
-                      "ellipse",
-                      "line",
-                      "polygon",
-                      "objectSelect",
-                      "pen",
-                      "node",
-                      "pressure",
-                    ] as const
-                  ).map((tool) => (
-                    <RailAction
-                      key={tool}
-                      label={VECTOR_TOOL_RAIL[tool].label}
-                      command={`tool.${tool}`}
-                      variant={snapshot.tool === tool ? "default" : "ghost"}
-                      size="icon"
-                      aria-pressed={snapshot.tool === tool}
-                      onClick={() =>
-                        runStudioCommand(`tool.${tool}`, commandContext)
-                      }
                       className="rounded-lg"
                     >
-                      {VECTOR_TOOL_RAIL[tool].icon}
+                      <RectangleIcon />
                     </RailAction>
-                  ))}
+                    {(
+                      [
+                        "ellipse",
+                        "line",
+                        "polygon",
+                        "objectSelect",
+                        "pen",
+                        "node",
+                        "pressure",
+                      ] as const
+                    ).map((tool) => (
+                      <RailAction
+                        key={tool}
+                        label={VECTOR_TOOL_RAIL[tool].label}
+                        detail={WORKS_ON.vector}
+                        command={`tool.${tool}`}
+                        variant={snapshot.tool === tool ? "default" : "ghost"}
+                        size="icon"
+                        aria-pressed={snapshot.tool === tool}
+                        onClick={() =>
+                          runStudioCommand(`tool.${tool}`, commandContext)
+                        }
+                        className="rounded-lg"
+                      >
+                        {VECTOR_TOOL_RAIL[tool].icon}
+                      </RailAction>
+                    ))}
+                  </ToolGroup>
+                  <RailDivider />
                   <RailAction
                     label="Colour"
                     variant={colorOpen ? "default" : "ghost"}
