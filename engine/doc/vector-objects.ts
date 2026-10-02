@@ -3,11 +3,53 @@ import { covers, tessellateObject } from "../geom/tessellate"
 import { applyAffine, type Affine } from "./transform-session"
 import type { Extent } from "./snap"
 import type {
+  LineCap,
+  LineJoin,
   Point,
   SceneCommand,
   VectorObject,
   VectorScene,
 } from "./vector-scene"
+
+/**
+ * A shape's fill and outline as the shape options show them (19): whether
+ * each is on, and with what. A null colour is the current colour.
+ */
+export type ShapeStyle = Readonly<{
+  fill: boolean
+  stroke: boolean
+  /** The outline's width in document pixels. */
+  strokeWidth: number
+  strokeCap: LineCap
+  strokeJoin: LineJoin
+  fillColor: string | null
+  strokeColor: string | null
+}>
+
+/**
+ * The style the selected objects have, as the shape options show it, or
+ * null with none selected. Of several, the lowest one's speaks for them; a
+ * part an object lacks — the outline of a fill-only shape — keeps
+ * `fallback`'s settings for when it is turned on.
+ */
+export function selectionStyle(
+  scene: VectorScene,
+  ids: readonly string[],
+  fallback: ShapeStyle
+): ShapeStyle | null {
+  const object = scene.objects.find((o) => ids.includes(o.id))
+  if (!object) return null
+  const { fill, stroke } = object.style
+  return {
+    fill: fill !== null,
+    stroke: stroke !== null,
+    strokeWidth: stroke?.width ?? fallback.strokeWidth,
+    strokeCap: stroke?.cap ?? fallback.strokeCap,
+    strokeJoin: stroke?.join ?? fallback.strokeJoin,
+    fillColor: fill?.color ?? null,
+    strokeColor: stroke?.color ?? null,
+  }
+}
 
 export function objectBounds(object: VectorObject): Extent | null {
   const meshes = tessellateObject(object)

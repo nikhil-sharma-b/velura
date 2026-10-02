@@ -134,8 +134,11 @@ export function splitPathSegment(
   return { ...path, nodes }
 }
 
+/** The parts of a node that can be taken hold of and moved. */
+export type NodePart = "anchor" | "in" | "out"
+
 export type NodeEdit =
-  | { type: "move"; index: number; part: "anchor" | "in" | "out"; point: Point }
+  | { type: "move"; index: number; part: NodePart; point: Point }
   | { type: "delete"; index: number }
   | { type: "toggle"; index: number }
   | { type: "split"; index: number; t?: number }
@@ -334,5 +337,49 @@ export function nearestPathSegment(
       previous = next
     }
   }
+  return best
+}
+
+/**
+ * The node part of `path` a press at `point` takes hold of, in document
+ * coordinates, or null for none within `reach`. The nearest part wins, an
+ * anchor on a tie; a handle counts only once it is pulled clear of its own
+ * anchor, so one left sitting on it — a pen click that never dragged — can
+ * never take a drag the anchor was meant to have.
+ */
+export function pickPathNode(
+  path: BezierPath,
+  point: Point,
+  transform: readonly number[],
+  reach: number,
+  options: { handles?: boolean } = {}
+): { index: number; part: NodePart; at: Point; distance: number } | null {
+  const place = (p: Point) => ({
+    x: transform[0] * p.x + transform[2] * p.y + transform[4],
+    y: transform[1] * p.x + transform[3] * p.y + transform[5],
+  })
+  let best: {
+    index: number
+    part: NodePart
+    at: Point
+    distance: number
+  } | null = null
+  const consider = (index: number, part: NodePart, at: Point) => {
+    const distance = Math.hypot(point.x - at.x, point.y - at.y)
+    if (distance <= reach && (!best || distance < best.distance))
+      best = { index, part, at, distance }
+  }
+  path.nodes.forEach((node, index) => {
+    const anchor = place(node)
+    consider(index, "anchor", anchor)
+    if (options.handles === false) return
+    for (const part of ["in", "out"] as const) {
+      const handle = node[part]
+      if (!handle) continue
+      const at = place(handle)
+      if (Math.hypot(at.x - anchor.x, at.y - anchor.y) > reach)
+        consider(index, part, at)
+    }
+  })
   return best
 }

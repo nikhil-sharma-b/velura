@@ -230,3 +230,169 @@ test("cancelling puts the layer and the outline back", async ({ page }) => {
   })
   expect(mask).toBe(255)
 })
+
+/**
+ * Whatever happened to the layer last — a transform cancelled, a transform
+ * undone, strokes painted since — a selection is what the next transform
+ * lifts, and its bounds are where the handles sit.
+ */
+test.describe("a selection is lifted after an earlier layer transform", () => {
+  /** Picks the whole layer up, moves it, and ends that with `end`. */
+  async function transformWhole(
+    page: Page,
+    id: string,
+    end: "cancelLayerTransform" | "commitLayerTransform"
+  ) {
+    await page.evaluate(
+      async ([layerId, type]) => {
+        await window.engine.dispatch({
+          type: "beginLayerTransform",
+          id: layerId,
+        })
+        const start = window.engine.getSnapshot().layerTransform!.placement
+        await window.engine.dispatch({
+          type: "adjustLayerTransform",
+          placement: { ...start, x: start.x + 30, rotation: 0.2 },
+        })
+        await window.engine.dispatch({ type })
+      },
+      [id, end] as const
+    )
+  }
+
+  const liftSelection = (page: Page, id: string) =>
+    page.evaluate(async (layerId) => {
+      await window.engine.dispatch({ type: "beginLayerTransform", id: layerId })
+      return window.engine.getSnapshot().layerTransform
+    }, id)
+
+  test("after a cancelled transform", async ({ page }) => {
+    await openCanvas(page)
+    const id = await paintedBlock(page)
+    await transformWhole(page, id, "cancelLayerTransform")
+    await select(page)
+    const transform = await liftSelection(page, id)
+    expect(transform!.lifted).toBe(true)
+    expect(transform!.placement).toMatchObject({
+      x: BOX.x + BOX.width / 2,
+      y: BOX.y + BOX.height / 2,
+      width: BOX.width,
+      height: BOX.height,
+    })
+  })
+
+  test("after an undone transform", async ({ page }) => {
+    await openCanvas(page)
+    const id = await paintedBlock(page)
+    const before = await steps(page)
+    await transformWhole(page, id, "commitLayerTransform")
+    await page.waitForFunction(
+      (n) => window.engine.historyUsage().steps > n,
+      before
+    )
+    await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+    await select(page)
+    const transform = await liftSelection(page, id)
+    expect(transform!.lifted).toBe(true)
+    expect(transform!.placement).toMatchObject({
+      x: BOX.x + BOX.width / 2,
+      y: BOX.y + BOX.height / 2,
+      width: BOX.width,
+      height: BOX.height,
+    })
+  })
+
+  test("strokes painted since are shown and lifted", async ({ page }) => {
+    await openCanvas(page)
+    const blank = await painted(page)
+    const id = await paintedBlock(page)
+    await transformWhole(page, id, "cancelLayerTransform")
+    // A stroke below the block, across the canvas.
+    await page.evaluate(async () => {
+      await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+      await window.engine.dispatch({ type: "setBrush", radius: 6 })
+    })
+    const origin = (await page.locator("canvas").boundingBox())!
+    const before = await steps(page)
+    await page.mouse.move(origin.x + 10, origin.y + 100)
+    await page.mouse.down()
+    await page.mouse.move(origin.x + 190, origin.y + 100, { steps: 30 })
+    await page.mouse.up()
+    await page.waitForFunction(
+      (n) => window.engine.historyUsage().steps > n,
+      before
+    )
+    const stroked = await painted(page)
+    const ink = pixel(stroked, 100, 100)
+    expect(ink).not.toEqual(pixel(blank, 100, 100))
+
+    // A selection over the block and the stroke together.
+    const box = { x: 70, y: 50, width: 60, height: 60 }
+    await page.evaluate(
+      (rect) =>
+        window.engine.dispatch({ type: "selectShape", shape: "rect", ...rect }),
+      box
+    )
+    const transform = await liftSelection(page, id)
+    expect(transform!.lifted).toBe(true)
+    expect(transform!.placement).toMatchObject({
+      x: box.x + box.width / 2,
+      y: box.y + box.height / 2,
+      width: box.width,
+      height: box.height,
+    })
+    // While it floats, nothing has gone: the stroke, the block, inside and
+    // outside the selection, all still drawn.
+    const floating = await painted(page)
+    expect(pixel(floating, 100, 100)).toEqual(ink)
+    expect(pixel(floating, 30, 100)).toEqual(ink)
+    expect(pixel(floating, 100, 40)).toEqual(pixel(stroked, 100, 40))
+    expect(pixel(floating, 40, 40)).toEqual(pixel(stroked, 40, 40))
+
+    // Put down 40 pixels higher, the stroke went with the selection: gone
+    // from where it was, landed where it was taken.
+    await page.evaluate(async () => {
+      const start = window.engine.getSnapshot().layerTransform!.placement
+      await window.engine.dispatch({
+        type: "adjustLayerTransform",
+        placement: { ...start, y: start.y - 40 },
+      })
+      await window.engine.dispatch({ type: "commitLayerTransform" })
+    })
+    const moved = await painted(page)
+    expect(pixel(moved, 120, 100)).toEqual(pixel(blank, 120, 100))
+    expect(pixel(moved, 120, 60)).not.toEqual(pixel(blank, 120, 60))
+    // Outside the selection, the stroke stays.
+    expect(pixel(moved, 30, 100)).toEqual(ink)
+  })
+
+  test("a selection over nothing painted transforms nothing", async ({
+    page,
+  }) => {
+    await openCanvas(page)
+    const id = await paintedBlock(page)
+    await transformWhole(page, id, "cancelLayerTransform")
+    // Beside the block, but inside where it has been.
+    await page.evaluate(() =>
+      window.engine.dispatch({
+        type: "selectShape",
+        shape: "rect",
+        x: 112,
+        y: 12,
+        width: 20,
+        height: 20,
+      })
+    )
+    const outcome = await page.evaluate(async (layerId) => {
+      const error = await window.engine
+        .dispatch({ type: "beginLayerTransform", id: layerId })
+        .then(
+          () => null,
+          (e: Error) => e.message
+        )
+      return { error, transform: window.engine.getSnapshot().layerTransform }
+    }, id)
+    expect(outcome.transform).toBeNull()
+    expect(outcome.error).toMatch(/nothing/i)
+  })
+})

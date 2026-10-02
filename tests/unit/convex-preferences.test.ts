@@ -107,4 +107,43 @@ describe("preferences", () => {
       "tool.brush": ["q"],
     })
   })
+
+  test("ruler visibility is unset until chosen, then reads back", async () => {
+    const t = setup()
+    const userId = await createUser(t, "artist@example.com")
+    const artist = asUser(t, userId)
+    await artist.mutation(api.preferences.setKeybinds, { keybinds: {} })
+    expect(
+      (await artist.query(api.preferences.get, {}))?.rulersVisible
+    ).toBeNull()
+    await artist.mutation(api.preferences.setRulersVisible, { visible: true })
+    expect(
+      (await asUser(t, userId).query(api.preferences.get, {}))?.rulersVisible
+    ).toBe(true)
+  })
+
+  test("choosing rulers first creates the preferences, keybinds untouched", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    await artist.mutation(api.preferences.setRulersVisible, { visible: true })
+    expect(await artist.query(api.preferences.get, {})).toEqual({
+      keybinds: {},
+      rulersVisible: true,
+    })
+    await artist.mutation(api.preferences.setKeybinds, {
+      keybinds: { "tool.brush": ["q"] },
+    })
+    await artist.mutation(api.preferences.setRulersVisible, { visible: false })
+    expect(await artist.query(api.preferences.get, {})).toEqual({
+      keybinds: { "tool.brush": ["q"] },
+      rulersVisible: false,
+    })
+  })
+
+  test("signed out cannot choose rulers", async () => {
+    const t = setup()
+    await expect(
+      t.mutation(api.preferences.setRulersVisible, { visible: true })
+    ).rejects.toThrow()
+  })
 })

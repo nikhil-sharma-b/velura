@@ -61,6 +61,7 @@ import {
   isSelectionTool,
   isVectorTool,
   type SelectionTool,
+  type ShapeStyle,
   type Tool,
   MAX_ZOOM,
   MIN_ZOOM,
@@ -95,6 +96,7 @@ import {
   VectorNodes,
 } from "./image-transform"
 import { RulersAndGuides } from "./rulers-and-guides"
+import { useRulersVisible } from "../lib/ruler-preference"
 import { StraightEdgeOverlay } from "./straight-edge"
 import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor"
 import { BrushIcon, EraserToolIcon } from "./brush-icon"
@@ -103,8 +105,10 @@ import { TiltToggle } from "./tilt-toggle"
 import { IconButton } from "./icon-button"
 import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
+import { ShapeStylePanel } from "./shape-style-panel"
 import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
+import { FeatherDialog } from "./feather-dialog"
 import { FilterDialog } from "./filter-dialog"
 import {
   runStudioCommand,
@@ -243,6 +247,18 @@ function QuickSetting({
     </PopoverPrimitive.Root>
   )
 }
+
+/** What a shape is given, in words, for the shape options' trigger. */
+function shapeSummary(style: ShapeStyle): string {
+  return (
+    [style.fill && "filled", style.stroke && `${style.strokeWidth}px outline`]
+      .filter(Boolean)
+      .join(", ") || "no paint"
+  )
+}
+
+const shapeReadout = (style: ShapeStyle) =>
+  style.stroke ? `${style.strokeWidth}` : "fill"
 
 const getInitialSnapshot = () => INITIAL_SNAPSHOT
 const subscribeToNothing = () => () => {}
@@ -388,6 +404,7 @@ export function CanvasHost({
   const layersToggled = useRef(false)
   const [eraserOpen, setEraserOpen] = useState(false)
   const [featherRadius, setFeatherRadius] = useState(10)
+  const [featherOpen, setFeatherOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [pressureOpen, setPressureOpen] = useState(false)
   /**
@@ -411,6 +428,8 @@ export function CanvasHost({
   // Zen hides the controls rather than unmounting them, so the panels the
   // artist had open are open again when they come back.
   const [zen, setZen] = useState(false)
+  const [rulerLayer, setRulerLayer] = useState<HTMLDivElement | null>(null)
+  const rulersVisible = useRulersVisible()
   /** The canvas the engine presents into; the transform box sits over it. */
   const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(
     null
@@ -442,6 +461,22 @@ export function CanvasHost({
     engine?.getSnapshot ?? getInitialSnapshot,
     getInitialSnapshot
   )
+  // A selection that goes while the dialog is up (an undo by key) takes the
+  // question with it, rather than leaving it to reappear with the next one.
+  const [featherFor, setFeatherFor] = useState(snapshot.selection)
+  if (featherFor !== snapshot.selection) {
+    setFeatherFor(snapshot.selection)
+    if (!snapshot.selection && featherOpen) setFeatherOpen(false)
+  }
+
+  // The rulers follow the preference (08): this device's copy as soon as
+  // the engine is ready, so a reload keeps them, and the account's when it
+  // arrives or another tab changes it.
+  useEffect(() => {
+    if (snapshot.status !== "ready" || !engine) return
+    if (engine.getSnapshot().rulersVisible === rulersVisible) return
+    void engine.dispatch({ type: "setRulersVisible", visible: rulersVisible })
+  }, [engine, snapshot.status, rulersVisible])
 
   // React 19 ref cleanup also covers Strict Mode's attach/detach rehearsal.
   const attach = useCallback(
@@ -640,7 +675,20 @@ export function CanvasHost({
     togglePalette: () => setPaletteOpen((open) => !open),
     openPreferences: () => setPreferencesOpen(true),
     toggleZen: () => setZen((on) => !on),
+    openFeather: () => setFeatherOpen(true),
   }
+  // The shape options are memoised, so they get one handle on the commands
+  // for good, reading whichever context is current when one runs.
+  const latestContext = useRef(commandContext)
+  useEffect(() => {
+    latestContext.current = commandContext
+  })
+  const runShapeCommand = useCallback(
+    (id: string) => runStudioCommand(id, latestContext.current),
+    []
+  )
+  /** The selection's style while there is one, else what the tools give. */
+  const shapeOptions = snapshot.selectionStyle ?? snapshot.shapeStyle
   // The artist's own keybinds over the defaults. While preferences are open
   // the keys are being rebound, not used.
   const commands = useBoundRegistry(studioCommands)
@@ -909,6 +957,68 @@ export function CanvasHost({
                 : TOOL_CURSOR,
         }}
       />
+      {/* Guides and the straight-edge (16, 17) are drawn with the canvas, so
+          before the controls: every panel and rail sits over them (07), and
+          they stay when zen puts the controls away. The rulers are controls,
+          drawn into a layer after them, and go with zen. */}
+      {/* What is on the canvas itself, selection and transform boxes, comes
+          first, so the guides are over it and can be taken hold of there. */}
+      {snapshot.status === "ready" && (
+        <div className="contents" hidden={zen}>
+          {engine && (
+            <>
+              <VectorNodes
+                engine={engine}
+                snapshot={snapshot}
+                canvas={canvasElement}
+              />
+              <VectorSelection
+                engine={engine}
+                snapshot={snapshot}
+                canvas={canvasElement}
+              />
+            </>
+          )}
+          {engine && snapshot.vectorTransform && (
+            <VectorTransform
+              engine={engine}
+              snapshot={snapshot}
+              canvas={canvasElement}
+            />
+          )}
+          {engine && snapshot.imageTransform && (
+            <ImageTransform
+              engine={engine}
+              snapshot={snapshot}
+              canvas={canvasElement}
+            />
+          )}
+          {engine && snapshot.layerTransform && (
+            <LayerTransform
+              engine={engine}
+              snapshot={snapshot}
+              canvas={canvasElement}
+            />
+          )}
+        </div>
+      )}
+      {snapshot.status === "ready" && engine && (
+        <>
+          <RulersAndGuides
+            engine={engine}
+            snapshot={snapshot}
+            canvas={canvasElement}
+            rulerLayer={rulerLayer}
+          />
+          {snapshot.straightEdge && (
+            <StraightEdgeOverlay
+              engine={engine}
+              snapshot={snapshot}
+              canvas={canvasElement}
+            />
+          )}
+        </>
+      )}
       {snapshot.status === "ready" && (
         <div className="contents" hidden={zen} data-testid="studio-chrome">
           <div className="pointer-events-none absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-studio-edge bg-studio-surface/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
@@ -1073,8 +1183,18 @@ export function CanvasHost({
 
           <TooltipProvider delayDuration={350}>
             {/* One column holds both rails, so the gap between them stays the
-              same however tall the adjustments grow. */}
-            <div className="absolute top-[4.375rem] left-3 flex flex-col gap-3">
+              same however tall the adjustments grow. On a window too short
+              for both (05) the column scrolls, never the studio under it, and
+              ends 12px short of the bottom edge. Its side and bottom padding
+              is the margin the rails had, so their shadows are not cut off;
+              it starts where the rails do, so the canvas above them still
+              takes strokes. It takes the pointer, padding and all, so its
+              scrollbar can be dragged. Its top and its height share one
+              offset. */}
+            <div
+              data-testid="tool-rails"
+              className="absolute top-[4.375rem] left-0 flex max-h-[calc(100%-4.375rem)] flex-col gap-3 overflow-y-auto overscroll-contain px-3 pb-3 [scrollbar-width:thin] *:shrink-0"
+            >
               <div
                 aria-label="Brush adjustments"
                 className="flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
@@ -1205,168 +1325,16 @@ export function CanvasHost({
                 {isVectorTool(snapshot.tool) && (
                   <QuickSetting
                     label="Shape"
-                    value={`${[
-                      snapshot.shapeStyle.fill && "filled",
-                      snapshot.shapeStyle.stroke &&
-                        `${snapshot.shapeStyle.strokeWidth}px outline`,
-                    ]
-                      .filter(Boolean)
-                      .join(", ")}`}
-                    readout={
-                      snapshot.shapeStyle.stroke
-                        ? `${snapshot.shapeStyle.strokeWidth}`
-                        : "fill"
-                    }
+                    value={shapeSummary(shapeOptions)}
+                    readout={shapeReadout(shapeOptions)}
                     icon={<RectangleIcon />}
                   >
-                    <div
-                      role="group"
-                      aria-label="Shape style"
-                      className="mb-3 grid grid-cols-2 gap-1 text-xs"
-                    >
-                      {(["fill", "stroke"] as const).map((part) => (
-                        <button
-                          key={part}
-                          type="button"
-                          aria-pressed={snapshot.shapeStyle[part]}
-                          className="rounded-md border border-transparent px-2 py-1 hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
-                          onClick={() =>
-                            void engine?.dispatch({
-                              type: "setShapeStyle",
-                              [part]: !snapshot.shapeStyle[part],
-                            })
-                          }
-                        >
-                          {part === "fill" ? "Fill" : "Outline"}
-                        </button>
-                      ))}
-                    </div>
-                    {(["fillColor", "strokeColor"] as const).map((part) => (
-                      <label key={part} className="block text-xs">
-                        {part === "fillColor" ? "Fill colour" : "Stroke colour"}
-                        <input
-                          type="color"
-                          aria-label={
-                            part === "fillColor"
-                              ? "Fill colour"
-                              : "Stroke colour"
-                          }
-                          value={
-                            snapshot.shapeStyle[part] ?? snapshot.color.hex
-                          }
-                          onChange={(event) =>
-                            void engine?.dispatch({
-                              type: "setShapeStyle",
-                              [part]: event.target.value,
-                            })
-                          }
-                        />
-                      </label>
-                    ))}
-                    {(["strokeCap", "strokeJoin"] as const).map((part) => (
-                      <label key={part} className="block text-xs">
-                        {part === "strokeCap" ? "Cap" : "Join"}
-                        <select
-                          aria-label={
-                            part === "strokeCap" ? "Stroke cap" : "Stroke join"
-                          }
-                          value={snapshot.shapeStyle[part]}
-                          onChange={(event) =>
-                            void engine?.dispatch(
-                              part === "strokeCap"
-                                ? {
-                                    type: "setShapeStyle",
-                                    strokeCap: event.target.value as
-                                      | "butt"
-                                      | "round"
-                                      | "square",
-                                  }
-                                : {
-                                    type: "setShapeStyle",
-                                    strokeJoin: event.target.value as
-                                      | "miter"
-                                      | "round"
-                                      | "bevel",
-                                  }
-                            )
-                          }
-                        >
-                          {(part === "strokeCap"
-                            ? ["butt", "round", "square"]
-                            : ["miter", "round", "bevel"]
-                          ).map((value) => (
-                            <option key={value}>{value}</option>
-                          ))}
-                        </select>
-                      </label>
-                    ))}
-                    {snapshot.vectorSelection.length > 0 && (
-                      <div className="flex flex-wrap gap-1 text-xs">
-                        {(["transform", "duplicate", "delete"] as const).map(
-                          (action) => (
-                            <button
-                              key={action}
-                              onClick={() =>
-                                runStudioCommand(
-                                  `object.${action}`,
-                                  commandContext
-                                )
-                              }
-                            >
-                              {action}
-                            </button>
-                          )
-                        )}
-                        {(["front", "back"] as const).map((to) => (
-                          <button
-                            key={to}
-                            onClick={() =>
-                              void engine?.dispatch({
-                                type: "reorderVectorObjects",
-                                to,
-                              })
-                            }
-                          >
-                            {to}
-                          </button>
-                        ))}
-                        {(
-                          [
-                            "left",
-                            "hcenter",
-                            "right",
-                            "top",
-                            "vcenter",
-                            "bottom",
-                          ] as const
-                        ).map((anchor) => (
-                          <button
-                            key={anchor}
-                            onClick={() =>
-                              void engine?.dispatch({
-                                type: "alignVectorObjects",
-                                anchor,
-                                to: "canvas",
-                              })
-                            }
-                          >
-                            {anchor}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    <SliderSetting
-                      label="Outline width"
-                      value={snapshot.shapeStyle.strokeWidth}
-                      min={1}
-                      max={64}
-                      step={1}
-                      onChange={(strokeWidth) =>
-                        void engine?.dispatch({
-                          type: "setShapeStyle",
-                          strokeWidth,
-                        })
-                      }
+                    <ShapeStylePanel
+                      engine={engine}
+                      style={shapeOptions}
+                      selected={snapshot.selectionStyle !== null}
+                      currentColor={snapshot.color.hex}
+                      runCommand={runShapeCommand}
                     />
                   </QuickSetting>
                 )}
@@ -1426,26 +1394,15 @@ export function CanvasHost({
                     readout={`${featherRadius}`}
                     icon={<DropHalfIcon />}
                   >
-                    <SliderSetting
-                      label="Feather radius"
-                      value={featherRadius}
-                      min={1}
-                      max={200}
-                      step={1}
-                      onChange={setFeatherRadius}
-                    />
-                    <div className="mt-3 grid grid-cols-2 gap-1 text-xs">
+                    <div className="grid grid-cols-2 gap-1 text-xs">
                       <button
                         type="button"
                         className="rounded-md border border-studio-edge px-2 py-1 hover:bg-muted"
                         onClick={() =>
-                          void engine?.dispatch({
-                            type: "featherSelection",
-                            radius: featherRadius,
-                          })
+                          runStudioCommand("select.feather", commandContext)
                         }
                       >
-                        Feather
+                        Feather…
                       </button>
                       <button
                         type="button"
@@ -1935,58 +1892,6 @@ export function CanvasHost({
             </TooltipProvider>
           </div>
 
-          {engine && (
-            <>
-              <VectorNodes
-                engine={engine}
-                snapshot={snapshot}
-                canvas={canvasElement}
-              />
-              <VectorSelection
-                engine={engine}
-                snapshot={snapshot}
-                canvas={canvasElement}
-              />
-            </>
-          )}
-          {engine && snapshot.vectorTransform && (
-            <VectorTransform
-              engine={engine}
-              snapshot={snapshot}
-              canvas={canvasElement}
-            />
-          )}
-          {engine && snapshot.imageTransform && (
-            <ImageTransform
-              engine={engine}
-              snapshot={snapshot}
-              canvas={canvasElement}
-            />
-          )}
-          {engine && snapshot.layerTransform && (
-            <LayerTransform
-              engine={engine}
-              snapshot={snapshot}
-              canvas={canvasElement}
-            />
-          )}
-
-          {engine && snapshot.straightEdge && (
-            <StraightEdgeOverlay
-              engine={engine}
-              snapshot={snapshot}
-              canvas={canvasElement}
-            />
-          )}
-
-          {engine && (
-            <RulersAndGuides
-              engine={engine}
-              snapshot={snapshot}
-              canvas={canvasElement}
-            />
-          )}
-
           {imageOverCanvas && (
             <div
               role="status"
@@ -2008,6 +1913,12 @@ export function CanvasHost({
           )}
         </div>
       )}
+      {/* The rulers' own layer, over the controls; see the guides above. */}
+      <div
+        ref={setRulerLayer}
+        className="pointer-events-none absolute inset-0"
+        hidden={zen || snapshot.status !== "ready"}
+      />
       {snapshot.status !== "ready" && (
         <div className="absolute inset-0 grid place-items-center bg-background p-6">
           <section
@@ -2055,6 +1966,15 @@ export function CanvasHost({
         </div>
       )}
       {engine && <FilterDialog engine={engine} open={snapshot.filter} />}
+      <FeatherDialog
+        open={featherOpen}
+        radius={featherRadius}
+        onOpenChange={setFeatherOpen}
+        onApply={(radius) => {
+          setFeatherRadius(radius)
+          void engine?.dispatch({ type: "featherSelection", radius })
+        }}
+      />
       <PreferencesPanel
         defaults={studioCommands}
         open={preferencesOpen}

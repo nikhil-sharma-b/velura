@@ -9,6 +9,7 @@ import {
 import { createRegistry, type Command } from "@/features/commands/lib/registry"
 
 import { findSummary, leafCount } from "./layer-tree"
+import { writeRulersVisible } from "./ruler-preference"
 
 /** One press of a zoom key or button, which is a comfortable step by eye. */
 export const ZOOM_STEP = 1.25
@@ -48,6 +49,12 @@ export interface StudioContext {
   openPreferences: () => void
   /** Hides every control so only the canvas is left, or brings them back. */
   toggleZen: () => void
+  /**
+   * Opens the feather dialog (04), which asks how far to feather the
+   * selection and feathers it once the artist says; cancelling asks nothing
+   * of the engine.
+   */
+  openFeather: () => void
 }
 
 type StudioCommand = Command<StudioContext>
@@ -121,7 +128,7 @@ const isLeaf = (layer: LayerSummary) => layer.kind !== "group"
 const isPaintable = (layer: LayerSummary) =>
   layer.kind === "raster" && !layer.locked && !layer.image
 
-const ALIGN_ANCHORS: readonly [AlignAnchor, string][] = [
+export const ALIGN_ANCHORS: readonly [AlignAnchor, string][] = [
   ["left", "left edges"],
   ["hcenter", "horizontal centres"],
   ["right", "right edges"],
@@ -426,6 +433,14 @@ export const studioCommands = createRegistry<StudioContext>([
     ...dispatching({ type: "invertSelection" }),
   },
   {
+    // Unbound by default: shift+f6 elsewhere, which no hand reaches for.
+    id: "select.feather",
+    label: "Feather selection",
+    category: "Select",
+    available: ({ engine }) => !!engine?.getSnapshot().selection,
+    run: (context) => context.openFeather(),
+  },
+  {
     // Layer via copy, on the key every editor the hand learned on gives it.
     id: "select.copyToLayer",
     label: "Copy selection to new layer",
@@ -706,10 +721,13 @@ export const studioCommands = createRegistry<StudioContext>([
     label: "Toggle rulers",
     category: "View",
     keybinds: ["mod+r"],
-    ...dispatching(({ engine }) => ({
-      type: "setRulersVisible",
-      visible: !engine?.getSnapshot().rulersVisible,
-    })),
+    available: hasEngine,
+    // A preference (08), remembered as well as shown, so a reload keeps it.
+    run: ({ engine }) => {
+      const visible = !engine?.getSnapshot().rulersVisible
+      writeRulersVisible(visible)
+      void engine?.dispatch({ type: "setRulersVisible", visible })
+    },
   },
   {
     id: "view.toggleGuides",

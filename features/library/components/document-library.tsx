@@ -47,6 +47,7 @@ import type { Doc } from "@/convex/_generated/dataModel"
 import { NewDocumentDialog } from "@/features/library/components/new-document-dialog"
 import { PreferencesSync } from "@/features/commands/components/preferences-sync"
 import { forgetAccountKeybinds } from "@/features/commands/hooks/use-keybind-overrides"
+import { forgetAccountRulers } from "@/features/studio/lib/ruler-preference"
 import { AnonymousMigration } from "@/features/library/components/anonymous-migration"
 import { IconButton } from "@/features/studio/components/icon-button"
 import {
@@ -113,6 +114,7 @@ function LibraryHeader() {
             // is left with nothing to reopen.
             await signOut()
             forgetAccountKeybinds()
+            forgetAccountRulers()
             router.replace("/signin")
           }}
         >

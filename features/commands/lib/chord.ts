@@ -60,10 +60,45 @@ export function chordFromEvent(event: KeyLike): Chord {
   return parts.join("+")
 }
 
+/** A chord's parts, modifiers then key; a bare "+" is a key, not a pair. */
+function chordParts(chord: Chord): string[] {
+  return chord === "+" ? ["+"] : chord.split("+")
+}
+
 /** The last part of a chord: the key that is pressed, or held, to fire it. */
 export function chordKey(chord: Chord): string {
-  const parts = chord === "+" ? ["+"] : chord.split("+")
+  const parts = chordParts(chord)
   return parts[parts.length - 1] || "+"
+}
+
+/** Keys a text field edits or moves with, though they type nothing. */
+const FIELD_KEYS = new Set([
+  "space",
+  "backspace",
+  "delete",
+  "arrowleft",
+  "arrowright",
+  "arrowup",
+  "arrowdown",
+  "home",
+  "end",
+  "enter",
+  // A dead key is the first half of an accented character.
+  "dead",
+])
+
+/**
+ * Whether a focused text field needs this chord for itself: a character,
+ * capital or not, or a key that edits or moves through the text. Shift is
+ * how a capital is typed, so on its own or with a key it is still typing;
+ * Cmd, Ctrl or Alt make a chord a command, as does a key that a field has
+ * no use for (F1).
+ */
+export function isFieldKey(chord: Chord): boolean {
+  const parts = chordParts(chord)
+  if (parts.includes("mod") || parts.includes("alt")) return false
+  const key = chordKey(chord)
+  return key === "shift" || Array.from(key).length === 1 || FIELD_KEYS.has(key)
 }
 
 const MAC_NAMES: Record<string, string> = {
@@ -94,7 +129,7 @@ const KEY_NAMES: Record<string, string> = {
  * and words joined with `+` everywhere else.
  */
 export function formatChord(chord: Chord, platform: Platform): string {
-  const parts = chord === "+" ? ["+"] : chord.split("+")
+  const parts = chordParts(chord)
   const names = platform === "mac" ? MAC_NAMES : OTHER_NAMES
   const modifiers = parts.filter((part) => part in names)
   const keys = parts

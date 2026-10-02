@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils"
 
 import { usePlatform } from "../hooks/use-keybinds"
 import { chordFromEvent, formatChord } from "../lib/chord"
-import { paletteEntries, rememberRecent } from "../lib/palette"
+import { closesPalette, paletteEntries, rememberRecent } from "../lib/palette"
 import type { Registry } from "../lib/registry"
 
 const RECENT_KEY = "velura.recentCommands"
@@ -40,7 +40,9 @@ function writeRecent(recent: readonly string[]) {
  * Every command in a registry, searchable by name. The command that opens it
  * is left out — running it from here would only close what is already open —
  * but its chord still closes the palette while the search field has focus,
- * since the window's keybinds leave keys typed into a field alone.
+ * since the window's keybinds leave keys typed into a field alone. A chord
+ * the search needs for itself, such as a plain letter, is typed instead
+ * (see `closesPalette`).
  */
 export function CommandPalette<Context>({
   registry,
@@ -112,7 +114,9 @@ export function CommandPalette<Context>({
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (registry.lookup(chordFromEvent(event))?.id === toggleId) {
+    // Mid-composition the keys are the input method's, not ours.
+    if (event.nativeEvent.isComposing) return
+    if (closesPalette(registry, chordFromEvent(event), toggleId)) {
       event.preventDefault()
       setOpen(false)
     } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -120,7 +124,7 @@ export function CommandPalette<Context>({
       const step = event.key === "ArrowDown" ? 1 : -1
       const count = entries.length || 1
       setActive((highlighted + step + count) % count)
-    } else if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+    } else if (event.key === "Enter") {
       // Enter that confirms an IME composition is the input's, not a run.
       event.preventDefault()
       run(highlighted)

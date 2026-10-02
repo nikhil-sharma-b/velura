@@ -2,9 +2,11 @@ import {
   editPathNode,
   fitPressureStroke,
   nearestPathSegment,
+  pickPathNode,
   type PathNode,
   type PressurePoint,
   type NodeEdit,
+  type NodePart,
 } from "./doc/vector-path"
 import { applyAffine } from "./doc/transform-session"
 import {
@@ -14,7 +16,9 @@ import {
 } from "./store/export-svg"
 import { svgPngImage } from "./store/svg-images"
 import {
+  selectionStyle,
   selectObjects,
+  type ShapeStyle,
   objectsBounds,
   objectBounds as vectorObjectBounds,
   transformObjects,
@@ -190,7 +194,12 @@ import {
   type Affine,
   type TransformSession,
 } from "./doc/transform-session"
-import { layerStartPlacement, coveredBounds } from "./doc/layer-transform"
+import {
+  layerStartPlacement,
+  coveredBounds,
+  liftsAnything,
+  type TileTexels,
+} from "./doc/layer-transform"
 import {
   resolveSnap,
   alignedPlacement,
@@ -427,21 +436,10 @@ export const isVectorTool = (tool: Tool): tool is VectorTool =>
 
 export type Tool = PaintTool | SelectionTool | VectorTool
 
-/**
- * How the shape tools draw (19): filled, outlined, or both, in the current
- * colour. Per-object styles are the scene's own; this is only what a new
- * shape is given.
- */
-export type ShapeStyle = Readonly<{
-  fill: boolean
-  stroke: boolean
-  /** The outline's width in document pixels. */
-  strokeWidth: number
-  strokeCap: import("./doc/vector-scene").LineCap
-  strokeJoin: import("./doc/vector-scene").LineJoin
-  fillColor: string | null
-  strokeColor: string | null
-}>
+export type { ShapeStyle }
+const sameShapeStyle = (a: ShapeStyle, b: ShapeStyle) =>
+  (Object.keys(a) as (keyof ShapeStyle)[]).every((key) => a[key] === b[key])
+
 export const DEFAULT_SHAPE_STYLE: ShapeStyle = Object.freeze({
   fill: true,
   stroke: false,
@@ -884,6 +882,11 @@ export type EngineSnapshot = Readonly<{
   tool: Tool
   /** What the shape tools give a new shape (19). */
   shapeStyle: ShapeStyle
+  /**
+   * The selected objects' own style, which the shape options show and edit
+   * in place of `shapeStyle` while there is one; null with none selected.
+   */
+  selectionStyle: ShapeStyle | null
   vectorSelection: readonly string[]
   vectorPaths: readonly VectorObject[]
   penNodes: readonly PathNode[]
@@ -1023,6 +1026,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   straightEdge: null,
   tool: "brush",
   shapeStyle: DEFAULT_SHAPE_STYLE,
+  selectionStyle: null,
   vectorSelection: [],
   vectorPaths: [],
   penNodes: [],
@@ -1687,6 +1691,28 @@ export function createEngine(
           : null
     }
     if (
+      doc &&
+      (update.vectorSelection ||
+        update.layers ||
+        update.tool ||
+        update.vectorPaths ||
+        update.shapeStyle)
+    ) {
+      const layer = activeLayer(doc)
+      const style =
+        layer.kind === "vector"
+          ? selectionStyle(layer.scene, next.vectorSelection, next.shapeStyle)
+          : null
+      // Kept by identity while it says the same, so a frame that changed
+      // nothing about it does not re-render the options.
+      next.selectionStyle =
+        style &&
+        snapshot.selectionStyle &&
+        sameShapeStyle(style, snapshot.selectionStyle)
+          ? snapshot.selectionStyle
+          : style && Object.freeze(style)
+    }
+    if (
       Object.keys(next).every(
         (key) =>
           next[key as keyof EngineSnapshot] ===
@@ -2316,6 +2342,16 @@ export function createEngine(
   /** Layer transforms hold their snapshot under an id no asset can have. */
   const layerImageId = (layerId: string) => `layer-transform:${layerId}`
 
+  /** A surface's tiles read back, each with its coordinate. */
+  async function readTileTexels(
+    id: string,
+    coords: readonly TileCoord[]
+  ): Promise<TileTexels[]> {
+    if (!renderer) throw new Error("The canvas is not ready.")
+    const texels = await renderer.readTiles(id, coords)
+    return coords.map(({ x, y }, index) => ({ x, y, texels: texels[index]! }))
+  }
+
   function describeLayerTransform(): LayerTransformState | null {
     if (!layerTransform) return null
     const { layerId, placement, source, lifted, snapTargets } = layerTransform
@@ -2350,15 +2386,12 @@ export function createEngine(
       await commitLayerTransform()
     }
     if (!renderer) throw new Error("The canvas is not ready.")
-    const held = contentBounds.get(id)
     const canvasRect = {
       x: 0,
       y: 0,
       width: document.width,
       height: document.height,
     }
-    const area = held && intersectRect(held, canvasRect)
-    const coords = area ? tilesCoveringRect(area) : []
     // With a selection, only what it covers is lifted (14), and the handles
     // sit on the selection rather than on the layer's content.
     const lifted =
@@ -2367,17 +2400,17 @@ export function createEngine(
         : undefined
     let region: PixelRect | null
     if (lifted) {
-      // Nothing painted under the selection is nothing to lift.
-      region =
-        held && intersectRect(held, lifted.mask.bounds)
-          ? lifted.mask.bounds
-          : null
+      // Nothing painted under the selection is nothing to lift. Asked of the
+      // pixels under the mask rather than of the content box, which only
+      // grows and so says yes wherever a cancelled preview once reached.
+      const tiles = await readTileTexels(id, lifted.mask.tiles())
+      region = liftsAnything(tiles, lifted.mask) ? lifted.mask.bounds : null
     } else {
-      const texels = await renderer.readTiles(id, coords)
+      const held = contentBounds.get(id)
+      const area = held && intersectRect(held, canvasRect)
+      const coords = area ? tilesCoveringRect(area) : []
       // Whole tiles overhang the canvas's edge; the surface does not.
-      const covered = coveredBounds(
-        coords.map((coord, index) => ({ ...coord, texels: texels[index]! }))
-      )
+      const covered = coveredBounds(await readTileTexels(id, coords))
       region = covered && intersectRect(covered, canvasRect)
     }
     if (!region) throw new Error("There is nothing on this layer to transform.")
@@ -2565,7 +2598,7 @@ export function createEngine(
         node?: {
           object: VectorObject
           index: number
-          part: "anchor" | "in" | "out"
+          part: NodePart
         }
         anchor: Point
         point: Point
@@ -2761,29 +2794,10 @@ export function createEngine(
       : dragRect(anchor, point, false)
   }
 
+  /** The tool's default stays as it was; the selection's own style is
+   * derived from the scene as it is published. */
   function setVectorSelection(ids: readonly string[]) {
-    const layer = selectedVectorLayer()
-    const object = layer.scene.objects.find((o) => ids.includes(o.id))
-    publish({
-      vectorSelection: ids,
-      ...(object
-        ? {
-            shapeStyle: {
-              ...snapshot.shapeStyle,
-              fill: object.style.fill !== null,
-              stroke: object.style.stroke !== null,
-              fillColor: object.style.fill?.color ?? null,
-              strokeColor: object.style.stroke?.color ?? null,
-              strokeWidth:
-                object.style.stroke?.width ?? snapshot.shapeStyle.strokeWidth,
-              strokeCap:
-                object.style.stroke?.cap ?? snapshot.shapeStyle.strokeCap,
-              strokeJoin:
-                object.style.stroke?.join ?? snapshot.shapeStyle.strokeJoin,
-            },
-          }
-        : {}),
-    })
+    publish({ vectorSelection: ids })
   }
 
   function selectVectorRegion(region: Point | Extent, additive = false) {
@@ -2858,19 +2872,9 @@ export function createEngine(
               },
         },
       }))
+    // What a new shape is given is left as it was: the selection's own
+    // style is read back from the scene as it is published.
     editScene(layer.id, commands, "style objects")
-    if (color)
-      publish({
-        shapeStyle: {
-          ...snapshot.shapeStyle,
-          fillColor: snapshot.shapeStyle.fill
-            ? color
-            : snapshot.shapeStyle.fillColor,
-          strokeColor: snapshot.shapeStyle.stroke
-            ? color
-            : snapshot.shapeStyle.strokeColor,
-        },
-      })
   }
 
   async function beginVectorTransform() {
@@ -4284,32 +4288,40 @@ export function createEngine(
   function beginNodeDrag(layer: VectorLayer, point: Point, time: number) {
     const reach = 6 / snapshot.view.zoom
     const paths = layer.scene.objects.filter((o) => o.geometry.kind === "path")
-    // Handles of selected objects have priority over an anchor beneath them.
-    for (const object of paths
-      .filter((o) => snapshot.vectorSelection.includes(o.id))
-      .reverse()) {
+    // Selected paths first, top down, then the rest: a node of what is
+    // being edited wins over one beneath it. Only a selected path shows its
+    // handles, so only a selected path's handles can be taken hold of.
+    const selected = (o: VectorObject) =>
+      snapshot.vectorSelection.includes(o.id)
+    const order = [
+      ...paths.filter(selected).reverse(),
+      ...paths.filter((o) => !selected(o)).reverse(),
+    ]
+    for (const object of order) {
       if (object.geometry.kind !== "path") continue
-      for (let index = 0; index < object.geometry.nodes.length; index++) {
-        const node = object.geometry.nodes[index]
-        for (const part of ["in", "out", "anchor"] as const) {
-          const local = part === "anchor" ? node : node[part]
-          if (!local) continue
-          const at = applyAffine(object.transform, local)
-          if (Math.hypot(point.x - at.x, point.y - at.y) <= reach) {
-            publish({ vectorNode: { objectId: object.id, index } })
-            shapeDrag = {
-              layerId: layer.id,
-              tool: "node",
-              anchor: point,
-              point: at,
-              ended: false,
-              node: { object, index, part },
-            }
-            scheduleFrame()
-            return
-          }
-        }
+      const picked = pickPathNode(
+        object.geometry,
+        point,
+        object.transform,
+        reach,
+        { handles: selected(object) }
+      )
+      if (!picked) continue
+      const { index, part, at } = picked
+      // Taking hold of a node of another path makes that path the one being
+      // edited, in the same press.
+      if (!selected(object)) setVectorSelection([object.id])
+      publish({ vectorNode: { objectId: object.id, index } })
+      shapeDrag = {
+        layerId: layer.id,
+        tool: "node",
+        anchor: point,
+        point: at,
+        ended: false,
+        node: { object, index, part },
       }
+      scheduleFrame()
+      return
     }
     const hit = [...paths]
       .reverse()
@@ -4347,7 +4359,11 @@ export function createEngine(
         })
       }
     } else {
-      setVectorSelection([])
+      // Inside a filled path is on it too, as with the object tool.
+      const [inside] = selectObjects(layer.scene, point).filter((id) =>
+        paths.some((o) => o.id === id)
+      )
+      setVectorSelection(inside ? [inside] : [])
       publish({ vectorNode: null })
     }
     lastNodeClick = { point, time }
@@ -5506,6 +5522,12 @@ export function createEngine(
             !["miter", "round", "bevel"].includes(command.strokeJoin)
           )
             throw new Error("Invalid stroke join.")
+          // With objects selected, the options edit them, and what the tool
+          // gives a new shape is left as it was.
+          if (snapshot.vectorSelection.length) {
+            applySelectedStyle(undefined, command)
+            break
+          }
           publish({
             shapeStyle: Object.freeze({
               fill: command.fill ?? snapshot.shapeStyle.fill,
@@ -5518,7 +5540,6 @@ export function createEngine(
                 command.strokeColor ?? snapshot.shapeStyle.strokeColor,
             }),
           })
-          applySelectedStyle(undefined, command)
           break
         }
         case "placeImage": {

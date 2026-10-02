@@ -50,6 +50,7 @@ function context(engine: Engine, layerId?: string): StudioContext {
     togglePalette: () => {},
     openPreferences: () => {},
     toggleZen: () => {},
+    openFeather: () => {},
   }
 }
 
@@ -295,6 +296,29 @@ describe("snapping and alignment", () => {
         (anchor) => ({ type: "alignLayer", id: "b", anchor, to: "canvas" })
       ) as EngineCommand[]
     )
+  })
+
+  test("feathering asks for a radius, and only with a selection", () => {
+    const feather = studioCommands.get("select.feather")!
+    expect(feather.label).toBe("Feather selection")
+    const without = fakeEngine([raster("a")])
+    const asked = mock(() => {})
+    const ask = (engine: Engine) => ({
+      ...context(engine),
+      openFeather: asked,
+    })
+    expect(feather.available!(ask(without.engine))).toBe(false)
+    runStudioCommand("select.feather", ask(without.engine))
+    expect(asked).not.toHaveBeenCalled()
+
+    const withSelection = fakeEngine([raster("a")], "a", {
+      selection: { bounds: { x: 0, y: 0, width: 5, height: 5 } },
+    })
+    expect(feather.available!(ask(withSelection.engine))).toBe(true)
+    runStudioCommand("select.feather", ask(withSelection.engine))
+    expect(asked).toHaveBeenCalledTimes(1)
+    // The radius is the prompt's to give; nothing is sent until it is.
+    expect(withSelection.sent).toEqual([])
   })
 
   test("aligning to the selection needs a selection", () => {
