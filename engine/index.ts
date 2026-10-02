@@ -280,6 +280,11 @@ import {
   type ViewMatrix,
   zoomView,
 } from "./view/view-transform"
+import {
+  DEFAULT_RASTER_MAGNIFICATION,
+  RASTER_MAGNIFICATIONS,
+  type RasterMagnification,
+} from "./view/magnification"
 
 export {
   docToScreen,
@@ -288,6 +293,11 @@ export {
   MIN_ZOOM,
   type ViewMatrix,
 } from "./view/view-transform"
+export {
+  DEFAULT_RASTER_MAGNIFICATION,
+  RASTER_MAGNIFICATIONS,
+  type RasterMagnification,
+} from "./view/magnification"
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
 export {
   defaultFilter,
@@ -760,6 +770,11 @@ export type EngineCommand =
   /** Whether the rulers are shown along the canvas's edges (16). */
   | { type: "setRulersVisible"; visible: boolean }
   /**
+   * How raster layers look magnified on screen (sharp-zoom 03): hard-edged
+   * pixels past 200%, or filtered at every zoom. Never what export reads.
+   */
+  | { type: "setRasterMagnification"; mode: RasterMagnification }
+  /**
    * Stroke assist (17): a straight-edge in document pixels, angle in radians,
    * that every stroke, brush or eraser, is held to; null takes it away.
    */
@@ -890,6 +905,7 @@ export type EngineSnapshot = Readonly<{
   /** Session view state (16): whether guides are drawn and snapped to. */
   guidesVisible: boolean
   rulersVisible: boolean
+  rasterMagnification: RasterMagnification
   /** The straight-edge strokes are held to (17), if one is placed. */
   straightEdge: StraightEdge | null
   /** The persistent tool in the hand; Alt/Option sampling never changes it. */
@@ -1037,6 +1053,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   guides: Object.freeze([]),
   guidesVisible: true,
   rulersVisible: false,
+  rasterMagnification: DEFAULT_RASTER_MAGNIFICATION,
   straightEdge: null,
   tool: "brush",
   shapeStyle: DEFAULT_SHAPE_STYLE,
@@ -4914,6 +4931,7 @@ export function createEngine(
         feather: BRUSH_FEATHER,
       })
       renderer = target
+      target.setRasterMagnification(snapshot.rasterMagnification)
       const local = options.persistence
       const store = local
         ? createDocumentStore(local.blobs ?? createLocalBlobStore())
@@ -6448,6 +6466,14 @@ export function createEngine(
         case "setRulersVisible":
           publish({ rulersVisible: command.visible !== false })
           break
+        case "setRasterMagnification": {
+          if (!RASTER_MAGNIFICATIONS.includes(command.mode))
+            throw new Error(`Unknown raster magnification: ${command.mode}`)
+          renderer?.setRasterMagnification(command.mode)
+          publish({ rasterMagnification: command.mode })
+          if (snapshot.status === "ready") render()
+          break
+        }
         case "setStraightEdge": {
           const edge = command.edge
           if (

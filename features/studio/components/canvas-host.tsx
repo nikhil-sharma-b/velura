@@ -104,6 +104,7 @@ import {
   VectorNodes,
 } from "./image-transform"
 import { RULER_SIZE, RulersAndGuides } from "./rulers-and-guides"
+import { useRasterMagnification } from "../lib/magnification-preference"
 import { useRulersVisible } from "../lib/ruler-preference"
 import { EraserTrail } from "./eraser-trail"
 import { StraightEdgeOverlay } from "./straight-edge"
@@ -667,6 +668,7 @@ export function CanvasHost({
   const [zen, setZen] = useState(false)
   const [rulerLayer, setRulerLayer] = useState<HTMLDivElement | null>(null)
   const rulersVisible = useRulersVisible()
+  const rasterMagnification = useRasterMagnification()
   /** The canvas the engine presents into; the transform box sits over it. */
   const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(
     null
@@ -714,6 +716,17 @@ export function CanvasHost({
     if (engine.getSnapshot().rulersVisible === rulersVisible) return
     void engine.dispatch({ type: "setRulersVisible", visible: rulersVisible })
   }, [engine, snapshot.status, rulersVisible])
+
+  // How raster layers look magnified follows this device's preference
+  // (sharp-zoom 03), from the first ready frame and as it changes.
+  useEffect(() => {
+    if (snapshot.status !== "ready" || !engine) return
+    if (engine.getSnapshot().rasterMagnification === rasterMagnification) return
+    void engine.dispatch({
+      type: "setRasterMagnification",
+      mode: rasterMagnification,
+    })
+  }, [engine, snapshot.status, rasterMagnification])
 
   // React 19 ref cleanup also covers Strict Mode's attach/detach rehearsal.
   const attach = useCallback(

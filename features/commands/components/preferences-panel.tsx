@@ -6,6 +6,14 @@ import { useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Kbd } from "@/components/ui/kbd"
 import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -33,6 +41,11 @@ import {
   type RebindMode,
 } from "../lib/overrides"
 import type { Command, Registry } from "../lib/registry"
+import {
+  useRasterMagnification,
+  writeRasterMagnification,
+} from "@/features/studio/lib/magnification-preference"
+import type { RasterMagnification } from "@/engine/view/magnification"
 
 /** The slot being rebound: a new chord, or one in place of `replace`. */
 interface Capture {
@@ -63,6 +76,7 @@ export function PreferencesPanel<Context>({
   const platform = usePlatform()
   const overrides = useKeybindOverrides()
   const registry = useBoundRegistry(defaults)
+  const magnification = useRasterMagnification()
   const [capture, setCapture] = useState<Capture>()
   const [pending, setPending] = useState<Pending>()
   // The modifier pressed alone since capture began, so a key already held
@@ -139,7 +153,7 @@ export function PreferencesPanel<Context>({
           event.preventDefault()
           setCapture(undefined)
         }}
-        className="max-h-[85vh] grid-rows-[auto_1fr] sm:max-w-lg"
+        className="max-h-[85vh] grid-rows-[auto_auto_1fr] sm:max-w-lg"
       >
         <div>
           <DialogTitle>Preferences</DialogTitle>
@@ -147,6 +161,35 @@ export function PreferencesPanel<Context>({
             Settings for Velura on this device.
           </DialogDescription>
         </div>
+        <section
+          aria-labelledby="preferences-canvas"
+          className="flex flex-col gap-2"
+        >
+          <h3 id="preferences-canvas" className="font-medium">
+            Canvas
+          </h3>
+          <div className="flex items-center justify-between gap-2">
+            <label htmlFor="preferences-magnification">
+              Raster layers when magnified
+            </label>
+            <Select
+              value={magnification}
+              onValueChange={(mode) =>
+                writeRasterMagnification(mode as RasterMagnification)
+              }
+            >
+              <SelectTrigger id="preferences-magnification">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="pixels">Pixels when zoomed in</SelectItem>
+                  <SelectItem value="smooth">Smooth</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+        </section>
         <section
           aria-labelledby="preferences-keybinds"
           className="flex min-h-0 flex-col gap-2"

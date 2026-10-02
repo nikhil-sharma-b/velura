@@ -51,6 +51,11 @@ import {
   invertMatrix,
   type ViewMatrix,
 } from "../view/view-transform"
+import {
+  DEFAULT_RASTER_MAGNIFICATION,
+  samplesNearest,
+  type RasterMagnification,
+} from "../view/magnification"
 import { STAMP, STAMP_STRIDE } from "./stamp-instance"
 import { createStampLog } from "./stamp-log"
 
@@ -306,6 +311,13 @@ export interface Renderer {
     matrix: ViewMatrix,
     viewport?: { width: number; height: number }
   ): void
+  /**
+   * How raster pixels look magnified on screen (sharp-zoom 03): layers, masks
+   * and the stroke are fetched nearest past the threshold in "pixels", and
+   * filtered otherwise. Only the screen reads through the view, so export
+   * and thumbnails never see it.
+   */
+  setRasterMagnification(mode: RasterMagnification): void
   /**
    * The document's selection (07), or null for none. Only the tiles that
    * changed since the last one are written, and no texture is held at all
@@ -1315,6 +1327,14 @@ export function createRenderer(
     addressModeU: "clamp-to-edge",
     addressModeV: "clamp-to-edge",
   })
+  /** Raster pixels as squares, when the view magnifies them (sharp-zoom 03). */
+  const pixelSampler = device.createSampler({
+    magFilter: "nearest",
+    minFilter: "nearest",
+    addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
+  })
+  let magnification: RasterMagnification = DEFAULT_RASTER_MAGNIFICATION
 
   /** An affine as the three 16-byte columns a WGSL `mat3x3` is laid out in. */
   function packMatrix([a, b, c, d, e, f]: ViewMatrix): number[] {
@@ -1635,6 +1655,8 @@ export function createRenderer(
     let space: Space = { width: 0, height: 0, toDoc: IDENTITY_MATRIX }
     /** Whether document surfaces are resampled into this target. */
     let resampling = false
+    /** What document surfaces are read through: filtered, or as pixels. */
+    let docSampler = viewSampler
     // Vector layers drawn from their geometry into this target, and the
     // version of the scene each was drawn from: -1 once the space moves.
     const vectorSurfaces = new Map<
@@ -1708,6 +1730,18 @@ export function createRenderer(
         space.height !== height
       resampling = resample
       compositeValues[5] = resample ? 1 : 0
+      // Target pixels per document pixel, whatever the turn or flip.
+      const zoom = 1 / Math.hypot(a, b)
+      const sampler = samplesNearest(magnification, zoom)
+        ? pixelSampler
+        : viewSampler
+      if (sampler !== docSampler) {
+        docSampler = sampler
+        // Every bind group holds the sampler, and the caches were read
+        // through the old one.
+        forgetBindGroups()
+        invalidate()
+      }
       compositeValues.set(packMatrix(space.toDoc), 8)
       compositeValues[20] = width
       compositeValues[21] = height
@@ -1774,7 +1808,7 @@ export function createRenderer(
         entries: [
           { binding: 0, resource: { buffer: compositeUniform } },
           { binding: 1, resource: source.view },
-          { binding: 2, resource: viewSampler },
+          { binding: 2, resource: docSampler },
         ],
       })
       readBindGroups.set(source.id, created)
@@ -1839,7 +1873,7 @@ export function createRenderer(
           },
           { binding: 4, resource: mask?.view ?? placeholderView },
           { binding: 5, resource: clipBase?.view ?? placeholderView },
-          { binding: 6, resource: viewSampler },
+          { binding: 6, resource: docSampler },
         ],
       })
       blendBindGroups.set(bindingKey, bindings)
@@ -2086,7 +2120,7 @@ export function createRenderer(
           { binding: 2, resource: frame ? placeholderView : active.view },
           { binding: 3, resource: frame ? placeholderView : stroke.view },
           { binding: 4, resource: above?.view ?? placeholderView },
-          { binding: 5, resource: viewSampler },
+          { binding: 5, resource: docSampler },
         ],
       })
     }
@@ -3005,6 +3039,11 @@ export function createRenderer(
       surface.empty = false
       // These pixels may sit inside a cache that was flattened before them.
       invalidateCaches()
+    },
+    setRasterMagnification(mode) {
+      if (mode === magnification) return
+      magnification = mode
+      for (const compositor of compositors) compositor.writeSpace()
     },
     setView(matrix, size) {
       screenToDocument = invertMatrix(matrix)
