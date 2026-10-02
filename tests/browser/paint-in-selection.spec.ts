@@ -113,6 +113,29 @@ test("a stroke across the selection's edge lands only inside it", async ({
   expect(png(marked)).toMatchSnapshot("stroke-across-selection-edge.png")
 })
 
+test("a selection dropped as the pen lifts still holds the stroke it drew", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const blank = await painted(page)
+  await select(page)
+  // Deselect in the very task the pen lifts in, before the frame that would
+  // land the stroke's tail: the stroke was drawn inside the selection, so it
+  // lands inside it.
+  await page.evaluate(() =>
+    window.addEventListener(
+      "pointerup",
+      () => void window.engine.dispatch({ type: "deselect" }),
+      { once: true }
+    )
+  )
+  await stroke(page, origin, 50)
+  const marked = await painted(page)
+
+  expect(pixels(marked, outside)).toEqual(pixels(blank, outside))
+  expect(pixels(marked, inside)).not.toEqual(pixels(blank, inside))
+})
+
 test("the eraser removes ink only inside the selection", async ({ page }) => {
   const origin = await openCanvas(page)
   const blank = await painted(page)

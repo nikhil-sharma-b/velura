@@ -1507,6 +1507,9 @@ export function createEngine(
   // The pen-down sample opens the path, and it arrives through the buffer like
   // every other sample: nothing is drawn from inside an event handler.
   let opening = false
+  // The pen has lifted and the stroke's tail waits on the next frame to land.
+  // A command that arrives first lands it, so it never overtakes the stroke.
+  let landing = false
   // Where the pen actually was, before stabilization pulled the path behind it,
   // and what it reported there: the tail flushed on pen-up reuses all of it.
   let rawX = 0
@@ -1774,6 +1777,7 @@ export function createEngine(
     stopSelection()
     stroking = false
     opening = false
+    landing = false
     stampCount = 0
     samples.clear()
     renderer?.destroy()
@@ -4229,30 +4233,16 @@ export function createEngine(
     return true
   }
 
-  function drawFrame(timestamp: number) {
-    frame = undefined
-    const cpuStart = frameObserver ? performance.now() : 0
-    frameStamps = 0
-    frameOldestSample = null
-    if (shapeDrag) {
-      drawShapeDrag()
-      return
-    }
-    if (vectorErase) {
-      drawVectorErase()
-      return
-    }
-    if (marquee) {
-      drawMarquee()
-      return
-    }
-    if (isVectorTool(tool)) {
-      samples.clear()
-      return
-    }
+  /**
+   * Draws what the pen has sent into the stroke buffer, and once the pen has
+   * lifted, the tail and the whole mark into its layer. Presenting is left
+   * to the frame.
+   */
+  function landStroke() {
     samples.drain(consumeSample)
     // A stroke that ended before its opening sample was drained drew nothing.
     if (!stroking && !opening) {
+      landing = false
       // The string is released on pen-up, so the mark reaches where the pen
       // lifted instead of stopping a pull radius short of it.
       resampler.extend(
@@ -4279,6 +4269,30 @@ export function createEngine(
       }
     }
     flushStamps()
+  }
+
+  function drawFrame(timestamp: number) {
+    frame = undefined
+    const cpuStart = frameObserver ? performance.now() : 0
+    frameStamps = 0
+    frameOldestSample = null
+    if (shapeDrag) {
+      drawShapeDrag()
+      return
+    }
+    if (vectorErase) {
+      drawVectorErase()
+      return
+    }
+    if (marquee) {
+      drawMarquee()
+      return
+    }
+    if (isVectorTool(tool)) {
+      samples.clear()
+      return
+    }
+    landStroke()
     try {
       if (snapshot.status === "ready") render()
     } catch (error) {
@@ -4541,6 +4555,10 @@ export function createEngine(
     sensesPressure: boolean
   ) {
     if (snapshot.status !== "ready" || !doc) return
+    // The last stroke lands before the pen starts anything else: a marquee
+    // or shape skips the frame that would land it, and a new stroke would
+    // take its tail for its own.
+    landLiftedStroke()
     if (isSelectionTool(tool)) {
       // The selection belongs to the document, so a locked or image layer
       // does not stop one being drawn.
@@ -4792,6 +4810,7 @@ export function createEngine(
     if (!stroking && !opening) return
     stroking = false
     opening = false
+    landing = false
     // The frame already scheduled would see a stroke that has just ended and
     // flush its tail into the layer, which is the very mark being taken back.
     if (frame !== undefined) cancelAnimationFrame(frame)
@@ -4841,10 +4860,23 @@ export function createEngine(
     // The tail is flushed by the next frame, so the stroke reaches the point
     // the pen actually lifted from rather than stopping a sample short.
     stroking = false
+    landing = true
     scheduleFrame()
     // An eraser removes ink rather than using it, so it never counts.
     if (snapshot.tool !== "eraser")
       options.onStrokeCommitted?.(snapshot.color.hex)
+  }
+
+  /**
+   * Lands a lifted stroke now rather than on the frame it waits for, so a
+   * command sent as the pen lifts — dropping the selection, switching layer —
+   * applies after the stroke, as the artist made them. The frame already
+   * scheduled still presents it.
+   */
+  function landLiftedStroke() {
+    if (!landing) return
+    landing = false
+    landStroke()
   }
 
   function render(): GPUTexture {
@@ -5340,6 +5372,7 @@ export function createEngine(
     },
     async dispatch(command) {
       if (disposed) return
+      landLiftedStroke()
       if (filterSession && !FILTER_PASSTHROUGH.has(command.type)) cancelFilter()
       switch (command.type) {
         case "initialize":
