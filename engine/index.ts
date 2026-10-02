@@ -438,6 +438,17 @@ export const isVectorTool = (tool: Tool): tool is VectorTool =>
 export type Tool = PaintTool | SelectionTool | VectorTool
 
 export type { ShapeStyle }
+
+/** The tools whose marks are lines: outlined whatever the style, never filled. */
+export const drawsOutlineOnly = (tool: Tool) =>
+  tool === "line" || tool === "pressure"
+
+/** What a new shape from this tool is given: the style, as the tool can take it. */
+export function toolShapeStyle(tool: Tool, style: ShapeStyle): ShapeStyle {
+  if (!drawsOutlineOnly(tool) || (style.stroke && !style.fill)) return style
+  return Object.freeze({ ...style, fill: false, stroke: true })
+}
+
 const sameShapeStyle = (a: ShapeStyle, b: ShapeStyle) =>
   (Object.keys(a) as (keyof ShapeStyle)[]).every((key) => a[key] === b[key])
 
@@ -3135,7 +3146,7 @@ export function createEngine(
       transform: [1, 0, 0, 1, 0, 0],
       style: {
         fill:
-          style.fill && drag.tool !== "line" && drag.tool !== "pressure"
+          style.fill && !drawsOutlineOnly(drag.tool)
             ? {
                 ...paint,
                 color: style.fillColor ?? paint.color,
@@ -3144,8 +3155,7 @@ export function createEngine(
             : null,
         stroke:
           style.stroke ||
-          drag.tool === "line" ||
-          drag.tool === "pressure" ||
+          drawsOutlineOnly(drag.tool) ||
           (drag.tool === "pen" && !drag.closed)
             ? {
                 ...paint,
@@ -6436,7 +6446,14 @@ export function createEngine(
           resampler = createStrokeResampler(brushSpacing(activeBrush()))
           applyBrushTextures()
           if (snapshot.status === "ready") render()
-          publish({ tool })
+          // A stroke left selected as it was drawn is let go with the tool
+          // that drew it, so the next tool's options are its own; only the
+          // tools that work on selected objects keep hold of them.
+          publish(
+            tool === "objectSelect" || tool === "node"
+              ? { tool }
+              : { tool, vectorSelection: [] }
+          )
           break
         case "setColor": {
           if (!parseHex(command.hex))

@@ -64,6 +64,8 @@ import {
   INITIAL_SNAPSHOT,
   isSelectionTool,
   isVectorTool,
+  drawsOutlineOnly,
+  toolShapeStyle,
   type VectorTool,
   type SelectionTool,
   type ShapeStyle,
@@ -262,6 +264,47 @@ function ToolFamilySlot({
   )
 }
 
+/**
+ * The corner mark of a button that opens a panel beside it, as against the
+ * dots on a slot whose second press swaps the tool. It takes the top corner,
+ * clear of a setting's value underneath. Its button is `relative`.
+ */
+function MenuNotch() {
+  return (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute top-1 right-1 size-1 bg-current opacity-60 [clip-path:polygon(0_0,100%_0,100%_100%)]"
+    />
+  )
+}
+
+/**
+ * What a new shape is given, drawn: a square filled, outlined, or both, so
+ * the trigger says which at a glance where a width alone could not.
+ */
+function ShapePaintIcon({ style }: { style: ShapeStyle }) {
+  // With neither paint on, a faint dashed square, so the trigger is never
+  // blank.
+  const bare = !style.fill && !style.stroke
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden className="size-4">
+      <rect
+        x="2"
+        y="2"
+        width="12"
+        height="12"
+        rx="1.5"
+        fill={style.fill ? "currentColor" : "none"}
+        fillOpacity={style.stroke ? 0.35 : 0.85}
+        stroke={style.stroke || bare ? "currentColor" : "none"}
+        strokeOpacity={bare ? 0.5 : 1}
+        strokeWidth="1.5"
+        strokeDasharray={bare ? "2 2" : undefined}
+      />
+    </svg>
+  )
+}
+
 /** Compact triggers keep adjustments close without covering the artwork. */
 function QuickSetting({
   label,
@@ -285,12 +328,13 @@ function QuickSetting({
           label={`${label}: ${value}`}
           side="right"
           variant="ghost"
-          className="h-auto w-8 flex-col gap-0.5 rounded-lg px-0 py-1"
+          className="relative h-auto w-8 flex-col gap-0.5 rounded-lg px-0 py-1"
         >
           {icon}
           <span className="text-[10px] leading-none font-medium text-foreground/75 tabular-nums">
             {readout}
           </span>
+          <MenuNotch />
         </IconButton>
       </PopoverPrimitive.Trigger>
       <PopoverPrimitive.Portal>
@@ -750,8 +794,13 @@ export function CanvasHost({
     (id: string) => runStudioCommand(id, latestContext.current),
     []
   )
-  /** The selection's style while there is one, else what the tools give. */
-  const shapeOptions = snapshot.selectionStyle ?? snapshot.shapeStyle
+  /** The selection's style while there is one, else what the tool in the
+   * hand gives: a line or a brush stroke is outlined whatever the style says. */
+  const toolStyle = useMemo(
+    () => toolShapeStyle(snapshot.tool, snapshot.shapeStyle),
+    [snapshot.tool, snapshot.shapeStyle]
+  )
+  const shapeOptions = snapshot.selectionStyle ?? toolStyle
   // The artist's own keybinds over the defaults. While preferences are open
   // the keys are being rebound, not used.
   const commands = useBoundRegistry(studioCommands)
@@ -1372,10 +1421,7 @@ export function CanvasHost({
                             id={snapshot.brush.id}
                             className="shrink-0"
                           />
-                          <span
-                            aria-hidden
-                            className="absolute right-1 bottom-1 size-1.5 bg-current opacity-60 [clip-path:polygon(100%_0,100%_100%,0_100%)]"
-                          />
+                          <MenuNotch />
                         </IconButton>
                       </PopoverPrimitive.Trigger>
                       <PopoverPrimitive.Portal>
@@ -1704,12 +1750,16 @@ export function CanvasHost({
                       label="Shape"
                       value={shapeSummary(shapeOptions)}
                       readout={shapeReadout(shapeOptions)}
-                      icon={<RectangleIcon />}
+                      icon={<ShapePaintIcon style={shapeOptions} />}
                     >
                       <ShapeStylePanel
                         engine={engine}
                         style={shapeOptions}
                         selected={snapshot.selectionStyle !== null}
+                        outlineOnly={
+                          snapshot.selectionStyle === null &&
+                          drawsOutlineOnly(snapshot.tool)
+                        }
                         currentColor={snapshot.color.hex}
                         runCommand={runShapeCommand}
                       />

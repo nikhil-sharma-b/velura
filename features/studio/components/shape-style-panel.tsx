@@ -54,6 +54,7 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
   engine,
   style,
   selected,
+  outlineOnly = false,
   currentColor,
   runCommand,
 }: {
@@ -61,6 +62,8 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
   /** The selection's style while there is one, else the tool's. */
   style: ShapeStyle
   selected: boolean
+  /** The tool in the hand draws lines, outlined and never filled. */
+  outlineOnly?: boolean
   /** What a paint with no colour of its own is drawn in. */
   currentColor: string
   /** Runs a studio command by id, as its keybind or the palette would. */
@@ -86,7 +89,8 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
         <PaintRow
           label="Fill"
           on={style.fill}
-          editable={!selected || style.fill}
+          locked={outlineOnly}
+          editable={!outlineOnly && (!selected || style.fill)}
           color={style.fillColor ?? currentColor}
           onToggle={() => setStyle({ fill: !style.fill })}
           onColor={(fillColor) => setStyle({ fillColor })}
@@ -94,6 +98,7 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
         <PaintRow
           label="Outline"
           on={style.stroke}
+          locked={outlineOnly}
           editable={outlined}
           color={style.strokeColor ?? currentColor}
           onToggle={() => setStyle({ stroke: !style.stroke })}
@@ -229,6 +234,7 @@ function ActionButton({
 function PaintRow({
   label,
   on,
+  locked = false,
   editable,
   color,
   onToggle,
@@ -236,6 +242,8 @@ function PaintRow({
 }: {
   label: string
   on: boolean
+  /** Whether the paint is fixed on or off by the tool, not the artist. */
+  locked?: boolean
   /** Whether the colour can be chosen now. */
   editable: boolean
   color: string
@@ -283,7 +291,8 @@ function PaintRow({
         role="switch"
         aria-checked={on}
         aria-label={label}
-        className="relative h-4 w-7 shrink-0 rounded-full bg-muted-foreground/30 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50 aria-checked:bg-primary"
+        disabled={locked}
+        className="relative h-4 w-7 shrink-0 rounded-full bg-muted-foreground/30 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50 aria-checked:bg-primary"
         onClick={onToggle}
       >
         <span
