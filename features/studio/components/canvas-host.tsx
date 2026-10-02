@@ -99,6 +99,7 @@ import {
   ImageTransform,
   LayerTransform,
   VectorTransform,
+  PolygonHint,
   VectorSelection,
   VectorNodes,
 } from "./image-transform"
@@ -1092,6 +1093,7 @@ export function CanvasHost({
                 snapshot={snapshot}
                 canvas={canvasElement}
               />
+              <PolygonHint snapshot={snapshot} />
             </>
           )}
           {engine && snapshot.vectorTransform && (

@@ -588,6 +588,8 @@ export type EngineCommand =
       to: "canvas" | "selection"
     }
   | { type: "finishPenPath" }
+  /** Closes the polygon being clicked out, if it has three corners yet. */
+  | { type: "closePolygon" }
   | { type: "editVectorNode"; objectId: string; edit: NodeEdit }
   | { type: "deleteVectorNode" }
   | { type: "toggleVectorNode" }
@@ -2597,6 +2599,8 @@ export function createEngine(
         nodes?: PathNode[]
         placing?: boolean
         closed?: boolean
+        /** When the polygon's last corner was clicked, to tell a double-click. */
+        clickedAt?: number
         pressurePoints?: PressurePoint[]
         pressureTail?: {
           x: number
@@ -3383,6 +3387,28 @@ export function createEngine(
     }
     if (drag.tool !== "pen" || drag.placing)
       frame = requestAnimationFrame(drawFrame)
+  }
+
+  /**
+   * Closes a polygon still being clicked out and keeps it, if it has the three
+   * corners a shape needs; with fewer it is left for the caller to drop.
+   */
+  function closePolygon() {
+    const drag = shapeDrag
+    if (
+      drag?.tool !== "polygon" ||
+      drag.ended ||
+      (drag.points?.length ?? 0) < 3
+    )
+      return
+    endPolygon(drag)
+    drawShapeDrag()
+  }
+
+  /** Ends a polygon at its first corner, to be kept as the next frame draws. */
+  function endPolygon(drag: NonNullable<typeof shapeDrag>) {
+    drag.point = drag.anchor
+    drag.ended = true
   }
 
   /** Drops a shape drag, its layer drawn as it was. */
@@ -4300,6 +4326,27 @@ export function createEngine(
    * One click of the polygonal lasso: a new vertex, or — on the first vertex
    * or a double-click — the outline closed and made the selection.
    */
+  /**
+   * Where a click lands on a polygon being clicked out: back on its first
+   * corner once it has three, or on its last corner again within a
+   * double-click. Both polygon tools close by the same rule, each at its reach.
+   */
+  function polygonClick(
+    points: readonly Point[],
+    point: Point,
+    clickedAt: number,
+    time: number,
+    reach: number
+  ) {
+    const near = (other: Point) =>
+      Math.hypot(point.x - other.x, point.y - other.y) <= reach
+    return {
+      onFirst: points.length >= 3 && near(points[0]),
+      doubled:
+        time - clickedAt <= DOUBLE_CLICK_MS && near(points[points.length - 1]),
+    }
+  }
+
   function clickPolygon(point: Point, time: number) {
     if (!marquee || marquee.shape !== "polygon") {
       marquee = {
@@ -4314,14 +4361,14 @@ export function createEngine(
       return
     }
     const polygon = marquee
-    const reach = CLOSE_RADIUS * Math.hypot(toDoc[0], toDoc[1])
-    const near = (other: Point) =>
-      Math.hypot(point.x - other.x, point.y - other.y) <= reach
-    const last = polygon.points[polygon.points.length - 1]
-    const closes =
-      (polygon.points.length >= 3 && near(polygon.points[0])) ||
-      (time - polygon.clickedAt <= DOUBLE_CLICK_MS && near(last))
-    if (closes) {
+    const { onFirst, doubled } = polygonClick(
+      polygon.points,
+      point,
+      polygon.clickedAt,
+      time,
+      CLOSE_RADIUS * Math.hypot(toDoc[0], toDoc[1])
+    )
+    if (onFirst || doubled) {
       // Too few corners to hold any area: the outline is dropped rather than
       // made the selection, so a stray double-click never deselects.
       polygon.closing = polygon.points.length < 3 ? "drop" : "commit"
@@ -4425,7 +4472,7 @@ export function createEngine(
     if (hit?.hit) {
       const doubleClick =
         lastNodeClick &&
-        time - lastNodeClick.time < 400 &&
+        time - lastNodeClick.time < DOUBLE_CLICK_MS &&
         Math.hypot(
           point.x - lastNodeClick.point.x,
           point.y - lastNodeClick.point.y
@@ -4591,25 +4638,28 @@ export function createEngine(
       // Shift squares the shape for as long as it is held.
       shiftLatched = false
       if (tool === "polygon" && shapeDrag?.tool === "polygon") {
-        if (
-          Math.hypot(
-            anchor.x - shapeDrag.anchor.x,
-            anchor.y - shapeDrag.anchor.y
-          ) <
-            6 / snapshot.view.zoom &&
-          (shapeDrag.points?.length ?? 0) >= 3
-        ) {
-          shapeDrag.point = shapeDrag.anchor
-          shapeDrag.ended = true
-        } else {
-          shapeDrag.points!.push(anchor)
+        const points = shapeDrag.points!
+        // A double-click places its corner with the first click and closes
+        // with the second, as a click back on the first corner does.
+        const { onFirst, doubled } = polygonClick(
+          points,
+          anchor,
+          shapeDrag.clickedAt!,
+          time,
+          6 / snapshot.view.zoom
+        )
+        if (points.length >= 3 && (onFirst || doubled)) endPolygon(shapeDrag)
+        else if (!doubled) {
+          points.push(anchor)
           shapeDrag.point = anchor
+          shapeDrag.clickedAt = time
         }
       } else
         shapeDrag = {
           layerId: layer.id,
           tool,
           points: tool === "polygon" ? [anchor] : undefined,
+          clickedAt: tool === "polygon" ? time : undefined,
           anchor,
           point: anchor,
           ended: false,
@@ -5418,6 +5468,9 @@ export function createEngine(
           applyLayerChange()
           break
         }
+        case "closePolygon":
+          closePolygon()
+          break
         case "finishPenPath":
           if (shapeDrag?.tool === "pen") {
             shapeDrag.ended = true
@@ -6438,8 +6491,11 @@ export function createEngine(
           break
         }
         case "setTool":
+          // A polygon clicked out far enough to be a shape is kept, not lost
+          // with the tool; anything less is dropped with it.
+          closePolygon()
           cancelStroke()
-          // A polygon half clicked out is dropped with the tool drawing it.
+          // A lasso polygon half clicked out is dropped with the tool.
           dropMarquee()
           cancelVectorTransform()
           tool = command.tool

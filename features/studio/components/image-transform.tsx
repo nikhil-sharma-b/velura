@@ -32,6 +32,7 @@ import {
   type ViewMatrix,
 } from "@/engine"
 import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 
 /**
  * The box an artist moves a placed image by (06).
@@ -786,7 +787,7 @@ export function VectorNodes({
         className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
         aria-label="Path anchors and handles"
       />
-      <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-lg border bg-background/95 p-2 text-xs shadow-lg">
+      <ToolHint>
         {snapshot.tool === "pen" ? (
           <>
             <span>Click anchors · drag handles · click first to close</span>
@@ -820,7 +821,38 @@ export function VectorNodes({
             </Button>
           </>
         )}
-      </div>
+      </ToolHint>
     </>
+  )
+}
+
+/** How a polygon is closed, shown while the tool is in the hand. */
+export function PolygonHint({ snapshot }: { snapshot: EngineSnapshot }) {
+  if (snapshot.tool !== "polygon") return null
+  return (
+    <ToolHint inert>
+      Click corners · click the first, double-click or press Enter to close
+    </ToolHint>
+  )
+}
+
+/** The bar under the canvas that says how the tool in the hand is used. */
+function ToolHint({
+  children,
+  inert = false,
+}: {
+  children: React.ReactNode
+  /** Words only, so clicks pass through it to the canvas. */
+  inert?: boolean
+}) {
+  return (
+    <div
+      className={cn(
+        "absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-lg border bg-background/95 p-2 text-xs shadow-lg",
+        inert && "pointer-events-none"
+      )}
+    >
+      {children}
+    </div>
   )
 }

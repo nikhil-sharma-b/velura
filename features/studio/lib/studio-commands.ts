@@ -357,7 +357,7 @@ export const studioCommands = createRegistry<StudioContext>([
   },
   {
     id: "tool.pressure",
-    label: "Vector pressure tool",
+    label: "Vector brush tool",
     category: "Tools",
     ...dispatching({ type: "setTool", tool: "pressure" }),
   },
@@ -370,6 +370,15 @@ export const studioCommands = createRegistry<StudioContext>([
       !!engine &&
       engine.getSnapshot().tool === "pen" &&
       engine.getSnapshot().penNodes.length >= 2,
+  },
+  {
+    id: "path.closePolygon",
+    label: "Close polygon",
+    category: "Tools",
+    keybinds: ["enter"],
+    ...dispatching({ type: "closePolygon" }),
+    available: ({ engine }) =>
+      !!engine && engine.getSnapshot().tool === "polygon",
   },
   {
     id: "node.delete",

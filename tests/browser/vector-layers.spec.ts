@@ -808,3 +808,66 @@ test("undo abandons an object transform; target removal and rasterisation close 
     await page.evaluate(() => window.engine.getSnapshot().vectorTransform)
   ).toBeNull()
 })
+
+test("a polygon is closed by leaving the tool, by Enter, or by a double-click, and kept", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const id = await addVectorLayer(page)
+  const objects = () =>
+    page.evaluate(
+      (id) =>
+        window.engine.getSnapshot().layers.find((node) => node.id === id),
+      id
+    )
+  const corners = async (points: number[][]) => {
+    for (const [x, y] of points) {
+      // Each corner is far from the last, so none reads as a double-click.
+      await page.mouse.click(origin.x + x, origin.y + y)
+    }
+  }
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "polygon" })
+  )
+
+  // Leaving the tool keeps a polygon of three corners.
+  await corners([
+    [10, 10],
+    [50, 10],
+    [30, 40],
+  ])
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "rectangle" })
+  )
+  expect(await objects()).toMatchObject({ objects: 1 })
+
+  // Closing by command, as Enter runs it.
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "polygon" })
+  )
+  await corners([
+    [70, 10],
+    [110, 10],
+    [90, 40],
+  ])
+  await page.evaluate(() => window.engine.dispatch({ type: "closePolygon" }))
+  expect(await objects()).toMatchObject({ objects: 2 })
+
+  // A double-click on the last corner closes it.
+  await corners([
+    [130, 10],
+    [170, 10],
+  ])
+  await page.mouse.dblclick(origin.x + 150, origin.y + 40)
+  await expect.poll(objects).toMatchObject({ objects: 3 })
+
+  // Two corners are no shape: leaving drops them.
+  await corners([
+    [10, 70],
+    [50, 70],
+  ])
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "rectangle" })
+  )
+  expect(await objects()).toMatchObject({ objects: 3 })
+})
