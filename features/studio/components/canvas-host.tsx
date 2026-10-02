@@ -108,6 +108,7 @@ import { LayerPanel } from "./layer-panel"
 import { ShapeStylePanel } from "./shape-style-panel"
 import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
+import { ClearLayerDialog } from "./clear-layer-dialog"
 import { FeatherDialog } from "./feather-dialog"
 import { FilterDialog } from "./filter-dialog"
 import {
@@ -405,6 +406,7 @@ export function CanvasHost({
   const [eraserOpen, setEraserOpen] = useState(false)
   const [featherRadius, setFeatherRadius] = useState(10)
   const [featherOpen, setFeatherOpen] = useState(false)
+  const [clearing, setClearing] = useState<LayerSummary | null>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [pressureOpen, setPressureOpen] = useState(false)
   /**
@@ -676,6 +678,7 @@ export function CanvasHost({
     openPreferences: () => setPreferencesOpen(true),
     toggleZen: () => setZen((on) => !on),
     openFeather: () => setFeatherOpen(true),
+    confirmClear: setClearing,
   }
   // The shape options are memoised, so they get one handle on the commands
   // for good, reading whichever context is current when one runs.
@@ -1974,6 +1977,13 @@ export function CanvasHost({
           setFeatherRadius(radius)
           void engine?.dispatch({ type: "featherSelection", radius })
         }}
+      />
+      <ClearLayerDialog
+        layer={clearing}
+        onOpenChange={(open) => !open && setClearing(null)}
+        onConfirm={(layer) =>
+          void engine?.dispatch({ type: "clearLayer", id: layer.id })
+        }
       />
       <PreferencesPanel
         defaults={studioCommands}

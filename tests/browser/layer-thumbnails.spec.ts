@@ -189,8 +189,15 @@ test("the active row's clear button empties the layer, and undo refills it", asy
   await expect(second).toHaveAttribute("data-state", "shown")
 
   const clear = layers.getByRole("button", { name: "Clear Layer 2" })
+  // Clearing waits for a yes; backing out leaves the layer alone.
   await clear.click()
+  await page.getByRole("button", { name: "Keep it" }).click()
+  await expect(second).toHaveAttribute("data-state", "shown")
+  await clear.click()
+  await page.getByRole("button", { name: "Clear layer" }).click()
   await expect(second).toHaveAttribute("data-state", "empty")
+  // An empty layer has nothing to clear.
+  await expect(clear).toBeDisabled()
   await page.keyboard.press("ControlOrMeta+z")
   await expect(second).toHaveAttribute("data-state", "shown")
 

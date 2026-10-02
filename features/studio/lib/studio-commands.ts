@@ -55,6 +55,11 @@ export interface StudioContext {
    * of the engine.
    */
   openFeather: () => void
+  /**
+   * Asks the artist to confirm emptying a layer, and clears it only once they
+   * do; cancelling asks nothing of the engine.
+   */
+  confirmClear: (layer: LayerSummary) => void
 }
 
 type StudioCommand = Command<StudioContext>
@@ -511,6 +516,11 @@ export const studioCommands = createRegistry<StudioContext>([
       (layer) =>
         (layer.kind === "vector" && !layer.locked) || isPaintable(layer)
     ),
+    // Clearing wipes every mark on the layer, so it waits for a yes.
+    run: (context) => {
+      const layer = targetLayer(context)
+      if (layer) context.confirmClear(layer)
+    },
   },
   // Filters (18) open on the layer and wait in a dialog for their settings;
   // the dialog is the engine's open filter, not a state of its own.
