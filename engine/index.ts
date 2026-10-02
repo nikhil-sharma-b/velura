@@ -16,6 +16,7 @@ import {
 } from "./store/export-svg"
 import { svgPngImage } from "./store/svg-images"
 import {
+  objectEraser,
   selectionStyle,
   selectObjects,
   type ShapeStyle,
@@ -2753,7 +2754,8 @@ export function createEngine(
   function editScene(
     layerId: string,
     commands: readonly SceneCommand[],
-    label: string
+    label: string,
+    coalesceAs?: string
   ) {
     const document = requireDocument()
     const layer = findLayer(document, layerId)
@@ -2767,6 +2769,7 @@ export function createEngine(
     layer.scene = scene
     recordOperation(label, captureStructure(document), {
       scenes: [{ layerId, forward: [...commands], inverse }],
+      coalesceAs,
     })
     applyLayerChange()
   }
@@ -2874,7 +2877,21 @@ export function createEngine(
       }))
     // What a new shape is given is left as it was: the selection's own
     // style is read back from the scene as it is published.
-    editScene(layer.id, commands, "style objects")
+    // A colour dragged across the picker is one act, however many commands
+    // it sends, so a run of changes to the same fields of the same objects is
+    // one step, as a layer's sliders are.
+    const fields = change
+      ? Object.keys(change)
+          .filter((key) => key !== "type")
+          .sort()
+          .join(",")
+      : "color"
+    editScene(
+      layer.id,
+      commands,
+      "style objects",
+      `style:${layer.id}:${[...snapshot.vectorSelection].sort().join(",")}:${fields}`
+    )
   }
 
   async function beginVectorTransform() {
@@ -3143,6 +3160,64 @@ export function createEngine(
   }
 
   /** One frame of a shape drag: drawn into its layer, added as the pen lifts. */
+  /**
+   * The eraser on a vector layer (19): the objects its tip touches drop out
+   * of the layer as it moves, and lifting it removes them as one step.
+   */
+  let vectorErase:
+    | {
+        layerId: string
+        scene: VectorScene
+        eraser: ReturnType<typeof objectEraser>
+        ended: boolean
+      }
+    | undefined
+
+  function drawVectorErase() {
+    const erase = vectorErase!
+    let took = false
+    samples.drain((x, y) => {
+      if (erase.eraser.moveTo({ x: toDocX(x, y), y: toDocY(x, y) }))
+        took = true
+    })
+    const { hit } = erase.eraser
+    if (erase.ended) {
+      vectorErase = undefined
+      forgetGestureInput()
+      if (hit.size) {
+        editScene(
+          erase.layerId,
+          [...hit].map((id) => ({ type: "remove" as const, id })),
+          "erase objects"
+        )
+        publish({
+          vectorSelection: snapshot.vectorSelection.filter(
+            (id) => !hit.has(id)
+          ),
+        })
+      }
+      if (snapshot.status === "ready") render()
+      return
+    }
+    if (took) {
+      drawScene(erase.layerId, {
+        objects: erase.scene.objects.filter((o) => !hit.has(o.id)),
+      })
+      if (snapshot.status === "ready") render()
+    }
+    frame = requestAnimationFrame(drawFrame)
+  }
+
+  /** Puts back what an abandoned vector erase took out of view. */
+  function dropVectorErase() {
+    const erase = vectorErase
+    if (!erase) return
+    vectorErase = undefined
+    forgetGestureInput()
+    drawScene(erase.layerId, erase.scene)
+    if (snapshot.status === "ready") render()
+  }
+
   function drawShapeDrag() {
     const drag = shapeDrag!
     const pressureSink = (x: number, y: number, pressure: number) => {
@@ -4102,6 +4177,10 @@ export function createEngine(
       drawShapeDrag()
       return
     }
+    if (vectorErase) {
+      drawVectorErase()
+      return
+    }
     if (marquee) {
       drawMarquee()
       return
@@ -4533,6 +4612,25 @@ export function createEngine(
     // An image or vector layer refuses it too, unless the stroke is going to
     // its mask: its pixels are drawn from a picture or from shapes.
     const layer = activeLayer(doc)
+    // The eraser on a vector layer takes whole objects rather than pixels,
+    // which it has none of; on its mask it erases the mask as anywhere else.
+    if (
+      tool === "eraser" &&
+      layer.kind === "vector" &&
+      !layer.locked &&
+      !(doc.paintingMask && layer.mask)
+    ) {
+      cancelVectorTransform()
+      vectorErase = {
+        layerId: layer.id,
+        scene: layer.scene,
+        eraser: objectEraser(layer.scene, eraser.shape.radius),
+        ended: false,
+      }
+      samples.push(screenX, screenY, pressure, tiltX, tiltY, time)
+      scheduleFrame()
+      return
+    }
     const drawnFrom = layer.kind === "vector" || layer.image
     if (layer.locked || (drawnFrom && !(doc.paintingMask && layer.mask))) return
     // The artist is painting, so the canvas shows what they are painting on.
@@ -4585,6 +4683,10 @@ export function createEngine(
       dropShapeDrag()
       return
     }
+    if (vectorErase) {
+      dropVectorErase()
+      return
+    }
     if (marquee) {
       // A polygon loses only the vertex the gesture was placing.
       if (marquee.shape === "polygon" && marquee.points.length > 1) {
@@ -4630,6 +4732,11 @@ export function createEngine(
       }
       if (shapeDrag.tool === "polygon" && !shapeDrag.ended) return
       shapeDrag.ended = true
+      scheduleFrame()
+      return
+    }
+    if (vectorErase) {
+      vectorErase.ended = true
       scheduleFrame()
       return
     }

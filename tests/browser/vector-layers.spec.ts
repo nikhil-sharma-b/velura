@@ -218,6 +218,65 @@ test("paint is refused on a vector layer, but its mask takes paint", async ({
   expect(await pixels(page)).toEqual(before)
 })
 
+test("the eraser takes whole objects it touches from a vector layer, as one step", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const id = await addVectorLayer(page)
+  const blank = await pixels(page)
+  await edit(page, id, [
+    { type: "add", object: rect("a", { x: 20, y: 20, width: 40, height: 40 }) },
+    {
+      type: "add",
+      object: rect("b", { x: 120, y: 20, width: 40, height: 40 }),
+    },
+  ])
+  const drawn = await pixels(page)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "eraser" })
+  )
+  const recorded = await steps(page)
+  // A swipe across one corner of "a" alone, never reaching "b".
+  await page.mouse.move(origin.x + 10, origin.y + 70)
+  await page.mouse.down()
+  await page.mouse.move(origin.x + 30, origin.y + 50, { steps: 4 })
+  await page.mouse.up()
+  await page.waitForFunction(
+    (n) => window.engine.historyUsage().steps > n,
+    recorded
+  )
+  expect(await steps(page)).toBe(recorded + 1)
+  const erased = await pixels(page)
+  expect(at(erased, 40, 40)).toEqual(at(blank, 40, 40))
+  expect(at(erased, 140, 40)).toEqual([208, 64, 42, 255])
+
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await pixels(page)).toEqual(drawn)
+})
+
+test("a locked vector layer keeps its objects from the eraser", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const id = await addVectorLayer(page)
+  await edit(page, id, [
+    { type: "add", object: rect("a", { x: 20, y: 20, width: 40, height: 40 }) },
+  ])
+  await page.evaluate(async (id) => {
+    await window.engine.dispatch({ type: "setLayer", id, locked: true })
+    await window.engine.dispatch({ type: "setTool", tool: "eraser" })
+  }, id)
+  const before = await pixels(page)
+  const recorded = await steps(page)
+  await page.mouse.move(origin.x + 30, origin.y + 40)
+  await page.mouse.down()
+  await page.mouse.move(origin.x + 50, origin.y + 40, { steps: 4 })
+  await page.mouse.up()
+  await page.waitForTimeout(150)
+  expect(await steps(page)).toBe(recorded)
+  expect(await pixels(page)).toEqual(before)
+})
+
 test("each edit is one step, undone and redone in turn", async ({ page }) => {
   await openCanvas(page)
   const id = await addVectorLayer(page)

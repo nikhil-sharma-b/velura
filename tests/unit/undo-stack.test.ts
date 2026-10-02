@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { createTileStore } from "../../engine/doc/tile-store"
 import { TILE_CHANNELS, TILE_TEXELS } from "../../engine/doc/tile-grid"
 import { createUndoStack, type UndoEntry } from "../../engine/doc/undo-stack"
+import type { DocumentStructure } from "../../engine/doc/structure"
+import type { SceneChange } from "../../engine/doc/vector-scene"
 
 const TILE_BYTES = TILE_TEXELS * TILE_CHANNELS * 2
 
@@ -123,5 +125,38 @@ describe("the byte budget", () => {
     stack.clear()
     expect(stack.canUndo()).toBe(false)
     expect(store.tier(hash)).toBe("absent")
+  })
+
+  test("a run of scene edits under one key is one step, undoing to the start", () => {
+    const { stack } = setup()
+    const structure = {} as DocumentStructure
+    const recolour = (from: string, to: string): SceneChange =>
+      ({
+        layerId: "v",
+        forward: [{ type: "update", id: "o", patch: { name: to } }],
+        inverse: [{ type: "update", id: "o", patch: { name: from } }],
+      }) as unknown as SceneChange
+    stack.push({
+      label: "style objects",
+      surfaces: [],
+      structure: { before: structure, after: structure },
+      scenes: [recolour("red", "green")],
+      coalesceAs: "style:v:o:fillColor",
+    })
+    expect(
+      stack.extendTop("style:v:o:fillColor", structure, [
+        recolour("green", "blue"),
+      ])
+    ).toBe(true)
+    expect(stack.depth()).toBe(1)
+    const [scene] = stack.top()!.scenes!
+    expect(scene.forward).toEqual(recolour("green", "blue").forward)
+    expect(scene.inverse).toEqual(recolour("red", "green").inverse)
+    // Another layer's edit is another step.
+    expect(
+      stack.extendTop("style:v:o:fillColor", structure, [
+        { ...recolour("blue", "pink"), layerId: "w" },
+      ])
+    ).toBe(false)
   })
 })

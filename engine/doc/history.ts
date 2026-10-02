@@ -572,8 +572,7 @@ export function createDocumentHistory(options: {
         if (
           key &&
           surfaces.length === 0 &&
-          !scenes &&
-          stack.extendTop(key, structure.after)
+          stack.extendTop(key, structure.after, scenes)
         )
           return
         pushEntry({

@@ -115,6 +115,75 @@ export function selectObjects(
     .map((o) => o.id)
 }
 
+/**
+ * What an eraser drawn across a vector layer takes (19): every object its tip
+ * touches, whole, as the vector apps' object erasers do. The objects are
+ * meshed once for the stroke, and each step from the last point to the next
+ * is walked in half-tip steps, so a quick swipe cannot jump a thin line.
+ */
+export function objectEraser(scene: VectorScene, radius: number) {
+  const meshes = scene.objects.map((object) => ({
+    id: object.id,
+    box: objectBounds(object),
+    ...tessellateObject(object),
+  }))
+  const r = Math.max(0.5, radius)
+  // The tip is tested at its centre and on two rings, which leaves no gap a
+  // shape could pass through unseen.
+  const tip: Point[] = [{ x: 0, y: 0 }]
+  for (const scale of [0.5, 1])
+    for (let i = 0; i < 12; i++) {
+      const angle = (i / 12) * Math.PI * 2
+      tip.push({
+        x: Math.cos(angle) * r * scale,
+        y: Math.sin(angle) * r * scale,
+      })
+    }
+  let last: Point | undefined
+  const hit = new Set<string>()
+  return {
+    hit: hit as ReadonlySet<string>,
+    /** Moves the tip to `to`, and answers whether it took anything new. */
+    moveTo(to: Point): boolean {
+      const from = last ?? to
+      last = to
+      const steps = Math.max(
+        1,
+        Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / (r / 2))
+      )
+      let took = false
+      for (const mesh of meshes) {
+        if (hit.has(mesh.id) || !mesh.box) continue
+        const box = mesh.box
+        for (let step = 0; step <= steps; step++) {
+          const t = step / steps
+          const cx = from.x + (to.x - from.x) * t
+          const cy = from.y + (to.y - from.y) * t
+          if (
+            cx + r < box.x ||
+            cy + r < box.y ||
+            cx - r > box.x + box.width ||
+            cy - r > box.y + box.height
+          )
+            continue
+          if (
+            tip.some(
+              (p) =>
+                (mesh.fill && covers(mesh.fill, cx + p.x, cy + p.y)) ||
+                (mesh.stroke && covers(mesh.stroke, cx + p.x, cy + p.y))
+            )
+          ) {
+            hit.add(mesh.id)
+            took = true
+            break
+          }
+        }
+      }
+      return took
+    },
+  }
+}
+
 /** Compose a document-space change with each object's existing placement. */
 export function transformObjects(
   scene: VectorScene,

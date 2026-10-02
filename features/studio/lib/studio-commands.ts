@@ -405,6 +405,7 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "object.delete",
     label: "Delete objects",
     category: "Tools",
+    keybinds: ["delete", "backspace"],
     ...onVectorSelection({ type: "deleteVectorObjects" }),
   },
   {

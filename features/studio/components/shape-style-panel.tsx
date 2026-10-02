@@ -15,7 +15,6 @@ import {
 } from "@phosphor-icons/react"
 import { memo, useEffect, useId, useRef, type ReactNode } from "react"
 
-import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import type { AlignAnchor, Engine, EngineCommand, ShapeStyle } from "@/engine"
@@ -80,7 +79,7 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
 
   return (
     <div className="space-y-3">
-      <p className="text-xs font-medium">
+      <p className="border-b border-border pb-2 text-xs font-semibold">
         {selected ? "Selected objects" : "New shapes"}
       </p>
       <div role="group" aria-label="Paint" className="space-y-1.5">
@@ -112,14 +111,14 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
         onChange={(strokeWidth) => setStyle({ strokeWidth })}
       />
       <Choice
-        label="Cap"
+        label="Line ends"
         options={CAPS}
         value={style.strokeCap}
         disabled={!outlined}
         onChange={(strokeCap) => setStyle({ strokeCap })}
       />
       <Choice
-        label="Join"
+        label="Corners"
         options={JOINS}
         value={style.strokeJoin}
         disabled={!outlined}
@@ -244,9 +243,10 @@ function PaintRow({
   onColor(hex: string): void
 }) {
   const input = useRef<HTMLInputElement>(null)
-  // The picker's own `change`, not React's per-move `input`: one colour
-  // chosen is one restyle, and so one undo step rather than one per drag.
-  // Registered once; the handler it calls is kept current beside it.
+  // Every move of the picker restyles at once, as the colour is chosen, not
+  // when the picker is closed or Enter pressed; the engine folds the run into
+  // one undo step. Moves land at most once a frame, as the screen can show no
+  // more. Registered once; the handler it calls is kept current beside it.
   const latest = useRef(onColor)
   useEffect(() => {
     latest.current = onColor
@@ -254,9 +254,19 @@ function PaintRow({
   useEffect(() => {
     const element = input.current
     if (!element) return
-    const changed = () => latest.current(element.value)
-    element.addEventListener("change", changed)
-    return () => element.removeEventListener("change", changed)
+    let frame = 0
+    const moved = () => {
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        latest.current(element.value)
+      })
+    }
+    element.addEventListener("input", moved)
+    return () => {
+      element.removeEventListener("input", moved)
+      cancelAnimationFrame(frame)
+    }
   }, [])
   // Uncontrolled between choices, since the picker owns its value while it
   // is open; put back to what the shape has whenever that moves.
@@ -265,16 +275,25 @@ function PaintRow({
   }, [color])
   return (
     <div className="flex items-center gap-2">
-      <Button
+      {/* A switch, not a button with the paint's name on it: the name is a
+          label, and whether the paint is on is a state to flip. */}
+      <span className="flex-1 text-xs">{label}</span>
+      <button
         type="button"
-        variant="ghost"
-        size="sm"
-        aria-pressed={on}
-        className="flex-1 justify-start rounded-md border-transparent aria-pressed:border-primary aria-pressed:bg-primary/10"
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        className="relative h-4 w-7 shrink-0 rounded-full bg-muted-foreground/30 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50 aria-checked:bg-primary"
         onClick={onToggle}
       >
-        {label}
-      </Button>
+        <span
+          aria-hidden
+          className={cn(
+            "absolute top-0.5 left-0.5 size-3 rounded-full bg-background shadow-sm motion-safe:transition-transform",
+            on && "translate-x-3"
+          )}
+        />
+      </button>
       <label
         className={cn(
           "relative flex h-7 w-14 items-center justify-center rounded-md border border-foreground/15 focus-within:ring-2 focus-within:ring-ring/50",
@@ -320,28 +339,31 @@ function Choice<T extends string>({
 }) {
   const id = useId()
   return (
-    <div className="flex items-center justify-between gap-2">
-      <Label id={id} className="text-xs">
+    <div className="space-y-1">
+      <Label id={id} className="text-xs text-muted-foreground">
         {label}
       </Label>
+      {/* One control in a sunken track, the choice raised out of it, so the
+          options read as alternatives and not as more labels. */}
       <div
         role="group"
         aria-labelledby={id}
-        className="grid grid-cols-3 gap-0.5"
+        className={cn(
+          "grid grid-cols-3 gap-0.5 rounded-md bg-muted p-0.5",
+          disabled && "opacity-50"
+        )}
       >
         {options.map(([option, name]) => (
-          <Button
+          <button
             key={option}
             type="button"
-            variant="ghost"
-            size="xs"
             aria-pressed={value === option}
             disabled={disabled}
-            className="rounded-md border-transparent aria-pressed:border-primary aria-pressed:bg-primary/10"
+            className="rounded-[5px] py-1 text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none aria-pressed:bg-background aria-pressed:font-medium aria-pressed:text-foreground aria-pressed:shadow-sm"
             onClick={() => onChange(option)}
           >
             {name}
-          </Button>
+          </button>
         ))}
       </div>
     </div>

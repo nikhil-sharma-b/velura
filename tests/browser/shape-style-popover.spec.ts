@@ -59,13 +59,13 @@ test("a selected object's fill colour and outline width change from the shape op
   await page.mouse.click(cx, cy)
   await trigger.click()
   await expect(options.getByText("Selected objects")).toBeVisible()
-  await expect(options.getByRole("button", { name: "Fill" })).toHaveAttribute(
-    "aria-pressed",
+  await expect(options.getByRole("switch", { name: "Fill" })).toHaveAttribute(
+    "aria-checked",
     "true"
   )
   await expect(
-    options.getByRole("button", { name: "Outline", exact: true })
-  ).toHaveAttribute("aria-pressed", "false")
+    options.getByRole("switch", { name: "Outline", exact: true })
+  ).toHaveAttribute("aria-checked", "false")
   // The actions and the six anchors are there, each named.
   const actions = options.getByRole("group", { name: "Object actions" })
   for (const name of [
@@ -81,8 +81,19 @@ test("a selected object's fill colour and outline width change from the shape op
   ).toHaveCount(6)
 
   // A new fill colour lands on the object.
+  // A new fill colour lands on the object as it is picked, and a run of
+  // picks is one step to take back.
+  const original = await screenPixel(page, cx, cy)
+  await options.getByLabel("Fill colour").fill("#c0c000")
+  await expect.poll(() => screenPixel(page, cx, cy)).toEqual([192, 192, 0])
   await options.getByLabel("Fill colour").fill("#00c040")
   await expect.poll(() => screenPixel(page, cx, cy)).toEqual([0, 192, 64])
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("ControlOrMeta+z")
+  await expect.poll(() => screenPixel(page, cx, cy)).toEqual(original)
+  await page.keyboard.press("ControlOrMeta+Shift+z")
+  await expect.poll(() => screenPixel(page, cx, cy)).toEqual([0, 192, 64])
+  await trigger.click()
 
   // A fill-only object has no outline to size or colour until it has one.
   const width = options.getByRole("textbox", { name: "Outline width" })
@@ -90,7 +101,7 @@ test("a selected object's fill colour and outline width change from the shape op
   await expect(options.getByLabel("Outline colour")).toBeDisabled()
 
   // An outline, widened, reaches past the edge the fill stopped at.
-  await options.getByRole("button", { name: "Outline", exact: true }).click()
+  await options.getByRole("switch", { name: "Outline", exact: true }).click()
   await expect(width).toBeEnabled()
   await options.getByLabel("Outline colour").fill("#c02000")
   await width.fill("24")
@@ -103,6 +114,11 @@ test("a selected object's fill colour and outline width change from the shape op
   // The options read back what the object now has.
   await expect(width).toHaveValue("24")
   await expect(
-    options.getByRole("button", { name: "Outline", exact: true })
-  ).toHaveAttribute("aria-pressed", "true")
+    options.getByRole("switch", { name: "Outline", exact: true })
+  ).toHaveAttribute("aria-checked", "true")
+
+  // Delete takes the selected object away, as in every vector app.
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("Delete")
+  await expect.poll(() => screenPixel(page, cx, cy)).toEqual(paper)
 })
