@@ -86,7 +86,11 @@ export function EraserTrail({
     const draw = () => {
       frame = 0
       const now = performance.now()
-      while (points.length && now - points[0].time > TRAIL_LIFE) points.shift()
+      // While the pen is down its last two points stay, aged to nothing if it
+      // rests, so a frame slower than the trail's life still draws its head.
+      const keep = down === null ? 0 : 2
+      while (points.length > keep && now - points[0].time > TRAIL_LIFE)
+        points.shift()
       trail.setAttribute("d", ribbon(points, now))
       if (points.length > 0) frame = requestAnimationFrame(draw)
     }

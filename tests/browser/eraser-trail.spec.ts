@@ -3,10 +3,6 @@ import { expect, test } from "@playwright/test"
 test("the eraser leaves a trail while it is down, and the trail fades once it lifts", async ({
   page,
 }) => {
-  // The trail lives only 180ms behind the pen, and a frame on CI's software
-  // WebGPU can take longer than that, so the stroke runs on a paused clock
-  // stepped one frame at a time.
-  await page.clock.install()
   await page.goto("/")
   await expect(page.getByRole("main")).toHaveAttribute(
     "data-engine-status",
@@ -32,13 +28,10 @@ test("the eraser leaves a trail while it is down, and the trail fades once it li
     page.getByRole("button", { name: "Eraser tool" })
   ).toHaveAttribute("aria-pressed", "true")
   await page.mouse.move(x, y + 60)
-  await page.clock.pauseAt(Date.now() + 1000)
   await page.mouse.down()
   for (let i = 1; i <= 6; i++) await page.mouse.move(x + i * 15, y + 60)
-  await page.clock.runFor(16)
-  expect(await drawn()).toBe(true)
+  await expect.poll(drawn).toBe(true)
   await page.mouse.up()
-  await page.clock.resume()
   await expect.poll(drawn).toBe(false)
 })
 
