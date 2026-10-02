@@ -23,6 +23,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { GearIcon } from "@phosphor-icons/react"
 import { FormProvider, useForm } from "react-hook-form"
+import { IconButton } from "@/features/studio/components/icon-button"
 
 export function AppSettingsDialog() {
   const isMobile = useIsMobile()
@@ -45,12 +46,14 @@ export function AppSettingsDialog() {
   return (
     <ResponsiveDialog>
       <ResponsiveDialogTrigger asChild>
-        <Button
+        <IconButton
+          label="Settings"
+          side="bottom"
           variant="ghost"
           className="h-11 rounded-full p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <GearIcon className="size-6" />
-        </Button>
+        </IconButton>
       </ResponsiveDialogTrigger>
       <ResponsiveDialogContent className="gap-0 p-0 md:min-w-150">
         <ResponsiveDialogHeader>

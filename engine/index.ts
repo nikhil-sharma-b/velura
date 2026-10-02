@@ -16,6 +16,7 @@ import {
 } from "./store/export-svg"
 import { svgPngImage } from "./store/svg-images"
 import {
+  objectEraser,
   selectionStyle,
   selectObjects,
   type ShapeStyle,
@@ -437,6 +438,17 @@ export const isVectorTool = (tool: Tool): tool is VectorTool =>
 export type Tool = PaintTool | SelectionTool | VectorTool
 
 export type { ShapeStyle }
+
+/** The tools whose marks are lines: outlined whatever the style, never filled. */
+export const drawsOutlineOnly = (tool: Tool) =>
+  tool === "line" || tool === "pressure"
+
+/** What a new shape from this tool is given: the style, as the tool can take it. */
+export function toolShapeStyle(tool: Tool, style: ShapeStyle): ShapeStyle {
+  if (!drawsOutlineOnly(tool) || (style.stroke && !style.fill)) return style
+  return Object.freeze({ ...style, fill: false, stroke: true })
+}
+
 const sameShapeStyle = (a: ShapeStyle, b: ShapeStyle) =>
   (Object.keys(a) as (keyof ShapeStyle)[]).every((key) => a[key] === b[key])
 
@@ -576,6 +588,8 @@ export type EngineCommand =
       to: "canvas" | "selection"
     }
   | { type: "finishPenPath" }
+  /** Closes the polygon being clicked out, if it has three corners yet. */
+  | { type: "closePolygon" }
   | { type: "editVectorNode"; objectId: string; edit: NodeEdit }
   | { type: "deleteVectorNode" }
   | { type: "toggleVectorNode" }
@@ -2585,6 +2599,8 @@ export function createEngine(
         nodes?: PathNode[]
         placing?: boolean
         closed?: boolean
+        /** When the polygon's last corner was clicked, to tell a double-click. */
+        clickedAt?: number
         pressurePoints?: PressurePoint[]
         pressureTail?: {
           x: number
@@ -2753,7 +2769,8 @@ export function createEngine(
   function editScene(
     layerId: string,
     commands: readonly SceneCommand[],
-    label: string
+    label: string,
+    coalesceAs?: string
   ) {
     const document = requireDocument()
     const layer = findLayer(document, layerId)
@@ -2767,6 +2784,7 @@ export function createEngine(
     layer.scene = scene
     recordOperation(label, captureStructure(document), {
       scenes: [{ layerId, forward: [...commands], inverse }],
+      coalesceAs,
     })
     applyLayerChange()
   }
@@ -2874,7 +2892,21 @@ export function createEngine(
       }))
     // What a new shape is given is left as it was: the selection's own
     // style is read back from the scene as it is published.
-    editScene(layer.id, commands, "style objects")
+    // A colour dragged across the picker is one act, however many commands
+    // it sends, so a run of changes to the same fields of the same objects is
+    // one step, as a layer's sliders are.
+    const fields = change
+      ? Object.keys(change)
+          .filter((key) => key !== "type")
+          .sort()
+          .join(",")
+      : "color"
+    editScene(
+      layer.id,
+      commands,
+      "style objects",
+      `style:${layer.id}:${[...snapshot.vectorSelection].sort().join(",")}:${fields}`
+    )
   }
 
   async function beginVectorTransform() {
@@ -3118,7 +3150,7 @@ export function createEngine(
       transform: [1, 0, 0, 1, 0, 0],
       style: {
         fill:
-          style.fill && drag.tool !== "line" && drag.tool !== "pressure"
+          style.fill && !drawsOutlineOnly(drag.tool)
             ? {
                 ...paint,
                 color: style.fillColor ?? paint.color,
@@ -3127,8 +3159,7 @@ export function createEngine(
             : null,
         stroke:
           style.stroke ||
-          drag.tool === "line" ||
-          drag.tool === "pressure" ||
+          drawsOutlineOnly(drag.tool) ||
           (drag.tool === "pen" && !drag.closed)
             ? {
                 ...paint,
@@ -3143,6 +3174,63 @@ export function createEngine(
   }
 
   /** One frame of a shape drag: drawn into its layer, added as the pen lifts. */
+  /**
+   * The eraser on a vector layer (19): the objects its tip touches drop out
+   * of the layer as it moves, and lifting it removes them as one step.
+   */
+  let vectorErase:
+    | {
+        layerId: string
+        scene: VectorScene
+        eraser: ReturnType<typeof objectEraser>
+        ended: boolean
+      }
+    | undefined
+
+  function drawVectorErase() {
+    const erase = vectorErase!
+    let took = false
+    samples.drain((x, y) => {
+      if (erase.eraser.moveTo({ x: toDocX(x, y), y: toDocY(x, y) })) took = true
+    })
+    const { hit } = erase.eraser
+    if (erase.ended) {
+      vectorErase = undefined
+      forgetGestureInput()
+      if (hit.size) {
+        editScene(
+          erase.layerId,
+          [...hit].map((id) => ({ type: "remove" as const, id })),
+          "erase objects"
+        )
+        publish({
+          vectorSelection: snapshot.vectorSelection.filter(
+            (id) => !hit.has(id)
+          ),
+        })
+      }
+      if (snapshot.status === "ready") render()
+      return
+    }
+    if (took) {
+      drawScene(erase.layerId, {
+        objects: erase.scene.objects.filter((o) => !hit.has(o.id)),
+      })
+      if (snapshot.status === "ready") render()
+    }
+    frame = requestAnimationFrame(drawFrame)
+  }
+
+  /** Puts back what an abandoned vector erase took out of view. */
+  function dropVectorErase() {
+    const erase = vectorErase
+    if (!erase) return
+    vectorErase = undefined
+    forgetGestureInput()
+    drawScene(erase.layerId, erase.scene)
+    if (snapshot.status === "ready") render()
+  }
+
   function drawShapeDrag() {
     const drag = shapeDrag!
     const pressureSink = (x: number, y: number, pressure: number) => {
@@ -3298,6 +3386,28 @@ export function createEngine(
     }
     if (drag.tool !== "pen" || drag.placing)
       frame = requestAnimationFrame(drawFrame)
+  }
+
+  /**
+   * Closes a polygon still being clicked out and keeps it, if it has the three
+   * corners a shape needs; with fewer it is left for the caller to drop.
+   */
+  function closePolygon() {
+    const drag = shapeDrag
+    if (
+      drag?.tool !== "polygon" ||
+      drag.ended ||
+      (drag.points?.length ?? 0) < 3
+    )
+      return
+    endPolygon(drag)
+    drawShapeDrag()
+  }
+
+  /** Ends a polygon at its first corner, to be kept as the next frame draws. */
+  function endPolygon(drag: NonNullable<typeof shapeDrag>) {
+    drag.point = drag.anchor
+    drag.ended = true
   }
 
   /** Drops a shape drag, its layer drawn as it was. */
@@ -4102,6 +4212,10 @@ export function createEngine(
       drawShapeDrag()
       return
     }
+    if (vectorErase) {
+      drawVectorErase()
+      return
+    }
     if (marquee) {
       drawMarquee()
       return
@@ -4211,6 +4325,27 @@ export function createEngine(
    * One click of the polygonal lasso: a new vertex, or — on the first vertex
    * or a double-click — the outline closed and made the selection.
    */
+  /**
+   * Where a click lands on a polygon being clicked out: back on its first
+   * corner once it has three, or on its last corner again within a
+   * double-click. Both polygon tools close by the same rule, each at its reach.
+   */
+  function polygonClick(
+    points: readonly Point[],
+    point: Point,
+    clickedAt: number,
+    time: number,
+    reach: number
+  ) {
+    const near = (other: Point) =>
+      Math.hypot(point.x - other.x, point.y - other.y) <= reach
+    return {
+      onFirst: points.length >= 3 && near(points[0]),
+      doubled:
+        time - clickedAt <= DOUBLE_CLICK_MS && near(points[points.length - 1]),
+    }
+  }
+
   function clickPolygon(point: Point, time: number) {
     if (!marquee || marquee.shape !== "polygon") {
       marquee = {
@@ -4225,14 +4360,14 @@ export function createEngine(
       return
     }
     const polygon = marquee
-    const reach = CLOSE_RADIUS * Math.hypot(toDoc[0], toDoc[1])
-    const near = (other: Point) =>
-      Math.hypot(point.x - other.x, point.y - other.y) <= reach
-    const last = polygon.points[polygon.points.length - 1]
-    const closes =
-      (polygon.points.length >= 3 && near(polygon.points[0])) ||
-      (time - polygon.clickedAt <= DOUBLE_CLICK_MS && near(last))
-    if (closes) {
+    const { onFirst, doubled } = polygonClick(
+      polygon.points,
+      point,
+      polygon.clickedAt,
+      time,
+      CLOSE_RADIUS * Math.hypot(toDoc[0], toDoc[1])
+    )
+    if (onFirst || doubled) {
       // Too few corners to hold any area: the outline is dropped rather than
       // made the selection, so a stray double-click never deselects.
       polygon.closing = polygon.points.length < 3 ? "drop" : "commit"
@@ -4336,7 +4471,7 @@ export function createEngine(
     if (hit?.hit) {
       const doubleClick =
         lastNodeClick &&
-        time - lastNodeClick.time < 400 &&
+        time - lastNodeClick.time < DOUBLE_CLICK_MS &&
         Math.hypot(
           point.x - lastNodeClick.point.x,
           point.y - lastNodeClick.point.y
@@ -4502,25 +4637,28 @@ export function createEngine(
       // Shift squares the shape for as long as it is held.
       shiftLatched = false
       if (tool === "polygon" && shapeDrag?.tool === "polygon") {
-        if (
-          Math.hypot(
-            anchor.x - shapeDrag.anchor.x,
-            anchor.y - shapeDrag.anchor.y
-          ) <
-            6 / snapshot.view.zoom &&
-          (shapeDrag.points?.length ?? 0) >= 3
-        ) {
-          shapeDrag.point = shapeDrag.anchor
-          shapeDrag.ended = true
-        } else {
-          shapeDrag.points!.push(anchor)
+        const points = shapeDrag.points!
+        // A double-click places its corner with the first click and closes
+        // with the second, as a click back on the first corner does.
+        const { onFirst, doubled } = polygonClick(
+          points,
+          anchor,
+          shapeDrag.clickedAt!,
+          time,
+          6 / snapshot.view.zoom
+        )
+        if (points.length >= 3 && (onFirst || doubled)) endPolygon(shapeDrag)
+        else if (!doubled) {
+          points.push(anchor)
           shapeDrag.point = anchor
+          shapeDrag.clickedAt = time
         }
       } else
         shapeDrag = {
           layerId: layer.id,
           tool,
           points: tool === "polygon" ? [anchor] : undefined,
+          clickedAt: tool === "polygon" ? time : undefined,
           anchor,
           point: anchor,
           ended: false,
@@ -4533,6 +4671,25 @@ export function createEngine(
     // An image or vector layer refuses it too, unless the stroke is going to
     // its mask: its pixels are drawn from a picture or from shapes.
     const layer = activeLayer(doc)
+    // The eraser on a vector layer takes whole objects rather than pixels,
+    // which it has none of; on its mask it erases the mask as anywhere else.
+    if (
+      tool === "eraser" &&
+      layer.kind === "vector" &&
+      !layer.locked &&
+      !(doc.paintingMask && layer.mask)
+    ) {
+      cancelVectorTransform()
+      vectorErase = {
+        layerId: layer.id,
+        scene: layer.scene,
+        eraser: objectEraser(layer.scene, eraser.shape.radius),
+        ended: false,
+      }
+      samples.push(screenX, screenY, pressure, tiltX, tiltY, time)
+      scheduleFrame()
+      return
+    }
     const drawnFrom = layer.kind === "vector" || layer.image
     if (layer.locked || (drawnFrom && !(doc.paintingMask && layer.mask))) return
     // The artist is painting, so the canvas shows what they are painting on.
@@ -4585,6 +4742,10 @@ export function createEngine(
       dropShapeDrag()
       return
     }
+    if (vectorErase) {
+      dropVectorErase()
+      return
+    }
     if (marquee) {
       // A polygon loses only the vertex the gesture was placing.
       if (marquee.shape === "polygon" && marquee.points.length > 1) {
@@ -4630,6 +4791,11 @@ export function createEngine(
       }
       if (shapeDrag.tool === "polygon" && !shapeDrag.ended) return
       shapeDrag.ended = true
+      scheduleFrame()
+      return
+    }
+    if (vectorErase) {
+      vectorErase.ended = true
       scheduleFrame()
       return
     }
@@ -5301,6 +5467,9 @@ export function createEngine(
           applyLayerChange()
           break
         }
+        case "closePolygon":
+          closePolygon()
+          break
         case "finishPenPath":
           if (shapeDrag?.tool === "pen") {
             shapeDrag.ended = true
@@ -6321,15 +6490,25 @@ export function createEngine(
           break
         }
         case "setTool":
+          // A polygon clicked out far enough to be a shape is kept, not lost
+          // with the tool; anything less is dropped with it.
+          closePolygon()
           cancelStroke()
-          // A polygon half clicked out is dropped with the tool drawing it.
+          // A lasso polygon half clicked out is dropped with the tool.
           dropMarquee()
           cancelVectorTransform()
           tool = command.tool
           resampler = createStrokeResampler(brushSpacing(activeBrush()))
           applyBrushTextures()
           if (snapshot.status === "ready") render()
-          publish({ tool })
+          // A stroke left selected as it was drawn is let go with the tool
+          // that drew it, so the next tool's options are its own; only the
+          // tools that work on selected objects keep hold of them.
+          publish(
+            tool === "objectSelect" || tool === "node"
+              ? { tool }
+              : { tool, vectorSelection: [] }
+          )
           break
         case "setColor": {
           if (!parseHex(command.hex))

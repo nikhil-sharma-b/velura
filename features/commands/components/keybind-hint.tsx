@@ -1,5 +1,7 @@
 "use client"
 
+import { Kbd } from "@/components/ui/kbd"
+
 import { useKeybindLabel } from "../hooks/use-keybinds"
 import type { Registry } from "../lib/registry"
 
@@ -16,12 +18,5 @@ export function KeybindHint<Context>({
 }) {
   const label = useKeybindLabel(registry, id)
   if (!label) return null
-  return (
-    <kbd
-      data-slot="kbd"
-      className="ml-1 font-mono text-[0.65rem] text-tooltip-foreground/70"
-    >
-      {label}
-    </kbd>
-  )
+  return <Kbd>{label}</Kbd>
 }

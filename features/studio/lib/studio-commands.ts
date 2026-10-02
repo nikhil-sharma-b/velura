@@ -55,6 +55,13 @@ export interface StudioContext {
    * of the engine.
    */
   openFeather: () => void
+  /**
+   * Asks the artist to confirm emptying a layer, and clears it only once they
+   * do; cancelling asks nothing of the engine.
+   */
+  confirmClear: (layer: LayerSummary) => void
+  /** As `confirmClear`, for deleting a layer or a group. */
+  confirmDelete: (layer: LayerSummary) => void
 }
 
 type StudioCommand = Command<StudioContext>
@@ -352,7 +359,7 @@ export const studioCommands = createRegistry<StudioContext>([
   },
   {
     id: "tool.pressure",
-    label: "Vector pressure tool",
+    label: "Vector brush tool",
     category: "Tools",
     ...dispatching({ type: "setTool", tool: "pressure" }),
   },
@@ -365,6 +372,15 @@ export const studioCommands = createRegistry<StudioContext>([
       !!engine &&
       engine.getSnapshot().tool === "pen" &&
       engine.getSnapshot().penNodes.length >= 2,
+  },
+  {
+    id: "path.closePolygon",
+    label: "Close polygon",
+    category: "Tools",
+    keybinds: ["enter"],
+    ...dispatching({ type: "closePolygon" }),
+    available: ({ engine }) =>
+      !!engine && engine.getSnapshot().tool === "polygon",
   },
   {
     id: "node.delete",
@@ -400,6 +416,7 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "object.delete",
     label: "Delete objects",
     category: "Tools",
+    keybinds: ["delete", "backspace"],
     ...onVectorSelection({ type: "deleteVectorObjects" }),
   },
   {
@@ -511,6 +528,11 @@ export const studioCommands = createRegistry<StudioContext>([
       (layer) =>
         (layer.kind === "vector" && !layer.locked) || isPaintable(layer)
     ),
+    // Clearing wipes every mark on the layer, so it waits for a yes.
+    run: (context) => {
+      const layer = targetLayer(context)
+      if (layer) context.confirmClear(layer)
+    },
   },
   // Filters (18) open on the layer and wait in a dialog for their settings;
   // the dialog is the engine's open filter, not a state of its own.
@@ -538,6 +560,11 @@ export const studioCommands = createRegistry<StudioContext>([
         return leafCount(engine!.getSnapshot().layers) > removed
       }
     ),
+    // Deleting takes the layer and all on it, so it waits for a yes.
+    run: (context) => {
+      const layer = targetLayer(context)
+      if (layer) context.confirmDelete(layer)
+    },
   },
   {
     id: "layer.toggleVisible",
@@ -720,7 +747,7 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "view.toggleRulers",
     label: "Toggle rulers",
     category: "View",
-    keybinds: ["mod+r"],
+    keybinds: ["shift+r"],
     available: hasEngine,
     // A preference (08), remembered as well as shown, so a reload keeps it.
     run: ({ engine }) => {

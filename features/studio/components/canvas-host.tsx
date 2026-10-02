@@ -13,6 +13,11 @@ import {
   CopySimpleIcon,
   CornersOutIcon,
   CircleIcon,
+  CursorIcon,
+  HexagonIcon,
+  LineSegmentIcon,
+  PaintBrushIcon,
+  PenNibIcon,
   CircleDashedIcon,
   DropHalfIcon,
   WaveSineIcon,
@@ -22,7 +27,6 @@ import {
   MagnifyingGlassPlusIcon,
   LassoIcon,
   MagicWandIcon,
-  PaletteIcon,
   PolygonIcon,
   RectangleIcon,
   SelectionIcon,
@@ -60,6 +64,9 @@ import {
   INITIAL_SNAPSHOT,
   isSelectionTool,
   isVectorTool,
+  drawsOutlineOnly,
+  toolShapeStyle,
+  type VectorTool,
   type SelectionTool,
   type ShapeStyle,
   type Tool,
@@ -92,11 +99,13 @@ import {
   ImageTransform,
   LayerTransform,
   VectorTransform,
+  PolygonHint,
   VectorSelection,
   VectorNodes,
 } from "./image-transform"
-import { RulersAndGuides } from "./rulers-and-guides"
+import { RULER_SIZE, RulersAndGuides } from "./rulers-and-guides"
 import { useRulersVisible } from "../lib/ruler-preference"
+import { EraserTrail } from "./eraser-trail"
 import { StraightEdgeOverlay } from "./straight-edge"
 import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor"
 import { BrushIcon, EraserToolIcon } from "./brush-icon"
@@ -108,6 +117,10 @@ import { LayerPanel } from "./layer-panel"
 import { ShapeStylePanel } from "./shape-style-panel"
 import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
+import {
+  ConfirmLayerDialog,
+  type LayerConfirmation,
+} from "./confirm-layer-dialog"
 import { FeatherDialog } from "./feather-dialog"
 import { FilterDialog } from "./filter-dialog"
 import {
@@ -124,16 +137,48 @@ import { KeybindHint } from "@/features/commands/components/keybind-hint"
 
 function RailAction({
   side = "right",
+  className,
   ...props
 }: ComponentProps<typeof IconButton>) {
-  return <IconButton {...props} side={side} className="rounded-lg" />
+  return (
+    <IconButton
+      {...props}
+      side={side}
+      className={cn("rounded-lg", className)}
+    />
+  )
 }
 
 type FamilyMember = {
   tool: SelectionTool
   label: string
+  /** How a sibling's tooltip names it, mid-sentence. */
+  name: string
   icon: React.ReactNode
 }
+
+/**
+ * The vector tools' rail buttons, in rail order and drawn as the vector apps
+ * artists know draw them: first the two arrows that act on what is drawn — a
+ * solid one picks objects and a hollow one their points, as in Illustrator —
+ * then the freehand tools, the pen and the brush, then the shapes.
+ */
+const VECTOR_TOOL_RAIL = {
+  objectSelect: { label: "Select objects", icon: <CursorIcon weight="fill" /> },
+  node: { label: "Edit points tool", icon: <CursorIcon /> },
+  pen: { label: "Pen tool", icon: <PenNibIcon /> },
+  pressure: { label: "Vector brush tool", icon: <PaintBrushIcon /> },
+  rectangle: { label: "Rectangle tool", icon: <RectangleIcon /> },
+  ellipse: { label: "Ellipse tool", icon: <CircleIcon /> },
+  polygon: { label: "Polygon tool", icon: <HexagonIcon /> },
+  line: { label: "Line tool", icon: <LineSegmentIcon /> },
+} satisfies Record<VectorTool, { label: string; icon: React.ReactNode }>
+/** The shape tools, which share one rail slot so they cost one button. */
+const SHAPE_TOOLS = ["rectangle", "ellipse", "polygon", "line"] as const
+type ShapeTool = (typeof SHAPE_TOOLS)[number]
+const VECTOR_RAIL_ORDER = (
+  Object.keys(VECTOR_TOOL_RAIL) as VectorTool[]
+).filter((tool) => !(SHAPE_TOOLS as readonly VectorTool[]).includes(tool))
 
 /** The selection tools, by the rail slot each pair shares (09). */
 const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
@@ -141,27 +186,36 @@ const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
     {
       tool: "rectSelect",
       label: "Rectangle select tool",
+      name: "rectangle select",
       icon: <SelectionIcon />,
     },
     {
       tool: "ellipseSelect",
       label: "Ellipse select tool",
+      name: "ellipse select",
       icon: <CircleDashedIcon />,
     },
   ],
   [
-    { tool: "lasso", label: "Lasso tool", icon: <LassoIcon /> },
+    { tool: "lasso", label: "Lasso tool", name: "lasso", icon: <LassoIcon /> },
     {
       tool: "polygonLasso",
       label: "Polygonal lasso tool",
+      name: "polygonal lasso",
       icon: <PolygonIcon />,
     },
   ],
   [
-    { tool: "magicWand", label: "Magic wand tool", icon: <MagicWandIcon /> },
+    {
+      tool: "magicWand",
+      label: "Magic wand tool",
+      name: "magic wand",
+      icon: <MagicWandIcon />,
+    },
     {
       tool: "moveSelection",
       label: "Move selection outline tool",
+      name: "move selection outline",
       icon: <ArrowsOutCardinalIcon />,
     },
   ],
@@ -171,7 +225,8 @@ const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
  * Two sibling tools in one rail slot, as the rail has height for no more:
  * the one last in the hand shows, a press picks it up, and a second press
  * swaps to its sibling. The slot follows the tool in the hand rather than
- * its own presses, so a keybind moves it as a press does.
+ * its own presses, so a keybind moves it as a press does. A pair of dots
+ * and the tooltip tell the slot holds two.
  */
 function ToolFamilySlot({
   members,
@@ -193,13 +248,193 @@ function ToolFamilySlot({
       variant={held ? "default" : "ghost"}
       size="icon"
       aria-pressed={!!held}
+      detail={`${WORKS_ON.selection}. Press again for ${sibling.name}`}
       onClick={() => onPick(held ? sibling.tool : shown.tool)}
-      className="rounded-lg"
+      className="relative"
     >
       {shown.icon}
+      {/* A dot per sibling, the one in the slot filled: unlike the brush
+        button's corner notch, which opens a menu, this says a press swaps. */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute bottom-0.5 left-1/2 flex -translate-x-1/2 gap-0.5"
+      >
+        {members.map((member) => (
+          <span
+            key={member.tool}
+            className={cn(
+              "size-0.75 rounded-full bg-current",
+              member === shown ? "opacity-80" : "opacity-30"
+            )}
+          />
+        ))}
+      </span>
     </RailAction>
   )
 }
+
+/**
+ * The shape tools in one rail slot, as the rail has height for no more. The
+ * slot shows the shape last in the hand: a press picks it up, and a press
+ * while it is held opens the menu of every shape. Like the selection pairs,
+ * the slot follows the tool in the hand, so a keybind moves it too.
+ */
+function ShapeToolSlot({
+  tool,
+  onPick,
+}: {
+  tool: Tool
+  onPick(tool: ShapeTool): void
+}) {
+  const [shown, setShown] = useState<ShapeTool>(SHAPE_TOOLS[0])
+  const [open, setOpen] = useState(false)
+  const commands = useBoundRegistry(studioCommands)
+  const held = SHAPE_TOOLS.find((shape) => shape === tool)
+  if (held && held !== shown) setShown(held)
+  return (
+    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+      <PopoverPrimitive.Anchor asChild>
+        <RailAction
+          label={VECTOR_TOOL_RAIL[shown].label}
+          command={`tool.${shown}`}
+          variant={held ? "default" : "ghost"}
+          size="icon"
+          aria-pressed={!!held}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          detail={`${WORKS_ON.vector}. Press again for the other shapes`}
+          onClick={() => (held ? setOpen((was) => !was) : onPick(shown))}
+          onContextMenu={(event) => {
+            event.preventDefault()
+            setOpen(true)
+          }}
+          className="relative"
+        >
+          {VECTOR_TOOL_RAIL[shown].icon}
+          <MenuNotch />
+        </RailAction>
+      </PopoverPrimitive.Anchor>
+      <PopoverPrimitive.Portal>
+        <PopoverPrimitive.Content
+          side="right"
+          align="start"
+          sideOffset={10}
+          collisionPadding={12}
+          role="menu"
+          aria-label="Shape tools"
+          className="z-50 flex flex-col gap-0.5 rounded-xl border bg-background p-1 shadow-xl outline-none"
+        >
+          {SHAPE_TOOLS.map((shape) => (
+            <button
+              key={shape}
+              type="button"
+              role="menuitemradio"
+              aria-checked={shape === tool}
+              onClick={() => {
+                setOpen(false)
+                onPick(shape)
+              }}
+              className={cn(
+                "flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm outline-none hover:bg-accent focus-visible:bg-accent [&_svg]:size-4",
+                shape === tool && "bg-accent text-accent-foreground"
+              )}
+            >
+              {VECTOR_TOOL_RAIL[shape].icon}
+              <span className="flex-1">
+                {VECTOR_TOOL_RAIL[shape].label.replace(/ tool$/, "")}
+              </span>
+              <KeybindHint registry={commands} id={`tool.${shape}`} />
+            </button>
+          ))}
+        </PopoverPrimitive.Content>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
+  )
+}
+
+/**
+ * The corner mark of a button that opens a panel beside it, as against the
+ * dots on a slot whose second press swaps the tool. It takes the top corner,
+ * clear of a setting's value underneath. Its button is `relative`.
+ */
+function MenuNotch() {
+  return (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute top-1 right-1 size-1 bg-current opacity-60 [clip-path:polygon(0_0,100%_0,100%_100%)]"
+    />
+  )
+}
+
+/**
+ * What a new shape is given, drawn: a square filled, outlined, or both, so
+ * the trigger says which at a glance where a width alone could not.
+ */
+function ShapePaintIcon({ style }: { style: ShapeStyle }) {
+  // With neither paint on, a faint dashed square, so the trigger is never
+  // blank.
+  const bare = !style.fill && !style.stroke
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden className="size-4">
+      <rect
+        x="2"
+        y="2"
+        width="12"
+        height="12"
+        rx="1.5"
+        fill={style.fill ? "currentColor" : "none"}
+        fillOpacity={style.stroke ? 0.35 : 0.85}
+        stroke={style.stroke || bare ? "currentColor" : "none"}
+        strokeOpacity={bare ? 0.5 : 1}
+        strokeWidth="1.5"
+        strokeDasharray={bare ? "2 2" : undefined}
+      />
+    </svg>
+  )
+}
+
+/**
+ * One kind of tool in the rail: the paint tools, the selection tools, or the
+ * vector tools. A kind that cannot act on the layer in hand is dimmed, not
+ * hidden, so the rail keeps its shape and the tools stay where the hand knows
+ * them; pointing at one brings it back up to be read.
+ */
+function ToolGroup({
+  label,
+  dimmed = false,
+  children,
+}: {
+  label: string
+  dimmed?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={label}
+      className={cn("flex flex-col items-center gap-1", dimmed && DIMMED_TOOL)}
+    >
+      {children}
+    </div>
+  )
+}
+
+/** A tool that cannot act on the layer in hand, brought up when pointed at. */
+const DIMMED_TOOL =
+  "opacity-40 motion-safe:transition-opacity focus-within:opacity-100 hover:opacity-100"
+
+/** The rule between two kinds of tool. */
+const RailDivider = () => (
+  <span aria-hidden className="my-0.5 h-px w-5 shrink-0 bg-studio-edge" />
+)
+
+/** Which layers each kind of tool works on, as its tooltip says. */
+const WORKS_ON = {
+  paint: "Works on paint layers",
+  eraser: "Works on paint and vector layers",
+  selection: "Works on any layer",
+  vector: "Works on vector layers",
+} as const
 
 /** Compact triggers keep adjustments close without covering the artwork. */
 function QuickSetting({
@@ -224,12 +459,13 @@ function QuickSetting({
           label={`${label}: ${value}`}
           side="right"
           variant="ghost"
-          className="h-auto w-8 flex-col gap-0.5 rounded-lg px-0 py-1"
+          className="relative h-auto w-8 flex-col gap-0.5 rounded-lg px-0 py-1"
         >
           {icon}
           <span className="text-[10px] leading-none font-medium text-foreground/75 tabular-nums">
             {readout}
           </span>
+          <MenuNotch />
         </IconButton>
       </PopoverPrimitive.Trigger>
       <PopoverPrimitive.Portal>
@@ -405,6 +641,7 @@ export function CanvasHost({
   const [eraserOpen, setEraserOpen] = useState(false)
   const [featherRadius, setFeatherRadius] = useState(10)
   const [featherOpen, setFeatherOpen] = useState(false)
+  const [confirming, setConfirming] = useState<LayerConfirmation | null>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [pressureOpen, setPressureOpen] = useState(false)
   /**
@@ -676,6 +913,8 @@ export function CanvasHost({
     openPreferences: () => setPreferencesOpen(true),
     toggleZen: () => setZen((on) => !on),
     openFeather: () => setFeatherOpen(true),
+    confirmClear: (layer) => setConfirming({ layer, action: "clear" }),
+    confirmDelete: (layer) => setConfirming({ layer, action: "delete" }),
   }
   // The shape options are memoised, so they get one handle on the commands
   // for good, reading whichever context is current when one runs.
@@ -687,8 +926,31 @@ export function CanvasHost({
     (id: string) => runStudioCommand(id, latestContext.current),
     []
   )
-  /** The selection's style while there is one, else what the tools give. */
-  const shapeOptions = snapshot.selectionStyle ?? snapshot.shapeStyle
+  /** The selection's style while there is one, else what the tool in the
+   * hand gives: a line or a brush stroke is outlined whatever the style says. */
+  const toolStyle = useMemo(
+    () => toolShapeStyle(snapshot.tool, snapshot.shapeStyle),
+    [snapshot.tool, snapshot.shapeStyle]
+  )
+  const shapeOptions = snapshot.selectionStyle ?? toolStyle
+  // With a vector tool in the hand, the size setting is the outline width.
+  const vectorWidth = isVectorTool(snapshot.tool)
+  // The layer in hand decides which kinds of tool can act on it, as the
+  // engine does: a locked layer or a group takes no tool but a selection;
+  // shapes go only onto a vector layer; paint never does, and a placed photo
+  // takes neither brush nor eraser until it is painted on, save into either's
+  // mask.
+  const handLayer = findLayer(snapshot.layers, snapshot.activeLayerId)
+  const untouchable =
+    !handLayer || handLayer.kind === "group" || !!handLayer.locked
+  const onVectorLayer = handLayer?.kind === "vector"
+  const intoMask = snapshot.paintingMask && !!handLayer?.mask
+  const onPlacedPhoto =
+    handLayer?.kind === "raster" && handLayer.image && !intoMask
+  const brushDimmed =
+    untouchable || (onVectorLayer && !intoMask) || onPlacedPhoto
+  const eraserDimmed = untouchable || onPlacedPhoto
+  const vectorDimmed = untouchable || !onVectorLayer
   // The artist's own keybinds over the defaults. While preferences are open
   // the keys are being rebound, not used.
   const commands = useBoundRegistry(studioCommands)
@@ -810,6 +1072,10 @@ export function CanvasHost({
   const saved = savedBrush ?? INITIAL_SNAPSHOT.brush
   const activeTip =
     snapshot.tool === "eraser" ? snapshot.eraser : snapshot.brush
+  /** Half the size setting, as a brush's radius or half an outline's width. */
+  const sizeRadius = vectorWidth
+    ? shapeOptions.strokeWidth / 2
+    : activeTip.shape.radius
   const brushEdited = isBrushEdited(saved, snapshot.brush)
 
   const unavailable = snapshot.status === "unavailable"
@@ -890,6 +1156,8 @@ export function CanvasHost({
           }
           if (
             !shapes &&
+            // The eraser takes whole objects from a vector layer (19).
+            snapshot.tool !== "eraser" &&
             selected.kind === "vector" &&
             !selected.locked &&
             !isSelectionTool(snapshot.tool) &&
@@ -898,7 +1166,7 @@ export function CanvasHost({
             toast.info(
               <>
                 <strong className="font-semibold">{selected.name}</strong> holds
-                shapes. Draw on it with the rectangle tool.
+                shapes. Draw on it with the shape and pen tools.
               </>,
               { id: "vector-layer" }
             )
@@ -962,9 +1230,10 @@ export function CanvasHost({
           they stay when zen puts the controls away. The rulers are controls,
           drawn into a layer after them, and go with zen. */}
       {/* What is on the canvas itself, selection and transform boxes, comes
-          first, so the guides are over it and can be taken hold of there. */}
+          first, so the guides are over it and can be taken hold of there. It
+          is the artwork's, not a control, so it stays in zen. */}
       {snapshot.status === "ready" && (
-        <div className="contents" hidden={zen}>
+        <>
           {engine && (
             <>
               <VectorNodes
@@ -977,6 +1246,7 @@ export function CanvasHost({
                 snapshot={snapshot}
                 canvas={canvasElement}
               />
+              <PolygonHint snapshot={snapshot} />
             </>
           )}
           {engine && snapshot.vectorTransform && (
@@ -1000,7 +1270,7 @@ export function CanvasHost({
               canvas={canvasElement}
             />
           )}
-        </div>
+        </>
       )}
       {snapshot.status === "ready" && engine && (
         <>
@@ -1009,6 +1279,10 @@ export function CanvasHost({
             snapshot={snapshot}
             canvas={canvasElement}
             rulerLayer={rulerLayer}
+          />
+          <EraserTrail
+            canvas={canvasElement}
+            active={snapshot.tool === "eraser"}
           />
           {snapshot.straightEdge && (
             <StraightEdgeOverlay
@@ -1020,7 +1294,18 @@ export function CanvasHost({
         </>
       )}
       {snapshot.status === "ready" && (
-        <div className="contents" hidden={zen} data-testid="studio-chrome">
+        // The controls float in a box that steps in past the rulers while
+        // they show, so nothing sits under them; only the controls move, never
+        // the canvas. The box itself lets the pointer through to the canvas.
+        <div
+          className="pointer-events-none absolute right-0 bottom-0 motion-safe:transition-[top,left] motion-safe:duration-150 motion-safe:ease-out [&>*:not(.pointer-events-none)]:pointer-events-auto"
+          style={{
+            top: snapshot.rulersVisible ? RULER_SIZE : 0,
+            left: snapshot.rulersVisible ? RULER_SIZE : 0,
+          }}
+          hidden={zen}
+          data-testid="studio-chrome"
+        >
           <div className="pointer-events-none absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-studio-edge bg-studio-surface/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
             <span>{documentName || DEFAULT_DOCUMENT_NAME}</span>
             {snapshot.loading && (
@@ -1191,105 +1476,262 @@ export function CanvasHost({
               takes strokes. It takes the pointer, padding and all, so its
               scrollbar can be dragged. Its top and its height share one
               offset. */}
-            <div
-              data-testid="tool-rails"
-              className="absolute top-[4.375rem] left-0 flex max-h-[calc(100%-4.375rem)] flex-col gap-3 overflow-y-auto overscroll-contain px-3 pb-3 [scrollbar-width:thin] *:shrink-0"
-            >
+            {/* The rails and, beside them, what only the tool in the hand
+                offers: those come and go with the tool, so they sit in a card
+                of their own rather than stretching the rails, which keep one
+                height whichever tool is held. */}
+            <div className="pointer-events-none absolute top-[4.375rem] bottom-0 left-0 flex items-start">
               <div
-                aria-label="Brush adjustments"
-                className="flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
+                data-testid="tool-rails"
+                className="pointer-events-auto flex max-h-full flex-col gap-3 overflow-y-auto overscroll-contain px-3 pb-3 [scrollbar-width:thin] *:shrink-0"
               >
-                {snapshot.tool === "eraser" ? (
+                <div
+                  aria-label="Brush adjustments"
+                  className="flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
+                >
+                  {snapshot.tool === "eraser" ? (
+                    <PopoverPrimitive.Root
+                      open={eraserOpen}
+                      onOpenChange={setEraserOpen}
+                    >
+                      <PopoverPrimitive.Trigger asChild>
+                        <IconButton
+                          variant="ghost"
+                          size="sm"
+                          label={`Choose eraser: ${snapshot.eraser.name}`}
+                          side="right"
+                          className="size-8 rounded-lg p-0"
+                        >
+                          <span className="flex items-center gap-2">
+                            <EraserToolIcon
+                              kind={
+                                snapshot.eraser.id === "eraser:pressure"
+                                  ? "pressure"
+                                  : "solid"
+                              }
+                            />
+                          </span>
+                        </IconButton>
+                      </PopoverPrimitive.Trigger>
+                      <PopoverPrimitive.Portal>
+                        <PopoverPrimitive.Content
+                          side="right"
+                          align="end"
+                          sideOffset={10}
+                          collisionPadding={12}
+                          aria-label="Choose an eraser"
+                          className="z-50 w-72 rounded-xl border bg-background p-3 shadow-xl"
+                        >
+                          <h2 className="mb-2 text-sm font-medium">Erasers</h2>
+                          {(["solid", "pressure"] as const).map((kind) => (
+                            <button
+                              key={kind}
+                              type="button"
+                              aria-pressed={
+                                snapshot.eraser.id === `eraser:${kind}`
+                              }
+                              className="mb-1 flex w-full items-center gap-3 rounded-lg border border-transparent p-3 text-left hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
+                              onClick={() => {
+                                void engine?.dispatch({
+                                  type: "setEraser",
+                                  kind,
+                                })
+                                setEraserOpen(false)
+                              }}
+                            >
+                              <EraserToolIcon kind={kind} className="size-5" />
+                              <span>
+                                <span className="block text-xs font-medium">
+                                  {kind === "solid"
+                                    ? "Solid eraser"
+                                    : "Pressure eraser"}
+                                </span>
+                                <span className="block text-[10px] text-muted-foreground">
+                                  {kind === "solid"
+                                    ? "Hard edge · constant size at any pressure"
+                                    : "Hard edge · press harder for a wider erase"}
+                                </span>
+                              </span>
+                            </button>
+                          ))}
+                        </PopoverPrimitive.Content>
+                      </PopoverPrimitive.Portal>
+                    </PopoverPrimitive.Root>
+                  ) : (
+                    <PopoverPrimitive.Root
+                      open={libraryOpen}
+                      onOpenChange={setLibraryOpen}
+                    >
+                      <PopoverPrimitive.Trigger asChild>
+                        <IconButton
+                          variant="ghost"
+                          size="sm"
+                          label={`Choose brush: ${snapshot.brush.name}`}
+                          side="right"
+                          className="relative size-8 rounded-lg p-0"
+                        >
+                          {/* The corner mark says this opens a choice of brushes; without
+                        it the button reads as the brush tool itself. */}
+                          <BrushIcon
+                            id={snapshot.brush.id}
+                            className="shrink-0"
+                          />
+                          <MenuNotch />
+                        </IconButton>
+                      </PopoverPrimitive.Trigger>
+                      <PopoverPrimitive.Portal>
+                        <PopoverPrimitive.Content
+                          side="right"
+                          align="start"
+                          sideOffset={10}
+                          collisionPadding={12}
+                          aria-label="Choose a brush"
+                          className="z-50 max-h-[min(36rem,var(--radix-popover-content-available-height))] w-80 max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border bg-background shadow-xl outline-none"
+                        >
+                          {engine && (
+                            <BrushLibrary
+                              library={library}
+                              store={brushStore}
+                              brush={snapshot.brush}
+                              edited={brushEdited}
+                              onSelect={(next, keepOpen) => {
+                                void engine.dispatch(brushCommand(next))
+                                setSavedBrush(next)
+                                if (!keepOpen) setLibraryOpen(false)
+                              }}
+                              onClose={() => setLibraryOpen(false)}
+                            />
+                          )}
+                        </PopoverPrimitive.Content>
+                      </PopoverPrimitive.Portal>
+                    </PopoverPrimitive.Root>
+                  )}
+                  {/* Size and opacity are the two a hand reaches for mid-piece, so
+                they stay on the canvas: the editor is for shaping a brush,
+                not for the adjustment made between one stroke and the next. */}
+                  {/* One size for whatever is in the hand: a brush's tip, or the
+                  width a vector tool outlines with — the same width the shape
+                  options set, so the two are one control, not two. */}
+                  <QuickSetting
+                    label={vectorWidth ? "Width" : "Size"}
+                    value={
+                      vectorWidth
+                        ? `${shapeOptions.strokeWidth} px`
+                        : `${(activeTip.shape.radius * 2).toFixed(1)} px`
+                    }
+                    readout={`${Math.round(sizeRadius * 2)}`}
+                    icon={
+                      // The dot grows with the brush, up to the icon's own size.
+                      <CircleIcon
+                        weight="fill"
+                        style={{
+                          transform: `scale(${Math.min(1, 0.45 + sizeRadius / 40)})`,
+                        }}
+                      />
+                    }
+                  >
+                    {vectorWidth ? (
+                      <SliderSetting
+                        label="Outline width"
+                        value={shapeOptions.strokeWidth}
+                        min={1}
+                        max={64}
+                        step={1}
+                        unit="px"
+                        disabled={!shapeOptions.stroke}
+                        onChange={(strokeWidth) =>
+                          void engine
+                            ?.dispatch({ type: "setShapeStyle", strokeWidth })
+                            .catch(() => {})
+                        }
+                      />
+                    ) : (
+                      <SliderSetting
+                        label="Size"
+                        value={activeTip.shape.radius}
+                        min={0.5}
+                        max={200}
+                        step={0.5}
+                        scale={2}
+                        decimals={1}
+                        unit="px"
+                        onChange={(radius) =>
+                          void engine?.dispatch({
+                            type:
+                              snapshot.tool === "eraser"
+                                ? "setEraser"
+                                : "setBrush",
+                            radius,
+                          })
+                        }
+                      />
+                    )}
+                  </QuickSetting>
+                  <QuickSetting
+                    label="Opacity"
+                    value={`${Math.round(activeTip.rendering.opacity * 100)}%`}
+                    readout={`${Math.round(activeTip.rendering.opacity * 100)}%`}
+                    icon={<DropHalfIcon />}
+                  >
+                    <SliderSetting
+                      label="Opacity"
+                      value={activeTip.rendering.opacity}
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      scale={100}
+                      unit="%"
+                      onChange={(opacity) =>
+                        void engine?.dispatch({
+                          type:
+                            snapshot.tool === "eraser"
+                              ? "setEraser"
+                              : "setBrush",
+                          opacity,
+                        })
+                      }
+                    />
+                  </QuickSetting>
+                  <QuickSetting
+                    label="Smoothing"
+                    value={`${Math.round(snapshot.stabilization * 100)}%`}
+                    readout={`${Math.round(snapshot.stabilization * 100)}%`}
+                    icon={<WaveSineIcon />}
+                  >
+                    <SliderSetting
+                      label="Smoothing"
+                      value={snapshot.stabilization}
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      scale={100}
+                      unit="%"
+                      onChange={(strength) =>
+                        void engine?.dispatch({
+                          type: "setStabilization",
+                          strength,
+                        })
+                      }
+                    />
+                  </QuickSetting>
+                  {/* Pen response is a calibration rather than an adjustment, so it
+                sits behind a popover instead of taking a fourth slider: an
+                artist sets it once for their hand and then leaves it. It is
+                here rather than only in app settings because the thing it has
+                to be judged against is the canvas. */}
                   <PopoverPrimitive.Root
-                    open={eraserOpen}
-                    onOpenChange={setEraserOpen}
+                    open={pressureOpen}
+                    onOpenChange={setPressureOpen}
                   >
                     <PopoverPrimitive.Trigger asChild>
                       <IconButton
                         variant="ghost"
                         size="sm"
-                        label={`Choose eraser: ${snapshot.eraser.name}`}
+                        label="Pen settings"
                         side="right"
                         className="size-8 rounded-lg p-0"
                       >
-                        <span className="flex items-center gap-2">
-                          <EraserToolIcon
-                            kind={
-                              snapshot.eraser.id === "eraser:pressure"
-                                ? "pressure"
-                                : "solid"
-                            }
-                          />
-                        </span>
-                      </IconButton>
-                    </PopoverPrimitive.Trigger>
-                    <PopoverPrimitive.Portal>
-                      <PopoverPrimitive.Content
-                        side="right"
-                        align="end"
-                        sideOffset={10}
-                        collisionPadding={12}
-                        aria-label="Choose an eraser"
-                        className="z-50 w-72 rounded-xl border bg-background p-3 shadow-xl"
-                      >
-                        <h2 className="mb-2 text-sm font-medium">Erasers</h2>
-                        {(["solid", "pressure"] as const).map((kind) => (
-                          <button
-                            key={kind}
-                            type="button"
-                            aria-pressed={
-                              snapshot.eraser.id === `eraser:${kind}`
-                            }
-                            className="mb-1 flex w-full items-center gap-3 rounded-lg border border-transparent p-3 text-left hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
-                            onClick={() => {
-                              void engine?.dispatch({
-                                type: "setEraser",
-                                kind,
-                              })
-                              setEraserOpen(false)
-                            }}
-                          >
-                            <EraserToolIcon kind={kind} className="size-5" />
-                            <span>
-                              <span className="block text-xs font-medium">
-                                {kind === "solid"
-                                  ? "Solid eraser"
-                                  : "Pressure eraser"}
-                              </span>
-                              <span className="block text-[10px] text-muted-foreground">
-                                {kind === "solid"
-                                  ? "Hard edge · constant size at any pressure"
-                                  : "Hard edge · press harder for a wider erase"}
-                              </span>
-                            </span>
-                          </button>
-                        ))}
-                      </PopoverPrimitive.Content>
-                    </PopoverPrimitive.Portal>
-                  </PopoverPrimitive.Root>
-                ) : (
-                  <PopoverPrimitive.Root
-                    open={libraryOpen}
-                    onOpenChange={setLibraryOpen}
-                  >
-                    <PopoverPrimitive.Trigger asChild>
-                      <IconButton
-                        variant="ghost"
-                        size="sm"
-                        label={`Choose brush: ${snapshot.brush.name}`}
-                        side="right"
-                        className="relative size-8 rounded-lg p-0"
-                      >
-                        {/* The corner mark says this opens a choice of brushes; without
-                        it the button reads as the brush tool itself. */}
-                        <BrushIcon
-                          id={snapshot.brush.id}
-                          className="shrink-0"
-                        />
-                        <span
-                          aria-hidden
-                          className="absolute right-1 bottom-1 size-1.5 bg-current opacity-60 [clip-path:polygon(100%_0,100%_100%,0_100%)]"
-                        />
+                        <ChartLineUpIcon />
                       </IconButton>
                     </PopoverPrimitive.Trigger>
                     <PopoverPrimitive.Portal>
@@ -1298,409 +1740,288 @@ export function CanvasHost({
                         align="start"
                         sideOffset={10}
                         collisionPadding={12}
-                        aria-label="Choose a brush"
-                        className="z-50 max-h-[min(36rem,var(--radix-popover-content-available-height))] w-80 max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border bg-background shadow-xl outline-none"
+                        aria-label="Pen settings"
+                        title="Pen settings"
+                        className="z-50 flex flex-col gap-3 rounded-xl border bg-background p-3 shadow-xl outline-none"
                       >
-                        {engine && (
-                          <BrushLibrary
-                            library={library}
-                            store={brushStore}
-                            brush={snapshot.brush}
-                            edited={brushEdited}
-                            onSelect={(next, keepOpen) => {
-                              void engine.dispatch(brushCommand(next))
-                              setSavedBrush(next)
-                              if (!keepOpen) setLibraryOpen(false)
-                            }}
-                            onClose={() => setLibraryOpen(false)}
-                          />
-                        )}
+                        {/* Driven by what the engine holds rather than by state of
+                      its own: the curve the artist drags and the curve every
+                      sample is shaped by are then the same one. */}
+                        <PressureCurve
+                          size="md"
+                          testArea
+                          value={snapshot.pressureCurve}
+                          onChange={(curve) => {
+                            penStore.setPressureCurve(curve)
+                            void engine?.dispatch({
+                              type: "setPressureCurve",
+                              curve,
+                            })
+                          }}
+                        />
+                        {/* Switched off, a pen reads as upright, which is what a
+                      noisy or absent tilt sensor needs and what an artist who
+                      rests their hand at an angle asks for. */}
+                        <TiltToggle
+                          enabled={snapshot.tiltEnabled}
+                          onChange={(enabled) => {
+                            penStore.setTiltEnabled(enabled)
+                            void engine?.dispatch({
+                              type: "setTiltEnabled",
+                              enabled,
+                            })
+                          }}
+                        />
                       </PopoverPrimitive.Content>
                     </PopoverPrimitive.Portal>
                   </PopoverPrimitive.Root>
-                )}
-                {/* What a new shape is given (19), shown while a shape tool
-                is in the hand: filled, outlined, or both, in the current
-                colour. */}
-                {isVectorTool(snapshot.tool) && (
-                  <QuickSetting
-                    label="Shape"
-                    value={shapeSummary(shapeOptions)}
-                    readout={shapeReadout(shapeOptions)}
-                    icon={<RectangleIcon />}
-                  >
-                    <ShapeStylePanel
-                      engine={engine}
-                      style={shapeOptions}
-                      selected={snapshot.selectionStyle !== null}
-                      currentColor={snapshot.color.hex}
-                      runCommand={runShapeCommand}
-                    />
-                  </QuickSetting>
-                )}
-                {/* The wand's own options (10), shown while it is in the hand:
-                how far a colour may stray, and whether it reads the layer
-                or the picture as a whole. */}
-                {snapshot.tool === "magicWand" && (
-                  <QuickSetting
-                    label="Tolerance"
-                    value={`${snapshot.wand.tolerance}, ${snapshot.wand.sample === "layer" ? "active layer" : "all layers"}`}
-                    readout={`${snapshot.wand.tolerance}`}
-                    icon={<MagicWandIcon />}
-                  >
-                    <SliderSetting
-                      label="Tolerance"
-                      value={snapshot.wand.tolerance}
-                      min={0}
-                      max={255}
-                      step={1}
-                      onChange={(tolerance) =>
-                        void engine?.dispatch({
-                          type: "setWandOptions",
-                          tolerance,
-                        })
-                      }
-                    />
-                    <div
-                      role="group"
-                      aria-label="Sample"
-                      className="mt-3 grid grid-cols-2 gap-1 text-xs"
+                </div>
+                <div className="flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl">
+                  <ToolGroup label="Paint tools">
+                    <RailAction
+                      label="Brush tool"
+                      detail={WORKS_ON.paint}
+                      command="tool.brush"
+                      variant={snapshot.tool === "brush" ? "default" : "ghost"}
+                      size="icon"
+                      aria-pressed={snapshot.tool === "brush"}
+                      onClick={() => {
+                        setEraserOpen(false)
+                        if (snapshot.tool === "brush")
+                          setLibraryOpen((open) => !open)
+                        runStudioCommand("tool.brush", commandContext)
+                      }}
+                      className={cn("rounded-lg", brushDimmed && DIMMED_TOOL)}
                     >
-                      {(["layer", "composite"] as const).map((sample) => (
-                        <button
-                          key={sample}
-                          type="button"
-                          aria-pressed={snapshot.wand.sample === sample}
-                          className="rounded-md border border-transparent px-2 py-1 hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
-                          onClick={() =>
-                            void engine?.dispatch({
-                              type: "setWandOptions",
-                              sample,
-                            })
-                          }
-                        >
-                          {sample === "layer" ? "Active layer" : "All layers"}
-                        </button>
-                      ))}
-                    </div>
-                  </QuickSetting>
-                )}
-                {/* What can be done with a selection once there is one (11):
-                its edges softened, and what it covers lifted to a layer. */}
-                {snapshot.selection && (
-                  <QuickSetting
-                    label="Feather"
-                    value={`${featherRadius} px`}
-                    readout={`${featherRadius}`}
-                    icon={<DropHalfIcon />}
-                  >
-                    <div className="grid grid-cols-2 gap-1 text-xs">
-                      <button
-                        type="button"
-                        className="rounded-md border border-studio-edge px-2 py-1 hover:bg-muted"
-                        onClick={() =>
-                          runStudioCommand("select.feather", commandContext)
+                      <BrushIcon id={snapshot.brush.id} />
+                    </RailAction>
+                    <RailAction
+                      label="Eraser tool"
+                      detail={WORKS_ON.eraser}
+                      command="tool.eraser"
+                      variant={snapshot.tool === "eraser" ? "default" : "ghost"}
+                      size="icon"
+                      aria-pressed={snapshot.tool === "eraser"}
+                      onClick={() => {
+                        setLibraryOpen(false)
+                        if (snapshot.tool === "eraser")
+                          setEraserOpen((open) => !open)
+                        runStudioCommand("tool.eraser", commandContext)
+                      }}
+                      className={cn("rounded-lg", eraserDimmed && DIMMED_TOOL)}
+                    >
+                      <EraserToolIcon
+                        kind={
+                          snapshot.eraser.id === "eraser:pressure"
+                            ? "pressure"
+                            : "solid"
                         }
+                      />
+                    </RailAction>
+                  </ToolGroup>
+                  <RailDivider />
+                  <ToolGroup label="Selection tools">
+                    {SELECTION_FAMILIES.map((members) => (
+                      <ToolFamilySlot
+                        key={members[0].tool}
+                        members={members}
+                        tool={snapshot.tool}
+                        onPick={(tool) => {
+                          setLibraryOpen(false)
+                          setEraserOpen(false)
+                          runStudioCommand(`tool.${tool}`, commandContext)
+                        }}
+                      />
+                    ))}
+                  </ToolGroup>
+                  <RailDivider />
+                  <ToolGroup label="Vector tools" dimmed={vectorDimmed}>
+                    {VECTOR_RAIL_ORDER.map((tool) => (
+                      <RailAction
+                        key={tool}
+                        label={VECTOR_TOOL_RAIL[tool].label}
+                        detail={WORKS_ON.vector}
+                        command={`tool.${tool}`}
+                        variant={snapshot.tool === tool ? "default" : "ghost"}
+                        size="icon"
+                        aria-pressed={snapshot.tool === tool}
+                        onClick={() => {
+                          setLibraryOpen(false)
+                          setEraserOpen(false)
+                          runStudioCommand(`tool.${tool}`, commandContext)
+                        }}
+                        className="rounded-lg"
                       >
-                        Feather…
-                      </button>
-                      <button
-                        type="button"
-                        className="flex items-center justify-center gap-1 rounded-md border border-studio-edge px-2 py-1 hover:bg-muted"
-                        onClick={() =>
-                          runStudioCommand("select.copyToLayer", commandContext)
-                        }
-                      >
-                        <CopySimpleIcon /> To layer
-                      </button>
-                    </div>
-                  </QuickSetting>
-                )}
-                {/* Size and opacity are the two a hand reaches for mid-piece, so
-                they stay on the canvas: the editor is for shaping a brush,
-                not for the adjustment made between one stroke and the next. */}
-                <QuickSetting
-                  label="Size"
-                  value={`${(activeTip.shape.radius * 2).toFixed(1)} px`}
-                  readout={`${Math.round(activeTip.shape.radius * 2)}`}
-                  icon={
-                    // The dot grows with the brush, up to the icon's own size.
-                    <CircleIcon
-                      weight="fill"
-                      style={{
-                        transform: `scale(${Math.min(1, 0.45 + activeTip.shape.radius / 40)})`,
+                        {VECTOR_TOOL_RAIL[tool].icon}
+                      </RailAction>
+                    ))}
+                    <ShapeToolSlot
+                      tool={snapshot.tool}
+                      onPick={(tool) => {
+                        setLibraryOpen(false)
+                        setEraserOpen(false)
+                        runStudioCommand(`tool.${tool}`, commandContext)
                       }}
                     />
-                  }
-                >
-                  <SliderSetting
-                    label="Size"
-                    value={activeTip.shape.radius}
-                    min={0.5}
-                    max={200}
-                    step={0.5}
-                    scale={2}
-                    decimals={1}
-                    unit="px"
-                    onChange={(radius) =>
-                      void engine?.dispatch({
-                        type:
-                          snapshot.tool === "eraser" ? "setEraser" : "setBrush",
-                        radius,
-                      })
-                    }
-                  />
-                </QuickSetting>
-                <QuickSetting
-                  label="Opacity"
-                  value={`${Math.round(activeTip.rendering.opacity * 100)}%`}
-                  readout={`${Math.round(activeTip.rendering.opacity * 100)}%`}
-                  icon={<DropHalfIcon />}
-                >
-                  <SliderSetting
-                    label="Opacity"
-                    value={activeTip.rendering.opacity}
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    scale={100}
-                    unit="%"
-                    onChange={(opacity) =>
-                      void engine?.dispatch({
-                        type:
-                          snapshot.tool === "eraser" ? "setEraser" : "setBrush",
-                        opacity,
-                      })
-                    }
-                  />
-                </QuickSetting>
-                <QuickSetting
-                  label="Smoothing"
-                  value={`${Math.round(snapshot.stabilization * 100)}%`}
-                  readout={`${Math.round(snapshot.stabilization * 100)}%`}
-                  icon={<WaveSineIcon />}
-                >
-                  <SliderSetting
-                    label="Smoothing"
-                    value={snapshot.stabilization}
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    scale={100}
-                    unit="%"
-                    onChange={(strength) =>
-                      void engine?.dispatch({
-                        type: "setStabilization",
-                        strength,
-                      })
-                    }
-                  />
-                </QuickSetting>
-                {/* Pen response is a calibration rather than an adjustment, so it
-                sits behind a popover instead of taking a fourth slider: an
-                artist sets it once for their hand and then leaves it. It is
-                here rather than only in app settings because the thing it has
-                to be judged against is the canvas. */}
-                <PopoverPrimitive.Root
-                  open={pressureOpen}
-                  onOpenChange={setPressureOpen}
-                >
-                  <PopoverPrimitive.Trigger asChild>
-                    <IconButton
-                      variant="ghost"
-                      size="sm"
-                      label="Pen settings"
-                      side="right"
-                      className="size-8 rounded-lg p-0"
-                    >
-                      <ChartLineUpIcon />
-                    </IconButton>
-                  </PopoverPrimitive.Trigger>
-                  <PopoverPrimitive.Portal>
-                    <PopoverPrimitive.Content
-                      side="right"
-                      align="start"
-                      sideOffset={10}
-                      collisionPadding={12}
-                      aria-label="Pen settings"
-                      title="Pen settings"
-                      className="z-50 flex flex-col gap-3 rounded-xl border bg-background p-3 shadow-xl outline-none"
-                    >
-                      {/* Driven by what the engine holds rather than by state of
-                      its own: the curve the artist drags and the curve every
-                      sample is shaped by are then the same one. */}
-                      <PressureCurve
-                        size="md"
-                        testArea
-                        value={snapshot.pressureCurve}
-                        onChange={(curve) => {
-                          penStore.setPressureCurve(curve)
-                          void engine?.dispatch({
-                            type: "setPressureCurve",
-                            curve,
-                          })
-                        }}
-                      />
-                      {/* Switched off, a pen reads as upright, which is what a
-                      noisy or absent tilt sensor needs and what an artist who
-                      rests their hand at an angle asks for. */}
-                      <TiltToggle
-                        enabled={snapshot.tiltEnabled}
-                        onChange={(enabled) => {
-                          penStore.setTiltEnabled(enabled)
-                          void engine?.dispatch({
-                            type: "setTiltEnabled",
-                            enabled,
-                          })
-                        }}
-                      />
-                    </PopoverPrimitive.Content>
-                  </PopoverPrimitive.Portal>
-                </PopoverPrimitive.Root>
-              </div>
-              <div className="flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl">
-                <RailAction
-                  label="Brush tool"
-                  command="tool.brush"
-                  variant={snapshot.tool === "brush" ? "default" : "ghost"}
-                  size="icon"
-                  aria-pressed={snapshot.tool === "brush"}
-                  onClick={() => {
-                    setEraserOpen(false)
-                    if (snapshot.tool === "brush")
-                      setLibraryOpen((open) => !open)
-                    runStudioCommand("tool.brush", commandContext)
-                  }}
-                  className="rounded-lg"
-                >
-                  <BrushIcon id={snapshot.brush.id} />
-                </RailAction>
-                <RailAction
-                  label="Eraser tool"
-                  command="tool.eraser"
-                  variant={snapshot.tool === "eraser" ? "default" : "ghost"}
-                  size="icon"
-                  aria-pressed={snapshot.tool === "eraser"}
-                  onClick={() => {
-                    setLibraryOpen(false)
-                    if (snapshot.tool === "eraser")
-                      setEraserOpen((open) => !open)
-                    runStudioCommand("tool.eraser", commandContext)
-                  }}
-                  className="rounded-lg"
-                >
-                  <EraserToolIcon
-                    kind={
-                      snapshot.eraser.id === "eraser:pressure"
-                        ? "pressure"
-                        : "solid"
-                    }
-                  />
-                </RailAction>
-                {SELECTION_FAMILIES.map((members) => (
-                  <ToolFamilySlot
-                    key={members[0].tool}
-                    members={members}
-                    tool={snapshot.tool}
-                    onPick={(tool) => {
-                      setLibraryOpen(false)
-                      setEraserOpen(false)
-                      runStudioCommand(`tool.${tool}`, commandContext)
-                    }}
-                  />
-                ))}
-                <RailAction
-                  label="Rectangle tool"
-                  command="tool.rectangle"
-                  variant={snapshot.tool === "rectangle" ? "default" : "ghost"}
-                  size="icon"
-                  aria-pressed={snapshot.tool === "rectangle"}
-                  onClick={() => {
-                    setLibraryOpen(false)
-                    setEraserOpen(false)
-                    runStudioCommand("tool.rectangle", commandContext)
-                  }}
-                  className="rounded-lg"
-                >
-                  <RectangleIcon />
-                </RailAction>
-                {(
-                  [
-                    "ellipse",
-                    "line",
-                    "polygon",
-                    "objectSelect",
-                    "pen",
-                    "node",
-                    "pressure",
-                  ] as const
-                ).map((tool) => (
+                  </ToolGroup>
+                  <RailDivider />
                   <RailAction
-                    key={tool}
-                    label={
-                      tool === "objectSelect"
-                        ? "Select objects"
-                        : `${tool} tool`
-                    }
-                    command={`tool.${tool}`}
-                    variant={snapshot.tool === tool ? "default" : "ghost"}
+                    label="Colour"
+                    variant={colorOpen ? "default" : "ghost"}
                     size="icon"
-                    aria-pressed={snapshot.tool === tool}
-                    onClick={() =>
-                      runStudioCommand(`tool.${tool}`, commandContext)
-                    }
-                  >
-                    <span className="text-xs">
-                      {
-                        {
-                          ellipse: "○",
-                          line: "╱",
-                          polygon: "⬡",
-                          objectSelect: "↖",
-                          pen: "✒",
-                          node: "◇",
-                          pressure: "〰",
-                        }[tool]
+                    aria-pressed={colorOpen}
+                    onClick={() => {
+                      // The two panels open into the same corner, so one gives
+                      // way to the other rather than drawing over it.
+                      if (!colorOpen && historyOpen) {
+                        // Not while a version is being opened; see the history
+                        // button for why closing then would lose track of it.
+                        if (historyBusy) return
+                        // Opened once the history has gone, not beside it while
+                        // a trial is still being taken back.
+                        void closeHistory().then(() => setColorOpen(true))
+                        return
                       }
-                    </span>
+                      setColorOpen((open) => !open)
+                    }}
+                    className="rounded-lg"
+                  >
+                    {/* The colour in the hand, as painting apps show it, rather
+                      than a picture of a palette. */}
+                    <span
+                      aria-hidden
+                      className="size-4.5 rounded-full border border-studio-edge shadow-[inset_0_0_0_1px_rgb(255_255_255/0.25)]"
+                      style={{ backgroundColor: snapshot.color.hex }}
+                    />
                   </RailAction>
-                ))}
-                <RailAction
-                  label="Colour"
-                  variant={colorOpen ? "default" : "ghost"}
-                  size="icon"
-                  aria-pressed={colorOpen}
-                  onClick={() => {
-                    // The two panels open into the same corner, so one gives
-                    // way to the other rather than drawing over it.
-                    if (!colorOpen && historyOpen) {
-                      // Not while a version is being opened; see the history
-                      // button for why closing then would lose track of it.
-                      if (historyBusy) return
-                      // Opened once the history has gone, not beside it while
-                      // a trial is still being taken back.
-                      void closeHistory().then(() => setColorOpen(true))
-                      return
-                    }
-                    setColorOpen((open) => !open)
-                  }}
-                  className="rounded-lg"
-                >
-                  <PaletteIcon />
-                </RailAction>
-                <RailAction
-                  label="Brush editor"
-                  variant={brushOpen ? "default" : "ghost"}
-                  size="icon"
-                  disabled={snapshot.tool === "eraser"}
-                  aria-pressed={brushOpen}
-                  ref={brushButton}
-                  onClick={() => setBrushOpen((open) => !open)}
-                  className="rounded-lg"
-                >
-                  <SlidersIcon />
-                </RailAction>
+                  <RailAction
+                    label="Brush editor"
+                    variant={brushOpen ? "default" : "ghost"}
+                    size="icon"
+                    disabled={snapshot.tool === "eraser"}
+                    aria-pressed={brushOpen}
+                    ref={brushButton}
+                    onClick={() => setBrushOpen((open) => !open)}
+                    className="rounded-lg"
+                  >
+                    <SlidersIcon />
+                  </RailAction>
+                </div>
               </div>
+              {(isVectorTool(snapshot.tool) ||
+                snapshot.tool === "magicWand" ||
+                snapshot.selection) && (
+                <div
+                  data-testid="tool-options"
+                  aria-label="Tool options"
+                  className="pointer-events-auto flex items-start gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
+                >
+                  {/* What a new shape is given (19), shown while a shape tool
+                is in the hand: filled, outlined, or both, in the current
+                colour. */}
+                  {isVectorTool(snapshot.tool) && (
+                    <QuickSetting
+                      label="Shape"
+                      value={shapeSummary(shapeOptions)}
+                      readout={shapeReadout(shapeOptions)}
+                      icon={<ShapePaintIcon style={shapeOptions} />}
+                    >
+                      <ShapeStylePanel
+                        engine={engine}
+                        style={shapeOptions}
+                        selected={snapshot.selectionStyle !== null}
+                        outlineOnly={
+                          snapshot.selectionStyle === null &&
+                          drawsOutlineOnly(snapshot.tool)
+                        }
+                        currentColor={snapshot.color.hex}
+                        runCommand={runShapeCommand}
+                      />
+                    </QuickSetting>
+                  )}
+                  {/* The wand's own options (10), shown while it is in the hand:
+                how far a colour may stray, and whether it reads the layer
+                or the picture as a whole. */}
+                  {snapshot.tool === "magicWand" && (
+                    <QuickSetting
+                      label="Tolerance"
+                      value={`${snapshot.wand.tolerance}, ${snapshot.wand.sample === "layer" ? "active layer" : "all layers"}`}
+                      readout={`${snapshot.wand.tolerance}`}
+                      icon={<MagicWandIcon />}
+                    >
+                      <SliderSetting
+                        label="Tolerance"
+                        value={snapshot.wand.tolerance}
+                        min={0}
+                        max={255}
+                        step={1}
+                        onChange={(tolerance) =>
+                          void engine?.dispatch({
+                            type: "setWandOptions",
+                            tolerance,
+                          })
+                        }
+                      />
+                      <div
+                        role="group"
+                        aria-label="Sample"
+                        className="mt-3 grid grid-cols-2 gap-1 text-xs"
+                      >
+                        {(["layer", "composite"] as const).map((sample) => (
+                          <button
+                            key={sample}
+                            type="button"
+                            aria-pressed={snapshot.wand.sample === sample}
+                            className="rounded-md border border-transparent px-2 py-1 hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
+                            onClick={() =>
+                              void engine?.dispatch({
+                                type: "setWandOptions",
+                                sample,
+                              })
+                            }
+                          >
+                            {sample === "layer" ? "Active layer" : "All layers"}
+                          </button>
+                        ))}
+                      </div>
+                    </QuickSetting>
+                  )}
+                  {/* What can be done with a selection once there is one (11):
+                its edges softened, and what it covers lifted to a layer. */}
+                  {snapshot.selection && (
+                    <QuickSetting
+                      label="Feather"
+                      value={`${featherRadius} px`}
+                      readout={`${featherRadius}`}
+                      icon={<DropHalfIcon />}
+                    >
+                      <div className="grid grid-cols-2 gap-1 text-xs">
+                        <button
+                          type="button"
+                          className="rounded-md border border-studio-edge px-2 py-1 hover:bg-muted"
+                          onClick={() =>
+                            runStudioCommand("select.feather", commandContext)
+                          }
+                        >
+                          Feather…
+                        </button>
+                        <button
+                          type="button"
+                          className="flex items-center justify-center gap-1 rounded-md border border-studio-edge px-2 py-1 hover:bg-muted"
+                          onClick={() =>
+                            runStudioCommand(
+                              "select.copyToLayer",
+                              commandContext
+                            )
+                          }
+                        >
+                          <CopySimpleIcon /> To layer
+                        </button>
+                      </div>
+                    </QuickSetting>
+                  )}
+                </div>
+              )}
             </div>
           </TooltipProvider>
 
@@ -1974,6 +2295,17 @@ export function CanvasHost({
           setFeatherRadius(radius)
           void engine?.dispatch({ type: "featherSelection", radius })
         }}
+      />
+      <ConfirmLayerDialog
+        confirming={confirming}
+        onOpenChange={(open) => !open && setConfirming(null)}
+        onConfirm={({ layer, action }) =>
+          void engine?.dispatch(
+            action === "clear"
+              ? { type: "clearLayer", id: layer.id }
+              : { type: "removeLayer", id: layer.id }
+          )
+        }
       />
       <PreferencesPanel
         defaults={studioCommands}

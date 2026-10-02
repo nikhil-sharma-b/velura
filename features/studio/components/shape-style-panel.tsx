@@ -15,7 +15,6 @@ import {
 } from "@phosphor-icons/react"
 import { memo, useEffect, useId, useRef, type ReactNode } from "react"
 
-import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import type { AlignAnchor, Engine, EngineCommand, ShapeStyle } from "@/engine"
@@ -23,7 +22,6 @@ import { cn } from "@/lib/utils"
 
 import { ALIGN_ANCHORS } from "../lib/studio-commands"
 import { IconButton } from "./icon-button"
-import { SliderSetting } from "./slider-setting"
 
 const ALIGN_ICONS: Record<AlignAnchor, ReactNode> = {
   left: <AlignLeftIcon />,
@@ -55,6 +53,7 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
   engine,
   style,
   selected,
+  outlineOnly = false,
   currentColor,
   runCommand,
 }: {
@@ -62,6 +61,8 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
   /** The selection's style while there is one, else the tool's. */
   style: ShapeStyle
   selected: boolean
+  /** The tool in the hand draws lines, outlined and never filled. */
+  outlineOnly?: boolean
   /** What a paint with no colour of its own is drawn in. */
   currentColor: string
   /** Runs a studio command by id, as its keybind or the palette would. */
@@ -80,14 +81,15 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
 
   return (
     <div className="space-y-3">
-      <p className="text-xs font-medium">
+      <p className="border-b border-border pb-2 text-xs font-semibold">
         {selected ? "Selected objects" : "New shapes"}
       </p>
       <div role="group" aria-label="Paint" className="space-y-1.5">
         <PaintRow
           label="Fill"
           on={style.fill}
-          editable={!selected || style.fill}
+          locked={outlineOnly}
+          editable={!outlineOnly && (!selected || style.fill)}
           color={style.fillColor ?? currentColor}
           onToggle={() => setStyle({ fill: !style.fill })}
           onColor={(fillColor) => setStyle({ fillColor })}
@@ -95,31 +97,30 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
         <PaintRow
           label="Outline"
           on={style.stroke}
+          locked={outlineOnly}
           editable={outlined}
           color={style.strokeColor ?? currentColor}
           onToggle={() => setStyle({ stroke: !style.stroke })}
           onColor={(strokeColor) => setStyle({ strokeColor })}
         />
       </div>
-      <SliderSetting
-        label="Outline width"
-        value={style.strokeWidth}
-        min={1}
-        max={64}
-        step={1}
-        unit="px"
-        disabled={!outlined}
-        onChange={(strokeWidth) => setStyle({ strokeWidth })}
-      />
+      {/* The width is the size setting on the rail, as a brush's size is:
+          the adjustment made between one stroke and the next, a click away
+          rather than in here. */}
+      <p className="text-xs text-muted-foreground">
+        Outline width is set with{" "}
+        <strong className="font-semibold text-foreground">Width</strong> in the
+        rail.
+      </p>
       <Choice
-        label="Cap"
+        label="Line ends"
         options={CAPS}
         value={style.strokeCap}
         disabled={!outlined}
         onChange={(strokeCap) => setStyle({ strokeCap })}
       />
       <Choice
-        label="Join"
+        label="Corners"
         options={JOINS}
         value={style.strokeJoin}
         disabled={!outlined}
@@ -230,6 +231,7 @@ function ActionButton({
 function PaintRow({
   label,
   on,
+  locked = false,
   editable,
   color,
   onToggle,
@@ -237,6 +239,8 @@ function PaintRow({
 }: {
   label: string
   on: boolean
+  /** Whether the paint is fixed on or off by the tool, not the artist. */
+  locked?: boolean
   /** Whether the colour can be chosen now. */
   editable: boolean
   color: string
@@ -244,9 +248,10 @@ function PaintRow({
   onColor(hex: string): void
 }) {
   const input = useRef<HTMLInputElement>(null)
-  // The picker's own `change`, not React's per-move `input`: one colour
-  // chosen is one restyle, and so one undo step rather than one per drag.
-  // Registered once; the handler it calls is kept current beside it.
+  // Every move of the picker restyles at once, as the colour is chosen, not
+  // when the picker is closed or Enter pressed; the engine folds the run into
+  // one undo step. Moves land at most once a frame, as the screen can show no
+  // more. Registered once; the handler it calls is kept current beside it.
   const latest = useRef(onColor)
   useEffect(() => {
     latest.current = onColor
@@ -254,9 +259,24 @@ function PaintRow({
   useEffect(() => {
     const element = input.current
     if (!element) return
-    const changed = () => latest.current(element.value)
-    element.addEventListener("change", changed)
-    return () => element.removeEventListener("change", changed)
+    let frame = 0
+    const moved = () => {
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        latest.current(element.value)
+      })
+    }
+    element.addEventListener("input", moved)
+    return () => {
+      element.removeEventListener("input", moved)
+      // A colour still waiting on its frame when the options close is the
+      // last one chosen, so it lands now rather than being dropped.
+      if (frame) {
+        cancelAnimationFrame(frame)
+        latest.current(element.value)
+      }
+    }
   }, [])
   // Uncontrolled between choices, since the picker owns its value while it
   // is open; put back to what the shape has whenever that moves.
@@ -265,16 +285,26 @@ function PaintRow({
   }, [color])
   return (
     <div className="flex items-center gap-2">
-      <Button
+      {/* A switch, not a button with the paint's name on it: the name is a
+          label, and whether the paint is on is a state to flip. */}
+      <span className="flex-1 text-xs">{label}</span>
+      <button
         type="button"
-        variant="ghost"
-        size="sm"
-        aria-pressed={on}
-        className="flex-1 justify-start rounded-md border-transparent aria-pressed:border-primary aria-pressed:bg-primary/10"
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        disabled={locked}
+        className="relative h-4 w-7 shrink-0 rounded-full bg-muted-foreground/30 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50 aria-checked:bg-primary"
         onClick={onToggle}
       >
-        {label}
-      </Button>
+        <span
+          aria-hidden
+          className={cn(
+            "absolute top-0.5 left-0.5 size-3 rounded-full bg-background shadow-sm motion-safe:transition-transform",
+            on && "translate-x-3"
+          )}
+        />
+      </button>
       <label
         className={cn(
           "relative flex h-7 w-14 items-center justify-center rounded-md border border-foreground/15 focus-within:ring-2 focus-within:ring-ring/50",
@@ -320,28 +350,31 @@ function Choice<T extends string>({
 }) {
   const id = useId()
   return (
-    <div className="flex items-center justify-between gap-2">
-      <Label id={id} className="text-xs">
+    <div className="space-y-1">
+      <Label id={id} className="text-xs text-muted-foreground">
         {label}
       </Label>
+      {/* One control in a sunken track, the choice raised out of it, so the
+          options read as alternatives and not as more labels. */}
       <div
         role="group"
         aria-labelledby={id}
-        className="grid grid-cols-3 gap-0.5"
+        className={cn(
+          "grid grid-cols-3 gap-0.5 rounded-md bg-muted p-0.5",
+          disabled && "opacity-50"
+        )}
       >
         {options.map(([option, name]) => (
-          <Button
+          <button
             key={option}
             type="button"
-            variant="ghost"
-            size="xs"
             aria-pressed={value === option}
             disabled={disabled}
-            className="rounded-md border-transparent aria-pressed:border-primary aria-pressed:bg-primary/10"
+            className="rounded-[5px] py-1 text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none aria-pressed:bg-background aria-pressed:font-medium aria-pressed:text-foreground aria-pressed:shadow-sm"
             onClick={() => onChange(option)}
           >
             {name}
-          </Button>
+          </button>
         ))}
       </div>
     </div>

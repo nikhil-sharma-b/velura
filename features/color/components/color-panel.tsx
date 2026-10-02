@@ -5,6 +5,7 @@ import { useMemo, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Kbd } from "@/components/ui/kbd"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import {
@@ -23,6 +24,7 @@ import { studioCommands } from "@/features/studio/lib/studio-commands"
 import { useBoundRegistry } from "@/features/commands/hooks/use-keybind-overrides"
 
 import type { PaletteRecord, PaletteStore } from "../lib/palette-store"
+import { IconButton } from "@/features/studio/components/icon-button"
 
 /**
  * How the artist holds a colour while choosing it: lightness and hue as OKLCH
@@ -400,15 +402,15 @@ export function ColorPanel({
     >
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium">Colour</h2>
-        <Button
+        <IconButton
+          label="Close colour picker"
           variant="ghost"
           size="icon"
-          aria-label="Close colour picker"
           onClick={onClose}
           className="size-7 rounded-md"
         >
           <XIcon className="size-3.5" />
-        </Button>
+        </IconButton>
       </div>
 
       {problem && (
@@ -498,11 +500,8 @@ export function ColorPanel({
             rather than a tool. This is where an artist looks when they want a
             colour, so it is where the way to take one off the canvas belongs. */}
         <p className="text-xs text-muted-foreground">
-          Hold{" "}
-          <kbd className="rounded border border-border/70 px-1 font-mono text-[0.65rem]">
-            {altLabel}
-          </kbd>{" "}
-          and click the canvas to pick a colour from it.
+          Hold <Kbd>{altLabel}</Kbd> and click the canvas to pick a colour from
+          it.
         </p>
       </section>
 

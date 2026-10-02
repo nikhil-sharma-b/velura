@@ -218,6 +218,65 @@ test("paint is refused on a vector layer, but its mask takes paint", async ({
   expect(await pixels(page)).toEqual(before)
 })
 
+test("the eraser takes whole objects it touches from a vector layer, as one step", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const id = await addVectorLayer(page)
+  const blank = await pixels(page)
+  await edit(page, id, [
+    { type: "add", object: rect("a", { x: 20, y: 20, width: 40, height: 40 }) },
+    {
+      type: "add",
+      object: rect("b", { x: 120, y: 20, width: 40, height: 40 }),
+    },
+  ])
+  const drawn = await pixels(page)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "eraser" })
+  )
+  const recorded = await steps(page)
+  // A swipe across one corner of "a" alone, never reaching "b".
+  await page.mouse.move(origin.x + 10, origin.y + 70)
+  await page.mouse.down()
+  await page.mouse.move(origin.x + 30, origin.y + 50, { steps: 4 })
+  await page.mouse.up()
+  await page.waitForFunction(
+    (n) => window.engine.historyUsage().steps > n,
+    recorded
+  )
+  expect(await steps(page)).toBe(recorded + 1)
+  const erased = await pixels(page)
+  expect(at(erased, 40, 40)).toEqual(at(blank, 40, 40))
+  expect(at(erased, 140, 40)).toEqual([208, 64, 42, 255])
+
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await pixels(page)).toEqual(drawn)
+})
+
+test("a locked vector layer keeps its objects from the eraser", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const id = await addVectorLayer(page)
+  await edit(page, id, [
+    { type: "add", object: rect("a", { x: 20, y: 20, width: 40, height: 40 }) },
+  ])
+  await page.evaluate(async (id) => {
+    await window.engine.dispatch({ type: "setLayer", id, locked: true })
+    await window.engine.dispatch({ type: "setTool", tool: "eraser" })
+  }, id)
+  const before = await pixels(page)
+  const recorded = await steps(page)
+  await page.mouse.move(origin.x + 30, origin.y + 40)
+  await page.mouse.down()
+  await page.mouse.move(origin.x + 50, origin.y + 40, { steps: 4 })
+  await page.mouse.up()
+  await page.waitForTimeout(150)
+  expect(await steps(page)).toBe(recorded)
+  expect(await pixels(page)).toEqual(before)
+})
+
 test("each edit is one step, undone and redone in turn", async ({ page }) => {
   await openCanvas(page)
   const id = await addVectorLayer(page)
@@ -748,4 +807,66 @@ test("undo abandons an object transform; target removal and rasterisation close 
   expect(
     await page.evaluate(() => window.engine.getSnapshot().vectorTransform)
   ).toBeNull()
+})
+
+test("a polygon is closed by leaving the tool, by Enter, or by a double-click, and kept", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const id = await addVectorLayer(page)
+  const objects = () =>
+    page.evaluate(
+      (id) => window.engine.getSnapshot().layers.find((node) => node.id === id),
+      id
+    )
+  const corners = async (points: number[][]) => {
+    for (const [x, y] of points) {
+      // Each corner is far from the last, so none reads as a double-click.
+      await page.mouse.click(origin.x + x, origin.y + y)
+    }
+  }
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "polygon" })
+  )
+
+  // Leaving the tool keeps a polygon of three corners.
+  await corners([
+    [10, 10],
+    [50, 10],
+    [30, 40],
+  ])
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "rectangle" })
+  )
+  expect(await objects()).toMatchObject({ objects: 1 })
+
+  // Closing by command, as Enter runs it.
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "polygon" })
+  )
+  await corners([
+    [70, 10],
+    [110, 10],
+    [90, 40],
+  ])
+  await page.evaluate(() => window.engine.dispatch({ type: "closePolygon" }))
+  expect(await objects()).toMatchObject({ objects: 2 })
+
+  // A double-click on the last corner closes it.
+  await corners([
+    [130, 10],
+    [170, 10],
+  ])
+  await page.mouse.dblclick(origin.x + 150, origin.y + 40)
+  await expect.poll(objects).toMatchObject({ objects: 3 })
+
+  // Two corners are no shape: leaving drops them.
+  await corners([
+    [10, 70],
+    [50, 70],
+  ])
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "rectangle" })
+  )
+  expect(await objects()).toMatchObject({ objects: 3 })
 })

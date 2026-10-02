@@ -4,6 +4,7 @@ import { XIcon } from "@phosphor-icons/react"
 import { useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
+import { Kbd } from "@/components/ui/kbd"
 import {
   Dialog,
   DialogContent,
@@ -173,8 +174,8 @@ export function PreferencesPanel<Context>({
               className="flex flex-wrap items-center gap-2 bg-muted p-2"
             >
               <span className="flex-1">
-                <kbd className="font-mono">{format(pending.chord)}</kbd> is
-                already bound to <strong>{pending.owner.label}</strong>.
+                <Kbd>{format(pending.chord)}</Kbd> is already bound to{" "}
+                <strong>{pending.owner.label}</strong>.
               </span>
               {pending.replace !== undefined && (
                 <Button

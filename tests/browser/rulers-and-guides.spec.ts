@@ -128,7 +128,7 @@ test("rulers toggle, and guides drag out of them, move, hide and go back", async
   const canvas = page.getByRole("img", { name: "Drawing canvas" })
   const top = page.getByTestId("ruler-top")
   await expect(top).not.toBeAttached()
-  await page.keyboard.press("ControlOrMeta+r")
+  await page.keyboard.press("Shift+R")
   await expect(top).toBeVisible()
   await expect(page.getByTestId("ruler-left")).toBeVisible()
 
@@ -178,7 +178,7 @@ test("the rulers follow the view as it zooms and turns", async ({ page }) => {
     "data-engine-status",
     "ready"
   )
-  await page.keyboard.press("ControlOrMeta+r")
+  await page.keyboard.press("Shift+R")
   const top = page.getByTestId("ruler-top")
   const labels = () => top.locator("text").allTextContents()
   const fitted = await labels()
@@ -204,14 +204,14 @@ test("rulers turned on stay on after a reload, and off once turned off", async (
   await ready()
   const top = page.getByTestId("ruler-top")
   await expect(top).not.toBeAttached()
-  await page.keyboard.press("ControlOrMeta+r")
+  await page.keyboard.press("Shift+R")
   await expect(top).toBeVisible()
 
   await page.reload()
   await ready()
   await expect(top).toBeVisible()
 
-  await page.keyboard.press("ControlOrMeta+r")
+  await page.keyboard.press("Shift+R")
   await expect(top).not.toBeAttached()
   await page.reload()
   await ready()

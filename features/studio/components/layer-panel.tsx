@@ -132,10 +132,13 @@ function LayerThumbnail({
   hidden,
   className = "",
   children,
+  onEmpty,
 }: {
   engine: Engine
   id: string
   label: string
+  /** Hears whether the layer has anything on it; must be stable. */
+  onEmpty?(empty: boolean): void
   /**
    * Hidden by its own eye, or by a group around it that is. Both keep it off
    * the canvas; only the first is something to switch back on from this row,
@@ -146,6 +149,7 @@ function LayerThumbnail({
   children?: React.ReactNode
 }) {
   const [empty, setEmpty] = useState(false)
+  useEffect(() => onEmpty?.(empty), [empty, onEmpty])
   // Hidden wins the attribute; an empty hidden layer still draws its outline.
   const state = hidden ? "hidden" : empty ? "empty" : "shown"
   return (
@@ -251,6 +255,7 @@ function LayerRow({
     setEditing(false)
   }
   const hiddenBy = !layer.visible ? "self" : groupHidden ? "group" : false
+  const [empty, setEmpty] = useState(false)
   const removedLeaves = layer.kind === "group" ? leafCount(layer.children) : 1
   const highlight = (id: string | null) =>
     void engine.dispatch({ type: "highlightLayer", id })
@@ -338,6 +343,7 @@ function LayerRow({
               id={layer.id}
               label={layer.name}
               hidden={hiddenBy}
+              onEmpty={setEmpty}
             >
               {layer.kind === "group" && (
                 <FolderSimpleIcon
@@ -458,13 +464,15 @@ function LayerRow({
                 </IconButton>
               )}
               {/* A placed image's pixels come from its file, so it has none
-                  of its own to clear. */}
-              {layer.kind === "raster" && !layer.image && (
+                  of its own to clear; a vector layer clears its shapes. */}
+              {(layer.kind === "vector" ||
+                (layer.kind === "raster" && !layer.image)) && (
                 <IconButton
                   variant="ghost"
                   size="icon-xs"
                   label={`Clear ${layer.name}`}
-                  disabled={layer.locked}
+                  // Nothing to clear is nothing to ask about.
+                  disabled={layer.locked || empty}
                   onClick={() => runCommand("layer.clear", layer.id)}
                 >
                   <EraserIcon />

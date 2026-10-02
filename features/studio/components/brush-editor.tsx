@@ -35,6 +35,7 @@ import {
 } from "../lib/brush-draft"
 import { BrushPreview } from "./brush-preview"
 import { SliderSetting } from "./slider-setting"
+import { IconButton } from "./icon-button"
 
 /**
  * The brush editor (D32): the dynamics graph of ticket 05 as a tool rather
@@ -249,14 +250,15 @@ function Mapping({
             ))}
           </SelectContent>
         </Select>
-        <Button
+        <IconButton
+          label="Remove mapping"
           variant="ghost"
           size="icon-sm"
           aria-label={`Remove mapping ${index + 1}`}
           onClick={onRemove}
         >
           <TrashIcon />
-        </Button>
+        </IconButton>
       </div>
 
       <div className="flex items-center gap-2">
@@ -378,14 +380,14 @@ export function BrushEditor({
     >
       <header className="flex items-center justify-between gap-2">
         <h2 className="truncate text-sm font-medium">{brush.name}</h2>
-        <Button
+        <IconButton
+          label="Close brush editor"
           variant="ghost"
           size="icon-sm"
-          aria-label="Close brush editor"
           onClick={onClose}
         >
           <XIcon />
-        </Button>
+        </IconButton>
       </header>
       {/* The preview sits above the tabs rather than inside one: every tab
             changes what it shows, and an artist dialling a brush in by eye

@@ -35,9 +35,16 @@ export interface UndoStack {
   push(entry: UndoEntry): void
   /**
    * Extends the step on top of the stack, if it carries `key` and is the step
-   * that would be undone next. Answers whether it did.
+   * that would be undone next. Answers whether it did. A step that edited
+   * scenes takes the latest edit's commands forward and keeps its own
+   * inverse, so undoing the run still lands where it started; the key is
+   * what promises the edits touched the same objects.
    */
-  extendTop(key: string, after: DocumentStructure): boolean
+  extendTop(
+    key: string,
+    after: DocumentStructure,
+    scenes?: readonly SceneChange[]
+  ): boolean
   canUndo(): boolean
   canRedo(): boolean
   /** Moves the cursor back and returns the step to invert. */
@@ -123,15 +130,22 @@ export function createUndoStack(options: {
       for (const hash of hashes(entry)) retain(hash)
       trim()
     },
-    extendTop(key, after) {
+    extendTop(key, after, scenes) {
       const top = entries[cursor - 1]
       if (
         cursor !== entries.length ||
         top?.coalesceAs !== key ||
-        !top.structure
+        !top.structure ||
+        (scenes?.length ?? 0) !== (top.scenes?.length ?? 0) ||
+        scenes?.some((change, i) => change.layerId !== top.scenes![i].layerId)
       )
         return false
       top.structure.after = after
+      if (scenes)
+        top.scenes = scenes.map((change, i) => ({
+          ...change,
+          inverse: top.scenes![i].inverse,
+        }))
       return true
     },
     canUndo: () => cursor > 0,

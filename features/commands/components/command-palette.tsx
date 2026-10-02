@@ -8,6 +8,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Kbd } from "@/components/ui/kbd"
 import { cn } from "@/lib/utils"
 
 import { usePlatform } from "../hooks/use-keybinds"
@@ -192,9 +193,7 @@ export function CommandPalette<Context>({
                 {entry.command.category}
               </span>
               {entry.keybinds[0] !== undefined && (
-                <kbd className="font-mono text-[0.65rem] text-muted-foreground">
-                  {formatChord(entry.keybinds[0], platform)}
-                </kbd>
+                <Kbd>{formatChord(entry.keybinds[0], platform)}</Kbd>
               )}
             </li>
           ))}
