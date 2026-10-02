@@ -5,7 +5,9 @@ import {
   describeEnvironment,
   markActiveLayer,
   runBenchmark,
+  runNavigationBenchmark,
   runVectorBenchmark,
+  type NavigationRunResult,
   type RunResult,
   type VectorRunResult,
 } from "../../bench/driver"
@@ -86,6 +88,12 @@ declare global {
     runBenchmark(options: WorkloadOptions): Promise<RunResult>
     /** Re-rasterising a vector layer of many paths (19). */
     runVectorBenchmark(options: VectorWorkloadOptions): Promise<VectorRunResult>
+    /** Panning and zooming a stack, its caches rebuilt each step (sharp-zoom 01). */
+    runNavigationBenchmark(options: {
+      width: number
+      height: number
+      layers: number
+    }): Promise<NavigationRunResult>
     describeEnvironment: typeof describeEnvironment
     /** A document of `count` layers, each holding a mark, for the compositor tests. */
     buildLayerStack(count: number): Promise<void>
@@ -369,6 +377,8 @@ window.remountEngine = (options) => {
 window.runBenchmark = (options) => runBenchmark(window.engine, canvas, options)
 window.runVectorBenchmark = (options) =>
   runVectorBenchmark(window.engine, canvas, options)
+window.runNavigationBenchmark = (options) =>
+  runNavigationBenchmark(window.engine, canvas, options)
 window.describeEnvironment = describeEnvironment
 // The same pen the benchmark uses, so the compositor's tests and its
 // measurements are driving one routine rather than two that resemble each other.

@@ -103,8 +103,11 @@ test("the layer panel manages the stack and explains locked painting", async ({
 
   await layers.getByText("Layer properties", { exact: true }).click()
   const opacity = layers.getByRole("slider", { name: "Layer opacity" })
+  // Each step recomposites the canvas, which CI's software WebGPU does
+  // slowly enough to starve the page of frames; page steps are 10% apiece.
   await opacity.press("End")
-  for (let step = 0; step < 45; step++) await opacity.press("ArrowLeft")
+  for (let step = 0; step < 4; step++) await opacity.press("PageDown")
+  for (let step = 0; step < 5; step++) await opacity.press("ArrowLeft")
   await expect(layers.getByText("55%")).toBeVisible()
   await layers.getByRole("combobox", { name: "Blend mode" }).click()
   await page.getByRole("option", { name: "Multiply" }).click()

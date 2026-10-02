@@ -16,7 +16,9 @@
  * `--sweep` runs the document-size ladder instead of the two passes, and
  * `--layers` the layer-count one; `--feather` paints inside a large feathered
  * selection against the same painting with none (11); `--vector` times
- * redrawing a vector layer of many paths (19). They are how the tables in
+ * redrawing a vector layer of many paths (19); `--navigate` times panning and
+ * zooming a stack whose caches each step rebuilds (sharp-zoom 01). They are
+ * how the tables in
  * `docs/design/benchmark.md` were measured, and they exist so those tables can
  * be reproduced rather than taken on trust.
  */
@@ -327,7 +329,9 @@ async function featherSweep(): Promise<void> {
  * the first draw of the whole scene, an edit spanning the layer (every path
  * redrawn), and an edit to one path (only its region redrawn). Re-rasterising
  * is what a vector layer pays instead of a compositor of its own, so this is
- * the number that says what that choice costs.
+ * the number that says what that choice costs. Beside them, navigating at
+ * high zoom, where every step draws the paths into the screen through the
+ * view (sharp-zoom 02).
  */
 const PATH_COUNTS = [500, 2000, 8000]
 
@@ -340,7 +344,7 @@ async function vectorSweep(): Promise<void> {
   try {
     console.log(
       `\n  vector layer, ${VECTOR_WORKLOAD.width}², ms from edit to GPU done` +
-        "\n  paths     first draw   whole layer (median / p95)   one path (median / p95)"
+        "\n  paths     first draw   whole layer (median / p95)   one path (median / p95)   navigating at 8× (median / p95)"
     )
     for (const paths of PATH_COUNTS) {
       const page = await browser.newPage()
@@ -356,7 +360,49 @@ async function vectorSweep(): Promise<void> {
       console.log(
         `  ${String(paths).padStart(5)}   ${fixed(result.firstDrawMs).padStart(10)}   ` +
           `${fixed(median(result.fullRedrawMs)).padStart(12)} / ${fixed(p95(result.fullRedrawMs)).padEnd(12)}   ` +
-          `${fixed(median(result.localRedrawMs), 2).padStart(10)} / ${fixed(p95(result.localRedrawMs), 2)}`
+          `${fixed(median(result.localRedrawMs), 2).padStart(10)} / ${fixed(p95(result.localRedrawMs), 2).padEnd(10)}   ` +
+          `${fixed(median(result.navigateMs), 2).padStart(10)} / ${fixed(p95(result.navigateMs), 2)}`
+      )
+      await page.close()
+    }
+    console.log()
+  } finally {
+    await browser.close()
+  }
+}
+
+/**
+ * Navigating a stack (sharp-zoom 01), at the layer ladder's counts: the
+ * screen is composited at the window's resolution through the view, so a
+ * pan or zoom rebuilds the caches — a draw per layer at viewport size. D30
+ * holds painting to a frame whatever the stack is; this is what navigating
+ * costs instead, and whether it fits in one.
+ */
+async function navigationSweep(): Promise<void> {
+  const browser = await launch([])
+  const median = (values: number[]) =>
+    [...values].sort((a, b) => a - b)[values.length >> 1]
+  const p95 = (values: number[]) =>
+    [...values].sort((a, b) => a - b)[Math.floor(values.length * 0.95)]
+  try {
+    console.log(
+      `\n  navigating, ${LAYER_SWEEP_SIZE}² document, ms from command to GPU done` +
+        "\n  layers   viewport    median     p95"
+    )
+    for (const layers of LAYER_COUNTS) {
+      const page = await browser.newPage()
+      page.on("pageerror", (error) =>
+        console.error("page error:", error.message)
+      )
+      await page.goto(HARNESS)
+      await page.waitForFunction(() => !!window.runNavigationBenchmark)
+      const result = await page.evaluate(
+        (options) => window.runNavigationBenchmark(options),
+        { width: LAYER_SWEEP_SIZE, height: LAYER_SWEEP_SIZE, layers }
+      )
+      console.log(
+        `  ${String(result.layers).padStart(6)}   ${`${result.viewport.width}×${result.viewport.height}`.padStart(8)}   ` +
+          `${fixed(median(result.frameMs), 2).padStart(7)}   ${fixed(p95(result.frameMs), 2).padStart(6)}`
       )
       await page.close()
     }
@@ -376,7 +422,9 @@ async function main(): Promise<void> {
         ? featherSweep
         : process.argv.includes("--vector")
           ? vectorSweep
-          : null
+          : process.argv.includes("--navigate")
+            ? navigationSweep
+            : null
   if (ladder) {
     try {
       await ladder()

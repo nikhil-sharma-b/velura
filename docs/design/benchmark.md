@@ -17,6 +17,7 @@ bun run bench                  # records a run
 bun run bench/run.ts --sweep   # the document-size ladder, for diagnosis
 bun run bench/run.ts --layers  # the layer-count ladder, for the compositor
 bun run bench/run.ts --vector  # redrawing a vector layer of many paths (19)
+bun run bench/run.ts --navigate # panning and zooming a stack (sharp-zoom 01)
 ```
 
 It is tracked, not gated. The exit status is zero whatever the numbers say,
@@ -263,6 +264,51 @@ cached for as long as the object is unchanged. A whole-layer redraw of two
 thousand paths fits in a frame; an edit to one path redraws only its region,
 and what it costs beyond that is the frame itself and the walk over the
 scene's objects to find what the region touches.
+
+On screen the layer is not sampled from those pixels: wherever the view
+resamples, it is drawn from its cached meshes straight into the screen
+through the view (sharp-zoom 02), so it is sharp at any zoom. Every pan or
+zoom redraws it so. The same run then zooms to 8× and alternates a pan and a
+zoom as `--navigate` does, timing each step from the start of its frame to
+the GPU's fence (1024² viewport):
+
+| paths | whole layer, median / p95 | one path, median / p95 | navigating at 8×, median / p95 |
+|---|---|---|---|
+| 500 | 6.7 / 9.5 | 4.5 / 4.9 | 2.4 / 5.8 |
+| 2000 | 11.3 / 13.4 | 6.2 / 7.5 | 2.4 / 8.1 |
+| 8000 | 26.0 / 38.9 | 13.3 / 16.4 | 2.1 / 6.8 |
+
+Navigating costs little whatever the path count: at 8× only the paths whose
+bounds reach the window are drawn, and the window is a fraction of the
+document. The p95 is the step that zooms out, where more of the scene is on
+screen. An edit now also hands the renderer the whole scene's meshes, uploaded
+afresh, and the screen redraws the layer from them, so an edit's cost grows
+with the scene on top of the region it re-rasterises; the one-path column
+includes it.
+
+## Navigating: caches rebuilt per view
+
+The screen is composited at the window's resolution through the view
+(sharp-zoom 01), so the caches around the active layer belong to the view and
+every pan or zoom rebuilds them: a draw per layer at the window's size, once
+per frame however many steps led to it. Painting still never rebuilds one, so
+D30's claim is untouched; this is what navigating costs instead.
+`--navigate` builds the layer ladder's stacks — each layer holding a mark, the
+pen on the middle one — at 1024², and alternates a pan and a zoom, timing each
+from the start of the frame that draws it to the GPU's fence.
+
+Apple GPU (M-series, integrated), Chrome/WebGPU, ms:
+
+| layers | viewport | before (document-space caches), median / p95 | after, median / p95 |
+|---|---|---|---|
+| 2 | 1024 × 1024 | 1.0 / 1.6 | 2.0 / 2.6 |
+| 50 | 1024 × 1024 | 1.7 / 2.5 | 1.5 / 2.4 |
+
+The two-layer row doubles: a rebuild costs a frame a fixed millisecond or so of passes and submissions whatever the stack. The rebuild is real — fifty layers is a submission per layer per step — and
+does not show above the frame's own cost on this GPU: a 1024² draw is tens of
+microseconds of bandwidth. Both rows sit an order of magnitude inside an
+8.33 ms frame. The cost scales with the window's pixels times the layers
+holding pixels, so the number to re-measure is a large window on a weak GPU.
 
 ## Caveats to read the numbers with
 

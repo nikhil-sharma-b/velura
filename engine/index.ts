@@ -280,6 +280,11 @@ import {
   type ViewMatrix,
   zoomView,
 } from "./view/view-transform"
+import {
+  DEFAULT_RASTER_MAGNIFICATION,
+  RASTER_MAGNIFICATIONS,
+  type RasterMagnification,
+} from "./view/magnification"
 
 export {
   docToScreen,
@@ -288,6 +293,11 @@ export {
   MIN_ZOOM,
   type ViewMatrix,
 } from "./view/view-transform"
+export {
+  DEFAULT_RASTER_MAGNIFICATION,
+  RASTER_MAGNIFICATIONS,
+  type RasterMagnification,
+} from "./view/magnification"
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
 export {
   defaultFilter,
@@ -760,6 +770,11 @@ export type EngineCommand =
   /** Whether the rulers are shown along the canvas's edges (16). */
   | { type: "setRulersVisible"; visible: boolean }
   /**
+   * How raster layers look magnified on screen (sharp-zoom 03): hard-edged
+   * pixels past 200%, or filtered at every zoom. Never what export reads.
+   */
+  | { type: "setRasterMagnification"; mode: RasterMagnification }
+  /**
    * Stroke assist (17): a straight-edge in document pixels, angle in radians,
    * that every stroke, brush or eraser, is held to; null takes it away.
    */
@@ -890,6 +905,7 @@ export type EngineSnapshot = Readonly<{
   /** Session view state (16): whether guides are drawn and snapped to. */
   guidesVisible: boolean
   rulersVisible: boolean
+  rasterMagnification: RasterMagnification
   /** The straight-edge strokes are held to (17), if one is placed. */
   straightEdge: StraightEdge | null
   /** The persistent tool in the hand; Alt/Option sampling never changes it. */
@@ -1037,6 +1053,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   guides: Object.freeze([]),
   guidesVisible: true,
   rulersVisible: false,
+  rasterMagnification: DEFAULT_RASTER_MAGNIFICATION,
   straightEdge: null,
   tool: "brush",
   shapeStyle: DEFAULT_SHAPE_STYLE,
@@ -1490,6 +1507,9 @@ export function createEngine(
   // The pen-down sample opens the path, and it arrives through the buffer like
   // every other sample: nothing is drawn from inside an event handler.
   let opening = false
+  // The pen has lifted and the stroke's tail waits on the next frame to land.
+  // A command that arrives first lands it, so it never overtakes the stroke.
+  let landing = false
   // Where the pen actually was, before stabilization pulled the path behind it,
   // and what it reported there: the tail flushed on pen-up reuses all of it.
   let rawX = 0
@@ -1757,6 +1777,7 @@ export function createEngine(
     stopSelection()
     stroking = false
     opening = false
+    landing = false
     stampCount = 0
     samples.clear()
     renderer?.destroy()
@@ -1889,7 +1910,7 @@ export function createEngine(
     const viewportSize = viewportExtent()
     const matrix = docToScreen(view, size, viewportSize)
     toDoc = screenToDoc(view, size, viewportSize)
-    renderer?.setView(matrix)
+    renderer?.setView(matrix, viewportSize)
   }
 
   /**
@@ -2712,8 +2733,11 @@ export function createEngine(
     return [red * alpha, green * alpha, blue * alpha, alpha] as const
   }
 
-  /** What the renderer draws of a scene within a region, bottom first. */
-  function vectorDraws(scene: VectorScene, region: PixelRect): VectorDraw[] {
+  /**
+   * What the renderer draws of a scene within a region, bottom first: all of
+   * it without one.
+   */
+  function vectorDraws(scene: VectorScene, region?: PixelRect): VectorDraw[] {
     const draws: VectorDraw[] = []
     const add = (
       mesh: Mesh | null,
@@ -2722,10 +2746,11 @@ export function createEngine(
       if (!mesh?.bounds) return
       const { minX, minY, maxX, maxY } = mesh.bounds
       if (
-        maxX < region.x ||
-        maxY < region.y ||
-        minX > region.x + region.width ||
-        minY > region.y + region.height
+        region &&
+        (maxX < region.x ||
+          maxY < region.y ||
+          minX > region.x + region.width ||
+          minY > region.y + region.height)
       )
         return
       draws.push({
@@ -2755,6 +2780,9 @@ export function createEngine(
     drawnScenes.set(layerId, scene)
     if (region)
       renderer.rasterizeVector(layerId, vectorDraws(scene, region), region)
+    // The screen draws the layer from its geometry, sharp at any zoom
+    // (sharp-zoom 02); the pixels above stay what everything else reads.
+    renderer.setVectorScene(layerId, vectorDraws(scene))
     // A scene's content box is its objects', and shrinks when they go.
     contentBounds.forget(layerId)
     const box = unionOf(scene.objects.map(objectBounds))
@@ -3445,6 +3473,8 @@ export function createEngine(
         return
       }
       const layer = node
+      // A layer rasterised, by command or by redo, is drawn from its pixels.
+      target.setVectorScene(layer.id, null)
       // Hashed before the upload clears the mark: these texels are exactly
       // what the GPU is about to hold, so the first stroke over them knows
       // what it covered without reading anything back.
@@ -4203,30 +4233,16 @@ export function createEngine(
     return true
   }
 
-  function drawFrame(timestamp: number) {
-    frame = undefined
-    const cpuStart = frameObserver ? performance.now() : 0
-    frameStamps = 0
-    frameOldestSample = null
-    if (shapeDrag) {
-      drawShapeDrag()
-      return
-    }
-    if (vectorErase) {
-      drawVectorErase()
-      return
-    }
-    if (marquee) {
-      drawMarquee()
-      return
-    }
-    if (isVectorTool(tool)) {
-      samples.clear()
-      return
-    }
+  /**
+   * Draws what the pen has sent into the stroke buffer, and once the pen has
+   * lifted, the tail and the whole mark into its layer. Presenting is left
+   * to the frame.
+   */
+  function landStroke() {
     samples.drain(consumeSample)
     // A stroke that ended before its opening sample was drained drew nothing.
     if (!stroking && !opening) {
+      landing = false
       // The string is released on pen-up, so the mark reaches where the pen
       // lifted instead of stopping a pull radius short of it.
       resampler.extend(
@@ -4253,6 +4269,30 @@ export function createEngine(
       }
     }
     flushStamps()
+  }
+
+  function drawFrame(timestamp: number) {
+    frame = undefined
+    const cpuStart = frameObserver ? performance.now() : 0
+    frameStamps = 0
+    frameOldestSample = null
+    if (shapeDrag) {
+      drawShapeDrag()
+      return
+    }
+    if (vectorErase) {
+      drawVectorErase()
+      return
+    }
+    if (marquee) {
+      drawMarquee()
+      return
+    }
+    if (isVectorTool(tool)) {
+      samples.clear()
+      return
+    }
+    landStroke()
     try {
       if (snapshot.status === "ready") render()
     } catch (error) {
@@ -4515,6 +4555,10 @@ export function createEngine(
     sensesPressure: boolean
   ) {
     if (snapshot.status !== "ready" || !doc) return
+    // The last stroke lands before the pen starts anything else: a marquee
+    // or shape skips the frame that would land it, and a new stroke would
+    // take its tail for its own.
+    landLiftedStroke()
     if (isSelectionTool(tool)) {
       // The selection belongs to the document, so a locked or image layer
       // does not stop one being drawn.
@@ -4766,6 +4810,7 @@ export function createEngine(
     if (!stroking && !opening) return
     stroking = false
     opening = false
+    landing = false
     // The frame already scheduled would see a stroke that has just ended and
     // flush its tail into the layer, which is the very mark being taken back.
     if (frame !== undefined) cancelAnimationFrame(frame)
@@ -4815,10 +4860,24 @@ export function createEngine(
     // The tail is flushed by the next frame, so the stroke reaches the point
     // the pen actually lifted from rather than stopping a sample short.
     stroking = false
+    landing = true
     scheduleFrame()
     // An eraser removes ink rather than using it, so it never counts.
     if (snapshot.tool !== "eraser")
       options.onStrokeCommitted?.(snapshot.color.hex)
+  }
+
+  /**
+   * Lands a lifted stroke now rather than on the frame it waits for, so a
+   * command sent as the pen lifts — dropping the selection, switching layer —
+   * applies after the stroke, as the artist made them. The frame already
+   * scheduled still presents it. The one place the stroke pipeline draws
+   * outside the frame (architecture §6.2).
+   */
+  function landLiftedStroke() {
+    if (!landing) return
+    landing = false
+    landStroke()
   }
 
   function render(): GPUTexture {
@@ -4905,6 +4964,7 @@ export function createEngine(
         feather: BRUSH_FEATHER,
       })
       renderer = target
+      target.setRasterMagnification(snapshot.rasterMagnification)
       const local = options.persistence
       const store = local
         ? createDocumentStore(local.blobs ?? createLocalBlobStore())
@@ -5261,13 +5321,14 @@ export function createEngine(
     })
     try {
       // The artwork is what was painted, not how it is being looked at, so
-      // the export presents through the identity rather than the view (D28).
-      renderer?.setView(IDENTITY_MATRIX)
-      // A layer picked out in the list is how it is being looked at too.
-      if (highlight && doc) renderer?.setComposition(planComposite(doc))
-      // Preview/export rendering has its own target. It never replaces the
-      // visible swap-chain frame while its asynchronous readback completes.
-      renderer?.render(output.createView())
+      // it is drawn at its own size rather than through the view (D28), into
+      // a target of its own: the visible swap-chain frame is never replaced
+      // while its asynchronous readback completes. A layer picked out in the
+      // list is how it is being looked at too, so it is drawn without that.
+      renderer?.renderArtwork(
+        output.createView(),
+        highlight && doc ? planComposite(doc) : undefined
+      )
       const encoder = acquired.createCommandEncoder()
       encoder.copyTextureToBuffer(
         { texture: output },
@@ -5275,9 +5336,6 @@ export function createEngine(
         { width, height }
       )
       acquired.queue.submit([encoder.finish()])
-      // Restore the interactive uniform before yielding to the browser. The
-      // submitted export work is ordered before this queue write.
-      applyView()
       await buffer.mapAsync(GPUMapMode.READ)
       const mapped = new Uint8Array(buffer.getMappedRange())
       const data = new Uint8Array(width * height * 4)
@@ -5302,9 +5360,6 @@ export function createEngine(
     } finally {
       buffer.destroy()
       output.destroy()
-      // Also restore after an early failure before the normal restoration.
-      applyView()
-      syncComposition()
     }
   }
 
@@ -5318,6 +5373,7 @@ export function createEngine(
     },
     async dispatch(command) {
       if (disposed) return
+      landLiftedStroke()
       if (filterSession && !FILTER_PASSTHROUGH.has(command.type)) cancelFilter()
       switch (command.type) {
         case "initialize":
@@ -5815,7 +5871,10 @@ export function createEngine(
             // The copy's pixels were copied with it, so they are already a
             // drawing of the scene it shares with its source.
             const drawn = drawnScenes.get(command.id)
-            if (drawn) drawnScenes.set(copyId, drawn)
+            if (drawn) {
+              drawnScenes.set(copyId, drawn)
+              renderer?.setVectorScene(copyId, vectorDraws(drawn))
+            }
             if (source.mask && copy.mask)
               renderer?.duplicateLayer(source.mask.id, copy.mask.id)
             // The copy's pixels are the source's, so history holds one copy of
@@ -6441,6 +6500,14 @@ export function createEngine(
         case "setRulersVisible":
           publish({ rulersVisible: command.visible !== false })
           break
+        case "setRasterMagnification": {
+          if (!RASTER_MAGNIFICATIONS.includes(command.mode))
+            throw new Error(`Unknown raster magnification: ${command.mode}`)
+          renderer?.setRasterMagnification(command.mode)
+          publish({ rasterMagnification: command.mode })
+          if (snapshot.status === "ready") render()
+          break
+        }
         case "setStraightEdge": {
           const edge = command.edge
           if (
