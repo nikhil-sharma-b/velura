@@ -60,6 +60,8 @@ export interface StudioContext {
    * do; cancelling asks nothing of the engine.
    */
   confirmClear: (layer: LayerSummary) => void
+  /** As `confirmClear`, for deleting a layer or a group. */
+  confirmDelete: (layer: LayerSummary) => void
 }
 
 type StudioCommand = Command<StudioContext>
@@ -558,6 +560,11 @@ export const studioCommands = createRegistry<StudioContext>([
         return leafCount(engine!.getSnapshot().layers) > removed
       }
     ),
+    // Deleting takes the layer and all on it, so it waits for a yes.
+    run: (context) => {
+      const layer = targetLayer(context)
+      if (layer) context.confirmDelete(layer)
+    },
   },
   {
     id: "layer.toggleVisible",

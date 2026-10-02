@@ -53,6 +53,8 @@ function context(engine: Engine, layerId?: string): StudioContext {
     openFeather: () => {},
     confirmClear: (layer) =>
       void engine.dispatch({ type: "clearLayer", id: layer.id }),
+    confirmDelete: (layer) =>
+      void engine.dispatch({ type: "removeLayer", id: layer.id }),
   }
 }
 
@@ -119,6 +121,17 @@ describe("layer commands", () => {
     runStudioCommand("layer.clear", {
       ...context(engine),
       confirmClear: asked,
+    })
+    expect(asked).toHaveBeenCalledTimes(1)
+    expect(sent).toEqual([])
+  })
+
+  test("delete asks before it removes a layer", () => {
+    const { engine, sent } = fakeEngine([raster("a"), raster("b")], "b")
+    const asked = mock(() => {})
+    runStudioCommand("layer.delete", {
+      ...context(engine),
+      confirmDelete: asked,
     })
     expect(asked).toHaveBeenCalledTimes(1)
     expect(sent).toEqual([])

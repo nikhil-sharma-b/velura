@@ -117,7 +117,10 @@ import { LayerPanel } from "./layer-panel"
 import { ShapeStylePanel } from "./shape-style-panel"
 import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
-import { ClearLayerDialog } from "./clear-layer-dialog"
+import {
+  ConfirmLayerDialog,
+  type LayerConfirmation,
+} from "./confirm-layer-dialog"
 import { FeatherDialog } from "./feather-dialog"
 import { FilterDialog } from "./filter-dialog"
 import {
@@ -511,7 +514,9 @@ export function CanvasHost({
   const [eraserOpen, setEraserOpen] = useState(false)
   const [featherRadius, setFeatherRadius] = useState(10)
   const [featherOpen, setFeatherOpen] = useState(false)
-  const [clearing, setClearing] = useState<LayerSummary | null>(null)
+  const [confirming, setConfirming] = useState<LayerConfirmation | null>(
+    null
+  )
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [pressureOpen, setPressureOpen] = useState(false)
   /**
@@ -783,7 +788,8 @@ export function CanvasHost({
     openPreferences: () => setPreferencesOpen(true),
     toggleZen: () => setZen((on) => !on),
     openFeather: () => setFeatherOpen(true),
-    confirmClear: setClearing,
+    confirmClear: (layer) => setConfirming({ layer, action: "clear" }),
+    confirmDelete: (layer) => setConfirming({ layer, action: "delete" }),
   }
   // The shape options are memoised, so they get one handle on the commands
   // for good, reading whichever context is current when one runs.
@@ -2124,11 +2130,15 @@ export function CanvasHost({
           void engine?.dispatch({ type: "featherSelection", radius })
         }}
       />
-      <ClearLayerDialog
-        layer={clearing}
-        onOpenChange={(open) => !open && setClearing(null)}
-        onConfirm={(layer) =>
-          void engine?.dispatch({ type: "clearLayer", id: layer.id })
+      <ConfirmLayerDialog
+        confirming={confirming}
+        onOpenChange={(open) => !open && setConfirming(null)}
+        onConfirm={({ layer, action }) =>
+          void engine?.dispatch(
+            action === "clear"
+              ? { type: "clearLayer", id: layer.id }
+              : { type: "removeLayer", id: layer.id }
+          )
         }
       />
       <PreferencesPanel

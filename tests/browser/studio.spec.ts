@@ -117,7 +117,16 @@ test("the layer panel manages the stack and explains locked painting", async ({
     "layer-row-Highlights"
   )
 
-  await layers.getByRole("button", { name: "Delete Highlights copy" }).click()
+  // Deleting asks first; keeping it leaves the layer where it was.
+  const remove = layers.getByRole("button", { name: "Delete Highlights copy" })
+  await remove.click()
+  await page.getByRole("button", { name: "Keep it" }).click()
+  await expect(layers.getByText("Highlights copy")).toHaveCount(1)
+  await remove.click()
+  await expect(
+    page.getByRole("alertdialog", { name: "Delete Highlights copy?" })
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Delete layer" }).click()
   await expect(layers.getByText("Highlights copy")).toHaveCount(0)
 
   // The collapse control lives in the panel's header, and focus follows the
