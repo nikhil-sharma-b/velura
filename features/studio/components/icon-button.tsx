@@ -24,13 +24,15 @@ import { studioCommands } from "../lib/studio-commands"
  * It should start with the label, so what is said matches what is shown.
  *
  * A button that runs a studio command names it, and its tooltip shows the
- * command's keybind as the registry has it.
+ * command's keybind as the registry has it. A `detail` adds a second, quieter
+ * line under the name, for what the button does that its icon cannot show.
  */
 export function IconButton({
   label,
   side = "top",
   sideOffset = 8,
   command,
+  detail,
   children,
   ...props
 }: ComponentProps<typeof Button> & {
@@ -38,6 +40,7 @@ export function IconButton({
   side?: ComponentProps<typeof TooltipContent>["side"]
   sideOffset?: number
   command?: string
+  detail?: string
   children: ReactNode
 }) {
   const commands = useBoundRegistry(studioCommands)
@@ -52,6 +55,9 @@ export function IconButton({
         <TooltipContent side={side} sideOffset={sideOffset}>
           {label}
           {command && <KeybindHint registry={commands} id={command} />}
+          {detail && (
+            <span className="block text-[11px] opacity-70">{detail}</span>
+          )}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>

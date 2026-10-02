@@ -131,9 +131,16 @@ import { KeybindHint } from "@/features/commands/components/keybind-hint"
 
 function RailAction({
   side = "right",
+  className,
   ...props
 }: ComponentProps<typeof IconButton>) {
-  return <IconButton {...props} side={side} className="rounded-lg" />
+  return (
+    <IconButton
+      {...props}
+      side={side}
+      className={cn("rounded-lg", className)}
+    />
+  )
 }
 
 type FamilyMember = {
@@ -154,7 +161,7 @@ const VECTOR_TOOL_RAIL = {
   objectSelect: { label: "Select objects", icon: <CursorIcon weight="fill" /> },
   pen: { label: "Pen tool", icon: <PenNibIcon /> },
   node: { label: "Edit points tool", icon: <CursorIcon /> },
-  pressure: { label: "Pressure stroke tool", icon: <PaintBrushIcon /> },
+  pressure: { label: "Vector brush tool", icon: <PaintBrushIcon /> },
 } satisfies Record<
   Exclude<VectorTool, "rectangle">,
   { label: string; icon: React.ReactNode }
@@ -196,7 +203,8 @@ const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
  * Two sibling tools in one rail slot, as the rail has height for no more:
  * the one last in the hand shows, a press picks it up, and a second press
  * swaps to its sibling. The slot follows the tool in the hand rather than
- * its own presses, so a keybind moves it as a press does.
+ * its own presses, so a keybind moves it as a press does. A pair of dots
+ * and the tooltip tell the slot holds two.
  */
 function ToolFamilySlot({
   members,
@@ -218,10 +226,27 @@ function ToolFamilySlot({
       variant={held ? "default" : "ghost"}
       size="icon"
       aria-pressed={!!held}
+      detail={`Press again for ${sibling.label.toLowerCase()}`}
       onClick={() => onPick(held ? sibling.tool : shown.tool)}
-      className="rounded-lg"
+      className="relative"
     >
       {shown.icon}
+      {/* A dot per sibling, the one in the slot filled: unlike the brush
+        button's corner notch, which opens a menu, this says a press swaps. */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute bottom-0.5 left-1/2 flex -translate-x-1/2 gap-0.5"
+      >
+        {members.map((member) => (
+          <span
+            key={member.tool}
+            className={cn(
+              "size-0.75 rounded-full bg-current",
+              member === shown ? "opacity-80" : "opacity-30"
+            )}
+          />
+        ))}
+      </span>
     </RailAction>
   )
 }
