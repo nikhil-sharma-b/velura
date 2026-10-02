@@ -158,22 +158,22 @@ type FamilyMember = {
 }
 
 /**
- * The vector tools' rail buttons, drawn as the vector apps artists know draw
- * them: a solid arrow picks objects and a hollow one their points, as in
- * Illustrator, and a pressure stroke is a paintbrush.
+ * The vector tools' rail buttons, in rail order and drawn as the vector apps
+ * artists know draw them: first the two arrows that act on what is drawn — a
+ * solid one picks objects and a hollow one their points, as in Illustrator —
+ * then the freehand tools, the pen and the brush, then the shapes.
  */
 const VECTOR_TOOL_RAIL = {
-  ellipse: { label: "Ellipse tool", icon: <CircleIcon /> },
-  line: { label: "Line tool", icon: <LineSegmentIcon /> },
-  polygon: { label: "Polygon tool", icon: <HexagonIcon /> },
   objectSelect: { label: "Select objects", icon: <CursorIcon weight="fill" /> },
-  pen: { label: "Pen tool", icon: <PenNibIcon /> },
   node: { label: "Edit points tool", icon: <CursorIcon /> },
+  pen: { label: "Pen tool", icon: <PenNibIcon /> },
   pressure: { label: "Vector brush tool", icon: <PaintBrushIcon /> },
-} satisfies Record<
-  Exclude<VectorTool, "rectangle">,
-  { label: string; icon: React.ReactNode }
->
+  rectangle: { label: "Rectangle tool", icon: <RectangleIcon /> },
+  ellipse: { label: "Ellipse tool", icon: <CircleIcon /> },
+  polygon: { label: "Polygon tool", icon: <HexagonIcon /> },
+  line: { label: "Line tool", icon: <LineSegmentIcon /> },
+} satisfies Record<VectorTool, { label: string; icon: React.ReactNode }>
+const VECTOR_RAIL_ORDER = Object.keys(VECTOR_TOOL_RAIL) as VectorTool[]
 
 /** The selection tools, by the rail slot each pair shares (09). */
 const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
@@ -1722,35 +1722,7 @@ export function CanvasHost({
                   </ToolGroup>
                   <RailDivider />
                   <ToolGroup label="Vector tools" dimmed={vectorDimmed}>
-                    <RailAction
-                      label="Rectangle tool"
-                      detail={WORKS_ON.vector}
-                      command="tool.rectangle"
-                      variant={
-                        snapshot.tool === "rectangle" ? "default" : "ghost"
-                      }
-                      size="icon"
-                      aria-pressed={snapshot.tool === "rectangle"}
-                      onClick={() => {
-                        setLibraryOpen(false)
-                        setEraserOpen(false)
-                        runStudioCommand("tool.rectangle", commandContext)
-                      }}
-                      className="rounded-lg"
-                    >
-                      <RectangleIcon />
-                    </RailAction>
-                    {(
-                      [
-                        "ellipse",
-                        "line",
-                        "polygon",
-                        "objectSelect",
-                        "pen",
-                        "node",
-                        "pressure",
-                      ] as const
-                    ).map((tool) => (
+                    {VECTOR_RAIL_ORDER.map((tool) => (
                       <RailAction
                         key={tool}
                         label={VECTOR_TOOL_RAIL[tool].label}
@@ -1759,9 +1731,11 @@ export function CanvasHost({
                         variant={snapshot.tool === tool ? "default" : "ghost"}
                         size="icon"
                         aria-pressed={snapshot.tool === tool}
-                        onClick={() =>
+                        onClick={() => {
+                          setLibraryOpen(false)
+                          setEraserOpen(false)
                           runStudioCommand(`tool.${tool}`, commandContext)
-                        }
+                        }}
                         className="rounded-lg"
                       >
                         {VECTOR_TOOL_RAIL[tool].icon}
