@@ -21,7 +21,7 @@ struct Present {
   // the artist has not navigated, and when exporting, which is what keeps a
   // rotated or flipped view out of the file.
   toDoc: mat3x3<f32>,
-  // The document's size in pixels, which every surface here is the size of.
+  // The document's size in pixels, which the active layer and stroke are.
   docSize: vec2<f32>,
   // One for destination-out erasing, zero for ordinary painting.
   strokeMode: f32,
@@ -30,16 +30,18 @@ struct Present {
 }
 
 @group(0) @binding(0) var<uniform> present: Present;
-// Everything under the active layer, already flattened at each layer's opacity.
+// Everything under the active layer, already flattened at each layer's opacity,
+// in this target: one texel per pixel presented (sharp-zoom 01).
 @group(0) @binding(1) var below: texture_2d<f32>;
 // The layer being painted on. Named for what it is because "active" is a
 // reserved word in WGSL.
 @group(0) @binding(2) var activeLayer: texture_2d<f32>;
 // The stroke in flight. Empty between strokes, so this pass is unconditional.
 @group(0) @binding(3) var stroke: texture_2d<f32>;
-// Everything over the active layer, flattened the same way.
+// Everything over the active layer, flattened the same way and in the same target.
 @group(0) @binding(4) var above: texture_2d<f32>;
-// Linear, so a magnified canvas is smooth rather than blocky. There are no
+// The active layer and the stroke are document surfaces, read through the
+// view. Linear, so a magnified canvas is smooth rather than blocky. There are no
 // mips: minification past a half is a preview of the whole piece, not a
 // surface anyone judges an edge on.
 @group(0) @binding(5) var viewSampler: sampler;
@@ -76,7 +78,7 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   }
   var color = vec4<f32>(0.0);
   if (present.hasBelow > 0.5) {
-    color = textureSampleLevel(below, viewSampler, uv, 0.0);
+    color = textureLoad(below, vec2<i32>(position.xy), 0);
   }
   // The stroke buffer sits above the active layer's own pixels and is shown at
   // the stroke's opacity, so the mark on screen matches the one that will be
@@ -92,7 +94,7 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   ) * present.activeOpacity;
   color = blendOver(composited, color);
   if (present.hasAbove > 0.5) {
-    let upper = textureSampleLevel(above, viewSampler, uv, 0.0);
+    let upper = textureLoad(above, vec2<i32>(position.xy), 0);
     color = upper + color * (1.0 - upper.a);
   }
   return vec4<f32>(encodeTransfer(present.toOutput * over(color, present.background.rgb)), 1.0);

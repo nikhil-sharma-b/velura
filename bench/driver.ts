@@ -508,3 +508,70 @@ export async function runVectorBenchmark(
     localRedrawMs,
   }
 }
+
+export type NavigationRunResult = {
+  canvas: { width: number; height: number }
+  viewport: { width: number; height: number }
+  layers: number
+  /** Each step of a pan or zoom, from its frame starting to the GPU done drawing it. */
+  frameMs: number[]
+}
+
+/** Steps of navigation timed; a pan and a zoom in turn. */
+const NAVIGATION_STEPS = 60
+
+/**
+ * Navigating a stack (sharp-zoom 01): the screen is composited at its own
+ * resolution through the view, so every pan and zoom rebuilds the caches
+ * around the active layer — one draw per layer at the window's size. Each
+ * step is timed from the command to the GPU finishing the frame that shows
+ * it, a fence rather than a readback.
+ */
+export async function runNavigationBenchmark(
+  engine: Engine,
+  canvas: HTMLCanvasElement,
+  options: { width: number; height: number; layers: number }
+): Promise<NavigationRunResult> {
+  canvas.style.width = `${VIEWPORT}px`
+  canvas.style.height = `${VIEWPORT}px`
+  await engine.dispatch({
+    type: "resize",
+    width: options.width,
+    height: options.height,
+    devicePixelRatio: 1,
+  })
+  await engine.dispatch({ type: "initialize" })
+  if (engine.getSnapshot().status !== "ready")
+    throw new Error(`The engine is ${engine.getSnapshot().status}, not ready.`)
+  const device = (
+    canvas.getContext("webgpu") as GPUCanvasContext | null
+  )?.getConfiguration()?.device
+  if (!device) throw new Error("The engine's device could not be reached.")
+  await buildLayerStack(engine, canvas, options.layers)
+  await engine.dispatch({ type: "zoomView", factor: 2 })
+  await nextFrame()
+  await device.queue.onSubmittedWorkDone()
+  const frameMs: number[] = []
+  for (let i = 0; i < NAVIGATION_STEPS; i++) {
+    // Requested before the command, so it runs first in the frame that draws
+    // it: the wait for that frame is the display's, not the compositor's.
+    const frameStart = nextFrame().then(() => performance.now())
+    await engine.dispatch(
+      i % 2
+        ? { type: "panView", dx: i % 4 === 1 ? 37 : -37, dy: 11 }
+        : { type: "zoomView", factor: i % 4 === 0 ? 1.25 : 0.8 }
+    )
+    const start = await frameStart
+    // After the frame's callbacks, the engine's drawing among them, have run.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await device.queue.onSubmittedWorkDone()
+    frameMs.push(performance.now() - start)
+  }
+  const { width, height } = engine.getSnapshot()
+  return {
+    canvas: { width, height },
+    viewport: { width: canvas.width, height: canvas.height },
+    layers: engine.getSnapshot().layers.length,
+    frameMs,
+  }
+}

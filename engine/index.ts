@@ -1889,7 +1889,7 @@ export function createEngine(
     const viewportSize = viewportExtent()
     const matrix = docToScreen(view, size, viewportSize)
     toDoc = screenToDoc(view, size, viewportSize)
-    renderer?.setView(matrix)
+    renderer?.setView(matrix, viewportSize)
   }
 
   /**
@@ -5261,13 +5261,14 @@ export function createEngine(
     })
     try {
       // The artwork is what was painted, not how it is being looked at, so
-      // the export presents through the identity rather than the view (D28).
-      renderer?.setView(IDENTITY_MATRIX)
-      // A layer picked out in the list is how it is being looked at too.
-      if (highlight && doc) renderer?.setComposition(planComposite(doc))
-      // Preview/export rendering has its own target. It never replaces the
-      // visible swap-chain frame while its asynchronous readback completes.
-      renderer?.render(output.createView())
+      // it is drawn at its own size rather than through the view (D28), into
+      // a target of its own: the visible swap-chain frame is never replaced
+      // while its asynchronous readback completes. A layer picked out in the
+      // list is how it is being looked at too, so it is drawn without that.
+      renderer?.renderArtwork(
+        output.createView(),
+        highlight && doc ? planComposite(doc) : undefined
+      )
       const encoder = acquired.createCommandEncoder()
       encoder.copyTextureToBuffer(
         { texture: output },
@@ -5275,9 +5276,6 @@ export function createEngine(
         { width, height }
       )
       acquired.queue.submit([encoder.finish()])
-      // Restore the interactive uniform before yielding to the browser. The
-      // submitted export work is ordered before this queue write.
-      applyView()
       await buffer.mapAsync(GPUMapMode.READ)
       const mapped = new Uint8Array(buffer.getMappedRange())
       const data = new Uint8Array(width * height * 4)
@@ -5302,9 +5300,6 @@ export function createEngine(
     } finally {
       buffer.destroy()
       output.destroy()
-      // Also restore after an early failure before the normal restoration.
-      applyView()
-      syncComposition()
     }
   }
 
