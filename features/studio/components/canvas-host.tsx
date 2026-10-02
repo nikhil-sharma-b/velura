@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import {
   CaretDownIcon,
@@ -32,7 +32,7 @@ import {
   SelectionIcon,
   SlidersIcon,
   StackIcon,
-} from "@phosphor-icons/react"
+} from "@phosphor-icons/react";
 import {
   useCallback,
   useEffect,
@@ -40,23 +40,23 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-} from "react"
+} from "react";
 
-import { Popover as PopoverPrimitive } from "radix-ui"
-import { toast } from "sonner"
-import { isViewPanButton } from "@/engine/input/view-gestures"
-import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
-import { PressureCurve } from "@/components/ui/pressure-curve"
+import { Popover as PopoverPrimitive } from "radix-ui";
+import { toast } from "sonner";
+import { isViewPanButton } from "@/engine/input/view-gestures";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { PressureCurve } from "@/components/ui/pressure-curve";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from "@/components/ui/tooltip"
-import Link from "next/link"
-import type { ComponentProps } from "react"
-import type { Brush } from "@/engine/brush/brush"
+} from "@/components/ui/tooltip";
+import Link from "next/link";
+import type { ComponentProps } from "react";
+import type { Brush } from "@/engine/brush/brush";
 import {
   type CloudOptions,
   createEngine,
@@ -75,26 +75,26 @@ import {
   type LayerSummary,
   type RemoteIndex,
   type SyncStatus,
-} from "@/engine"
+} from "@/engine";
 
-import { ColorPanel } from "@/features/color/components/color-panel"
-import { createLocalPaletteStore } from "@/features/color/lib/local-palette-store"
-import type { PaletteStore } from "@/features/color/lib/palette-store"
+import { ColorPanel } from "@/features/color/components/color-panel";
+import { createLocalPaletteStore } from "@/features/color/lib/local-palette-store";
+import type { PaletteStore } from "@/features/color/lib/palette-store";
 
-import { brushCommand, isBrushEdited } from "../lib/brush-draft"
-import { createLocalBrushStore } from "../lib/local-brush-store"
-import { createLocalPenSettingsStore } from "../lib/local-pen-settings"
-import type { BrushStore } from "../lib/brush-store"
-import { resolveLibraryBrush, setForNewBrush } from "../lib/brush-shelf"
-import { DEFAULT_DOCUMENT_NAME } from "@/convex/lib/documents"
-import { DEFAULT_LIBRARY_BRUSH_ID } from "@/engine/brush/presets"
+import { brushCommand, isBrushEdited } from "../lib/brush-draft";
+import { createLocalBrushStore } from "../lib/local-brush-store";
+import { createLocalPenSettingsStore } from "../lib/local-pen-settings";
+import type { BrushStore } from "../lib/brush-store";
+import { resolveLibraryBrush, setForNewBrush } from "../lib/brush-shelf";
+import { DEFAULT_DOCUMENT_NAME } from "@/convex/lib/documents";
+import { DEFAULT_LIBRARY_BRUSH_ID } from "@/engine/brush/presets";
 import {
   dragCarriesFile,
   firstImageFile,
   placeImageFile,
-} from "../lib/image-import"
-import { readTextureFile } from "../lib/texture-import"
-import { BrushEditor } from "./brush-editor"
+} from "../lib/image-import";
+import { readTextureFile } from "../lib/texture-import";
+import { BrushEditor } from "./brush-editor";
 import {
   ImageTransform,
   LayerTransform,
@@ -102,38 +102,38 @@ import {
   PolygonHint,
   VectorSelection,
   VectorNodes,
-} from "./image-transform"
-import { RULER_SIZE, RulersAndGuides } from "./rulers-and-guides"
-import { useRulersVisible } from "../lib/ruler-preference"
-import { EraserTrail } from "./eraser-trail"
-import { StraightEdgeOverlay } from "./straight-edge"
-import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor"
-import { BrushIcon, EraserToolIcon } from "./brush-icon"
-import { BrushLibrary } from "./brush-library"
-import { TiltToggle } from "./tilt-toggle"
-import { IconButton } from "./icon-button"
-import { NumberField, SliderSetting } from "./slider-setting"
-import { LayerPanel } from "./layer-panel"
-import { ShapeStylePanel } from "./shape-style-panel"
-import { VersionPanel, type VersionPreviewState } from "./version-panel"
-import { ExportDialog } from "./export-dialog"
+} from "./image-transform";
+import { RULER_SIZE, RulersAndGuides } from "./rulers-and-guides";
+import { useRulersVisible } from "../lib/ruler-preference";
+import { EraserTrail } from "./eraser-trail";
+import { StraightEdgeOverlay } from "./straight-edge";
+import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor";
+import { BrushIcon, EraserToolIcon } from "./brush-icon";
+import { BrushLibrary } from "./brush-library";
+import { TiltToggle } from "./tilt-toggle";
+import { IconButton } from "./icon-button";
+import { NumberField, SliderSetting } from "./slider-setting";
+import { LayerPanel } from "./layer-panel";
+import { ShapeStylePanel } from "./shape-style-panel";
+import { VersionPanel, type VersionPreviewState } from "./version-panel";
+import { ExportDialog } from "./export-dialog";
 import {
   ConfirmLayerDialog,
   type LayerConfirmation,
-} from "./confirm-layer-dialog"
-import { FeatherDialog } from "./feather-dialog"
-import { FilterDialog } from "./filter-dialog"
+} from "./confirm-layer-dialog";
+import { FeatherDialog } from "./feather-dialog";
+import { FilterDialog } from "./filter-dialog";
 import {
   runStudioCommand,
   PALETTE_COMMAND,
   studioCommands,
   type StudioContext,
-} from "../lib/studio-commands"
-import { CommandPalette } from "@/features/commands/components/command-palette"
-import { useKeybinds } from "@/features/commands/hooks/use-keybinds"
-import { useBoundRegistry } from "@/features/commands/hooks/use-keybind-overrides"
-import { PreferencesPanel } from "@/features/commands/components/preferences-panel"
-import { KeybindHint } from "@/features/commands/components/keybind-hint"
+} from "../lib/studio-commands";
+import { CommandPalette } from "@/features/commands/components/command-palette";
+import { useKeybinds } from "@/features/commands/hooks/use-keybinds";
+import { useBoundRegistry } from "@/features/commands/hooks/use-keybind-overrides";
+import { PreferencesPanel } from "@/features/commands/components/preferences-panel";
+import { KeybindHint } from "@/features/commands/components/keybind-hint";
 
 function RailAction({
   side = "right",
@@ -146,16 +146,16 @@ function RailAction({
       side={side}
       className={cn("rounded-lg", className)}
     />
-  )
+  );
 }
 
 type FamilyMember = {
-  tool: SelectionTool
-  label: string
+  tool: SelectionTool;
+  label: string;
   /** How a sibling's tooltip names it, mid-sentence. */
-  name: string
-  icon: React.ReactNode
-}
+  name: string;
+  icon: React.ReactNode;
+};
 
 /**
  * The vector tools' rail buttons, in rail order and drawn as the vector apps
@@ -172,8 +172,13 @@ const VECTOR_TOOL_RAIL = {
   ellipse: { label: "Ellipse tool", icon: <CircleIcon /> },
   polygon: { label: "Polygon tool", icon: <HexagonIcon /> },
   line: { label: "Line tool", icon: <LineSegmentIcon /> },
-} satisfies Record<VectorTool, { label: string; icon: React.ReactNode }>
-const VECTOR_RAIL_ORDER = Object.keys(VECTOR_TOOL_RAIL) as VectorTool[]
+} satisfies Record<VectorTool, { label: string; icon: React.ReactNode }>;
+/** The shape tools, which share one rail slot so they cost one button. */
+const SHAPE_TOOLS = ["rectangle", "ellipse", "polygon", "line"] as const;
+type ShapeTool = (typeof SHAPE_TOOLS)[number];
+const VECTOR_RAIL_ORDER = (
+  Object.keys(VECTOR_TOOL_RAIL) as VectorTool[]
+).filter((tool) => !(SHAPE_TOOLS as readonly VectorTool[]).includes(tool));
 
 /** The selection tools, by the rail slot each pair shares (09). */
 const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
@@ -214,7 +219,7 @@ const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
       icon: <ArrowsOutCardinalIcon />,
     },
   ],
-]
+];
 
 /**
  * Two sibling tools in one rail slot, as the rail has height for no more:
@@ -228,14 +233,14 @@ function ToolFamilySlot({
   tool,
   onPick,
 }: {
-  members: readonly [FamilyMember, FamilyMember]
-  tool: Tool
-  onPick(tool: SelectionTool): void
+  members: readonly [FamilyMember, FamilyMember];
+  tool: Tool;
+  onPick(tool: SelectionTool): void;
 }) {
-  const [shown, setShown] = useState(members[0])
-  const held = members.find((member) => member.tool === tool)
-  if (held && held !== shown) setShown(held)
-  const sibling = members[0] === shown ? members[1] : members[0]
+  const [shown, setShown] = useState(members[0]);
+  const held = members.find((member) => member.tool === tool);
+  if (held && held !== shown) setShown(held);
+  const sibling = members[0] === shown ? members[1] : members[0];
   return (
     <RailAction
       label={shown.label}
@@ -259,13 +264,92 @@ function ToolFamilySlot({
             key={member.tool}
             className={cn(
               "size-0.75 rounded-full bg-current",
-              member === shown ? "opacity-80" : "opacity-30"
+              member === shown ? "opacity-80" : "opacity-30",
             )}
           />
         ))}
       </span>
     </RailAction>
-  )
+  );
+}
+
+/**
+ * The shape tools in one rail slot, as the rail has height for no more. The
+ * slot shows the shape last in the hand: a press picks it up, and a press
+ * while it is held opens the menu of every shape. Like the selection pairs,
+ * the slot follows the tool in the hand, so a keybind moves it too.
+ */
+function ShapeToolSlot({
+  tool,
+  onPick,
+}: {
+  tool: Tool;
+  onPick(tool: ShapeTool): void;
+}) {
+  const [shown, setShown] = useState<ShapeTool>(SHAPE_TOOLS[0]);
+  const [open, setOpen] = useState(false);
+  const commands = useBoundRegistry(studioCommands);
+  const held = SHAPE_TOOLS.find((shape) => shape === tool);
+  if (held && held !== shown) setShown(held);
+  return (
+    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+      <PopoverPrimitive.Anchor asChild>
+        <RailAction
+          label={VECTOR_TOOL_RAIL[shown].label}
+          command={`tool.${shown}`}
+          variant={held ? "default" : "ghost"}
+          size="icon"
+          aria-pressed={!!held}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          detail={`${WORKS_ON.vector}. Press again for the other shapes`}
+          onClick={() => (held ? setOpen((was) => !was) : onPick(shown))}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setOpen(true);
+          }}
+          className="relative"
+        >
+          {VECTOR_TOOL_RAIL[shown].icon}
+          <MenuNotch />
+        </RailAction>
+      </PopoverPrimitive.Anchor>
+      <PopoverPrimitive.Portal>
+        <PopoverPrimitive.Content
+          side="right"
+          align="start"
+          sideOffset={10}
+          collisionPadding={12}
+          role="menu"
+          aria-label="Shape tools"
+          className="z-50 flex flex-col gap-0.5 rounded-xl border bg-background p-1 shadow-xl outline-none"
+        >
+          {SHAPE_TOOLS.map((shape) => (
+            <button
+              key={shape}
+              type="button"
+              role="menuitemradio"
+              aria-checked={shape === tool}
+              onClick={() => {
+                setOpen(false);
+                onPick(shape);
+              }}
+              className={cn(
+                "flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm outline-none hover:bg-accent focus-visible:bg-accent [&_svg]:size-4",
+                shape === tool && "bg-accent text-accent-foreground",
+              )}
+            >
+              {VECTOR_TOOL_RAIL[shape].icon}
+              <span className="flex-1">
+                {VECTOR_TOOL_RAIL[shape].label.replace(/ tool$/, "")}
+              </span>
+              <KeybindHint registry={commands} id={`tool.${shape}`} />
+            </button>
+          ))}
+        </PopoverPrimitive.Content>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
+  );
 }
 
 /**
@@ -279,7 +363,7 @@ function MenuNotch() {
       aria-hidden
       className="pointer-events-none absolute top-1 right-1 size-1 bg-current opacity-60 [clip-path:polygon(0_0,100%_0,100%_100%)]"
     />
-  )
+  );
 }
 
 /**
@@ -289,7 +373,7 @@ function MenuNotch() {
 function ShapePaintIcon({ style }: { style: ShapeStyle }) {
   // With neither paint on, a faint dashed square, so the trigger is never
   // blank.
-  const bare = !style.fill && !style.stroke
+  const bare = !style.fill && !style.stroke;
   return (
     <svg viewBox="0 0 16 16" aria-hidden className="size-4">
       <rect
@@ -306,7 +390,7 @@ function ShapePaintIcon({ style }: { style: ShapeStyle }) {
         strokeDasharray={bare ? "2 2" : undefined}
       />
     </svg>
-  )
+  );
 }
 
 /**
@@ -320,9 +404,9 @@ function ToolGroup({
   dimmed = false,
   children,
 }: {
-  label: string
-  dimmed?: boolean
-  children: React.ReactNode
+  label: string;
+  dimmed?: boolean;
+  children: React.ReactNode;
 }) {
   return (
     <div
@@ -332,17 +416,17 @@ function ToolGroup({
     >
       {children}
     </div>
-  )
+  );
 }
 
 /** A tool that cannot act on the layer in hand, brought up when pointed at. */
 const DIMMED_TOOL =
-  "opacity-40 motion-safe:transition-opacity focus-within:opacity-100 hover:opacity-100"
+  "opacity-40 motion-safe:transition-opacity focus-within:opacity-100 hover:opacity-100";
 
 /** The rule between two kinds of tool. */
 const RailDivider = () => (
   <span aria-hidden className="my-0.5 h-px w-5 shrink-0 bg-studio-edge" />
-)
+);
 
 /** Which layers each kind of tool works on, as its tooltip says. */
 const WORKS_ON = {
@@ -350,7 +434,7 @@ const WORKS_ON = {
   eraser: "Works on paint and vector layers",
   selection: "Works on any layer",
   vector: "Works on vector layers",
-} as const
+} as const;
 
 /** Compact triggers keep adjustments close without covering the artwork. */
 function QuickSetting({
@@ -360,11 +444,11 @@ function QuickSetting({
   icon,
   children,
 }: {
-  label: string
-  value: string
-  readout: string
-  icon: React.ReactNode
-  children: React.ReactNode
+  label: string;
+  value: string;
+  readout: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
 }) {
   // The value sits under the icon rather than beside it, so the panel keeps
   // the tool bar's width: a readout is what tells a setting from a tool.
@@ -397,7 +481,7 @@ function QuickSetting({
         </PopoverPrimitive.Content>
       </PopoverPrimitive.Portal>
     </PopoverPrimitive.Root>
-  )
+  );
 }
 
 /** What a shape is given, in words, for the shape options' trigger. */
@@ -406,38 +490,38 @@ function shapeSummary(style: ShapeStyle): string {
     [style.fill && "filled", style.stroke && `${style.strokeWidth}px outline`]
       .filter(Boolean)
       .join(", ") || "no paint"
-  )
+  );
 }
 
 const shapeReadout = (style: ShapeStyle) =>
-  style.stroke ? `${style.strokeWidth}` : "fill"
+  style.stroke ? `${style.strokeWidth}` : "fill";
 
-const getInitialSnapshot = () => INITIAL_SNAPSHOT
-const subscribeToNothing = () => () => {}
+const getInitialSnapshot = () => INITIAL_SNAPSHOT;
+const subscribeToNothing = () => () => {};
 
 /** What the sync-status pill says, from genuine upload state — never a guess. */
 function syncStatusLabel(status: SyncStatus | null): string {
   switch (status) {
     case "syncing":
-      return "Syncing…"
+      return "Syncing…";
     case "fully-synced":
-      return "Synced"
+      return "Synced";
     case "saved-locally":
-      return "Saved on this device"
+      return "Saved on this device";
     default:
-      return ""
+      return "";
   }
 }
 
 function findLayer(
   nodes: readonly LayerSummary[],
-  id: string
+  id: string,
 ): LayerSummary | undefined {
   for (const node of nodes) {
-    if (node.id === id) return node
+    if (node.id === id) return node;
     if (node.kind === "group") {
-      const found = findLayer(node.children, id)
-      if (found) return found
+      const found = findLayer(node.children, id);
+      if (found) return found;
     }
   }
 }
@@ -459,38 +543,38 @@ export function CanvasHost({
   brushes,
   openElsewhere = false,
 }: {
-  documentId?: string
+  documentId?: string;
   /** The title shown above the canvas; a document with none is called `DEFAULT_DOCUMENT_NAME`. */
-  documentName?: string
+  documentName?: string;
   /** Where "Back to documents" goes; a host with no library passes none. */
-  libraryHref?: string
+  libraryHref?: string;
   /** Fixed authored size supplied by the document created in the library. */
-  documentSize?: { width: number; height: number }
+  documentSize?: { width: number; height: number };
   /**
    * Where palettes are kept. The cloud host passes an account-backed store so
    * they follow the artist between machines; a host that passes none — the
    * anonymous studio, which mounts outside the Convex provider — gets one
    * backed by this browser.
    */
-  palettes?: PaletteStore
+  palettes?: PaletteStore;
   /**
    * Where brushes are kept (25). As with palettes, the cloud host passes an
    * account-backed store so they follow the artist between machines and the
    * anonymous one gets this browser.
    */
-  brushes?: BrushStore
+  brushes?: BrushStore;
   /** The cloud-sync backend, when this document has an owned Convex row to sync to. */
-  remote?: RemoteIndex
+  remote?: RemoteIndex;
   /** Each preview the engine encodes for the library, before it is uploaded. */
-  onPreview?: CloudOptions["onPreview"]
+  onPreview?: CloudOptions["onPreview"];
   /** The sync status, including a last flush that outlives this canvas. */
-  onSyncStatus?: CloudOptions["onSyncStatus"]
+  onSyncStatus?: CloudOptions["onSyncStatus"];
   /** Whether another tab or device currently has this same document open. */
-  openElsewhere?: boolean
+  openElsewhere?: boolean;
 }) {
-  const [engine, setEngine] = useState<Engine | null>(null)
-  const [panelsOpen, setPanelsOpen] = useState(true)
-  const [historyOpen, setHistoryOpen] = useState(false)
+  const [engine, setEngine] = useState<Engine | null>(null);
+  const [panelsOpen, setPanelsOpen] = useState(true);
+  const [historyOpen, setHistoryOpen] = useState(false);
   /**
    * What the version panel has on the canvas. Kept here rather than in the
    * panel because closing the history is leaving the past — a version still
@@ -502,26 +586,26 @@ export function CanvasHost({
   const versionPreview = useRef<VersionPreviewState>({
     busy: false,
     onTrial: false,
-  })
-  const [historyBusy, setHistoryBusy] = useState(false)
+  });
+  const [historyBusy, setHistoryBusy] = useState(false);
   // The ref is what the teardown and the keyboard read, the state is what
   // renders; they only ever change together.
   function setVersionPreview(state: VersionPreviewState) {
-    versionPreview.current = state
-    setHistoryBusy(state.busy)
+    versionPreview.current = state;
+    setHistoryBusy(state.busy);
   }
   /** The revert under way, so a second request joins it instead of undoing again. */
-  const revertInFlight = useRef<Promise<void> | null>(null)
+  const revertInFlight = useRef<Promise<void> | null>(null);
   /**
    * Takes a version on trial back — the one place that does, for closing the
    * history and for leaving the canvas alike. Everything that could race it
    * (the panel, undo, leaving) reads `busy` and holds off until it lands.
    */
   function takeTrialBack(target: Engine): Promise<void> {
-    if (revertInFlight.current) return revertInFlight.current
+    if (revertInFlight.current) return revertInFlight.current;
     if (!versionPreview.current.onTrial || !target.canRevertRestore())
-      return Promise.resolve()
-    setVersionPreview({ busy: true, onTrial: true })
+      return Promise.resolve();
+    setVersionPreview({ busy: true, onTrial: true });
     revertInFlight.current = target
       .revertRestore()
       .then(
@@ -529,37 +613,37 @@ export function CanvasHost({
         () => {
           // Only a canvas already torn down fails here, and it took the
           // trial with it.
-        }
+        },
       )
       .finally(() => {
-        revertInFlight.current = null
-        setVersionPreview({ busy: false, onTrial: false })
-      })
-    return revertInFlight.current
+        revertInFlight.current = null;
+        setVersionPreview({ busy: false, onTrial: false });
+      });
+    return revertInFlight.current;
   }
   /** Closes the history; closing it is leaving the past (see `versionPreview`). */
   async function closeHistory() {
     // Not while a version is being opened or taken back: the first would land
     // after the panel had gone with nothing left to take it back, and the
     // second is already closing.
-    if (versionPreview.current.busy) return
-    if (engine) await takeTrialBack(engine)
-    setHistoryOpen(false)
+    if (versionPreview.current.busy) return;
+    if (engine) await takeTrialBack(engine);
+    setHistoryOpen(false);
   }
-  const [colorOpen, setColorOpen] = useState(false)
-  const [brushOpen, setBrushOpen] = useState(false)
-  const brushButton = useRef<HTMLButtonElement>(null)
+  const [colorOpen, setColorOpen] = useState(false);
+  const [brushOpen, setBrushOpen] = useState(false);
+  const brushButton = useRef<HTMLButtonElement>(null);
   /** The docked editor's panel, whose strip fitting the view has to avoid. */
-  const brushPanel = useRef<HTMLElement>(null)
+  const brushPanel = useRef<HTMLElement>(null);
   /** Whichever of collapse and expand is showing; focus follows the swap. */
-  const layersToggle = useRef<HTMLButtonElement>(null)
-  const layersToggled = useRef(false)
-  const [eraserOpen, setEraserOpen] = useState(false)
-  const [featherRadius, setFeatherRadius] = useState(10)
-  const [featherOpen, setFeatherOpen] = useState(false)
-  const [confirming, setConfirming] = useState<LayerConfirmation | null>(null)
-  const [libraryOpen, setLibraryOpen] = useState(false)
-  const [pressureOpen, setPressureOpen] = useState(false)
+  const layersToggle = useRef<HTMLButtonElement>(null);
+  const layersToggled = useRef(false);
+  const [eraserOpen, setEraserOpen] = useState(false);
+  const [featherRadius, setFeatherRadius] = useState(10);
+  const [featherOpen, setFeatherOpen] = useState(false);
+  const [confirming, setConfirming] = useState<LayerConfirmation | null>(null);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [pressureOpen, setPressureOpen] = useState(false);
   /**
    * The brush as it was last saved. The engine holds the *working* brush — so
    * an edit paints immediately, which is the whole point of a live editor —
@@ -567,77 +651,77 @@ export function CanvasHost({
    * kept until they say so. The brush library (D25) is what will make this
    * outlive the session.
    */
-  const [savedBrush, setSavedBrush] = useState<Brush | null>(null)
+  const [savedBrush, setSavedBrush] = useState<Brush | null>(null);
   /** Why the last attempt to keep a brush failed, if it did. */
-  const [brushProblem, setBrushProblem] = useState<string | null>(null)
+  const [brushProblem, setBrushProblem] = useState<string | null>(null);
   /** Why the last dropped or pasted image did not come in, if it did not. */
-  const [imageProblem, setImageProblem] = useState<string | null>(null)
+  const [imageProblem, setImageProblem] = useState<string | null>(null);
   /** An image is over the canvas and would land if let go of. */
-  const [imageOverCanvas, setImageOverCanvas] = useState(false)
+  const [imageOverCanvas, setImageOverCanvas] = useState(false);
   /** Alt is down, so the next click on the canvas samples rather than paints. */
-  const [sampling, setSampling] = useState(false)
-  const [paletteOpen, setPaletteOpen] = useState(false)
-  const [preferencesOpen, setPreferencesOpen] = useState(false)
+  const [sampling, setSampling] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
   // Zen hides the controls rather than unmounting them, so the panels the
   // artist had open are open again when they come back.
-  const [zen, setZen] = useState(false)
-  const [rulerLayer, setRulerLayer] = useState<HTMLDivElement | null>(null)
-  const rulersVisible = useRulersVisible()
+  const [zen, setZen] = useState(false);
+  const [rulerLayer, setRulerLayer] = useState<HTMLDivElement | null>(null);
+  const rulersVisible = useRulersVisible();
   /** The canvas the engine presents into; the transform box sits over it. */
   const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(
-    null
-  )
-  const documentWidth = documentSize?.width
-  const documentHeight = documentSize?.height
+    null,
+  );
+  const documentWidth = documentSize?.width;
+  const documentHeight = documentSize?.height;
   // Created once per host: the store owns the subscription the picker reads
   // through, so a new one each render would resubscribe on every keystroke.
-  const localPalettes = useMemo(() => createLocalPaletteStore(), [])
-  const paletteStore = palettes ?? localPalettes
+  const localPalettes = useMemo(() => createLocalPaletteStore(), []);
+  const paletteStore = palettes ?? localPalettes;
   // Held in a ref so that swapping the store — which happens when anonymous
   // work is carried into an account — does not tear the engine down and take
   // the document with it.
-  const paletteRef = useRef(paletteStore)
-  paletteRef.current = paletteStore
+  const paletteRef = useRef(paletteStore);
+  paletteRef.current = paletteStore;
   // Read through a ref, like the palette, so a host passing a fresh callback
   // each render does not tear the engine down and rebuild it.
-  const previewRef = useRef(onPreview)
-  previewRef.current = onPreview
-  const syncStatusRef = useRef(onSyncStatus)
-  syncStatusRef.current = onSyncStatus
-  const localBrushes = useMemo(() => createLocalBrushStore(), [])
-  const brushStore = brushes ?? localBrushes
-  const penStore = useMemo(() => createLocalPenSettingsStore(), [])
-  const pen = penStore.usePenSettings()
-  const library = brushStore.useBrushLibrary(documentId)
+  const previewRef = useRef(onPreview);
+  previewRef.current = onPreview;
+  const syncStatusRef = useRef(onSyncStatus);
+  syncStatusRef.current = onSyncStatus;
+  const localBrushes = useMemo(() => createLocalBrushStore(), []);
+  const brushStore = brushes ?? localBrushes;
+  const penStore = useMemo(() => createLocalPenSettingsStore(), []);
+  const pen = penStore.usePenSettings();
+  const library = brushStore.useBrushLibrary(documentId);
   const snapshot = useSyncExternalStore(
     engine?.subscribe ?? subscribeToNothing,
     engine?.getSnapshot ?? getInitialSnapshot,
-    getInitialSnapshot
-  )
+    getInitialSnapshot,
+  );
   // A selection that goes while the dialog is up (an undo by key) takes the
   // question with it, rather than leaving it to reappear with the next one.
-  const [featherFor, setFeatherFor] = useState(snapshot.selection)
+  const [featherFor, setFeatherFor] = useState(snapshot.selection);
   if (featherFor !== snapshot.selection) {
-    setFeatherFor(snapshot.selection)
-    if (!snapshot.selection && featherOpen) setFeatherOpen(false)
+    setFeatherFor(snapshot.selection);
+    if (!snapshot.selection && featherOpen) setFeatherOpen(false);
   }
 
   // The rulers follow the preference (08): this device's copy as soon as
   // the engine is ready, so a reload keeps them, and the account's when it
   // arrives or another tab changes it.
   useEffect(() => {
-    if (snapshot.status !== "ready" || !engine) return
-    if (engine.getSnapshot().rulersVisible === rulersVisible) return
-    void engine.dispatch({ type: "setRulersVisible", visible: rulersVisible })
-  }, [engine, snapshot.status, rulersVisible])
+    if (snapshot.status !== "ready" || !engine) return;
+    if (engine.getSnapshot().rulersVisible === rulersVisible) return;
+    void engine.dispatch({ type: "setRulersVisible", visible: rulersVisible });
+  }, [engine, snapshot.status, rulersVisible]);
 
   // React 19 ref cleanup also covers Strict Mode's attach/detach rehearsal.
   const attach = useCallback(
     (canvas: HTMLCanvasElement | null) => {
-      if (!canvas) return
+      if (!canvas) return;
       // Kept so the transform box can be laid out over exactly the pixels the
       // engine is presenting into.
-      setCanvasElement(canvas)
+      setCanvasElement(canvas);
       const attached = createEngine(canvas, {
         ...(documentWidth !== undefined && documentHeight !== undefined
           ? { documentSize: { width: documentWidth, height: documentHeight } }
@@ -659,38 +743,38 @@ export function CanvasHost({
           void paletteRef.current.recordUsed(hex).catch(() => {
             // A recent colour is a convenience, not work. Losing one is not
             // worth interrupting a stroke to report.
-          })
+          });
         },
-      })
-      setEngine(attached)
+      });
+      setEngine(attached);
       const resize = () => {
-        const bounds = canvas.getBoundingClientRect()
+        const bounds = canvas.getBoundingClientRect();
         void attached.dispatch({
           type: "resize",
           width: bounds.width,
           height: bounds.height,
           devicePixelRatio: window.devicePixelRatio || 1,
-        })
-      }
-      const observer = new ResizeObserver(resize)
-      observer.observe(canvas)
-      let density = window.devicePixelRatio
-      let frame: number
+        });
+      };
+      const observer = new ResizeObserver(resize);
+      observer.observe(canvas);
+      let density = window.devicePixelRatio;
+      let frame: number;
       // Density can change without layout or media-query events (e.g. emulation).
       // Only a change issues a command; steady frames never touch React state.
       const watchDensity = () => {
         if (density !== window.devicePixelRatio) {
-          density = window.devicePixelRatio
-          resize()
+          density = window.devicePixelRatio;
+          resize();
         }
-        frame = requestAnimationFrame(watchDensity)
-      }
-      resize()
-      frame = requestAnimationFrame(watchDensity)
-      void attached.dispatch({ type: "initialize" })
+        frame = requestAnimationFrame(watchDensity);
+      };
+      resize();
+      frame = requestAnimationFrame(watchDensity);
+      void attached.dispatch({ type: "initialize" });
       return () => {
-        observer.disconnect()
-        cancelAnimationFrame(frame)
+        observer.disconnect();
+        cancelAnimationFrame(frame);
         // A trial left on the canvas goes back before the engine goes, or the
         // last sync would send it as the document; a revert already under
         // way is joined rather than repeated.
@@ -698,13 +782,13 @@ export function CanvasHost({
           revertInFlight.current ??
           (versionPreview.current.onTrial && attached.canRevertRestore()
             ? takeTrialBack(attached)
-            : null)
-        if (pending) void pending.finally(() => attached.dispose())
-        else attached.dispose()
-      }
+            : null);
+        if (pending) void pending.finally(() => attached.dispose());
+        else attached.dispose();
+      };
     },
-    [documentHeight, documentId, documentWidth, remote]
-  )
+    [documentHeight, documentId, documentWidth, remote],
+  );
 
   // Completed strokes are already on disk; this is for the save that a commit
   // queued and the tab is about to outrun. `pagehide` covers the close and the
@@ -721,30 +805,30 @@ export function CanvasHost({
   // touch a control: a pressure curve that has to be re-set to take effect is
   // one that was not really saved.
   useEffect(() => {
-    if (!engine) return
+    if (!engine) return;
     void engine.dispatch({
       type: "setPressureCurve",
       curve: pen.pressureCurve,
-    })
-    void engine.dispatch({ type: "setTiltEnabled", enabled: pen.tiltEnabled })
+    });
+    void engine.dispatch({ type: "setTiltEnabled", enabled: pen.tiltEnabled });
     // Deliberately keyed on the engine alone. This restores what was stored;
     // the controls below write to the store and dispatch themselves, and
     // re-running here on every change would fight the artist's own edit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine])
+  }, [engine]);
 
   useEffect(() => {
-    if (!engine) return
+    if (!engine) return;
     const flush = () => {
-      void engine.save()
-    }
-    window.addEventListener("pagehide", flush)
-    document.addEventListener("visibilitychange", flush)
+      void engine.save();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", flush);
     return () => {
-      window.removeEventListener("pagehide", flush)
-      document.removeEventListener("visibilitychange", flush)
-    }
-  }, [engine])
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", flush);
+    };
+  }, [engine]);
 
   // Undo and navigation are keystrokes before they are buttons, and the canvas
   // has no focus of its own to hang them off: the artist's hand is on the pen,
@@ -757,40 +841,40 @@ export function CanvasHost({
    */
   const placeImage = useCallback(
     (file: File) => {
-      if (!engine) return
-      setImageProblem(null)
+      if (!engine) return;
+      setImageProblem(null);
       void placeImageFile(engine, file).catch((error: unknown) =>
         setImageProblem(
           error instanceof Error
             ? error.message
-            : "That image could not be placed."
-        )
-      )
+            : "That image could not be placed.",
+        ),
+      );
     },
-    [engine]
-  )
+    [engine],
+  );
 
   // Pasting is bound on the window rather than on the canvas: the canvas
   // cannot hold focus while the pen is drawing on it, and an artist who has
   // just copied a screenshot expects Cmd-V to work wherever they last clicked.
   useEffect(() => {
-    if (!engine) return
+    if (!engine) return;
     const onPaste = (event: ClipboardEvent) => {
       // A field being typed in owns its own paste, and this is not it.
-      const target = event.target as HTMLElement | null
+      const target = event.target as HTMLElement | null;
       if (
         target?.isContentEditable ||
         ["INPUT", "TEXTAREA"].includes(target?.tagName ?? "")
       )
-        return
-      const file = firstImageFile(event.clipboardData)
-      if (!file) return
-      event.preventDefault()
-      placeImage(file)
-    }
-    window.addEventListener("paste", onPaste)
-    return () => window.removeEventListener("paste", onPaste)
-  }, [engine, placeImage])
+        return;
+      const file = firstImageFile(event.clipboardData);
+      if (!file) return;
+      event.preventDefault();
+      placeImage(file);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [engine, placeImage]);
 
   /**
    * How much of the right of the window fitting and resetting should leave
@@ -799,12 +883,12 @@ export function CanvasHost({
    * are small enough that the artwork keeps the full window beneath them.
    */
   const occludedRight = useCallback(() => {
-    const panel = brushPanel.current
+    const panel = brushPanel.current;
     // A hidden panel measures as a zero rect at the left edge, which would
     // read as covering the whole window.
-    if (!panel || !panel.getClientRects().length) return 0
-    return Math.max(0, window.innerWidth - panel.getBoundingClientRect().left)
-  }, [])
+    if (!panel || !panel.getClientRects().length) return 0;
+    return Math.max(0, window.innerWidth - panel.getBoundingClientRect().left);
+  }, []);
 
   /**
    * Collapse and expand are two buttons that replace each other, so the one
@@ -812,10 +896,10 @@ export function CanvasHost({
    * after a press, never on the first render.
    */
   useEffect(() => {
-    if (!layersToggled.current) return
-    layersToggled.current = false
-    layersToggle.current?.focus()
-  }, [panelsOpen])
+    if (!layersToggled.current) return;
+    layersToggled.current = false;
+    layersToggle.current?.focus();
+  }, [panelsOpen]);
 
   // Undo, navigation and size are keystrokes before they are buttons, and
   // every one of them — keys, buttons and tooltips — goes through the studio's
@@ -831,46 +915,46 @@ export function CanvasHost({
     openFeather: () => setFeatherOpen(true),
     confirmClear: (layer) => setConfirming({ layer, action: "clear" }),
     confirmDelete: (layer) => setConfirming({ layer, action: "delete" }),
-  }
+  };
   // The shape options are memoised, so they get one handle on the commands
   // for good, reading whichever context is current when one runs.
-  const latestContext = useRef(commandContext)
+  const latestContext = useRef(commandContext);
   useEffect(() => {
-    latestContext.current = commandContext
-  })
+    latestContext.current = commandContext;
+  });
   const runShapeCommand = useCallback(
     (id: string) => runStudioCommand(id, latestContext.current),
-    []
-  )
+    [],
+  );
   /** The selection's style while there is one, else what the tool in the
    * hand gives: a line or a brush stroke is outlined whatever the style says. */
   const toolStyle = useMemo(
     () => toolShapeStyle(snapshot.tool, snapshot.shapeStyle),
-    [snapshot.tool, snapshot.shapeStyle]
-  )
-  const shapeOptions = snapshot.selectionStyle ?? toolStyle
+    [snapshot.tool, snapshot.shapeStyle],
+  );
+  const shapeOptions = snapshot.selectionStyle ?? toolStyle;
   // With a vector tool in the hand, the size setting is the outline width.
-  const vectorWidth = isVectorTool(snapshot.tool)
+  const vectorWidth = isVectorTool(snapshot.tool);
   // The layer in hand decides which kinds of tool can act on it, as the
   // engine does: a locked layer or a group takes no tool but a selection;
   // shapes go only onto a vector layer; paint never does, and a placed photo
   // takes neither brush nor eraser until it is painted on, save into either's
   // mask.
-  const handLayer = findLayer(snapshot.layers, snapshot.activeLayerId)
+  const handLayer = findLayer(snapshot.layers, snapshot.activeLayerId);
   const untouchable =
-    !handLayer || handLayer.kind === "group" || !!handLayer.locked
-  const onVectorLayer = handLayer?.kind === "vector"
-  const intoMask = snapshot.paintingMask && !!handLayer?.mask
+    !handLayer || handLayer.kind === "group" || !!handLayer.locked;
+  const onVectorLayer = handLayer?.kind === "vector";
+  const intoMask = snapshot.paintingMask && !!handLayer?.mask;
   const onPlacedPhoto =
-    handLayer?.kind === "raster" && handLayer.image && !intoMask
+    handLayer?.kind === "raster" && handLayer.image && !intoMask;
   const brushDimmed =
-    untouchable || (onVectorLayer && !intoMask) || onPlacedPhoto
-  const eraserDimmed = untouchable || onPlacedPhoto
-  const vectorDimmed = untouchable || !onVectorLayer
+    untouchable || (onVectorLayer && !intoMask) || onPlacedPhoto;
+  const eraserDimmed = untouchable || onPlacedPhoto;
+  const vectorDimmed = untouchable || !onVectorLayer;
   // The artist's own keybinds over the defaults. While preferences are open
   // the keys are being rebound, not used.
-  const commands = useBoundRegistry(studioCommands)
-  useKeybinds(commands, commandContext, !preferencesOpen)
+  const commands = useBoundRegistry(studioCommands);
+  useKeybinds(commands, commandContext, !preferencesOpen);
 
   /**
    * Frames the document the first time it is ready to be looked at.
@@ -881,27 +965,27 @@ export function CanvasHost({
    * `ready`, by which point the resize dispatched on attach has told the
    * engine how big the window is.
    */
-  const framed = useRef<string | undefined>(undefined)
-  const documentKey = documentId ?? "session"
+  const framed = useRef<string | undefined>(undefined);
+  const documentKey = documentId ?? "session";
   useEffect(() => {
-    if (!engine || snapshot.status !== "ready") return
-    if (framed.current === documentKey) return
-    framed.current = documentKey
+    if (!engine || snapshot.status !== "ready") return;
+    if (framed.current === documentKey) return;
+    framed.current = documentKey;
     void engine.dispatch({
       type: "fitView",
       occludedRight: 0,
-    })
+    });
     // Only on the way in: re-fitting when the artist opens a panel would throw
     // away the zoom they had chosen to work at.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, snapshot.status, documentKey])
+  }, [engine, snapshot.status, documentKey]);
 
   // A brush names its textures and never carries them (24), so a library
   // synced from another machine arrives as definitions pointing at assets this
   // engine has never seen. Registering them is what makes those brushes
   // paintable here rather than refused as naming nothing.
   useEffect(() => {
-    if (!engine) return
+    if (!engine) return;
     for (const texture of library.textures)
       void engine
         .dispatch({
@@ -912,8 +996,8 @@ export function CanvasHost({
         .catch(() => {
           // One unreadable asset must not stop the rest of the library
           // loading; a brush naming it will say so when it is picked up.
-        })
-  }, [engine, library.textures])
+        });
+  }, [engine, library.textures]);
 
   /**
    * The brush this session starts with (25): the one this document was last
@@ -929,18 +1013,18 @@ export function CanvasHost({
    * has since picked up, and re-applying a remembered brush because a query
    * re-resolved would take the pen out of their hand mid-session.
    */
-  const restoredFor = useRef<string | null>(null)
+  const restoredFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!engine || !documentId || !library.loaded) return
-    if (restoredFor.current === documentId) return
-    restoredFor.current = documentId
-    const last = library.lastUsed
+    if (!engine || !documentId || !library.loaded) return;
+    if (restoredFor.current === documentId) return;
+    restoredFor.current = documentId;
+    const last = library.lastUsed;
     // A remembered brush that has since been deleted falls back to the
     // ready-made one rather than leaving the session on the engine's default.
     const entry =
       (last ? resolveLibraryBrush(last.brushId, library.brushes) : undefined) ??
-      resolveLibraryBrush(DEFAULT_LIBRARY_BRUSH_ID, library.brushes)
-    if (!entry) return
+      resolveLibraryBrush(DEFAULT_LIBRARY_BRUSH_ID, library.brushes);
+    if (!entry) return;
     const restored =
       // The size is restored beside the brush, since size is adjusted
       // constantly and almost never saved into one — the brush without it is
@@ -950,12 +1034,12 @@ export function CanvasHost({
             ...entry.brush,
             shape: { ...entry.brush.shape, radius: last.radius },
           }
-        : entry.brush
+        : entry.brush;
     void engine.dispatch(brushCommand(restored)).then(
       () => setSavedBrush(restored),
-      () => {}
-    )
-  }, [engine, documentId, library])
+      () => {},
+    );
+  }, [engine, documentId, library]);
 
   /**
    * Remembers what is in the hand, so the next session can put it back.
@@ -965,37 +1049,37 @@ export function CanvasHost({
    * stop costs nothing an artist can perceive — the value written is the one
    * they left it at either way.
    */
-  const currentBrushId = snapshot.brush.id
-  const currentRadius = snapshot.brush.shape.radius
+  const currentBrushId = snapshot.brush.id;
+  const currentRadius = snapshot.brush.shape.radius;
   useEffect(() => {
     // Never before the restore has run: writing on the way in would record
     // the default brush over the one this document was actually left with.
     if (!documentId || !library.loaded || restoredFor.current !== documentId)
-      return
+      return;
     const timer = setTimeout(() => {
       void brushStore
         .recordLastUsed(documentId, currentBrushId, currentRadius)
         .catch(() => {
           // Which brush was in the hand is a convenience, not the painting.
-        })
-    }, 1_000)
-    return () => clearTimeout(timer)
-  }, [brushStore, documentId, library.loaded, currentBrushId, currentRadius])
+        });
+    }, 1_000);
+    return () => clearTimeout(timer);
+  }, [brushStore, documentId, library.loaded, currentBrushId, currentRadius]);
 
   // The engine starts from the same brush the initial snapshot describes, so
   // the baseline needs no effect to establish: an unsaved session is measured
   // against the default brush, exactly as the engine's own is.
-  const saved = savedBrush ?? INITIAL_SNAPSHOT.brush
+  const saved = savedBrush ?? INITIAL_SNAPSHOT.brush;
   const activeTip =
-    snapshot.tool === "eraser" ? snapshot.eraser : snapshot.brush
+    snapshot.tool === "eraser" ? snapshot.eraser : snapshot.brush;
   /** Half the size setting, as a brush's radius or half an outline's width. */
   const sizeRadius = vectorWidth
     ? shapeOptions.strokeWidth / 2
-    : activeTip.shape.radius
-  const brushEdited = isBrushEdited(saved, snapshot.brush)
+    : activeTip.shape.radius;
+  const brushEdited = isBrushEdited(saved, snapshot.brush);
 
-  const unavailable = snapshot.status === "unavailable"
-  const failed = snapshot.status === "failed"
+  const unavailable = snapshot.status === "unavailable";
+  const failed = snapshot.status === "failed";
   const viewActions = [
     ["view.zoomOut", <MagnifyingGlassMinusIcon key="zoom-out" />],
     ["view.zoomIn", <MagnifyingGlassPlusIcon key="zoom-in" />],
@@ -1004,7 +1088,7 @@ export function CanvasHost({
     ["view.flip", <FlipHorizontalIcon key="flip" />],
     ["view.fit", <CornersOutIcon key="fit" />],
     ["view.reset", <ArrowsClockwiseIcon key="reset" />],
-  ] as const
+  ] as const;
   return (
     <main
       className="fixed inset-0 overflow-hidden bg-canvas-matting"
@@ -1014,27 +1098,27 @@ export function CanvasHost({
         // any kind is welcomed here and the drop says whether it was an image.
         // Text and links are left alone: the browser's own answer to those is
         // better than a canvas swallowing them.
-        if (!dragCarriesFile(event.dataTransfer)) return
-        event.preventDefault()
-        event.dataTransfer.dropEffect = "copy"
-        setImageOverCanvas(true)
+        if (!dragCarriesFile(event.dataTransfer)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        setImageOverCanvas(true);
       }}
       onDragLeave={(event) => {
         // Crossing between the panels and the canvas is not leaving: only a
         // pointer that has left the window entirely puts the hint away.
         if (event.currentTarget.contains(event.relatedTarget as Node | null))
-          return
-        setImageOverCanvas(false)
+          return;
+        setImageOverCanvas(false);
       }}
       onDrop={(event) => {
-        if (!dragCarriesFile(event.dataTransfer)) return
-        event.preventDefault()
-        setImageOverCanvas(false)
-        const file = firstImageFile(event.dataTransfer)
+        if (!dragCarriesFile(event.dataTransfer)) return;
+        event.preventDefault();
+        setImageOverCanvas(false);
+        const file = firstImageFile(event.dataTransfer);
         // Told, rather than nothing happening: a dropped file that vanished
         // without a word is indistinguishable from a bug.
-        if (!file) setImageProblem("That file is not an image.")
-        else placeImage(file)
+        if (!file) setImageProblem("That file is not an image.");
+        else placeImage(file);
       }}
     >
       <canvas
@@ -1052,13 +1136,13 @@ export function CanvasHost({
             sampling ||
             event.altKey
           )
-            return
-          const selected = findLayer(snapshot.layers, snapshot.activeLayerId)
+            return;
+          const selected = findLayer(snapshot.layers, snapshot.activeLayerId);
           // The engine refuses these strokes without a word, so the refusal
           // is said here. Fixed ids keep repeated taps to one toast each.
-          if (!selected || selected.kind === "group") return
+          if (!selected || selected.kind === "group") return;
           // Shapes go on a vector layer (19), and paint does not.
-          const shapes = isVectorTool(snapshot.tool)
+          const shapes = isVectorTool(snapshot.tool);
           if (shapes && selected.kind !== "vector") {
             toast.info("Shapes are drawn on a vector layer.", {
               id: "shape-layer",
@@ -1067,8 +1151,8 @@ export function CanvasHost({
                 onClick: () =>
                   runStudioCommand("layer.addVector", commandContext),
               },
-            })
-            return
+            });
+            return;
           }
           if (
             !shapes &&
@@ -1084,9 +1168,9 @@ export function CanvasHost({
                 <strong className="font-semibold">{selected.name}</strong> holds
                 shapes. Draw on it with the shape and pen tools.
               </>,
-              { id: "vector-layer" }
-            )
-            return
+              { id: "vector-layer" },
+            );
+            return;
           }
           if (selected.locked)
             toast.info(
@@ -1094,8 +1178,8 @@ export function CanvasHost({
                 <strong className="font-semibold">{selected.name}</strong> is
                 locked. Unlock it to paint.
               </>,
-              { id: "locked-layer" }
-            )
+              { id: "locked-layer" },
+            );
           else if (
             selected.kind === "raster" &&
             selected.image &&
@@ -1125,8 +1209,8 @@ export function CanvasHost({
                       id: selected.id,
                     }),
                 },
-              }
-            )
+              },
+            );
         }}
         // Touch and pen gestures belong to the stroke, not to the scroller.
         className="block h-full w-full touch-none"
@@ -1294,7 +1378,7 @@ export function CanvasHost({
                     aria-disabled={historyBusy || undefined}
                     tabIndex={historyBusy ? -1 : undefined}
                     onClick={(event) => {
-                      if (historyBusy) event.preventDefault()
+                      if (historyBusy) event.preventDefault();
                     }}
                   >
                     <ArrowLeftIcon />
@@ -1359,10 +1443,10 @@ export function CanvasHost({
                   // that mix.
                   disabled={historyBusy || (snapshot.loading && !historyOpen)}
                   onClick={() => {
-                    if (historyOpen) void closeHistory()
+                    if (historyOpen) void closeHistory();
                     else {
-                      setColorOpen(false)
-                      setHistoryOpen(true)
+                      setColorOpen(false);
+                      setHistoryOpen(true);
                     }
                   }}
                   className="rounded-lg"
@@ -1451,8 +1535,8 @@ export function CanvasHost({
                                 void engine?.dispatch({
                                   type: "setEraser",
                                   kind,
-                                })
-                                setEraserOpen(false)
+                                });
+                                setEraserOpen(false);
                               }}
                             >
                               <EraserToolIcon kind={kind} className="size-5" />
@@ -1511,9 +1595,9 @@ export function CanvasHost({
                               brush={snapshot.brush}
                               edited={brushEdited}
                               onSelect={(next, keepOpen) => {
-                                void engine.dispatch(brushCommand(next))
-                                setSavedBrush(next)
-                                if (!keepOpen) setLibraryOpen(false)
+                                void engine.dispatch(brushCommand(next));
+                                setSavedBrush(next);
+                                if (!keepOpen) setLibraryOpen(false);
                               }}
                               onClose={() => setLibraryOpen(false)}
                             />
@@ -1668,11 +1752,11 @@ export function CanvasHost({
                           testArea
                           value={snapshot.pressureCurve}
                           onChange={(curve) => {
-                            penStore.setPressureCurve(curve)
+                            penStore.setPressureCurve(curve);
                             void engine?.dispatch({
                               type: "setPressureCurve",
                               curve,
-                            })
+                            });
                           }}
                         />
                         {/* Switched off, a pen reads as upright, which is what a
@@ -1681,11 +1765,11 @@ export function CanvasHost({
                         <TiltToggle
                           enabled={snapshot.tiltEnabled}
                           onChange={(enabled) => {
-                            penStore.setTiltEnabled(enabled)
+                            penStore.setTiltEnabled(enabled);
                             void engine?.dispatch({
                               type: "setTiltEnabled",
                               enabled,
-                            })
+                            });
                           }}
                         />
                       </PopoverPrimitive.Content>
@@ -1702,10 +1786,10 @@ export function CanvasHost({
                       size="icon"
                       aria-pressed={snapshot.tool === "brush"}
                       onClick={() => {
-                        setEraserOpen(false)
+                        setEraserOpen(false);
                         if (snapshot.tool === "brush")
-                          setLibraryOpen((open) => !open)
-                        runStudioCommand("tool.brush", commandContext)
+                          setLibraryOpen((open) => !open);
+                        runStudioCommand("tool.brush", commandContext);
                       }}
                       className={cn("rounded-lg", brushDimmed && DIMMED_TOOL)}
                     >
@@ -1719,10 +1803,10 @@ export function CanvasHost({
                       size="icon"
                       aria-pressed={snapshot.tool === "eraser"}
                       onClick={() => {
-                        setLibraryOpen(false)
+                        setLibraryOpen(false);
                         if (snapshot.tool === "eraser")
-                          setEraserOpen((open) => !open)
-                        runStudioCommand("tool.eraser", commandContext)
+                          setEraserOpen((open) => !open);
+                        runStudioCommand("tool.eraser", commandContext);
                       }}
                       className={cn("rounded-lg", eraserDimmed && DIMMED_TOOL)}
                     >
@@ -1743,9 +1827,9 @@ export function CanvasHost({
                         members={members}
                         tool={snapshot.tool}
                         onPick={(tool) => {
-                          setLibraryOpen(false)
-                          setEraserOpen(false)
-                          runStudioCommand(`tool.${tool}`, commandContext)
+                          setLibraryOpen(false);
+                          setEraserOpen(false);
+                          runStudioCommand(`tool.${tool}`, commandContext);
                         }}
                       />
                     ))}
@@ -1762,15 +1846,23 @@ export function CanvasHost({
                         size="icon"
                         aria-pressed={snapshot.tool === tool}
                         onClick={() => {
-                          setLibraryOpen(false)
-                          setEraserOpen(false)
-                          runStudioCommand(`tool.${tool}`, commandContext)
+                          setLibraryOpen(false);
+                          setEraserOpen(false);
+                          runStudioCommand(`tool.${tool}`, commandContext);
                         }}
                         className="rounded-lg"
                       >
                         {VECTOR_TOOL_RAIL[tool].icon}
                       </RailAction>
                     ))}
+                    <ShapeToolSlot
+                      tool={snapshot.tool}
+                      onPick={(tool) => {
+                        setLibraryOpen(false);
+                        setEraserOpen(false);
+                        runStudioCommand(`tool.${tool}`, commandContext);
+                      }}
+                    />
                   </ToolGroup>
                   <RailDivider />
                   <RailAction
@@ -1784,13 +1876,13 @@ export function CanvasHost({
                       if (!colorOpen && historyOpen) {
                         // Not while a version is being opened; see the history
                         // button for why closing then would lose track of it.
-                        if (historyBusy) return
+                        if (historyBusy) return;
                         // Opened once the history has gone, not beside it while
                         // a trial is still being taken back.
-                        void closeHistory().then(() => setColorOpen(true))
-                        return
+                        void closeHistory().then(() => setColorOpen(true));
+                        return;
                       }
-                      setColorOpen((open) => !open)
+                      setColorOpen((open) => !open);
                     }}
                     className="rounded-lg"
                   >
@@ -1919,7 +2011,7 @@ export function CanvasHost({
                           onClick={() =>
                             runStudioCommand(
                               "select.copyToLayer",
-                              commandContext
+                              commandContext,
                             )
                           }
                         >
@@ -1953,7 +2045,7 @@ export function CanvasHost({
               "pointer-events-none absolute top-3 right-3 bottom-3 flex max-w-[calc(100vw-6rem)] flex-col items-end gap-3",
               // The editor docks here beside the layers, so the column widens
               // for its mapping rows while it is open.
-              brushOpen ? "w-80" : "w-72"
+              brushOpen ? "w-80" : "w-72",
             )}
           >
             {/* Folded, the layers leave a labelled tab where their header
@@ -1968,8 +2060,8 @@ export function CanvasHost({
                 aria-expanded={false}
                 aria-label="Expand layers"
                 onClick={() => {
-                  layersToggled.current = true
-                  setPanelsOpen(true)
+                  layersToggled.current = true;
+                  setPanelsOpen(true);
                 }}
                 className="pointer-events-auto h-10 shrink-0 gap-2 rounded-xl border border-studio-edge bg-studio-surface/88 px-3 text-xs font-semibold tracking-wide uppercase shadow-xl backdrop-blur-xl"
               >
@@ -1985,7 +2077,7 @@ export function CanvasHost({
                   // The layers keep their height and the editor below them
                   // scrolls, up to half the column so a long stack cannot
                   // crowd the editor out.
-                  brushOpen ? "max-h-1/2 shrink-0" : "shrink"
+                  brushOpen ? "max-h-1/2 shrink-0" : "shrink",
                 )}
               >
                 <LayerPanel
@@ -1996,8 +2088,8 @@ export function CanvasHost({
                     runStudioCommand(id, { ...commandContext, layerId })
                   }
                   onCollapse={() => {
-                    layersToggled.current = true
-                    setPanelsOpen(false)
+                    layersToggled.current = true;
+                    setPanelsOpen(false);
                   }}
                 />
               </aside>
@@ -2015,13 +2107,13 @@ export function CanvasHost({
                   textures={snapshot.textures}
                   edited={brushEdited}
                   onClose={() => {
-                    setBrushOpen(false)
-                    brushButton.current?.focus()
+                    setBrushOpen(false);
+                    brushButton.current?.focus();
                   }}
                   onEdit={(next) => void engine.dispatch(brushCommand(next))}
                   onImportTexture={async (file, name) => {
-                    const texture = await readTextureFile(file)
-                    const id = await brushStore.saveTexture(name, texture)
+                    const texture = await readTextureFile(file);
+                    const id = await brushStore.saveTexture(name, texture);
                     // Registered here as well as by the sync effect, so
                     // the texture is selectable in the editor that
                     // imported it rather than only once the store has
@@ -2030,16 +2122,16 @@ export function CanvasHost({
                       type: "registerTexture",
                       id,
                       texture,
-                    })
-                    return id
+                    });
+                    return id;
                   }}
                   problem={brushProblem}
                   onSave={() => {
-                    const working = snapshot.brush
+                    const working = snapshot.brush;
                     const stored = library.brushes.find(
-                      (brush) => brush.id === working.id
-                    )
-                    setBrushProblem(null)
+                      (brush) => brush.id === working.id,
+                    );
+                    setBrushProblem(null);
                     // A built-in has no row to write over, so saving an edit
                     // to one keeps it and creates the artist's own brush
                     // beside it — which is what makes a shipped brush a
@@ -2055,17 +2147,17 @@ export function CanvasHost({
                             // was saved, id and all: without that, the editor
                             // would go on measuring it against something it
                             // no longer is and call a saved brush unsaved.
-                            const next = { ...working, id }
-                            await engine.dispatch(brushCommand(next))
-                            return next
-                          })
+                            const next = { ...working, id };
+                            await engine.dispatch(brushCommand(next));
+                            return next;
+                          });
                     void write.then(setSavedBrush, (error: unknown) =>
                       setBrushProblem(
                         error instanceof Error
                           ? error.message
-                          : "That brush could not be saved."
-                      )
-                    )
+                          : "That brush could not be saved.",
+                      ),
+                    );
                   }}
                   onRevert={() => void engine.dispatch(brushCommand(saved))}
                 />
@@ -2200,8 +2292,8 @@ export function CanvasHost({
         radius={featherRadius}
         onOpenChange={setFeatherOpen}
         onApply={(radius) => {
-          setFeatherRadius(radius)
-          void engine?.dispatch({ type: "featherSelection", radius })
+          setFeatherRadius(radius);
+          void engine?.dispatch({ type: "featherSelection", radius });
         }}
       />
       <ConfirmLayerDialog
@@ -2211,7 +2303,7 @@ export function CanvasHost({
           void engine?.dispatch(
             action === "clear"
               ? { type: "clearLayer", id: layer.id }
-              : { type: "removeLayer", id: layer.id }
+              : { type: "removeLayer", id: layer.id },
           )
         }
       />
@@ -2228,5 +2320,5 @@ export function CanvasHost({
         toggleId={PALETTE_COMMAND}
       />
     </main>
-  )
+  );
 }
