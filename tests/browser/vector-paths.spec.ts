@@ -741,3 +741,53 @@ test("dragging a segment bends it through the pointer, as one step; a click sele
   await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
   expect(await path(page)).toEqual(object)
 })
+
+test("Shift+drag pulls a handle out of a corner; Ctrl+click retracts it, one step", async ({
+  page,
+}) => {
+  const box = await open(page)
+  const object = await penTriangle(page, box)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "node" })
+  )
+  await page.mouse.click(box.x + 100, box.y + 70)
+  const steps = () => page.evaluate(() => window.engine.historyUsage().steps)
+  const before = await steps()
+  await page.keyboard.down("Shift")
+  await page.mouse.move(box.x + 100, box.y + 20)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 130, box.y + 20, { steps: 5 })
+  const held = () =>
+    page.evaluate(() => window.engine.getSnapshot().vectorHandleHeld)
+  // The hint bar names the handle modifiers while one is held.
+  expect(await held()).toBe(true)
+  await page.mouse.up()
+  await page.keyboard.up("Shift")
+  await page.waitForFunction(
+    (n) => window.engine.historyUsage().steps === n + 1,
+    before
+  )
+  expect(await held()).toBe(false)
+  const pulled = (await path(page))!.geometry
+  if (pulled.kind !== "path") throw new Error("A pen path is a path")
+  expect(pulled.nodes[1]).toMatchObject({
+    x: 100,
+    y: 20,
+    out: { x: 130, y: 20 },
+  })
+
+  await page.keyboard.down("Control")
+  await page.mouse.click(box.x + 130, box.y + 20)
+  await page.keyboard.up("Control")
+  await page.waitForFunction(
+    (n) => window.engine.historyUsage().steps === n + 2,
+    before
+  )
+  const retracted = (await path(page))!.geometry
+  if (retracted.kind !== "path") throw new Error("A pen path is a path")
+  expect(retracted.nodes[1].out).toBeNull()
+  expect(retracted.nodes[1]).toMatchObject({ x: 100, y: 20 })
+  for (let undo = 0; undo < 2; undo++)
+    await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await path(page)).toEqual(object)
+})

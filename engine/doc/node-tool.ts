@@ -3,6 +3,7 @@ import { applyAffine } from "./transform-session"
 import { selectObjects } from "./vector-objects"
 import {
   editPathNode,
+  handleOf,
   nearestPathSegment,
   pickPathNode,
   segmentPoint,
@@ -68,6 +69,10 @@ export type NodePress = {
   | { kind: "select" | "box"; lastClick: NodeClick }
 )
 
+/** Whether a grabbed part is one of a node's handles. */
+export const isHandle = (part: NodeGrab["part"]): part is "in" | "out" =>
+  part === "in" || part === "out"
+
 const same = (a: VectorNode, b: VectorNode) =>
   a.objectId === b.objectId && a.index === b.index
 
@@ -130,13 +135,27 @@ export function pressNode({
       : shift
         ? [...selection, object.id]
         : [object.id]
-    if (shift && part === "anchor")
-      return {
-        kind: "select",
+    // Shift+drag on an anchor with no handle pulls one out of it; an open
+    // path's last node can only have the one coming in. A click without a
+    // drag still toggles it, as the press already has.
+    if (shift && part === "anchor") {
+      const node = object.geometry.nodes[index]
+      const onlyIn =
+        !object.geometry.closed && index === object.geometry.nodes.length - 1
+      const toggled = {
         selection: paths,
         nodes: held ? nodes.filter((n) => !same(n, picks)) : [...nodes, picks],
         lastClick: { point, time },
       }
+      return handleOf(node, node.in) || handleOf(node, node.out)
+        ? { kind: "select", ...toggled }
+        : {
+            kind: "grab",
+            grab: { object, index, part: onlyIn ? "in" : "out" },
+            at,
+            ...toggled,
+          }
+    }
     return {
       kind: "grab",
       grab: { object, index, part },
@@ -299,9 +318,22 @@ export function handlesShown(
  * The grabbed path with its part moved to `point`, in document coordinates;
  * the very object grabbed when the part is still where it was.
  */
-export function dragNode(grab: NodeGrab, point: Point): VectorObject {
+export function dragNode(
+  grab: NodeGrab,
+  point: Point,
+  modifiers: HandleModifiers = {}
+): VectorObject {
   const { object, index, part } = grab
   if (!isPath(object)) return object
+  if (isHandle(part)) {
+    const n = object.geometry.nodes[index]
+    point = constrainHandle(
+      placed(object, n),
+      n[part] && placed(object, n[part]),
+      point,
+      modifiers
+    )
+  }
   const local = applyAffine(invertMatrix(object.transform), point)
   if (part === "segment") {
     const was = segmentPoint(object.geometry, index, grab.t)
@@ -319,15 +351,78 @@ export function dragNode(grab: NodeGrab, point: Point): VectorObject {
   const original = object.geometry.nodes[index]
   const at = part === "anchor" ? original : original[part]
   if (at && at.x === local.x && at.y === local.y) return object
-  return {
-    ...object,
-    geometry: editPathNode(object.geometry, {
-      type: "move",
-      index,
-      part,
-      point: local,
-    }),
+  const geometry = editPathNode(object.geometry, {
+    type: "move",
+    index,
+    part,
+    point: local,
+  })
+  if (!modifiers.shift || part === "anchor" || original.type !== "cusp")
+    return { ...object, geometry }
+  // Shift mirrors a cusp's other handle for this drag, if it has one.
+  const opposite = part === "in" ? "out" : "in"
+  if (!handleOf(original, original[opposite])) return { ...object, geometry }
+  const nodes = [...geometry.nodes]
+  nodes[index] = {
+    ...nodes[index],
+    [opposite]: { x: 2 * original.x - local.x, y: 2 * original.y - local.y },
   }
+  return { ...object, geometry: { ...geometry, nodes } }
+}
+
+/** The modifiers held through a handle drag. */
+export type HandleModifiers = { ctrl?: boolean; alt?: boolean; shift?: boolean }
+
+/** Ctrl's angle steps, as Inkscape's default rotation snap. */
+const ANGLE_STEP = Math.PI / 12
+
+/**
+ * Where a handle of the anchor at `anchor`, once at `was`, goes when put at
+ * `point`: Ctrl turns it to the nearest 15° step, Alt keeps the length it
+ * had and only turns it. All in document coordinates.
+ */
+export function constrainHandle(
+  anchor: Point,
+  was: Point | null,
+  point: Point,
+  { ctrl = false, alt = false }: HandleModifiers
+): Point {
+  const dx = point.x - anchor.x,
+    dy = point.y - anchor.y
+  const before = was ? Math.hypot(was.x - anchor.x, was.y - anchor.y) : 0
+  const reach = alt && before > 0 ? before : Math.hypot(dx, dy)
+  if (!reach || (!ctrl && !(alt && before > 0))) return point
+  let angle = Math.atan2(dy, dx)
+  if (ctrl) angle = Math.round(angle / ANGLE_STEP) * ANGLE_STEP
+  return {
+    x: anchor.x + reach * Math.cos(angle),
+    y: anchor.y + reach * Math.sin(angle),
+  }
+}
+
+/**
+ * The scene edit of laying a grabbed handle back on its anchor (Ctrl+click);
+ * none for an anchor or a handle already there. An auto node becomes a
+ * cusp, as it would only pull the handle out again.
+ */
+export function retractHandle(grab: NodeGrab): SceneCommand[] {
+  const { object, index, part } = grab
+  if (!isPath(object) || !isHandle(part)) return []
+  const n = object.geometry.nodes[index]
+  if (!n[part]) return []
+  const nodes = [...object.geometry.nodes]
+  nodes[index] = {
+    ...n,
+    [part]: null,
+    type: n.type === "auto" ? "cusp" : n.type,
+  }
+  return [
+    {
+      type: "update",
+      id: object.id,
+      patch: { geometry: { ...object.geometry, nodes } },
+    },
+  ]
 }
 
 /**
@@ -373,17 +468,20 @@ export function dragNodes({
   grab,
   nodes,
   point,
+  modifiers,
 }: {
   scene: VectorScene
   grab: NodeGrab
   nodes: readonly VectorNode[]
   /** Where the grabbed part is now, in document coordinates. */
   point: Point
+  /** Held while a handle is dragged: see `constrainHandle`, and Shift mirrors. */
+  modifiers?: HandleModifiers
 }): SceneCommand[] {
   const { object, index, part } = grab
   if (!isPath(object)) return []
   if (part !== "anchor") {
-    const moved = dragNode(grab, point)
+    const moved = dragNode(grab, point, modifiers)
     return moved === object
       ? []
       : [{ type: "update", id: moved.id, patch: { geometry: moved.geometry } }]

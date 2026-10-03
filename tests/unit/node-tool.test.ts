@@ -114,8 +114,9 @@ test("Shift+click toggles a node in and out of the selection", () => {
       shift: true,
     }
   )
+  // A corner with no handles is grabbed, in case Shift drags one out.
   expect(added).toMatchObject({
-    kind: "select",
+    kind: "grab",
     selection: ["a"],
     nodes: [node("a", 0), node("a", 1)],
   })

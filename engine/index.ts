@@ -14,7 +14,9 @@ import {
   moveNodes,
   nodeCommand,
   segmentCommand,
+  isHandle,
   pressNode,
+  retractHandle,
   pruneNodes,
   boxNodes,
   allNodes,
@@ -952,6 +954,8 @@ export type EngineSnapshot = Readonly<{
   penNodes: readonly PathNode[]
   /** The nodes selected with the node tool, on the paths being edited. */
   vectorNodes: readonly VectorNode[]
+  /** A node handle is held by the node tool, for the hint's modifiers. */
+  vectorHandleHeld: boolean
   vectorSelectionBounds: Extent | null
   vectorTransform: {
     placement: ImagePlacement
@@ -1093,6 +1097,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   vectorPaths: [],
   penNodes: [],
   vectorNodes: [],
+  vectorHandleHeld: false,
   vectorSelectionBounds: null,
   vectorTransform: null,
   color: Object.freeze({
@@ -2663,8 +2668,9 @@ export function createEngine(
         node?: NodeGrab
         /** Where the grabbed part sat as the press began, for the axis lock. */
         nodeAt?: Point
-        /** Ctrl was down as the anchor was pressed: a click turns its type. */
-        nodeCycle?: boolean
+        /** Ctrl was down at the press. A click then turns an anchor to the
+         * next type, or retracts a handle. */
+        ctrlClick?: boolean
         /** The node tool is drawing a rubber band, not moving a node. */
         nodeBox?: boolean
         anchor: Point
@@ -3280,7 +3286,11 @@ export function createEngine(
       const point = { x: toDocX(x, y), y: toDocY(x, y) }
       // The grabbed node snaps; the rest follow its snapped offset. A
       // snap moves it along the locked axis only, never off it.
-      const lock = ctrlHeld ? drag.nodeAt : undefined
+      // On a handle, Ctrl snaps the angle instead, in `dragNodes`.
+      const lock =
+        ctrlHeld && drag.node && !isHandle(drag.node.part)
+          ? drag.nodeAt
+          : undefined
       const locked = lock ? lockAxis(lock, point) : point
       drag.point =
         drag.tool === "pressure" ? point : snapVectorPoint(locked, drag.layerId)
@@ -3378,6 +3388,11 @@ export function createEngine(
         return
       }
       const moved = drag.node && nodeDragEdits(drag, layer.scene)
+      if (drag.node) publish({ vectorHandleHeld: false })
+      if (drag.ctrlClick && drag.node && !moved?.length) {
+        const retracted = retractHandle(drag.node)
+        if (retracted.length) editScene(layer.id, retracted, "retract handle")
+      }
       // A click, not a drag, on one of several selected nodes selects it
       // alone; the press kept them all in case it became a drag. With Ctrl
       // it also turns the node to the next type (Inkscape); Ctrl dragged
@@ -3389,7 +3404,7 @@ export function createEngine(
         }
         const geometry = drag.node.object.geometry
         const cycled =
-          drag.nodeCycle &&
+          drag.ctrlClick &&
           geometry.kind === "path" &&
           nodeCommand(
             layer.scene,
@@ -3477,7 +3492,11 @@ export function createEngine(
     if (!drag) return
     shapeDrag = undefined
     forgetGestureInput()
-    publish({ penNodes: [], vectorSelection: snapshot.vectorSelection })
+    publish({
+      penNodes: [],
+      vectorSelection: snapshot.vectorSelection,
+      vectorHandleHeld: false,
+    })
     if (isBand(drag)) showSelection(selection)
     const layer = doc && findNodeIn(doc.layers, drag.layerId)
     if (layer?.kind === "vector") drawScene(layer.id, layer.scene)
@@ -4506,6 +4525,7 @@ export function createEngine(
       grab: drag.node!,
       nodes: snapshot.vectorNodes,
       point: drag.point,
+      modifiers: { ctrl: ctrlHeld, alt: altHeld, shift: shiftHeld },
     })
   }
 
@@ -4527,7 +4547,10 @@ export function createEngine(
       setVectorSelection(press.selection)
     lastNodeClick = press.lastClick
     if (press.kind === "grab" || press.kind === "box") {
-      publish({ vectorNodes: press.nodes })
+      publish({
+        vectorNodes: press.nodes,
+        vectorHandleHeld: press.kind === "grab" && isHandle(press.grab.part),
+      })
       shapeDrag = {
         layerId: layer.id,
         tool: "node",
@@ -4538,7 +4561,7 @@ export function createEngine(
           ? {
               node: press.grab,
               nodeAt: press.at,
-              nodeCycle: ctrlHeld && press.grab.part === "anchor",
+              ctrlClick: ctrlHeld,
             }
           : { nodeBox: true as const }),
       }

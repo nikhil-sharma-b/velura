@@ -377,7 +377,7 @@ function solveAuto(nodes: PathNode[], closed: boolean): PathNode[] {
 }
 
 /** A handle that sits on its anchor is no handle at all. */
-const handleOf = (n: PathNode, h: Point | null) =>
+export const handleOf = (n: PathNode, h: Point | null) =>
   h && (h.x !== n.x || h.y !== n.y) ? h : null
 
 /**

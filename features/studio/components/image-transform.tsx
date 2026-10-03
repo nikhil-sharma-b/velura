@@ -864,8 +864,9 @@ export function VectorNodes({
         ) : (
           <>
             <span>
-              Click or drag to select nodes · Shift adds · double-click a
-              segment to add
+              {snapshot.vectorHandleHeld
+                ? "Ctrl snaps to 15° · Alt keeps the length · Shift mirrors a cusp · Ctrl+click retracts"
+                : "Click or drag to select nodes · Shift adds · double-click a segment to add · Shift+drag a bare anchor pulls a handle"}
             </span>
             <span className="text-muted-foreground tabular-nums">
               {nodeCount(snapshot)}
