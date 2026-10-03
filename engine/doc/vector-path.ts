@@ -207,7 +207,9 @@ export function createPressureFit(width: number, taper?: Taper) {
       pieces = []
       return { kind: "path", nodes: [dot, { ...dot }], closed: false }
     }
-    let { segments, start, end } = fitTail()
+    const tail = fitTail()
+    const { segments } = tail
+    let { start, end } = tail
     if (!ended && along[end] - along[start] >= FREEZE_AFTER) {
       let count = 0
       while (
@@ -341,10 +343,10 @@ function splitForTaper(
   if (!cuts.length) return [first, last]
   cuts.sort((x, y) => x - y)
   const nodes = [first]
+  const p3: Point = d
   let p0: Point = a,
     p1 = segment.out,
     p2 = segment.in,
-    p3: Point = d,
     t0 = 0
   for (const at of cuts) {
     // Chord-length place on the curve; the split is exact wherever it falls.

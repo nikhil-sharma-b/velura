@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test"
 
-test("the solid vector brush tapers each end by the share it is given", async ({
+test("the solid vector brush sets its tapers from the tool options", async ({
   page,
 }) => {
   await page.goto("/")
@@ -8,9 +8,6 @@ test("the solid vector brush tapers each end by the share it is given", async ({
     "data-engine-status",
     "ready"
   )
-  const box = (await page
-    .getByRole("img", { name: "Drawing canvas" })
-    .boundingBox())!
   await page
     .getByRole("region", { name: "Layers" })
     .getByRole("button", { name: "Add vector layer" })
@@ -43,11 +40,4 @@ test("the solid vector brush tapers each end by the share it is given", async ({
   }
   await page.keyboard.press("Escape")
   await expect(taper).toHaveAccessibleName("Taper: Start 30%, end 50%")
-
-  const cx = box.x + box.width / 2,
-    cy = box.y + box.height / 2
-  await page.mouse.move(cx - 150, cy)
-  await page.mouse.down()
-  await page.mouse.move(cx + 150, cy, { steps: 40 })
-  await page.mouse.up()
 })
