@@ -2,6 +2,7 @@ import {
   fitPressureStroke,
   nextNodeType,
   type NodeType,
+  type BezierPath,
   type PathNode,
   type SegmentShape,
   type PressurePoint,
@@ -3193,6 +3194,27 @@ export function createEngine(
   }
 
   /**
+   * A pressure stroke still being drawn, as its samples joined straight.
+   * Fitting the whole stroke each frame would reshape curves already
+   * drawn as the end moves, so the fit waits for the pen to lift.
+   */
+  function pressurePreview(
+    points: readonly PressurePoint[],
+    width: number
+  ): BezierPath {
+    const nodes: PathNode[] = points.map((p) => ({
+      x: p.x,
+      y: p.y,
+      width: width * Math.max(0, Math.min(1, p.pressure)),
+      in: null,
+      out: null,
+      type: "smooth",
+    }))
+    if (nodes.length === 1) nodes.push({ ...nodes[0] })
+    return { kind: "path", nodes, closed: false }
+  }
+
+  /**
    * The rectangle a drag outlines, in the shape style and the current
    * colour; nothing for a click, or with neither fill nor outline asked for.
    */
@@ -3229,7 +3251,9 @@ export function createEngine(
               closed: drag.closed ?? false,
             }
           : drag.tool === "pressure"
-            ? fitPressureStroke(drag.pressurePoints!, style.strokeWidth)
+            ? drag.ended
+              ? fitPressureStroke(drag.pressurePoints!, style.strokeWidth)
+              : pressurePreview(drag.pressurePoints!, style.strokeWidth)
             : drag.tool === "ellipse"
               ? {
                   kind: "ellipse",
