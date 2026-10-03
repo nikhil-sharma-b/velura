@@ -38,51 +38,85 @@ export type PressurePoint = Point & { pressure: number }
 
 /** Turns sharper than this (cos 60°) are kept as corners when fitting. */
 const CORNER_COS = 0.5
+/** How far, in document pixels, a fitted stroke may stray from the hand. */
+const FIT_TOLERANCE = 1.5
+/** How far a fitted width may stray: a tenth of the brush, at least half a pixel. */
+const widthTolerance = (width: number) => Math.max(0.5, width / 10)
 
+type Sample = Point & { width: number }
+type Segment = { last: number; out: Point; in: Point }
+
+/**
+ * A freehand pressure stroke as the fewest cubic Béziers that stay within
+ * a pixel and a half of the hand and a tenth of the brush's width, as
+ * Inkscape and Paper.js fit (Schneider, Graphics Gems 1990). Width runs
+ * linearly along each segment, so pressure only adds a node where it
+ * strays from that line. Sharp turns are kept as cusps.
+ */
 export function fitPressureStroke(
   samples: readonly PressurePoint[],
   width: number
 ): BezierPath {
   if (!Number.isFinite(width) || width <= 0 || !samples.length)
     throw new Error("A pressure stroke needs samples and a positive width.")
-  const sampled: PathNode[] = samples.map((p) => {
+  const points: Sample[] = []
+  for (const p of samples) {
     if (![p.x, p.y, p.pressure].every(Number.isFinite))
       throw new Error("Pressure samples must be finite.")
-    return {
+    const sample = {
       x: p.x,
       y: p.y,
       width: width * Math.max(0, Math.min(1, p.pressure)),
-      in: null,
-      out: null,
-      type: "smooth" as const,
     }
+    // A pen resting in place repeats its point; the last pressure stands.
+    const previous = points.at(-1)
+    if (previous && previous.x === p.x && previous.y === p.y)
+      points[points.length - 1] = sample
+    else points.push(sample)
+  }
+  const node = (p: Sample, type: NodeType): PathNode => ({
+    x: p.x,
+    y: p.y,
+    width: p.width,
+    in: null,
+    out: null,
+    type,
   })
-  // Simplify in both position and width: a straight line still needs an
-  // anchor wherever pressure changes beyond a quarter document pixel.
+  // A single press is a round dot, kept as a zero-length editable centre line.
+  if (points.length === 1) {
+    const dot = node(points[0], "smooth")
+    return { kind: "path", nodes: [dot, { ...dot }], closed: false }
+  }
+  const corners = cornersOf(points)
+  const nodes: PathNode[] = [node(points[0], "smooth")]
+  for (let c = 0; c + 1 < corners.length; c++) {
+    const first = corners[c],
+      last = corners[c + 1]
+    for (const segment of fitStroke(points, first, last, width)) {
+      nodes[nodes.length - 1] = { ...nodes.at(-1)!, out: segment.out }
+      const end = points[segment.last]
+      const type =
+        segment.last === last && last !== points.length - 1 ? "cusp" : "smooth"
+      nodes.push({ ...node(end, type), in: segment.in })
+    }
+  }
+  return { kind: "path", nodes, closed: false }
+}
+
+/**
+ * Where the stroke turns sharply: the ends, and the corners of its outline
+ * simplified to the fit tolerance that turn by more than 60°.
+ */
+function cornersOf(points: readonly Sample[]): number[] {
+  const keep = new Set([0, points.length - 1])
   // An explicit stack avoids recursion limits on long tablet gestures.
-  const keep = new Set([0, sampled.length - 1])
-  const pending = [[0, sampled.length - 1]]
+  const pending = [[0, points.length - 1]]
   while (pending.length) {
     const [first, last] = pending.pop()!
-    const a = sampled[first],
-      b = sampled[last]
-    const dx = b.x - a.x,
-      dy = b.y - a.y,
-      length = dx * dx + dy * dy
-    let largest = 0.25,
+    let largest = FIT_TOLERANCE,
       split = -1
     for (let i = first + 1; i < last; i++) {
-      const p = sampled[i]
-      const t = length
-        ? Math.max(
-            0,
-            Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / length)
-          )
-        : (i - first) / (last - first)
-      const error = Math.max(
-        Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy),
-        Math.abs(p.width! - (a.width! + (b.width! - a.width!) * t))
-      )
+      const error = chordDistance(points[i], points[first], points[last])
       if (error > largest) {
         largest = error
         split = i
@@ -93,30 +127,152 @@ export function fitPressureStroke(
       pending.push([first, split], [split, last])
     }
   }
-  const nodes = sampled.filter((_, index) => keep.has(index))
-  // A single press is a round dot, kept as a zero-length editable centre line.
-  if (nodes.length === 1) nodes.push({ ...nodes[0] })
+  const outline = [...keep].sort((a, b) => a - b)
+  return outline.filter((index, i) => {
+    if (i === 0 || i === outline.length - 1) return true
+    const before = points[outline[i - 1]],
+      p = points[index],
+      after = points[outline[i + 1]]
+    const ax = p.x - before.x,
+      ay = p.y - before.y,
+      bx = after.x - p.x,
+      by = after.y - p.y
+    const lengths = Math.hypot(ax, ay) * Math.hypot(bx, by)
+    return lengths > 0 && (ax * bx + ay * by) / lengths < CORNER_COS
+  })
+}
+
+function chordDistance(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x,
+    dy = b.y - a.y,
+    length = dx * dx + dy * dy
+  const t = length
+    ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / length))
+    : 0
+  return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy)
+}
+
+const unit = (x: number, y: number): Point => {
+  const length = Math.hypot(x, y) || 1
+  return { x: x / length, y: y / length }
+}
+
+/**
+ * The way the stroke leaves `from` toward `toward`, read an eighth of the
+ * way there and at least 12 px along, so the hand's jitter cannot tip it.
+ */
+function tangentAt(
+  points: readonly Sample[],
+  from: number,
+  toward: number
+): Point {
+  const reach = Math.max(
+    12,
+    Math.hypot(
+      points[toward].x - points[from].x,
+      points[toward].y - points[from].y
+    ) / 8
+  )
+  const step = Math.sign(toward - from)
+  let i = from + step
+  while (
+    i !== toward &&
+    Math.hypot(points[i].x - points[from].x, points[i].y - points[from].y) <
+      reach
+  )
+    i += step
+  return unit(points[i].x - points[from].x, points[i].y - points[from].y)
+}
+
+const cubicAt = (a: Point, b: Point, c: Point, d: Point, u: number): Point => {
+  const v = 1 - u
+  const [k0, k1, k2, k3] = [v * v * v, 3 * u * v * v, 3 * u * u * v, u * u * u]
   return {
-    kind: "path",
-    nodes: nodes.map((n, i) => {
-      const before = nodes[Math.max(0, i - 1)]
-      const after = nodes[Math.min(nodes.length - 1, i + 1)]
-      const inLength = Math.hypot(n.x - before.x, n.y - before.y)
-      const outLength = Math.hypot(after.x - n.x, after.y - n.y)
-      // Where the hand turned sharply, keep the corner: a smooth node's
-      // handles would carry the curve past it and back, overshooting.
-      const turn =
-        inLength && outLength
-          ? ((n.x - before.x) * (after.x - n.x) +
-              (n.y - before.y) * (after.y - n.y)) /
-            (inLength * outLength)
-          : 1
-      if (turn < CORNER_COS && i > 0 && i < nodes.length - 1)
-        return { ...n, in: null, out: null, type: "cusp" as const }
-      return { ...n, ...chordHandles(nodes, i, false) }
-    }),
-    closed: false,
+    x: a.x * k0 + b.x * k1 + c.x * k2 + d.x * k3,
+    y: a.y * k0 + b.y * k1 + c.y * k2 + d.y * k3,
   }
+}
+
+/** The segments fitted between samples `first` and `last`, in order. */
+function fitStroke(
+  points: readonly Sample[],
+  first: number,
+  last: number,
+  width: number
+): Segment[] {
+  const segments: Segment[] = []
+  const widthAllowed = widthTolerance(width)
+  const pending: [number, number, Point, Point][] = [
+    [
+      first,
+      last,
+      tangentAt(points, first, last),
+      tangentAt(points, last, first),
+    ],
+  ]
+  while (pending.length) {
+    const [from, to, t1, t2] = pending.pop()!
+    const a = points[from],
+      d = points[to]
+    const span = Math.hypot(d.x - a.x, d.y - a.y)
+    const samples = points.slice(from, to + 1)
+    const u = [0]
+    for (let i = 1; i < samples.length; i++)
+      u.push(
+        u[i - 1] +
+          Math.hypot(
+            samples[i].x - samples[i - 1].x,
+            samples[i].y - samples[i - 1].y
+          )
+      )
+    const total = u.at(-1) || 1
+    for (let i = 0; i < u.length; i++) u[i] /= total
+    let b: Point = a,
+      c: Point = d,
+      worst = Infinity,
+      split = from
+    for (let pass = 0; pass < 5 && worst > 1; pass++) {
+      let reach = fitReach(samples, u, a, d, t1, t2) ?? [span / 3, span / 3]
+      // Handles that cross past each other along the chord would loop.
+      const along = (t: Point, r: number) =>
+        (t.x * (d.x - a.x) + t.y * (d.y - a.y)) * r
+      if (along(t1, reach[0]) - along(t2, reach[1]) > span * span)
+        reach = [span / 3, span / 3]
+      b = { x: a.x + t1.x * reach[0], y: a.y + t1.y * reach[0] }
+      c = { x: d.x + t2.x * reach[1], y: d.y + t2.y * reach[1] }
+      worst = 0
+      for (let i = 1; i < samples.length - 1; i++) {
+        const p = samples[i],
+          on = cubicAt(a, b, c, d, u[i])
+        const error = Math.max(
+          Math.hypot(p.x - on.x, p.y - on.y) / FIT_TOLERANCE,
+          Math.abs(p.width - (a.width + (d.width - a.width) * u[i])) /
+            widthAllowed
+        )
+        if (error > worst) {
+          worst = error
+          split = from + i
+        }
+      }
+      // Far off, a better place along the curve will not save it.
+      if (worst > 4) break
+      for (let i = 1; i < u.length - 1; i++)
+        u[i] = newtonPlace(a, b, c, d, samples[i], u[i])
+    }
+    if (worst <= 1) {
+      segments.push({ last: to, out: b, in: c })
+      continue
+    }
+    const back = tangentAt(points, split, from),
+      on = tangentAt(points, split, to)
+    const through = unit(back.x - on.x, back.y - on.y)
+    // The right half is pushed first so the left is fitted, and kept, first.
+    pending.push(
+      [split, to, { x: -through.x, y: -through.y }, t2],
+      [from, split, t1, through]
+    )
+  }
+  return segments
 }
 
 const mix = (a: Point, b: Point, t: number): Point => ({
