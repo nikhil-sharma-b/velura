@@ -1,14 +1,21 @@
 import {
-  editPathNode,
   fitPressureStroke,
-  nearestPathSegment,
-  pickPathNode,
   type PathNode,
   type PressurePoint,
   type NodeEdit,
-  type NodePart,
 } from "./doc/vector-path"
-import { applyAffine } from "./doc/transform-session"
+import {
+  dragNode,
+  editNode,
+  nodeCommand,
+  releaseNode,
+  pressNode,
+  pruneVectorNode,
+  type NodeClick,
+  type NodeGrab,
+  type VectorNode,
+  DOUBLE_CLICK_MS,
+} from "./doc/node-tool"
 import {
   serializeSvg,
   type SvgExportOptions,
@@ -273,7 +280,6 @@ import {
   fitView as fitCanvasView,
   flipView,
   IDENTITY_MATRIX,
-  invertMatrix,
   panView,
   rotateView,
   screenToDoc,
@@ -920,7 +926,7 @@ export type EngineSnapshot = Readonly<{
   vectorSelection: readonly string[]
   vectorPaths: readonly VectorObject[]
   penNodes: readonly PathNode[]
-  vectorNode: { objectId: string; index: number } | null
+  vectorNode: VectorNode | null
   vectorSelectionBounds: Extent | null
   vectorTransform: {
     placement: ImagePlacement
@@ -1709,16 +1715,7 @@ export function createEngine(
                 o.geometry.kind === "path"
             )
           : [])
-      if (
-        next.vectorNode &&
-        !next.vectorPaths.some(
-          (o) =>
-            o.id === next.vectorNode!.objectId &&
-            o.geometry.kind === "path" &&
-            o.geometry.nodes[next.vectorNode!.index]
-        )
-      )
-        next.vectorNode = null
+      next.vectorNode = pruneVectorNode(next.vectorPaths, next.vectorNode)
       next.vectorSelectionBounds =
         layer.kind === "vector"
           ? objectsBounds(layer.scene, next.vectorSelection)
@@ -2632,11 +2629,7 @@ export function createEngine(
           time: number
         }
         pressureResampler?: ReturnType<typeof createStrokeResampler>
-        node?: {
-          object: VectorObject
-          index: number
-          part: NodePart
-        }
+        node?: NodeGrab
         anchor: Point
         point: Point
         ended: boolean
@@ -3106,25 +3099,7 @@ export function createEngine(
     scene: VectorScene
   ): VectorObject | null {
     const style = snapshot.shapeStyle
-    if (drag.node && drag.node.object.geometry.kind === "path") {
-      const local = applyAffine(
-        invertMatrix(drag.node.object.transform),
-        drag.point
-      )
-      const original = drag.node.object.geometry.nodes[drag.node.index]
-      const at =
-        drag.node.part === "anchor" ? original : original[drag.node.part]
-      if (at && at.x === local.x && at.y === local.y) return drag.node.object
-      return {
-        ...drag.node.object,
-        geometry: editPathNode(drag.node.object.geometry, {
-          type: "move",
-          index: drag.node.index,
-          part: drag.node.part,
-          point: local,
-        }),
-      }
-    }
+    if (drag.node) return dragNode(drag.node, drag.point)
     if (drag.tool === "node") return null
     if (
       !style.fill &&
@@ -3356,25 +3331,19 @@ export function createEngine(
         render()
         return
       }
-      if (shape && (!drag.node || shape !== drag.node.object)) {
+      const moved = drag.node && releaseNode(drag.node, drag.point)
+      if (moved?.length) {
+        editScene(layer.id, moved, "move node")
+        publish({ vectorSelection: [drag.node!.object.id] })
+      } else if (shape && !drag.node) {
         editScene(
           layer.id,
-          drag.node
-            ? [
-                {
-                  type: "update",
-                  id: shape.id,
-                  patch: { geometry: shape.geometry },
-                },
-              ]
-            : [{ type: "add", object: shape }],
-          drag.node ? "move node" : `draw ${drag.tool}`
+          [{ type: "add", object: shape }],
+          `draw ${drag.tool}`
         )
         publish({
           vectorSelection:
-            drag.node || drag.tool === "pen" || drag.tool === "pressure"
-              ? [shape.id]
-              : [],
+            drag.tool === "pen" || drag.tool === "pressure" ? [shape.id] : [],
         })
       } else {
         drawScene(layer.id, layer.scene)
@@ -3668,7 +3637,6 @@ export function createEngine(
   const constrained = () => shiftHeld && !shiftLatched
   /** How near the first vertex, in backing pixels, a click closes a polygon. */
   const CLOSE_RADIUS = 8
-  const DOUBLE_CLICK_MS = 400
   // How far the ants have marched. They move on a timer of their own, which
   // runs only while there is a selection to outline.
   let antsPhase = 0
@@ -4448,7 +4416,7 @@ export function createEngine(
       frame = requestAnimationFrame(drawFrame)
   }
 
-  let lastNodeClick: { point: Point; time: number } | undefined
+  let lastNodeClick: NodeClick | undefined
 
   function snapVectorPoint(point: Point, layerId: string): Point {
     if (!snapping || altHeld) return point
@@ -4461,87 +4429,50 @@ export function createEngine(
   }
 
   function beginNodeDrag(layer: VectorLayer, point: Point, time: number) {
-    const reach = 6 / snapshot.view.zoom
-    const paths = layer.scene.objects.filter((o) => o.geometry.kind === "path")
-    // Selected paths first, top down, then the rest: a node of what is
-    // being edited wins over one beneath it. Only a selected path shows its
-    // handles, so only a selected path's handles can be taken hold of.
-    const selected = (o: VectorObject) =>
-      snapshot.vectorSelection.includes(o.id)
-    const order = [
-      ...paths.filter(selected).reverse(),
-      ...paths.filter((o) => !selected(o)).reverse(),
-    ]
-    for (const object of order) {
-      if (object.geometry.kind !== "path") continue
-      const picked = pickPathNode(
-        object.geometry,
-        point,
-        object.transform,
-        reach,
-        { handles: selected(object) }
-      )
-      if (!picked) continue
-      const { index, part, at } = picked
-      // Taking hold of a node of another path makes that path the one being
-      // edited, in the same press.
-      if (!selected(object)) setVectorSelection([object.id])
-      publish({ vectorNode: { objectId: object.id, index } })
+    const press = pressNode({
+      scene: layer.scene,
+      selection: snapshot.vectorSelection,
+      point,
+      reach: 6 / snapshot.view.zoom,
+      time,
+      lastClick: lastNodeClick,
+    })
+    // A grab on a path already being edited leaves the selection be.
+    if (
+      press.kind !== "grab" ||
+      press.selection[0] !== press.grab.object.id ||
+      !snapshot.vectorSelection.includes(press.grab.object.id)
+    )
+      setVectorSelection(press.selection)
+    if (press.kind === "grab") {
+      publish({ vectorNode: press.vectorNode })
       shapeDrag = {
         layerId: layer.id,
         tool: "node",
         anchor: point,
-        point: at,
+        point: press.at,
         ended: false,
-        node: { object, index, part },
+        node: press.grab,
       }
       scheduleFrame()
       return
     }
-    const hit = [...paths]
-      .reverse()
-      .map((object) => ({
-        object,
-        hit:
-          object.geometry.kind === "path"
-            ? nearestPathSegment(object.geometry, point, object.transform)
-            : null,
-      }))
-      .find((entry) => entry.hit && entry.hit.distance <= reach)
-    if (hit?.hit) {
-      const doubleClick =
-        lastNodeClick &&
-        time - lastNodeClick.time < DOUBLE_CLICK_MS &&
-        Math.hypot(
-          point.x - lastNodeClick.point.x,
-          point.y - lastNodeClick.point.y
-        ) <= reach
-      setVectorSelection([hit.object.id])
+    lastNodeClick = press.lastClick
+    if (press.kind === "split") {
       publish({ vectorNode: null })
-      if (doubleClick && hit.object.geometry.kind === "path") {
-        const geometry = editPathNode(hit.object.geometry, {
-          type: "split",
-          index: hit.hit.index,
-          t: hit.hit.t,
-        })
-        editScene(
-          layer.id,
-          [{ type: "update", id: hit.object.id, patch: { geometry } }],
-          "add node"
-        )
-        publish({
-          vectorNode: { objectId: hit.object.id, index: hit.hit.index + 1 },
-        })
-      }
-    } else {
-      // Inside a filled path is on it too, as with the object tool.
-      const [inside] = selectObjects(layer.scene, point).filter((id) =>
-        paths.some((o) => o.id === id)
+      editScene(
+        layer.id,
+        [
+          {
+            type: "update",
+            id: press.objectId,
+            patch: { geometry: press.geometry },
+          },
+        ],
+        "add node"
       )
-      setVectorSelection(inside ? [inside] : [])
-      publish({ vectorNode: null })
     }
-    lastNodeClick = { point, time }
+    publish({ vectorNode: press.vectorNode })
   }
 
   function beginStroke(
@@ -5536,56 +5467,42 @@ export function createEngine(
         case "editVectorNode": {
           dropShapeDrag()
           const layer = selectedVectorLayer()
-          const object = layer.scene.objects.find(
-            (o) => o.id === command.objectId
+          const { geometry, vectorNode } = editNode(
+            layer.scene,
+            command.objectId,
+            command.edit
           )
-          if (!object || object.geometry.kind !== "path")
-            throw new Error("Select an editable path.")
-          const geometry = editPathNode(object.geometry, command.edit)
           editScene(
             layer.id,
-            [{ type: "update", id: object.id, patch: { geometry } }],
+            [{ type: "update", id: command.objectId, patch: { geometry } }],
             "edit node"
           )
-          publish({
-            vectorNode: {
-              objectId: object.id,
-              index: Math.min(
-                command.edit.type === "split"
-                  ? command.edit.index + 1
-                  : command.edit.index,
-                geometry.nodes.length - 1
-              ),
-            },
-          })
+          publish({ vectorNode })
           break
         }
         case "deleteVectorNode":
         case "toggleVectorNode": {
-          const node = snapshot.vectorNode
-          if (node) {
-            dropShapeDrag()
-            const layer = selectedVectorLayer(),
-              object = layer.scene.objects.find((o) => o.id === node.objectId)
-            if (object?.geometry.kind === "path") {
-              if (
-                command.type === "deleteVectorNode" &&
-                object.geometry.nodes.length <= 2
-              )
-                break
-              const geometry = editPathNode(object.geometry, {
-                type: command.type === "deleteVectorNode" ? "delete" : "toggle",
-                index: node.index,
-              })
-              editScene(
-                layer.id,
-                [{ type: "update", id: object.id, patch: { geometry } }],
-                "edit node"
-              )
-              publish({
-                vectorNode: command.type === "deleteVectorNode" ? null : node,
-              })
-            }
+          if (!snapshot.vectorNode) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const edit = nodeCommand(
+            layer.scene,
+            snapshot.vectorNode,
+            command.type === "deleteVectorNode" ? "delete" : "toggle"
+          )
+          if (edit) {
+            editScene(
+              layer.id,
+              [
+                {
+                  type: "update",
+                  id: edit.objectId,
+                  patch: { geometry: edit.geometry },
+                },
+              ],
+              "edit node"
+            )
+            publish({ vectorNode: edit.vectorNode })
           }
           break
         }
