@@ -17,6 +17,9 @@ export type BezierPath = Readonly<{
 }>
 export type PressurePoint = Point & { pressure: number }
 
+/** Turns sharper than this (cos 60°) are kept as corners when fitting. */
+const CORNER_COS = 0.5
+
 export function fitPressureStroke(
   samples: readonly PressurePoint[],
   width: number
@@ -79,12 +82,32 @@ export function fitPressureStroke(
     nodes: nodes.map((n, i) => {
       const before = nodes[Math.max(0, i - 1)]
       const after = nodes[Math.min(nodes.length - 1, i + 1)]
-      const dx = (after.x - before.x) / 6,
-        dy = (after.y - before.y) / 6
+      const inLength = Math.hypot(n.x - before.x, n.y - before.y)
+      const outLength = Math.hypot(after.x - n.x, after.y - n.y)
+      // Where the hand turned sharply, keep the corner: a smooth node's
+      // handles would carry the curve past it and back, overshooting.
+      const turn =
+        inLength && outLength
+          ? ((n.x - before.x) * (after.x - n.x) +
+              (n.y - before.y) * (after.y - n.y)) /
+            (inLength * outLength)
+          : 1
+      if (turn < CORNER_COS && i > 0 && i < nodes.length - 1)
+        return { ...n, in: null, out: null, smooth: false }
+      // Tangent along the neighbours' chord, each handle a third of its own
+      // segment, so an uneven spacing never makes a handle outrun its
+      // segment and loop.
+      const tx = after.x - before.x,
+        ty = after.y - before.y,
+        tangent = Math.hypot(tx, ty) || 1
+      const handle = (length: number, sign: number) => ({
+        x: n.x + (sign * tx * length) / 3 / tangent,
+        y: n.y + (sign * ty * length) / 3 / tangent,
+      })
       return {
         ...n,
-        in: i ? { x: n.x - dx, y: n.y - dy } : null,
-        out: i < nodes.length - 1 ? { x: n.x + dx, y: n.y + dy } : null,
+        in: i ? handle(inLength, -1) : null,
+        out: i < nodes.length - 1 ? handle(outLength, 1) : null,
       }
     }),
     closed: false,
@@ -218,8 +241,15 @@ export function editPathNode(path: BezierPath, edit: NodeEdit): BezierPath {
 export function flattenPath(
   path: BezierPath,
   scale = 1
-): { points: Point[]; widths: number[] | null; closed: boolean } {
+): {
+  points: Point[]
+  widths: number[] | null
+  closed: boolean
+  /** Indices into `points` of the nodes that are corners, not smooth. */
+  corners: number[]
+} {
   const points: Point[] = [],
+    corners: number[] = [],
     widths: number[] | null = path.nodes.every((n) => n.width !== undefined)
       ? []
       : null
@@ -228,8 +258,10 @@ export function flattenPath(
     points.push({ x: p.x, y: p.y })
     widths?.push(width)
   }
-  if (!path.nodes.length) return { points, widths, closed: path.closed }
+  if (!path.nodes.length)
+    return { points, widths, closed: path.closed, corners }
   emit(path.nodes[0], path.nodes[0].width ?? 0)
+  if (!path.nodes[0].smooth) corners.push(0)
   const walk = (
     a: Point,
     b: Point,
@@ -270,12 +302,14 @@ export function flattenPath(
     const a = path.nodes[i],
       b = path.nodes[(i + 1) % path.nodes.length]
     walk(a, a.out ?? a, b.in ?? b, b, a.width ?? 0, b.width ?? 0, 0)
+    if (!b.smooth && (i + 1 < path.nodes.length || !path.closed))
+      corners.push(points.length - 1)
   }
   if (path.closed) {
     points.pop()
     widths?.pop()
   }
-  return { points, widths, closed: path.closed }
+  return { points, widths, closed: path.closed, corners }
 }
 
 /** Nearest segment parameter for inserting a node, in document coordinates. */
