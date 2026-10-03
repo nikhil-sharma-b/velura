@@ -17,6 +17,7 @@ import type {
   SnapTargets,
 } from "@/engine"
 import {
+  canJoin,
   docToScreen,
   handlesShown,
   placementExtent,
@@ -860,9 +861,57 @@ export function VectorNodes({
             <span className="text-muted-foreground tabular-nums">
               {nodeCount(snapshot)}
             </span>
+            <JoinButtons engine={engine} snapshot={snapshot} />
           </>
         )}
       </ToolHint>
+    </>
+  )
+}
+
+/**
+ * Join and join-with-segment, shown while the selection has ends to join:
+ * two open curves, one to close, or two end nodes (Shift+J, Alt+J).
+ */
+function JoinButtons({
+  engine,
+  snapshot,
+}: {
+  engine: Engine
+  snapshot: EngineSnapshot
+}) {
+  const able = (mode: "merge" | "segment") =>
+    canJoin(
+      snapshot.vectorPaths,
+      snapshot.vectorNodes,
+      mode,
+      snapshot.vectorSelection
+    )
+  const merge = able("merge"),
+    segment = able("segment")
+  if (!merge && !segment) return null
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={!merge}
+        title="Shift+J"
+        onClick={() => void engine.dispatch({ type: "joinVectorNodes" })}
+      >
+        Join
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={!segment}
+        title="Alt+J"
+        onClick={() =>
+          void engine.dispatch({ type: "joinVectorNodes", segment: true })
+        }
+      >
+        Join with segment
+      </Button>
     </>
   )
 }

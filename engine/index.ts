@@ -18,6 +18,7 @@ import {
   deleteSegments,
   insertNodes,
   joinNodes,
+  joinableEnds,
   nodeCommand,
   segmentCommand,
   isHandle,
@@ -5833,11 +5834,18 @@ export function createEngine(
           break
         }
         case "joinVectorNodes": {
-          if (snapshot.vectorNodes.length !== 2) break
           dropShapeDrag()
           const layer = selectedVectorLayer()
           const mode = command.segment ? "segment" : "merge"
-          const edit = joinNodes(layer.scene, snapshot.vectorNodes, mode)
+          // Picked nodes say which ends only while the node tool is held.
+          const ends = joinableEnds(
+            layer.scene.objects,
+            snapshot.tool === "node" ? snapshot.vectorNodes : [],
+            snapshot.vectorSelection,
+            mode
+          )
+          if (!ends) break
+          const edit = joinNodes(layer.scene, ends, mode)
           if (!edit) break
           editScene(layer.id, edit.edits, "join nodes")
           publish({

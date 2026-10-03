@@ -946,13 +946,66 @@ function joinEnds(
 
 type JoinEnd = { object: PathObject; end: PathEnd }
 
-/** Whether the selection is two ends of open paths a join can join. */
+/**
+ * The two ends a join joins: the selected nodes when they are two ends;
+ * otherwise, for one or two whole open paths — selected as objects, or by
+ * any of their nodes — the ends nearest each other, so two curves join
+ * where they almost meet, and one alone closes. Null when there are none.
+ */
+export function joinableEnds(
+  paths: readonly VectorObject[],
+  nodes: readonly VectorNode[],
+  selection: readonly string[],
+  mode: JoinMode = "merge"
+): VectorNode[] | null {
+  if (joinEnds(paths, nodes, mode)) return [...nodes]
+  const ids = [
+    ...new Set(nodes.length ? nodes.map((n) => n.objectId) : selection),
+  ]
+  const open = ids.map((id) => paths.find((o) => o.id === id))
+  if (
+    !open.length ||
+    open.length > 2 ||
+    open.some((o) => !o || !isPath(o) || o.geometry.closed)
+  )
+    return null
+  const ends = (o: VectorObject): VectorNode[] =>
+    isPath(o)
+      ? [0, o.geometry.nodes.length - 1].map((index) => ({
+          objectId: o.id,
+          index,
+        }))
+      : []
+  const at = (n: VectorNode) => {
+    const o = paths.find((p) => p.id === n.objectId)!
+    return isPath(o) ? placed(o, o.geometry.nodes[n.index]) : { x: 0, y: 0 }
+  }
+  const pairs =
+    open.length === 1
+      ? [ends(open[0]!)]
+      : ends(open[0]!).flatMap((a) => ends(open[1]!).map((b) => [a, b]))
+  let best: VectorNode[] | null = null,
+    nearest = Infinity
+  for (const pair of pairs) {
+    if (!joinEnds(paths, pair, mode)) continue
+    const [p, q] = pair.map(at)
+    const distance = Math.hypot(p.x - q.x, p.y - q.y)
+    if (distance < nearest) {
+      nearest = distance
+      best = pair
+    }
+  }
+  return best
+}
+
+/** Whether a join has two ends to join; see `joinableEnds`. */
 export function canJoin(
   paths: readonly VectorObject[],
   nodes: readonly VectorNode[],
-  mode: JoinMode = "merge"
+  mode: JoinMode = "merge",
+  selection: readonly string[] = []
 ): boolean {
-  return joinEnds(paths, nodes, mode) !== null
+  return joinableEnds(paths, nodes, selection, mode) !== null
 }
 
 /**
@@ -990,7 +1043,38 @@ export function joinNodes(
           out: carry(n.out),
         })),
       }
-  const geometry = joinPathEnds(a.object.geometry, a.end, other, b.end, mode)
+  // A pressure stroke keeps its widths joined to a plain line: the line's
+  // nodes take its outline width, which is what it was drawn at.
+  const widthed = (geometry: BezierPath, width: number): BezierPath =>
+    geometry.nodes.every((n) => n.width !== undefined)
+      ? geometry
+      : {
+          ...geometry,
+          nodes: geometry.nodes.map((n) => ({ ...n, width: n.width ?? width })),
+        }
+  const varies = (g: BezierPath) => g.nodes.some((n) => n.width !== undefined)
+  const pressure = varies(a.object.geometry) || (!!other && varies(other))
+  const first = pressure
+    ? widthed(a.object.geometry, a.object.style.stroke?.width ?? 0)
+    : a.object.geometry
+  const second =
+    other && pressure
+      ? widthed(
+          other,
+          (b.object.style.stroke?.width ?? 0) *
+            Math.sqrt(
+              Math.abs(
+                b.object.transform[0] * b.object.transform[3] -
+                  b.object.transform[1] * b.object.transform[2]
+              ) /
+                Math.abs(
+                  a.object.transform[0] * a.object.transform[3] -
+                    a.object.transform[1] * a.object.transform[2]
+                )
+            )
+        )
+      : other
+  const geometry = joinPathEnds(first, a.end, second, b.end, mode)
   const id = a.object.id
   // `a` runs on into the join, so it is where `a`'s nodes end.
   const joint = samePath ? 0 : a.object.geometry.nodes.length - 1

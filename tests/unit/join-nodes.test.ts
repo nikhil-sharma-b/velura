@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import {
   canJoin,
+  joinableEnds,
   deleteSegments,
   joinNodes,
   type VectorNode,
@@ -109,16 +110,39 @@ test("two paths merge end to start, the second turned round to fit", () => {
   expect(linked.closed).toBe(false)
 })
 
-test("join needs exactly two open-path ends", () => {
+test("join needs open-path ends, picked or found", () => {
   const paths = [object("a", hook), object("b", square)]
   expect(canJoin(paths, [node("a", 0), node("a", 2)])).toBe(true)
-  expect(canJoin(paths, [node("a", 0), node("a", 1)])).toBe(false)
-  expect(canJoin(paths, [node("a", 0)])).toBe(false)
+  // Any nodes of one open path, or the path itself, find its two ends.
+  expect(canJoin(paths, [node("a", 0), node("a", 1)])).toBe(true)
+  expect(canJoin(paths, [node("a", 1)])).toBe(true)
+  expect(canJoin(paths, [], "merge", ["a"])).toBe(true)
+  // A closed path has no ends.
   expect(canJoin(paths, [node("a", 0), node("b", 0)])).toBe(false)
+  expect(canJoin(paths, [], "merge", ["b"])).toBe(false)
   // A two-node path's ends merged would leave one node.
   const short = [object("c", open(at(0, 0), at(5, 0)))]
   expect(canJoin(short, [node("c", 0), node("c", 1)], "merge")).toBe(false)
   expect(canJoin(short, [node("c", 0), node("c", 1)], "segment")).toBe(true)
+})
+
+test("two curves selected whole join at their nearest ends", () => {
+  const paths = [
+    object("a", open(at(0, 0), at(10, 0))),
+    object("b", open(at(50, 0), at(12, 0))),
+  ]
+  expect(joinableEnds(paths, [], ["a", "b"], "segment")).toEqual([
+    node("a", 1),
+    node("b", 1),
+  ])
+  // Three curves are not one join.
+  expect(
+    joinableEnds(
+      [...paths, object("c", open(at(0, 9), at(1, 9)))],
+      [],
+      ["a", "b", "c"]
+    )
+  ).toBeNull()
 })
 
 test("two objects join as one with the first one's style, in its space", () => {

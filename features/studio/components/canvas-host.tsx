@@ -58,6 +58,7 @@ import Link from "next/link"
 import type { ComponentProps } from "react"
 import type { Brush } from "@/engine/brush/brush"
 import {
+  canJoin,
   type CloudOptions,
   createEngine,
   type Engine,
@@ -2021,6 +2022,25 @@ export function CanvasHost({
                           drawsOutlineOnly(snapshot.tool)
                         }
                         currentColor={snapshot.color.hex}
+                        joinable={{
+                          merge: canJoin(
+                            snapshot.vectorPaths,
+                            snapshot.tool === "node"
+                              ? snapshot.vectorNodes
+                              : [],
+                            "merge",
+                            snapshot.vectorSelection
+                          ),
+                          segment: canJoin(
+                            snapshot.vectorPaths,
+                            snapshot.tool === "node"
+                              ? snapshot.vectorNodes
+                              : [],
+                            "segment",
+                            snapshot.vectorSelection
+                          ),
+                        }}
+                        curves={snapshot.vectorPaths.length > 0}
                         runCommand={runShapeCommand}
                       />
                     </QuickSetting>
