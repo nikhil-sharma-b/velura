@@ -1,6 +1,6 @@
 import { invertMatrix } from "../view/view-transform"
 import { applyAffine } from "./transform-session"
-import { selectObjects } from "./vector-objects"
+import { insideConvex, selectObjects } from "./vector-objects"
 import {
   breakPath,
   cutPathSegments,
@@ -257,18 +257,21 @@ const placed = (object: VectorObject, p: Point): Point => {
 export function boxNodes(
   paths: readonly VectorObject[],
   nodes: readonly VectorNode[],
-  box: NodeBox,
+  box: NodeBox | readonly Point[],
   add: boolean
 ): VectorNode[] {
+  // A band on a turned view is the screen's rectangle, turned in the document.
+  const within = (at: Point) =>
+    Array.isArray(box)
+      ? insideConvex(box, at.x, at.y)
+      : at.x >= (box as NodeBox).x &&
+        at.x <= (box as NodeBox).x + (box as NodeBox).width &&
+        at.y >= (box as NodeBox).y &&
+        at.y <= (box as NodeBox).y + (box as NodeBox).height
   const inside = paths.filter(isPath).flatMap((object) =>
     object.geometry.nodes.flatMap((n, index) => {
       const at = placed(object, n)
-      return at.x >= box.x &&
-        at.x <= box.x + box.width &&
-        at.y >= box.y &&
-        at.y <= box.y + box.height
-        ? [{ objectId: object.id, index }]
-        : []
+      return within(at) ? [{ objectId: object.id, index }] : []
     })
   )
   if (!add) return inside

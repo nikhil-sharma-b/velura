@@ -1046,3 +1046,61 @@ test("a polygon is closed by leaving the tool, by Enter, or by a double-click, a
   )
   expect(await objects()).toMatchObject({ objects: 3 })
 })
+
+test("on a turned view, a band selects what lies inside it as drawn on screen", async ({
+  page,
+}) => {
+  await openCanvas(page)
+  const id = await addVectorLayer(page)
+  await edit(page, id, [
+    { type: "add", object: rect("a", { x: 60, y: 40, width: 20, height: 20 }) },
+    {
+      type: "add",
+      object: rect("b", { x: 120, y: 40, width: 20, height: 20 }),
+    },
+  ])
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setTool", tool: "objectSelect" })
+    await window.engine.dispatch({ type: "setSnapping", enabled: true })
+    await window.engine.dispatch({
+      type: "rotateView",
+      radians: Math.PI / 4,
+      absolute: true,
+    })
+  })
+  const view = await page.evaluate(
+    () => window.engine.getSnapshot().view as CanvasView
+  )
+  const size = { width: WIDTH, height: HEIGHT }
+  const screen = (await page.locator("canvas").boundingBox())!
+  const toScreen = docToScreen(view, size, {
+    width: screen.width,
+    height: screen.height,
+  })
+  // The screen box round a's turned corners, with a margin, and none of b.
+  const corners = [
+    [60, 40],
+    [80, 40],
+    [80, 60],
+    [60, 60],
+  ].map(([x, y]) => applyMatrix(toScreen, x, y))
+  const xs = corners.map((c) => c.x),
+    ys = corners.map((c) => c.y)
+  await page.mouse.move(
+    screen.x + Math.min(...xs) - 4,
+    screen.y + Math.min(...ys) - 4
+  )
+  await page.mouse.down()
+  await page.mouse.move(
+    screen.x + Math.max(...xs) + 4,
+    screen.y + Math.max(...ys) + 4,
+    { steps: 8 }
+  )
+  await page.mouse.up()
+  // The band lands on the frame after the pen lifts.
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.engine.getSnapshot().vectorSelection)
+    )
+    .toEqual(["a"])
+})

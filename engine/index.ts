@@ -305,6 +305,8 @@ import {
   IDENTITY_MATRIX,
   panView,
   rotateView,
+  applyMatrix as applyViewMatrix,
+  invertMatrix as invertViewMatrix,
   screenToDoc,
   type ViewMatrix,
   zoomView,
@@ -2983,11 +2985,26 @@ export function createEngine(
     return layer
   }
 
-  function boxSelection(anchor: Point, point: Point): Point | Extent {
-    return Math.hypot(point.x - anchor.x, point.y - anchor.y) <
+  /**
+   * What a band dragged from `anchor` to `point` selects: a click's point,
+   * or the rectangle as it is on screen, which on a turned or flipped view
+   * is a turned shape in the document, its corners in order round it.
+   */
+  function boxSelection(anchor: Point, point: Point): Point | Point[] {
+    if (
+      Math.hypot(point.x - anchor.x, point.y - anchor.y) <
       3 / snapshot.view.zoom
-      ? point
-      : dragRect(anchor, point, false)
+    )
+      return point
+    const toScreen = invertViewMatrix(toDoc)
+    const a = applyViewMatrix(toScreen, anchor.x, anchor.y),
+      b = applyViewMatrix(toScreen, point.x, point.y)
+    return [
+      { x: a.x, y: a.y },
+      { x: b.x, y: a.y },
+      { x: b.x, y: b.y },
+      { x: a.x, y: b.y },
+    ].map((corner) => applyViewMatrix(toDoc, corner.x, corner.y))
   }
 
   /** The tool's default stays as it was; the selection's own style is
@@ -2996,7 +3013,10 @@ export function createEngine(
     publish({ vectorSelection: ids })
   }
 
-  function selectVectorRegion(region: Point | Extent, additive = false) {
+  function selectVectorRegion(
+    region: Point | Extent | readonly Point[],
+    additive = false
+  ) {
     cancelVectorTransform()
     const ids = selectObjects(selectedVectorLayer().scene, region)
     setVectorSelection(
@@ -3485,8 +3505,12 @@ export function createEngine(
           ? drag.nodeAt
           : undefined
       const locked = lock ? lockAxis(lock, point) : point
+      // A band follows the hand: snapping its corner would pull it off
+      // the cursor onto whatever it passes.
       drag.point =
-        drag.tool === "pressure" ? point : snapVectorPoint(locked, drag.layerId)
+        drag.tool === "pressure" || isBand(drag)
+          ? point
+          : snapVectorPoint(locked, drag.layerId)
       if (lock)
         drag.point =
           locked.y === lock.y
@@ -3657,10 +3681,12 @@ export function createEngine(
           : layer.scene
     drawScene(layer.id, drag.preview)
     notifyVectorControls()
-    if (isBand(drag))
+    if (isBand(drag)) {
+      const band = boxSelection(drag.anchor, drag.point)
       renderer?.setSelection(
-        rectSelection(document, dragRect(drag.anchor, drag.point, false))
+        Array.isArray(band) ? lassoSelection(document, band) : null
       )
+    }
     try {
       if (snapshot.status === "ready") render()
     } catch (error) {
@@ -4805,7 +4831,7 @@ export function createEngine(
    */
   function endNodeBox(drag: NonNullable<typeof shapeDrag>) {
     const region = boxSelection(drag.anchor, drag.point)
-    if (!("width" in region)) {
+    if (!Array.isArray(region)) {
       if (!shiftHeld) {
         setVectorSelection([])
         publish({ vectorNodes: [] })

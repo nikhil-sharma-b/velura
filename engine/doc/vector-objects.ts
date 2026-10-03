@@ -86,16 +86,56 @@ export function objectsBounds(
   }
 }
 
+/**
+ * Whether a point lies inside a convex outline, whichever way round its
+ * corners run: a selection band dragged on a turned view is such a shape.
+ */
+export function insideConvex(
+  outline: readonly Point[],
+  x: number,
+  y: number
+): boolean {
+  let sign = 0
+  for (let i = 0; i < outline.length; i++) {
+    const a = outline[i],
+      b = outline[(i + 1) % outline.length]
+    const cross = (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x)
+    if (Math.abs(cross) < 1e-9) continue
+    if (sign && Math.sign(cross) !== sign) return false
+    sign = Math.sign(cross)
+  }
+  return true
+}
+
 export function selectObjects(
   scene: VectorScene,
-  region: Point | Extent
+  region: Point | Extent | readonly Point[]
 ): string[] {
-  if (!("width" in region)) {
+  // A band on a turned view: the objects drawn wholly inside it.
+  if (Array.isArray(region))
+    return scene.objects
+      .filter((object) => {
+        const { fill, stroke } = tessellateObject(object)
+        const meshes = [fill, stroke].filter((m) => m?.bounds)
+        return (
+          meshes.length > 0 &&
+          meshes.every((mesh) => {
+            const v = mesh!.vertices
+            for (let i = 0; i < v.length; i += 2)
+              if (!insideConvex(region, v[i], v[i + 1])) return false
+            return true
+          })
+        )
+      })
+      .map((o) => o.id)
+  const extent = region as Point | Extent
+  if (!("width" in extent)) {
+    const at = extent
     for (const object of [...scene.objects].reverse()) {
       const { fill, stroke } = tessellateObject(object)
       if (
-        (fill && covers(fill, region.x, region.y)) ||
-        (stroke && covers(stroke, region.x, region.y))
+        (fill && covers(fill, at.x, at.y)) ||
+        (stroke && covers(stroke, at.x, at.y))
       )
         return [object.id]
     }
@@ -106,10 +146,10 @@ export function selectObjects(
       const box = objectBounds(object)
       return (
         box &&
-        box.x >= region.x &&
-        box.y >= region.y &&
-        box.x + box.width <= region.x + region.width &&
-        box.y + box.height <= region.y + region.height
+        box.x >= extent.x &&
+        box.y >= extent.y &&
+        box.x + box.width <= extent.x + extent.width &&
+        box.y + box.height <= extent.y + extent.height
       )
     })
     .map((o) => o.id)
