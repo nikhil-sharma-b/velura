@@ -549,6 +549,39 @@ describe("filter commands", () => {
     ).toEqual([{ type: "deleteVectorObjects" }])
   })
 
+  test("Insert and Shift+B insert and break at the selected nodes, and only then", () => {
+    const run = (vectorNodes: unknown[]) => {
+      const { engine, sent } = fakeEngine([raster("a")], "a", {
+        tool: "node",
+        vectorNodes,
+      })
+      const resolver = createKeybindResolver(studioCommands, () =>
+        context(engine)
+      )
+      for (const [key, shiftKey] of [
+        ["Insert", false],
+        ["B", true],
+      ] as const)
+        resolver.keydown({
+          key,
+          shiftKey,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          repeat: false,
+          defaultPrevented: false,
+          target: null,
+          preventDefault: () => {},
+        })
+      return sent
+    }
+    expect(run([{ objectId: "p", index: 0 }])).toEqual([
+      { type: "insertVectorNodes" },
+      { type: "breakVectorNodes" },
+    ])
+    expect(run([])).toEqual([])
+  })
+
   test("Shift+C, S, Y and A set the selected nodes' type, and only then", () => {
     const run = (vectorNodes: unknown[]) => {
       const { engine, sent } = fakeEngine([raster("a")], "a", {

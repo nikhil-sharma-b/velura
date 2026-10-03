@@ -19,6 +19,7 @@ import type {
 import {
   docToScreen,
   handlesShown,
+  canBreak,
   selectedSegments,
   placementExtent,
   resolveSnap,
@@ -885,6 +886,26 @@ export function VectorNodes({
                 {label}
               </Button>
             ))}
+            <Button
+              size="sm"
+              variant="outline"
+              title="Insert a node in each selected segment (Insert)"
+              disabled={!hasSegments}
+              onClick={() =>
+                void engine.dispatch({ type: "insertVectorNodes" })
+              }
+            >
+              Insert
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              title="Break the path at the selected nodes (Shift+B)"
+              disabled={!canBreak(snapshot.vectorPaths, snapshot.vectorNodes)}
+              onClick={() => void engine.dispatch({ type: "breakVectorNodes" })}
+            >
+              Break
+            </Button>
             {NODE_TYPE_BUTTONS.map(({ nodeType, label, keys }) => (
               <Button
                 key={nodeType}

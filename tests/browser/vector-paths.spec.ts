@@ -821,3 +821,52 @@ test("deleting nodes that leave too few removes the path, as one step", async ({
   }, object.id)
   expect(await path(page)).toEqual(object)
 })
+
+test("breaking an open path makes two objects above one another, one step", async ({
+  page,
+}) => {
+  const box = await open(page)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "pen" })
+  )
+  await page.mouse.click(box.x + 20, box.y + 60)
+  await page.mouse.click(box.x + 100, box.y + 60)
+  await page.mouse.click(box.x + 180, box.y + 60)
+  await page.evaluate(() => window.engine.dispatch({ type: "finishPenPath" }))
+  await waitForObject(page)
+  const object = (await path(page))!
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "node" })
+  )
+  await page.mouse.click(box.x + 100, box.y + 60)
+  await page.waitForFunction(
+    () => window.engine.getSnapshot().vectorNodes.length === 1
+  )
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "breakVectorNodes" })
+  )
+  await page.waitForFunction(
+    () => window.engine.getSnapshot().vectorPaths.length === 2
+  )
+  const [first, second] = await page.evaluate(
+    () => window.engine.getSnapshot().vectorPaths
+  )
+  expect(first.id).toBe(object.id)
+  expect(second.style).toEqual(object.style)
+  const xs = (o: typeof first) =>
+    o.geometry.kind === "path" ? o.geometry.nodes.map((n) => n.x) : []
+  expect(xs(first)).toEqual([20, 100])
+  expect(xs(second)).toEqual([100, 180])
+  // The new path sits directly above the one it came from.
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().layers.at(-1))
+  ).toMatchObject({ objects: 2 })
+  await page.evaluate(async (id) => {
+    await window.engine.dispatch({ type: "undo" })
+    await window.engine.dispatch({ type: "selectVectorObjects", ids: [id] })
+  }, object.id)
+  expect(await path(page)).toEqual(object)
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().layers.at(-1))
+  ).toMatchObject({ objects: 1 })
+})

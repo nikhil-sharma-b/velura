@@ -2,6 +2,7 @@ import { invertMatrix } from "../view/view-transform"
 import { applyAffine } from "./transform-session"
 import { selectObjects } from "./vector-objects"
 import {
+  breakPath,
   deletePathNodes,
   editPathNode,
   handleOf,
@@ -636,6 +637,92 @@ export function segmentCommand(
         : [{ type: "update", id: object.id, patch: { geometry } }]
     })
   return edits.length ? edits : null
+}
+
+/**
+ * The scene edits of adding a node at the middle of every selected segment,
+ * keeping the curve as it was, with the selection grown by the new nodes;
+ * null when no segment is selected.
+ */
+export function insertNodes(
+  scene: VectorScene,
+  nodes: readonly VectorNode[]
+): { edits: SceneCommand[]; nodes: VectorNode[] } | null {
+  const segments = selectedSegments(scene.objects, nodes)
+  if (!segments.length) return null
+  const edits: SceneCommand[] = []
+  const added: VectorNode[] = []
+  const moved = nodes.map((n) => ({ ...n }))
+  for (const object of scene.objects.filter(isPath)) {
+    const splits = segments
+      .filter((s) => s.objectId === object.id)
+      .map((s) => s.index)
+      .sort((a, b) => a - b)
+    if (!splits.length) continue
+    // From the last first, so each split leaves the earlier indices be.
+    const geometry = splits.reduceRight(
+      (path, index) => editPathNode(path, { type: "split", index }),
+      object.geometry
+    )
+    edits.push({ type: "update", id: object.id, patch: { geometry } })
+    // Every node after a split has moved up one for each split before it.
+    const before = (index: number) => splits.filter((s) => s < index).length
+    for (const n of moved)
+      if (n.objectId === object.id) n.index += before(n.index)
+    for (const index of splits)
+      added.push({ objectId: object.id, index: index + 1 + before(index) })
+  }
+  return { edits, nodes: [...moved, ...added] }
+}
+
+/** Whether any selected node is one a break can part a path at. */
+export function canBreak(
+  paths: readonly VectorObject[],
+  nodes: readonly VectorNode[]
+): boolean {
+  return paths.filter(isPath).some((object) => {
+    const indices = nodes
+      .filter((n) => n.objectId === object.id)
+      .map((n) => n.index)
+    return breakPath(object.geometry, indices)[0] !== object.geometry
+  })
+}
+
+/**
+ * The scene edits of breaking every path at its selected nodes. A closed
+ * path opens; each further piece becomes a path of its own, in the same
+ * style, directly above the one it came from and in order along it, named
+ * by `nextId`. Null when no selected node can be broken.
+ */
+export function breakNodes(
+  scene: VectorScene,
+  nodes: readonly VectorNode[],
+  nextId: () => string
+): { edits: SceneCommand[]; added: string[] } | null {
+  const edits: SceneCommand[] = []
+  const added: string[] = []
+  // From the top down, so each add leaves the places below it be.
+  for (let at = scene.objects.length - 1; at >= 0; at--) {
+    const object = scene.objects[at]
+    if (!isPath(object)) continue
+    const indices = nodes
+      .filter((n) => n.objectId === object.id)
+      .map((n) => n.index)
+    if (!indices.length) continue
+    const [first, ...rest] = breakPath(object.geometry, indices)
+    if (first === object.geometry) continue
+    edits.push({ type: "update", id: object.id, patch: { geometry: first } })
+    rest.forEach((geometry, k) => {
+      const id = nextId()
+      added.push(id)
+      edits.push({
+        type: "add",
+        index: at + 1 + k,
+        object: { ...object, id, geometry },
+      })
+    })
+  }
+  return edits.length ? { edits, added } : null
 }
 
 /**

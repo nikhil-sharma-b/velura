@@ -12,7 +12,9 @@ import {
   editNode,
   lockAxis,
   moveNodes,
+  breakNodes,
   deleteNodes,
+  insertNodes,
   nodeCommand,
   segmentCommand,
   isHandle,
@@ -284,6 +286,7 @@ import type { Curve } from "./brush/curve"
 import { createSampleBuffer } from "./input/sample-buffer"
 import { attachViewGestures } from "./input/view-gestures"
 import { explainFailure, type ExplainedFailure } from "./errors"
+
 import {
   type CanvasView,
   DEFAULT_VIEW,
@@ -302,6 +305,11 @@ import {
   RASTER_MAGNIFICATIONS,
   type RasterMagnification,
 } from "./view/magnification"
+
+/** What a node edit's key says when there is nothing for it to do. */
+const CANNOT_INSERT = "Select both ends of a segment to insert a node in it."
+const CANNOT_BREAK =
+  "An open path's end node has nothing to break. Select a node inside the path."
 
 export {
   docToScreen,
@@ -359,6 +367,7 @@ export {
 } from "./brush/presets"
 export type { Curve, CurvePoint } from "./brush/curve"
 export {
+  canBreak,
   handlesShown,
   selectedSegments,
   type VectorNode,
@@ -630,6 +639,13 @@ export type EngineCommand =
    * fewer than two nodes goes.
    */
   | { type: "deleteVectorNode"; refit?: boolean }
+  /** Adds a node at the middle of every selected segment (Insert). */
+  | { type: "insertVectorNodes" }
+  /**
+   * Breaks every path at its selected nodes (Shift+B): a closed path opens,
+   * an open one parts into paths of its own.
+   */
+  | { type: "breakVectorNodes" }
   /** Makes every selected segment straight, or bendable (Shift+L, Shift+U). */
   | { type: "setVectorSegmentShape"; shape: SegmentShape }
   /** Makes every selected node cusp, smooth, symmetric or auto-smooth. */
@@ -3127,6 +3143,14 @@ export function createEngine(
           ]
         : []
     )
+  }
+
+  /** The problem shown, unless it was a node edit's that has since applied. */
+  function nodeProblemGone(): ExplainedFailure | null {
+    const message = snapshot.problem?.message
+    return message === CANNOT_INSERT || message === CANNOT_BREAK
+      ? null
+      : snapshot.problem
   }
 
   /** An id no object in `scene` has. */
@@ -5645,6 +5669,46 @@ export function createEngine(
             vectorSelection: snapshot.vectorSelection.filter(
               (id) => !removed.has(id)
             ),
+          })
+          break
+        }
+        case "insertVectorNodes": {
+          if (!snapshot.vectorNodes.length) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const edit = insertNodes(layer.scene, snapshot.vectorNodes)
+          if (!edit) {
+            publish({
+              problem: { action: "retry", message: CANNOT_INSERT },
+            })
+            break
+          }
+          editScene(layer.id, edit.edits, "insert nodes")
+          publish({ vectorNodes: edit.nodes, problem: nodeProblemGone() })
+          break
+        }
+        case "breakVectorNodes": {
+          if (!snapshot.vectorNodes.length) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          // New paths count on from the highest id the layer has.
+          let next = Number(nextObjectId(layer.scene).slice("shape-".length))
+          const edit = breakNodes(
+            layer.scene,
+            snapshot.vectorNodes,
+            () => `shape-${next++}`
+          )
+          if (!edit) {
+            publish({
+              problem: { action: "retry", message: CANNOT_BREAK },
+            })
+            break
+          }
+          editScene(layer.id, edit.edits, "break nodes")
+          publish({
+            vectorNodes: [],
+            vectorSelection: [...snapshot.vectorSelection, ...edit.added],
+            problem: nodeProblemGone(),
           })
           break
         }

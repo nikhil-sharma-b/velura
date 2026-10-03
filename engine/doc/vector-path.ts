@@ -162,6 +162,52 @@ export function splitPathSegment(
   return { ...path, nodes }
 }
 
+/**
+ * `path` broken at the nodes at `indices`, each into two coincident end
+ * nodes, as the open paths that leaves in order along it: a closed path
+ * opens at its first break, an open one parts at each. An open path's end
+ * has nothing to break, so a path with no other break comes back whole.
+ */
+export function breakPath(
+  path: BezierPath,
+  indices: readonly number[]
+): BezierPath[] {
+  const count = path.nodes.length
+  const cuts = [...new Set(indices)]
+    .filter((i) =>
+      path.closed ? path.nodes[i] !== undefined : i > 0 && i < count - 1
+    )
+    .sort((a, b) => a - b)
+  if (!cuts.length) return [path]
+  // A closed path read from its first break round to that node again.
+  const start = path.closed ? cuts[0] : 0
+  const nodes = path.closed
+    ? [...path.nodes.slice(start), ...path.nodes.slice(0, start + 1)]
+    : path.nodes
+  const ends = path.closed
+    ? [...cuts.map((c) => c - start), count]
+    : [0, ...cuts, count - 1]
+  // A broken end has one side left: it keeps that handle as a cusp.
+  const end = (n: PathNode, side: "in" | "out"): PathNode => ({
+    ...n,
+    [side]: null,
+    type: "cusp",
+  })
+  return ends.slice(1).map((last, k) => {
+    const first = ends[k]
+    const piece = nodes
+      .slice(first, last + 1)
+      .map((n, i, all) =>
+        i === 0 && (path.closed || first > 0)
+          ? end(n, "in")
+          : i === all.length - 1 && (path.closed || last < count - 1)
+            ? end(n, "out")
+            : n
+      )
+    return { ...path, closed: false, nodes: solveAuto(piece, false) }
+  })
+}
+
 /** A straight segment, or one with handles to bend it. */
 export type SegmentShape = "line" | "curve"
 

@@ -533,6 +533,20 @@ export const studioCommands = createRegistry<StudioContext>([
     ...onSelectedNodes({ type: "deleteVectorNode", refit: false }),
   },
   {
+    id: "node.insert",
+    label: "Insert nodes in selected segments",
+    category: "Tools",
+    keybinds: ["insert"],
+    ...onSelectedNodes({ type: "insertVectorNodes" }),
+  },
+  {
+    id: "node.break",
+    label: "Break path at selected nodes",
+    category: "Tools",
+    keybinds: ["shift+b"],
+    ...onSelectedNodes({ type: "breakVectorNodes" }),
+  },
+  {
     id: "segment.line",
     label: "Make selected segments lines",
     category: "Tools",
