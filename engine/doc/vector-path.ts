@@ -250,6 +250,175 @@ export function editPathNode(path: BezierPath, edit: NodeEdit): BezierPath {
   return { ...path, nodes: solveAuto(nodes, path.closed) }
 }
 
+/**
+ * `path` without the nodes at `indices`; null when fewer than two would be
+ * left. Refitting, as Inkscape deletes, each run of consecutive deleted
+ * nodes becomes one segment fitted to the stretch they shaped, its ends
+ * keeping their directions; without, the neighbours keep their handles.
+ * An open path's end run has nothing to fit to and simply goes.
+ */
+export function deletePathNodes(
+  path: BezierPath,
+  indices: readonly number[],
+  { refit = true }: { refit?: boolean } = {}
+): BezierPath | null {
+  const gone = new Set(indices.filter((i) => path.nodes[i]))
+  const kept = path.nodes.flatMap((_, i) => (gone.has(i) ? [] : [i]))
+  if (kept.length < 2) return null
+  const nodes = [...path.nodes]
+  if (refit)
+    kept.forEach((from, k) => {
+      const last = k === kept.length - 1
+      if (last && !path.closed) return
+      const to = kept[last ? 0 : k + 1]
+      if ((from + 1) % nodes.length === to) return
+      const fit = fitRun(path, from, to)
+      // A fitted handle is its own length: an auto node would only work it
+      // out again, and a symmetric one even it with its other.
+      const own = (n: PathNode): NodeType =>
+        n.type === "auto" || n.type === "symmetric" ? "smooth" : n.type
+      nodes[from] = { ...nodes[from], out: fit.out, type: own(nodes[from]) }
+      nodes[to] = { ...nodes[to], in: fit.in, type: own(nodes[to]) }
+    })
+  return {
+    ...path,
+    nodes: solveAuto(
+      kept.map((i) => nodes[i]),
+      path.closed
+    ),
+  }
+}
+
+/** Samples taken along each segment of a run when refitting it. */
+const FIT_SAMPLES = 16
+
+/**
+ * The handles of one cubic from node `from` to node `to` fitted, least
+ * squares, to the segments between them, its handles along the directions
+ * the curve left `from` and arrived at `to` (Schneider's fit with the
+ * tangents fixed), the samples' places along it bettered by Newton's method.
+ */
+function fitRun(
+  path: BezierPath,
+  from: number,
+  to: number
+): { out: Point; in: Point } {
+  const count = path.nodes.length
+  const a = path.nodes[from],
+    d = path.nodes[to]
+  const samples: Point[] = []
+  for (let i = from; i !== to; i = (i + 1) % count)
+    for (let s = 0; s < FIT_SAMPLES; s++)
+      samples.push(segmentPoint(path, i, s / FIT_SAMPLES))
+  samples.push(d)
+  const after = path.nodes[(from + 1) % count],
+    before = path.nodes[(to - 1 + count) % count]
+  const direction = (n: PathNode, ...toward: (Point | null)[]) => {
+    const p = toward.find((q) => q && (q.x !== n.x || q.y !== n.y))
+    if (!p) return { x: 0, y: 0 }
+    const length = Math.hypot(p.x - n.x, p.y - n.y)
+    return { x: (p.x - n.x) / length, y: (p.y - n.y) / length }
+  }
+  const t1 = direction(a, a.out, after.in, after),
+    t2 = direction(d, d.in, before.out, before)
+  const span = Math.hypot(d.x - a.x, d.y - a.y)
+
+  // Chord-length places to start from.
+  const u = [0]
+  for (let i = 1; i < samples.length; i++)
+    u.push(
+      u[i - 1] +
+        Math.hypot(
+          samples[i].x - samples[i - 1].x,
+          samples[i].y - samples[i - 1].y
+        )
+    )
+  const total = u[u.length - 1] || 1
+  for (let i = 0; i < u.length; i++) u[i] /= total
+
+  let reach = [span / 3, span / 3]
+  for (let pass = 0; pass < 5; pass++) {
+    reach = fitReach(samples, u, a, d, t1, t2) ?? [span / 3, span / 3]
+    const b = { x: a.x + t1.x * reach[0], y: a.y + t1.y * reach[0] },
+      c = { x: d.x + t2.x * reach[1], y: d.y + t2.y * reach[1] }
+    for (let i = 1; i < u.length - 1; i++)
+      u[i] = newtonPlace(a, b, c, d, samples[i], u[i])
+  }
+  return {
+    out: { x: a.x + t1.x * reach[0], y: a.y + t1.y * reach[0] },
+    in: { x: d.x + t2.x * reach[1], y: d.y + t2.y * reach[1] },
+  }
+}
+
+/** The two handle lengths that best fit `samples` at `u`; null if none do. */
+function fitReach(
+  samples: readonly Point[],
+  u: readonly number[],
+  a: Point,
+  d: Point,
+  t1: Point,
+  t2: Point
+): [number, number] | null {
+  let c00 = 0,
+    c01 = 0,
+    c11 = 0,
+    x0 = 0,
+    x1 = 0
+  samples.forEach((p, i) => {
+    const t = u[i],
+      v = 1 - t
+    const b1 = 3 * t * v * v,
+      b2 = 3 * t * t * v,
+      b0 = v * v * v + b1,
+      b3 = t * t * t + b2
+    const a1 = { x: t1.x * b1, y: t1.y * b1 },
+      a2 = { x: t2.x * b2, y: t2.y * b2 }
+    const rx = p.x - (a.x * b0 + d.x * b3),
+      ry = p.y - (a.y * b0 + d.y * b3)
+    c00 += a1.x * a1.x + a1.y * a1.y
+    c01 += a1.x * a2.x + a1.y * a2.y
+    c11 += a2.x * a2.x + a2.y * a2.y
+    x0 += a1.x * rx + a1.y * ry
+    x1 += a2.x * rx + a2.y * ry
+  })
+  const det = c00 * c11 - c01 * c01
+  if (Math.abs(det) < 1e-12 * Math.max(1, c00 * c11)) return null
+  const r0 = (x0 * c11 - c01 * x1) / det,
+    r1 = (c00 * x1 - c01 * x0) / det
+  // A handle backwards, or none at all, fits nothing a node can keep.
+  const span = Math.hypot(d.x - a.x, d.y - a.y)
+  return r0 > 1e-6 * span && r1 > 1e-6 * span ? [r0, r1] : null
+}
+
+/** `t` moved by one Newton step toward the place on the cubic nearest `p`. */
+function newtonPlace(
+  a: Point,
+  b: Point,
+  c: Point,
+  d: Point,
+  p: Point,
+  t: number
+): number {
+  const v = 1 - t
+  const at = (k: "x" | "y") =>
+    v * v * v * a[k] +
+    3 * v * v * t * b[k] +
+    3 * v * t * t * c[k] +
+    t * t * t * d[k]
+  const first = (k: "x" | "y") =>
+    3 *
+    (v * v * (b[k] - a[k]) + 2 * v * t * (c[k] - b[k]) + t * t * (d[k] - c[k]))
+  const second = (k: "x" | "y") =>
+    6 * (v * (c[k] - 2 * b[k] + a[k]) + t * (d[k] - 2 * c[k] + b[k]))
+  const ex = at("x") - p.x,
+    ey = at("y") - p.y
+  const fx = first("x"),
+    fy = first("y")
+  const step = fx * fx + fy * fy + ex * second("x") + ey * second("y")
+  if (!step) return t
+  return Math.max(0, Math.min(1, t - (ex * fx + ey * fy) / step))
+}
+
 /** The point at `t` along segment `index` of `path`, in its own coordinates. */
 export const segmentPoint = (
   path: BezierPath,

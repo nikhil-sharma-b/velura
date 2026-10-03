@@ -181,6 +181,22 @@ function onSelectedSegments(
   }
 }
 
+/** `command` with nodes selected, else what `otherwise` does. */
+function nodesOr(
+  command: EngineCommand,
+  otherwise: Pick<StudioCommand, "available" | "run">
+): Pick<StudioCommand, "available" | "run"> {
+  const nodes = onSelectedNodes(command)
+  return {
+    available: (context) =>
+      nodesSelected(context.engine) || !!otherwise.available?.(context),
+    run: (context, input) =>
+      nodesSelected(context.engine)
+        ? nodes.run(context, input)
+        : otherwise.run(context, input),
+  }
+}
+
 function onVectorSelection(
   command: EngineCommand
 ): Pick<StudioCommand, "available" | "run"> {
@@ -505,9 +521,16 @@ export const studioCommands = createRegistry<StudioContext>([
   },
   {
     id: "node.delete",
-    label: "Delete selected anchor",
+    label: "Delete selected nodes",
     category: "Tools",
-    ...dispatching({ type: "deleteVectorNode" }),
+    ...onSelectedNodes({ type: "deleteVectorNode" }),
+  },
+  {
+    id: "node.deleteWithoutRefit",
+    label: "Delete selected nodes without keeping the shape",
+    category: "Tools",
+    keybinds: ["mod+delete", "mod+backspace"],
+    ...onSelectedNodes({ type: "deleteVectorNode", refit: false }),
   },
   {
     id: "segment.line",
@@ -573,8 +596,13 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "object.delete",
     label: "Delete objects",
     category: "Tools",
+    // With nodes selected the key deletes them, keeping the shape, as the
+    // node tool's own Delete does in Inkscape.
     keybinds: ["delete", "backspace"],
-    ...onVectorSelection({ type: "deleteVectorObjects" }),
+    ...nodesOr(
+      { type: "deleteVectorNode" },
+      onVectorSelection({ type: "deleteVectorObjects" })
+    ),
   },
   {
     // Escape lets go of an outline half drawn, the polygonal lasso's above

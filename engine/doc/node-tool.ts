@@ -2,6 +2,7 @@ import { invertMatrix } from "../view/view-transform"
 import { applyAffine } from "./transform-session"
 import { selectObjects } from "./vector-objects"
 import {
+  deletePathNodes,
   editPathNode,
   handleOf,
   nearestPathSegment,
@@ -529,49 +530,61 @@ export function editNode(
 }
 
 /**
- * The scene edits of giving every selected node a type, or deleting it, with the
- * nodes to keep selected after; null when there is nothing to do. A path a
- * delete would leave with fewer than two anchors is left as it is.
+ * The scene edits of giving every selected node a type; null when there is
+ * nothing to do.
  */
 export function nodeCommand(
   scene: VectorScene,
   nodes: readonly VectorNode[],
-  type: NodeType | "delete"
+  type: NodeType
 ): { edits: SceneCommand[]; nodes: VectorNode[] } | null {
-  const edits: SceneCommand[] = []
-  const edited = new Set<string>()
-  for (const object of scene.objects) {
-    if (!isPath(object)) continue
-    // Deleting from the end first keeps the earlier indices where they are.
-    const indices = nodes
-      .filter((n) => n.objectId === object.id && object.geometry.nodes[n.index])
-      .map((n) => n.index)
-      .sort((a, b) => b - a)
-    if (!indices.length) continue
-    if (type === "delete" && object.geometry.nodes.length - indices.length < 2)
-      continue
-    const geometry = indices.reduce(
-      (path, index) =>
-        editPathNode(
-          path,
-          type === "delete"
-            ? { type, index }
-            : { type: "retype", index, nodeType: type }
-        ),
-      object.geometry
-    )
-    edits.push({ type: "update", id: object.id, patch: { geometry } })
-    edited.add(object.id)
-  }
-  if (!edits.length) return null
-  // A deleted node is gone; one on a path the delete left alone stays.
-  return {
-    edits,
-    nodes:
-      type === "delete"
-        ? nodes.filter((n) => !edited.has(n.objectId))
-        : [...nodes],
-  }
+  const edits = scene.objects
+    .filter(isPath)
+    .flatMap((object): SceneCommand[] => {
+      const indices = nodes
+        .filter(
+          (n) => n.objectId === object.id && object.geometry.nodes[n.index]
+        )
+        .map((n) => n.index)
+      if (!indices.length) return []
+      const geometry = indices.reduce(
+        (path, index) =>
+          editPathNode(path, { type: "retype", index, nodeType: type }),
+        object.geometry
+      )
+      return [{ type: "update", id: object.id, patch: { geometry } }]
+    })
+  return edits.length ? { edits, nodes: [...nodes] } : null
+}
+
+/**
+ * The scene edits of deleting every selected node, refitting the curve
+ * around each run of them to keep its shape or not, with the nodes to keep
+ * selected after; null when none is selected. A path left with fewer than
+ * two nodes goes as an object.
+ */
+export function deleteNodes(
+  scene: VectorScene,
+  nodes: readonly VectorNode[],
+  { refit }: { refit: boolean }
+): { edits: SceneCommand[]; nodes: VectorNode[] } | null {
+  const edits = scene.objects
+    .filter(isPath)
+    .flatMap((object): SceneCommand[] => {
+      const indices = nodes
+        .filter((n) => n.objectId === object.id)
+        .map((n) => n.index)
+        .filter((i) => object.geometry.nodes[i])
+      if (!indices.length) return []
+      const geometry = deletePathNodes(object.geometry, indices, { refit })
+      return [
+        geometry
+          ? { type: "update", id: object.id, patch: { geometry } }
+          : { type: "remove", id: object.id },
+      ]
+    })
+  // Every selected node is gone, its path's indices with it.
+  return edits.length ? { edits, nodes: [] } : null
 }
 
 /**

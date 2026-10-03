@@ -509,6 +509,46 @@ describe("filter commands", () => {
     ])
   })
 
+  test("Delete keeps the shape of selected nodes, Ctrl+Delete does not, objects otherwise", () => {
+    const run = (extra: Record<string, unknown>) => {
+      const { engine, sent } = fakeEngine([raster("a")], "a", extra)
+      const resolver = createKeybindResolver(studioCommands, () =>
+        context(engine)
+      )
+      for (const [key, ctrlKey] of [
+        ["Delete", false],
+        ["Backspace", true],
+      ] as const)
+        resolver.keydown({
+          key,
+          shiftKey: false,
+          metaKey: false,
+          ctrlKey,
+          altKey: false,
+          repeat: false,
+          defaultPrevented: false,
+          target: null,
+          preventDefault: () => {},
+        })
+      return sent
+    }
+    expect(
+      run({ tool: "node", vectorNodes: [{ objectId: "p", index: 0 }] })
+    ).toEqual([
+      { type: "deleteVectorNode" },
+      { type: "deleteVectorNode", refit: false },
+    ])
+    expect(
+      run({
+        layers: [{ ...raster("v"), kind: "vector" }],
+        activeLayerId: "v",
+        tool: "objectSelect",
+        vectorNodes: [],
+        vectorSelection: ["p"],
+      })
+    ).toEqual([{ type: "deleteVectorObjects" }])
+  })
+
   test("Shift+C, S, Y and A set the selected nodes' type, and only then", () => {
     const run = (vectorNodes: unknown[]) => {
       const { engine, sent } = fakeEngine([raster("a")], "a", {

@@ -791,3 +791,33 @@ test("Shift+drag pulls a handle out of a corner; Ctrl+click retracts it, one ste
     await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
   expect(await path(page)).toEqual(object)
 })
+
+test("deleting nodes that leave too few removes the path, as one step", async ({
+  page,
+}) => {
+  const box = await open(page)
+  const object = await penTriangle(page, box)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "node" })
+  )
+  await page.mouse.click(box.x + 100, box.y + 20)
+  await page.keyboard.down("Shift")
+  await page.mouse.click(box.x + 30, box.y + 95)
+  await page.keyboard.up("Shift")
+  await page.waitForFunction(
+    () => window.engine.getSnapshot().vectorNodes.length === 2
+  )
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "deleteVectorNode" })
+  )
+  expect(await path(page)).toBeUndefined()
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().vectorNodes)
+  ).toEqual([])
+  // One undo brings the path back whole; selecting it shows it.
+  await page.evaluate(async (id) => {
+    await window.engine.dispatch({ type: "undo" })
+    await window.engine.dispatch({ type: "selectVectorObjects", ids: [id] })
+  }, object.id)
+  expect(await path(page)).toEqual(object)
+})

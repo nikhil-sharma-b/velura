@@ -902,10 +902,11 @@ export function VectorNodes({
             <Button
               size="sm"
               variant="outline"
+              title="Delete nodes, keeping the shape (Delete) · without keeping it (Ctrl+Delete)"
               disabled={!snapshot.vectorNodes.length}
               onClick={() => void engine.dispatch({ type: "deleteVectorNode" })}
             >
-              Delete anchor
+              Delete
             </Button>
           </>
         )}

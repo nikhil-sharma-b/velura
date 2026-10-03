@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import {
   allNodes,
   boxNodes,
+  deleteNodes,
   dragNode,
   editNode,
   handlesShown,
@@ -296,7 +297,9 @@ test("a type goes to every selected node, delete removes them all", () => {
       })),
     },
   })
-  const deleted = nodeCommand(square, [node("a", 0), node("a", 2)], "delete")
+  const deleted = deleteNodes(square, [node("a", 0), node("a", 2)], {
+    refit: false,
+  })
   expect(deleted?.nodes).toEqual([])
   const [edit] = deleted!.edits
   expect(
@@ -306,10 +309,10 @@ test("a type goes to every selected node, delete removes them all", () => {
   ).toEqual([1, 3])
 })
 
-test("commands do nothing without nodes; a path never drops below two", () => {
+test("commands do nothing without nodes", () => {
   const s = scene(triangle("a"))
   expect(nodeCommand(s, [], "smooth")).toBeNull()
-  expect(nodeCommand(s, [node("a", 0), node("a", 1)], "delete")).toBeNull()
+  expect(deleteNodes(s, [], { refit: false })).toBeNull()
 })
 
 test("selected nodes are forgotten once their path or index is gone", () => {
@@ -466,7 +469,7 @@ test("only a handle that is shown can be taken hold of", () => {
   ).not.toBe("grab")
 })
 
-test("a delete keeps the selected nodes of a path it had to leave alone", () => {
+test("a delete that leaves a path too few nodes removes it", () => {
   const s = scene(triangle("a"), {
     ...triangle("b"),
     geometry: {
@@ -481,9 +484,9 @@ test("a delete keeps the selected nodes of a path it had to leave alone", () => 
       })),
     },
   })
-  const result = nodeCommand(s, [node("a", 0), node("b", 0)], "delete")
-  expect(result?.edits).toHaveLength(1)
-  expect(result?.nodes).toEqual([node("b", 0)])
+  const result = deleteNodes(s, [node("a", 0), node("b", 0)], { refit: false })
+  expect(result?.edits.map((e) => e.type)).toEqual(["update", "remove"])
+  expect(result?.nodes).toEqual([])
 })
 
 test("Tab goes on to the next path at a path's end", () => {

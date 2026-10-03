@@ -12,6 +12,7 @@ import {
   editNode,
   lockAxis,
   moveNodes,
+  deleteNodes,
   nodeCommand,
   segmentCommand,
   isHandle,
@@ -623,7 +624,12 @@ export type EngineCommand =
   /** Closes the polygon being clicked out, if it has three corners yet. */
   | { type: "closePolygon" }
   | { type: "editVectorNode"; objectId: string; edit: NodeEdit }
-  | { type: "deleteVectorNode" }
+  /**
+   * Deletes the selected nodes, refitting the curve around them to keep its
+   * shape unless `refit` is false (Delete, Ctrl+Delete). A path left with
+   * fewer than two nodes goes.
+   */
+  | { type: "deleteVectorNode"; refit?: boolean }
   /** Makes every selected segment straight, or bendable (Shift+L, Shift+U). */
   | { type: "setVectorSegmentShape"; shape: SegmentShape }
   /** Makes every selected node cusp, smooth, symmetric or auto-smooth. */
@@ -5622,7 +5628,26 @@ export function createEngine(
           publish({ vectorNodes: [node] })
           break
         }
-        case "deleteVectorNode":
+        case "deleteVectorNode": {
+          if (!snapshot.vectorNodes.length) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const edit = deleteNodes(layer.scene, snapshot.vectorNodes, {
+            refit: command.refit ?? true,
+          })
+          if (!edit) break
+          editScene(layer.id, edit.edits, "delete nodes")
+          const removed = new Set(
+            edit.edits.flatMap((e) => (e.type === "remove" ? [e.id] : []))
+          )
+          publish({
+            vectorNodes: edit.nodes,
+            vectorSelection: snapshot.vectorSelection.filter(
+              (id) => !removed.has(id)
+            ),
+          })
+          break
+        }
         case "setVectorNodeType": {
           if (!snapshot.vectorNodes.length) break
           dropShapeDrag()
@@ -5630,7 +5655,7 @@ export function createEngine(
           const edit = nodeCommand(
             layer.scene,
             snapshot.vectorNodes,
-            command.type === "deleteVectorNode" ? "delete" : command.nodeType
+            command.nodeType
           )
           if (edit) {
             editScene(layer.id, edit.edits, "edit node")
