@@ -234,9 +234,16 @@ function onJoinableEnds(
   return {
     ...dispatching(command),
     available: ({ engine }) => {
-      if (!nodesSelected(engine)) return false
-      const { vectorPaths, vectorNodes } = engine!.getSnapshot()
-      return canJoin(vectorPaths, vectorNodes, mode)
+      if (!engine) return false
+      const { vectorPaths, vectorNodes, vectorSelection, tool } =
+        engine.getSnapshot()
+      // Picked nodes say which ends only while the node tool is held.
+      return canJoin(
+        vectorPaths,
+        tool === "node" ? vectorNodes : [],
+        mode,
+        vectorSelection
+      )
     },
   }
 }
@@ -593,14 +600,14 @@ export const studioCommands = createRegistry<StudioContext>([
   },
   {
     id: "node.join",
-    label: "Join selected end nodes",
+    label: "Join selected curves",
     category: "Tools",
     keybinds: ["shift+j"],
     ...onJoinableEnds({ type: "joinVectorNodes" }, "merge"),
   },
   {
     id: "node.joinWithSegment",
-    label: "Join selected end nodes with a segment",
+    label: "Join selected curves with a segment",
     category: "Tools",
     keybinds: ["alt+j"],
     ...onJoinableEnds({ type: "joinVectorNodes", segment: true }, "segment"),

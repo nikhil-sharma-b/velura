@@ -1,7 +1,10 @@
 import {
-  fitPressureStroke,
+  createPressureFit,
+  MAX_TAPER,
+  type Taper,
   nextNodeType,
   type NodeType,
+  type BezierPath,
   type PathNode,
   type SegmentShape,
   type PressurePoint,
@@ -17,6 +20,7 @@ import {
   deleteSegments,
   insertNodes,
   joinNodes,
+  joinableEnds,
   nodeCommand,
   segmentCommand,
   isHandle,
@@ -148,6 +152,7 @@ import {
   type VectorScene,
 } from "./doc/vector-scene"
 import { tessellateObject, type Mesh } from "./geom/tessellate"
+import { createLiveStrokeMesh } from "./geom/live-stroke"
 import {
   centeredPlacement,
   flippedPlacement,
@@ -300,6 +305,8 @@ import {
   IDENTITY_MATRIX,
   panView,
   rotateView,
+  applyMatrix as applyViewMatrix,
+  invertMatrix as invertViewMatrix,
   screenToDoc,
   type ViewMatrix,
   zoomView,
@@ -379,6 +386,7 @@ export {
   type VectorNode,
 } from "./doc/node-tool"
 export type { JoinMode, NodeType, SegmentShape } from "./doc/vector-path"
+export { MAX_TAPER, type Taper } from "./doc/vector-path"
 export {
   DEFAULT_PRESSURE_CURVE,
   DEFAULT_PRESSURE_PRESET,
@@ -536,6 +544,12 @@ const SAMPLE_CAPACITY = 512
 /** Fresh strokes follow the hand directly until the artist asks for smoothing. */
 export const DEFAULT_STABILIZATION = 0
 
+/**
+ * The finest a vector's curves are cut, in pieces per document pixel's
+ * tolerance: the most zoom and a dense display ask of them.
+ */
+const MAX_VECTOR_DETAIL = 256
+
 /** How near a guide, in CSS pixels, a stroke opens to be held to it (17). */
 const GUIDE_STROKE_REACH = 8
 
@@ -687,6 +701,10 @@ export type EngineCommand =
    * back to them.
    */
   | { type: "rasteriseLayer"; id: string }
+  /** Whether the vector brush follows the pen's pressure or keeps full width. */
+  | { type: "setVectorBrushPressure"; pressure: boolean }
+  /** How much of a solid vector brush stroke narrows to each tip; unnamed ends are kept. */
+  | { type: "setVectorBrushTaper"; start?: number; end?: number }
   /** How the shape tools draw what comes next; unnamed fields are kept. */
   | {
       type: "setShapeStyle"
@@ -989,6 +1007,10 @@ export type EngineSnapshot = Readonly<{
   tool: Tool
   /** What the shape tools give a new shape (19). */
   shapeStyle: ShapeStyle
+  /** Whether the vector brush's width follows pressure; off, it is solid. */
+  vectorBrushPressure: boolean
+  /** The solid vector brush's tapers, as shares of a stroke's length. */
+  vectorBrushTaper: Taper
   /**
    * The selected objects' own style, which the shape options show and edit
    * in place of `shapeStyle` while there is one; null with none selected.
@@ -1137,6 +1159,8 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   straightEdge: null,
   tool: "brush",
   shapeStyle: DEFAULT_SHAPE_STYLE,
+  vectorBrushPressure: true,
+  vectorBrushTaper: { start: 0, end: 0 },
   selectionStyle: null,
   vectorSelection: [],
   vectorPaths: [],
@@ -1989,6 +2013,7 @@ export function createEngine(
     const matrix = docToScreen(view, size, viewportSize)
     toDoc = screenToDoc(view, size, viewportSize)
     renderer?.setView(matrix, viewportSize)
+    refreshVectorDetail()
   }
 
   /**
@@ -2684,11 +2709,16 @@ export function createEngine(
   // it was drawn" is one comparison, and what changed is a diff of two lists
   // of objects that share everything an edit did not touch.
   const drawnScenes = new Map<string, VectorScene>()
-  /** Triangles per object, made once for as long as the object exists. */
+  /**
+   * Triangles per object and level of detail, each made once for as long as
+   * the object exists.
+   */
   const meshes = new WeakMap<
     VectorObject,
-    { fill: Mesh | null; stroke: Mesh | null }
+    Map<number, { fill: Mesh | null; stroke: Mesh | null }>
   >()
+  /** The detail the screen's vector scenes were last cut at. */
+  let screenDetail = 1
   /** A shape being dragged out (19), shown in its layer but not yet in it. */
   let shapeDrag:
     | {
@@ -2710,12 +2740,21 @@ export function createEngine(
           time: number
         }
         pressureResampler?: ReturnType<typeof createStrokeResampler>
+        /** The stroke fitted and meshed as it is drawn, and how many samples it has had. */
+        pressureFit?: {
+          fit: ReturnType<typeof createPressureFit>
+          fed: number
+          mesh: ReturnType<typeof createLiveStrokeMesh>
+        }
         node?: NodeGrab
         /** Where the grabbed part sat as the press began, for the axis lock. */
         nodeAt?: Point
         /** Ctrl was down at the press. A click then turns an anchor to the
          * next type, or retracts a handle. */
         ctrlClick?: boolean
+        /** The grabbed part has left its place: the pointer went past the
+         * drag threshold, so a click alone never moves it. */
+        nodeMoved?: boolean
         /** The node tool is drawing a rubber band, not moving a node. */
         nodeBox?: boolean
         anchor: Point
@@ -2747,13 +2786,38 @@ export function createEngine(
     drawnScenes.delete(id)
   }
 
-  function meshesOf(object: VectorObject) {
-    let found = meshes.get(object)
+  function meshesOf(object: VectorObject, detail = 1) {
+    let levels = meshes.get(object)
+    if (!levels) meshes.set(object, (levels = new Map()))
+    let found = levels.get(detail)
     if (!found) {
-      found = tessellateObject(object)
-      meshes.set(object, found)
+      found = tessellateObject(object, detail)
+      levels.set(detail, found)
     }
     return found
+  }
+
+  /**
+   * How many times finer than a document pixel the view needs its curves:
+   * screen pixels per document pixel, rounded up to a power of two so a
+   * zoom re-cuts them only when it crosses one, as a map's tiles do.
+   */
+  function viewDetail(): number {
+    const magnified = 1 / Math.max(1e-9, Math.hypot(toDoc[0], toDoc[1]))
+    if (!(magnified > 1)) return 1
+    return Math.min(
+      MAX_VECTOR_DETAIL,
+      2 ** Math.ceil(Math.log2(magnified - 1e-6))
+    )
+  }
+
+  /** Re-cuts the screen's vector scenes when the zoom has crossed a level. */
+  function refreshVectorDetail() {
+    const detail = viewDetail()
+    if (detail === screenDetail) return
+    screenDetail = detail
+    for (const [layerId, scene] of drawnScenes)
+      renderer?.setVectorScene(layerId, vectorDraws(scene, undefined, detail))
   }
 
   /** Whole pixels round an object, a pixel out for its antialiased edge. */
@@ -2818,7 +2882,11 @@ export function createEngine(
    * What the renderer draws of a scene within a region, bottom first: all of
    * it without one.
    */
-  function vectorDraws(scene: VectorScene, region?: PixelRect): VectorDraw[] {
+  function vectorDraws(
+    scene: VectorScene,
+    region?: PixelRect,
+    detail = 1
+  ): VectorDraw[] {
     const draws: VectorDraw[] = []
     const add = (
       mesh: Mesh | null,
@@ -2842,7 +2910,7 @@ export function createEngine(
       })
     }
     for (const object of scene.objects) {
-      const { fill, stroke } = meshesOf(object)
+      const { fill, stroke } = meshesOf(object, detail)
       if (object.style.fill) add(fill, object.style.fill)
       if (object.style.stroke) add(stroke, object.style.stroke)
     }
@@ -2863,7 +2931,10 @@ export function createEngine(
       renderer.rasterizeVector(layerId, vectorDraws(scene, region), region)
     // The screen draws the layer from its geometry, sharp at any zoom
     // (sharp-zoom 02); the pixels above stay what everything else reads.
-    renderer.setVectorScene(layerId, vectorDraws(scene))
+    renderer.setVectorScene(
+      layerId,
+      vectorDraws(scene, undefined, screenDetail)
+    )
     // A scene's content box is its objects', and shrinks when they go.
     contentBounds.forget(layerId)
     const box = unionOf(scene.objects.map(objectBounds))
@@ -2914,11 +2985,26 @@ export function createEngine(
     return layer
   }
 
-  function boxSelection(anchor: Point, point: Point): Point | Extent {
-    return Math.hypot(point.x - anchor.x, point.y - anchor.y) <
+  /**
+   * What a band dragged from `anchor` to `point` selects: a click's point,
+   * or the rectangle as it is on screen, which on a turned or flipped view
+   * is a turned shape in the document, its corners in order round it.
+   */
+  function boxSelection(anchor: Point, point: Point): Point | Point[] {
+    if (
+      Math.hypot(point.x - anchor.x, point.y - anchor.y) <
       3 / snapshot.view.zoom
-      ? point
-      : dragRect(anchor, point, false)
+    )
+      return point
+    const toScreen = invertViewMatrix(toDoc)
+    const a = applyViewMatrix(toScreen, anchor.x, anchor.y),
+      b = applyViewMatrix(toScreen, point.x, point.y)
+    return [
+      { x: a.x, y: a.y },
+      { x: b.x, y: a.y },
+      { x: b.x, y: b.y },
+      { x: a.x, y: b.y },
+    ].map((corner) => applyViewMatrix(toDoc, corner.x, corner.y))
   }
 
   /** The tool's default stays as it was; the selection's own style is
@@ -2927,12 +3013,43 @@ export function createEngine(
     publish({ vectorSelection: ids })
   }
 
-  function selectVectorRegion(region: Point | Extent, additive = false) {
+  function selectVectorRegion(
+    region: Point | Extent | readonly Point[],
+    additive = false
+  ) {
     cancelVectorTransform()
     const ids = selectObjects(selectedVectorLayer().scene, region)
     setVectorSelection(
       additive ? [...new Set([...snapshot.vectorSelection, ...ids])] : ids
     )
+  }
+
+  /**
+   * A pressure stroke's width lives on its nodes, so a new outline width
+   * scales them, keeping the shape of its swell.
+   */
+  function widthScaled(
+    o: VectorObject,
+    width: number | undefined
+  ): { geometry?: VectorObject["geometry"] } {
+    const was = o.style.stroke?.width
+    if (
+      width === undefined ||
+      !was ||
+      width === was ||
+      o.geometry.kind !== "path" ||
+      !o.geometry.nodes.some((n) => n.width !== undefined)
+    )
+      return {}
+    const scale = width / was
+    return {
+      geometry: {
+        ...o.geometry,
+        nodes: o.geometry.nodes.map((n) =>
+          n.width === undefined ? n : { ...n, width: n.width * scale }
+        ),
+      },
+    }
   }
 
   function applySelectedStyle(
@@ -2951,6 +3068,7 @@ export function createEngine(
         type: "update",
         id: o.id,
         patch: {
+          ...widthScaled(o, change?.strokeWidth),
           style: color
             ? {
                 fill: o.style.fill ? { ...o.style.fill, color } : null,
@@ -3193,6 +3311,25 @@ export function createEngine(
   }
 
   /**
+   * The vector brush's stroke as fitted so far, fed the samples it has not
+   * seen. Its width and taper are the ones it began with.
+   */
+  function pressureStroke(drag: NonNullable<typeof shapeDrag>): BezierPath {
+    drag.pressureFit ??= {
+      fit: createPressureFit(
+        snapshot.shapeStyle.strokeWidth,
+        snapshot.vectorBrushPressure ? undefined : snapshot.vectorBrushTaper
+      ),
+      fed: 0,
+      mesh: createLiveStrokeMesh(),
+    }
+    const live = drag.pressureFit
+    live.fit.add(drag.pressurePoints!.slice(live.fed))
+    live.fed = drag.pressurePoints!.length
+    return live.fit.path(drag.ended)
+  }
+
+  /**
    * The rectangle a drag outlines, in the shape style and the current
    * colour; nothing for a click, or with neither fill nor outline asked for.
    */
@@ -3229,7 +3366,7 @@ export function createEngine(
               closed: drag.closed ?? false,
             }
           : drag.tool === "pressure"
-            ? fitPressureStroke(drag.pressurePoints!, style.strokeWidth)
+            ? pressureStroke(drag)
             : drag.tool === "ellipse"
               ? {
                   kind: "ellipse",
@@ -3339,10 +3476,27 @@ export function createEngine(
     const drag = shapeDrag!
     const pressureSink = (x: number, y: number, pressure: number) => {
       if (drag.pressurePoints!.length < 100_000)
-        drag.pressurePoints!.push({ x, y, pressure })
+        drag.pressurePoints!.push({
+          x,
+          y,
+          pressure: snapshot.vectorBrushPressure ? pressure : 1,
+        })
     }
     samples.drain((x, y, pressure, tiltX, tiltY, time) => {
-      const point = { x: toDocX(x, y), y: toDocY(x, y) }
+      let point = { x: toDocX(x, y), y: toDocY(x, y) }
+      if (drag.node && drag.nodeAt) {
+        // A press near a part, not on it, grabs it where it sits: the part
+        // follows the pointer's travel, and only once it is a drag.
+        const dx = point.x - drag.anchor.x,
+          dy = point.y - drag.anchor.y
+        if (
+          !drag.nodeMoved &&
+          Math.hypot(dx, dy) * snapshot.view.zoom < NODE_DRAG_THRESHOLD
+        )
+          return
+        drag.nodeMoved = true
+        point = { x: drag.nodeAt.x + dx, y: drag.nodeAt.y + dy }
+      }
       // The grabbed node snaps; the rest follow its snapped offset. A
       // snap moves it along the locked axis only, never off it.
       // On a handle, Ctrl snaps the angle instead, in `dragNodes`.
@@ -3351,8 +3505,12 @@ export function createEngine(
           ? drag.nodeAt
           : undefined
       const locked = lock ? lockAxis(lock, point) : point
+      // A band follows the hand: snapping its corner would pull it off
+      // the cursor onto whatever it passes.
       drag.point =
-        drag.tool === "pressure" ? point : snapVectorPoint(locked, drag.layerId)
+        drag.tool === "pressure" || isBand(drag)
+          ? point
+          : snapVectorPoint(locked, drag.layerId)
       if (lock)
         drag.point =
           locked.y === lock.y
@@ -3408,7 +3566,7 @@ export function createEngine(
         drag.pressurePoints!.push({
           x: tail.x,
           y: tail.y,
-          pressure: tail.pressure,
+          pressure: snapshot.vectorBrushPressure ? tail.pressure : 1,
         })
     }
     const document = requireDocument()
@@ -3433,6 +3591,25 @@ export function createEngine(
       return
     }
     const shape = draggedShape(drag, layer.scene)
+    // A stroke being drawn is meshed piece by piece, its finished curves
+    // kept from frame to frame, rather than whole as any other object is.
+    const live = drag.pressureFit
+    if (live && shape?.style.stroke) {
+      const pieces = live.fit.pieces()
+      if (pieces.length) {
+        const stroke = shape.style.stroke
+        const levels = new Map<
+          number,
+          { fill: Mesh | null; stroke: Mesh | null }
+        >()
+        for (const detail of new Set([1, screenDetail]))
+          levels.set(detail, {
+            fill: null,
+            stroke: live.mesh.mesh(pieces, stroke, detail),
+          })
+        meshes.set(shape, levels)
+      }
+    }
     if (drag.ended) {
       shapeDrag = undefined
       forgetGestureInput()
@@ -3485,10 +3662,9 @@ export function createEngine(
           [{ type: "add", object: shape }],
           `draw ${drag.tool}`
         )
-        publish({
-          vectorSelection:
-            drag.tool === "pen" || drag.tool === "pressure" ? [shape.id] : [],
-        })
+        // A brush stroke is left unselected, as paint is: the width and
+        // colour then set up the next stroke rather than edit this one.
+        publish({ vectorSelection: drag.tool === "pen" ? [shape.id] : [] })
       } else {
         drawScene(layer.id, layer.scene)
         if (snapshot.status === "ready") render()
@@ -3505,10 +3681,12 @@ export function createEngine(
           : layer.scene
     drawScene(layer.id, drag.preview)
     notifyVectorControls()
-    if (isBand(drag))
+    if (isBand(drag)) {
+      const band = boxSelection(drag.anchor, drag.point)
       renderer?.setSelection(
-        rectSelection(document, dragRect(drag.anchor, drag.point, false))
+        Array.isArray(band) ? lassoSelection(document, band) : null
       )
+    }
     try {
       if (snapshot.status === "ready") render()
     } catch (error) {
@@ -4588,6 +4766,9 @@ export function createEngine(
     })
   }
 
+  /** Screen pixels the pointer travels before a press on a node drags it. */
+  const NODE_DRAG_THRESHOLD = 3
+
   function beginNodeDrag(layer: VectorLayer, point: Point, time: number) {
     const press = pressNode({
       scene: layer.scene,
@@ -4650,7 +4831,7 @@ export function createEngine(
    */
   function endNodeBox(drag: NonNullable<typeof shapeDrag>) {
     const region = boxSelection(drag.anchor, drag.point)
-    if (!("width" in region)) {
+    if (!Array.isArray(region)) {
       if (!shiftHeld) {
         setVectorSelection([])
         publish({ vectorNodes: [] })
@@ -5753,11 +5934,18 @@ export function createEngine(
           break
         }
         case "joinVectorNodes": {
-          if (snapshot.vectorNodes.length !== 2) break
           dropShapeDrag()
           const layer = selectedVectorLayer()
           const mode = command.segment ? "segment" : "merge"
-          const edit = joinNodes(layer.scene, snapshot.vectorNodes, mode)
+          // Picked nodes say which ends only while the node tool is held.
+          const ends = joinableEnds(
+            layer.scene.objects,
+            snapshot.tool === "node" ? snapshot.vectorNodes : [],
+            snapshot.vectorSelection,
+            mode
+          )
+          if (!ends) break
+          const edit = joinNodes(layer.scene, ends, mode)
           if (!edit) break
           editScene(layer.id, edit.edits, "join nodes")
           publish({
@@ -6036,6 +6224,25 @@ export function createEngine(
           })
           break
         }
+        case "setVectorBrushTaper": {
+          const share = (t: number | undefined, was: number) => {
+            if (t === undefined) return was
+            if (!Number.isFinite(t) || t < 0 || t > MAX_TAPER)
+              throw new Error("A taper is a share of the stroke, 0 to 0.5.")
+            return t
+          }
+          const was = snapshot.vectorBrushTaper
+          publish({
+            vectorBrushTaper: Object.freeze({
+              start: share(command.start, was.start),
+              end: share(command.end, was.end),
+            }),
+          })
+          break
+        }
+        case "setVectorBrushPressure":
+          publish({ vectorBrushPressure: command.pressure === true })
+          break
         case "placeImage": {
           const document = requireDocument()
           const canvas = { width: document.width, height: document.height }
@@ -6142,7 +6349,10 @@ export function createEngine(
             const drawn = drawnScenes.get(command.id)
             if (drawn) {
               drawnScenes.set(copyId, drawn)
-              renderer?.setVectorScene(copyId, vectorDraws(drawn))
+              renderer?.setVectorScene(
+                copyId,
+                vectorDraws(drawn, undefined, screenDetail)
+              )
             }
             if (source.mask && copy.mask)
               renderer?.duplicateLayer(source.mask.id, copy.mask.id)

@@ -61,15 +61,22 @@ function lengthScale(matrix: Affine): number {
   return Math.sqrt(Math.abs(a * d - b * c))
 }
 
-/** Enough chords that none strays from an arc of `radius` by more than the tolerance. */
-function arcSegments(radius: number, sweep: number): number {
-  if (radius <= TOLERANCE) return 1
-  const step = 2 * Math.acos(1 - TOLERANCE / radius)
+/**
+ * Enough chords that none strays from an arc of `radius` by more than the
+ * tolerance, `detail` times finer for a view that magnifies it.
+ */
+function arcSegments(radius: number, sweep: number, detail = 1): number {
+  const tolerance = TOLERANCE / detail
+  if (radius <= tolerance) return 1
+  const step = 2 * Math.acos(1 - tolerance / radius)
   return Math.max(1, Math.ceil(Math.abs(sweep) / step))
 }
 
 /** The object's outline in its own coordinates, and whether it closes. */
-function outline(object: VectorObject): {
+function outline(
+  object: VectorObject,
+  detail: number
+): {
   points: Point[]
   closed: boolean
   widths?: number[] | null
@@ -94,7 +101,7 @@ function outline(object: VectorObject): {
       // Chords are chosen in document pixels, after the transform, so a
       // small ellipse scaled up is still smooth.
       const radius = Math.max(rx, ry) * lengthScale(object.transform)
-      const count = Math.max(8, arcSegments(radius, Math.PI * 2))
+      const count = Math.max(8, arcSegments(radius, Math.PI * 2, detail))
       const points: Point[] = []
       for (let i = 0; i < count; i++) {
         const angle = (i / count) * Math.PI * 2
@@ -106,7 +113,10 @@ function outline(object: VectorObject): {
       return { points, closed: true }
     }
     case "path":
-      return flattenPath(geometry, Math.hypot(...object.transform.slice(0, 4)))
+      return flattenPath(
+        geometry,
+        Math.hypot(...object.transform.slice(0, 4)) * detail
+      )
     case "polygon":
       return { points: [...geometry.points], closed: geometry.closed }
   }
@@ -160,6 +170,12 @@ export function tessellateFill(
  */
 export const MITER_LIMIT = 4
 
+/**
+ * A pressure stroke turning more than this (cos 30°) at a point is joined
+ * with a disc there rather than a shared edge, which would pinch it.
+ */
+const SMOOTH_TURN_COS = Math.cos(Math.PI / 6)
+
 type Vector = { x: number; y: number }
 
 const add = (p: Point, v: Vector, scale = 1): Point => ({
@@ -193,22 +209,25 @@ function distinct<T extends Point>(points: readonly T[], closed: boolean): T[] {
  * The band `stroke.width` wide centred on a run of segments, with its joins
  * and, left open, its caps.
  *
- * With `widths`, a pressure stroke, the band is the area a disc sweeps as it
- * rides the line, its size following the pen — the shape tldraw's freehand
- * outline traces. Offsetting each chord by its ends' half-widths and joining
- * every chord to the next would put a join at each of the hundreds of points
- * a hand-drawn curve flattens to, and a hand turns sharply there often
- * enough that mitres spike out and quads poke past the curve. A disc at each
- * point and the hull between each pair cannot: the stroke's own join is kept
- * for its corner nodes (`corners`, indices into `input`), its cap for its
- * ends.
+ * With `widths`, a pressure stroke, the band's width follows the pen. A
+ * join at each of the hundreds of points a curve flattens to would spike
+ * mitres, so its quads instead share their edges, offset along each point's
+ * mean normal; only a sharp turn, or a corner node (`corners`, indices into
+ * `input`), is rounded with a disc and given the stroke's own join. Its
+ * ends take the stroke's cap.
  */
 export function tessellateStroke(
   input: readonly Point[],
   closed: boolean,
   stroke: Pick<VectorStroke, "width" | "cap" | "join">,
   widths?: readonly number[] | null,
-  corners: readonly number[] = []
+  corners: readonly number[] = [],
+  detail = 1,
+  /**
+   * Which ends are the stroke's own, capped; an end that is not joins on to
+   * a piece drawn apart, and is rounded so the two meet without a seam.
+   */
+  ends: Readonly<{ start: boolean; end: boolean }> = { start: true, end: true }
 ): Mesh {
   const mesh = createBuilder("union")
   const corner = new Set(corners)
@@ -226,7 +245,7 @@ export function tessellateStroke(
 
   // An arc of triangles round `center`, from `start` turning by `sweep`.
   const fan = (center: Point, start: number, sweep: number, half: number) => {
-    const count = arcSegments(half, sweep)
+    const count = arcSegments(half, sweep, detail)
     let previous = add(center, { x: Math.cos(start), y: Math.sin(start) }, half)
     for (let i = 1; i <= count; i++) {
       const angle = start + (sweep * i) / count
@@ -285,11 +304,12 @@ export function tessellateStroke(
 
   const caps = () => {
     if (closed || stroke.cap === "butt") return
-    const ends = [
-      { at: points[0], out: edge(0), sign: -1 },
-      { at: points.at(-1)!, out: edge(segments - 1), sign: 1 },
+    const capped = [
+      { at: points[0], out: edge(0), sign: -1, own: ends.start },
+      { at: points.at(-1)!, out: edge(segments - 1), sign: 1, own: ends.end },
     ]
-    for (const { at, out, sign } of ends) {
+    for (const { at, out, sign, own } of capped) {
+      if (!own) continue
       const half = at.width / 2
       const forward = { x: out.x * sign, y: out.y * sign }
       const side = normal(out)
@@ -309,39 +329,53 @@ export function tessellateStroke(
   }
 
   if (widths) {
+    // A strip whose quads share an edge at every point, offset along the
+    // mean of the two chords' normals: seamless however far it is zoomed,
+    // where a disc per point leaves its polygon's notches between hulls.
+    // A sharp turn would pinch the strip, so there each chord keeps its
+    // own normal and a disc rounds the gap, as the outline's round join.
+    const sharp = (i: number) => {
+      if (!closed && (i === 0 || i === points.length - 1)) return false
+      if (points[i].corner) return true
+      const a = edge((i - 1 + points.length) % points.length),
+        b = edge(i)
+      return a.x * b.x + a.y * b.y < SMOOTH_TURN_COS
+    }
+    const sideAt = (i: number, chord: number): Vector => {
+      if (sharp(i)) return normal(edge(chord))
+      const before =
+        !closed && i === 0
+          ? edge(0)
+          : edge((i - 1 + points.length) % points.length)
+      const after = !closed && i === points.length - 1 ? before : edge(i)
+      const mean = { x: before.x + after.x, y: before.y + after.y }
+      const length = Math.hypot(mean.x, mean.y)
+      return length > 1e-9
+        ? normal({ x: mean.x / length, y: mean.y / length })
+        : normal(after)
+    }
     points.forEach((point, i) => {
-      const end = !closed && (i === 0 || i === points.length - 1)
-      if (end || point.width <= 0) return
-      fan(point, 0, Math.PI * 2, point.width / 2)
-      // A disc already rounds the corner; a bevel lies inside it.
-      if (point.corner && stroke.join === "miter") join(i)
+      if (sharp(i) && point.width > 0) {
+        fan(point, 0, Math.PI * 2, point.width / 2)
+        if (stroke.join === "miter") join(i)
+      }
     })
+    if (!closed)
+      for (const [own, point] of [
+        [ends.start, points[0]],
+        [ends.end, points.at(-1)!],
+      ] as const)
+        if (!own && point.width > 0) fan(point, 0, Math.PI * 2, point.width / 2)
     for (let i = 0; i < segments; i++) {
-      const a = points[i]
-      const b = points[(i + 1) % points.length]
-      const ra = a.width / 2
-      const rb = b.width / 2
-      const along = Math.hypot(b.x - a.x, b.y - a.y)
-      // One disc inside the other, which already covers the hull.
-      if (along <= Math.abs(ra - rb)) continue
-      // The outer tangents touch each disc where its radius leans back
-      // along the line by the slope the width changes at.
-      const u = direction(a, b)
-      const side = normal(u)
-      const lean = (ra - rb) / along
-      const reach = Math.sqrt(1 - lean * lean)
-      const touch = (sign: number): Vector => ({
-        x: u.x * lean + side.x * reach * sign,
-        y: u.y * lean + side.y * reach * sign,
-      })
-      // An open stroke's ends are cut square across the line, as the cap
-      // then extends them; the hull's own ends would lean with the taper.
-      const first = !closed && i === 0
-      const last = !closed && i === segments - 1
-      const a1 = add(a, first ? side : touch(1), ra)
-      const a2 = add(a, first ? side : touch(-1), first ? -ra : ra)
-      const b1 = add(b, last ? side : touch(1), rb)
-      const b2 = add(b, last ? side : touch(-1), last ? -rb : rb)
+      const j = (i + 1) % points.length
+      const a = points[i],
+        b = points[j]
+      const sa = sideAt(i, i),
+        sb = sideAt(j, i)
+      const a1 = add(a, sa, a.width / 2)
+      const a2 = add(a, sa, -a.width / 2)
+      const b1 = add(b, sb, b.width / 2)
+      const b2 = add(b, sb, -b.width / 2)
       mesh.triangle(a1, b1, b2)
       mesh.triangle(a1, b2, a2)
     }
@@ -369,12 +403,43 @@ export function tessellateStroke(
   return mesh.finish()
 }
 
-/** The meshes that draw one object, in document pixels. */
-export function tessellateObject(object: VectorObject): {
+/** One mesh of the triangles of several, as one stroke is drawn in pieces. */
+export function mergeMeshes(parts: readonly Mesh[], rule: CoverageRule): Mesh {
+  const size = parts.reduce((sum, part) => sum + part.vertices.length, 0)
+  const vertices = new Float32Array(size)
+  let offset = 0,
+    bounds: Bounds | null = null
+  for (const part of parts) {
+    vertices.set(part.vertices, offset)
+    offset += part.vertices.length
+    const b = part.bounds
+    if (!b) continue
+    bounds = bounds
+      ? {
+          minX: Math.min(bounds.minX, b.minX),
+          minY: Math.min(bounds.minY, b.minY),
+          maxX: Math.max(bounds.maxX, b.maxX),
+          maxY: Math.max(bounds.maxY, b.maxY),
+        }
+      : { ...b }
+  }
+  return { vertices, rule, bounds }
+}
+
+/**
+ * The meshes that draw one object, in document pixels. `detail` is how many
+ * times finer than a document pixel its curves are cut, for a view zoomed
+ * that far in: as Inkscape and tldraw draw a curve as a curve at any zoom,
+ * the screen asks for its zoom's detail rather than enlarging the page's.
+ */
+export function tessellateObject(
+  object: VectorObject,
+  detail = 1
+): {
   fill: Mesh | null
   stroke: Mesh | null
 } {
-  const shape = outline(object)
+  const shape = outline(object, detail)
   const points = transformed(object.transform, shape.points)
   const { fill, stroke } = object.style
   return {
@@ -388,7 +453,8 @@ export function tessellateObject(object: VectorObject): {
             width: stroke.width * lengthScale(object.transform),
           },
           shape.widths?.map((w) => w * lengthScale(object.transform)),
-          shape.corners
+          shape.corners,
+          detail
         )
       : null,
   }

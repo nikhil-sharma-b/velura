@@ -590,6 +590,7 @@ describe("filter commands", () => {
   test("Shift+J, Alt+J and Alt+Delete join ends and delete segments when they fit", () => {
     const line = {
       id: "p",
+      transform: [1, 0, 0, 1, 0, 0],
       geometry: {
         kind: "path",
         closed: false,
@@ -634,13 +635,17 @@ describe("filter commands", () => {
       { type: "joinVectorNodes" },
       { type: "joinVectorNodes", segment: true },
     ])
-    // A segment's two ends, one of them inside the path: no join.
+    // A segment of the open path: its own ends join, closing it.
     expect(
       run([
         { objectId: "p", index: 0 },
         { objectId: "p", index: 1 },
       ])
-    ).toEqual([{ type: "deleteVectorSegments" }])
+    ).toEqual([
+      { type: "joinVectorNodes" },
+      { type: "joinVectorNodes", segment: true },
+      { type: "deleteVectorSegments" },
+    ])
   })
 
   test("< > [ ] H V transform selected nodes, and do what they did without", () => {
@@ -730,6 +735,7 @@ describe("filter commands", () => {
   test("Shift+L and Shift+U shape selected segments; Shift+L lassos otherwise", () => {
     const line = {
       id: "p",
+      transform: [1, 0, 0, 1, 0, 0],
       geometry: {
         kind: "path",
         closed: false,

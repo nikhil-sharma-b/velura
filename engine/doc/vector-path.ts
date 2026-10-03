@@ -53,54 +53,383 @@ type Segment = { last: number; out: Point; in: Point }
  * linearly along each segment, so pressure only adds a node where it
  * strays from that line. Sharp turns are kept as cusps.
  */
+/** How much of a stroke, as a share of its length, narrows to each tip. */
+export type Taper = Readonly<{ start: number; end: number }>
+
+/** The most of a stroke one taper may take: half, so two meet at most. */
+export const MAX_TAPER = 0.5
+
 export function fitPressureStroke(
   samples: readonly PressurePoint[],
-  width: number
+  width: number,
+  taper?: Taper
 ): BezierPath {
-  if (!Number.isFinite(width) || width <= 0 || !samples.length)
+  if (!samples.length)
+    throw new Error("A pressure stroke needs samples and a positive width.")
+  const fit = createPressureFit(width, taper)
+  fit.add(samples)
+  return fit.path(true)
+}
+
+/** Curves this far behind the pen, along the stroke, are left as they are. */
+const FREEZE_LAG = 48
+/** No curve is left alone before the stroke is this long: its start may yet hook. */
+const FREEZE_AFTER = 64
+/** The last curves before the pen are always refitted, frozen or not. */
+const KEEP_LIVE = 2
+
+/**
+ * One fitted curve of a stroke being drawn, as the nodes that draw it: its
+ * two ends and any a taper splits it at. A frozen one will not change shape
+ * again, and `key` changes when its widths do.
+ */
+export type PressurePiece = Readonly<{
+  nodes: readonly PathNode[]
+  frozen: boolean
+  key: string
+}>
+
+type FittedSegment = {
+  from: number
+  to: number
+  out: Point
+  in: Point
+  cusp: boolean
+}
+
+/**
+ * A pressure stroke fitted as it is drawn. The curves well behind the pen
+ * are frozen and the rest refitted each time, leaving the frozen one's way
+ * out, so a stroke being drawn neither wobbles nor changes when the pen
+ * lifts: what was shown is what is kept. Settling and tapering only set
+ * widths, never positions, and a taper splits curves exactly where it
+ * needs more nodes, so it reshapes nothing either.
+ */
+export function createPressureFit(width: number, taper?: Taper) {
+  if (!Number.isFinite(width) || width <= 0)
     throw new Error("A pressure stroke needs samples and a positive width.")
   const points: Sample[] = []
-  for (const p of samples) {
-    if (![p.x, p.y, p.pressure].every(Number.isFinite))
-      throw new Error("Pressure samples must be finite.")
-    const sample = {
-      x: p.x,
-      y: p.y,
-      width: width * Math.max(0, Math.min(1, p.pressure)),
+  const along: number[] = []
+  const frozen: FittedSegment[] = []
+  let tangent: Point | null = null
+  let pieces: PressurePiece[] = []
+
+  function add(samples: readonly PressurePoint[]) {
+    for (const p of samples) {
+      if (![p.x, p.y, p.pressure].every(Number.isFinite))
+        throw new Error("Pressure samples must be finite.")
+      const sample = {
+        x: p.x,
+        y: p.y,
+        width: width * Math.max(0, Math.min(1, p.pressure)),
+      }
+      // A pen resting in place repeats its point; the last pressure stands.
+      const previous = points.at(-1)
+      if (previous && previous.x === p.x && previous.y === p.y)
+        points[points.length - 1] = sample
+      else {
+        along.push(
+          previous
+            ? along.at(-1)! + Math.hypot(p.x - previous.x, p.y - previous.y)
+            : 0
+        )
+        points.push(sample)
+      }
     }
-    // A pen resting in place repeats its point; the last pressure stands.
-    const previous = points.at(-1)
-    if (previous && previous.x === p.x && previous.y === p.y)
-      points[points.length - 1] = sample
-    else points.push(sample)
   }
-  const node = (p: Sample, type: NodeType): PathNode => ({
-    x: p.x,
-    y: p.y,
-    width: p.width,
+
+  /** The curves after the frozen ones, and where the stroke starts and ends. */
+  function fitTail() {
+    const from = frozen.at(-1)?.to ?? 0
+    const raw = points.slice(from)
+    const hooks = trimHooks(raw, cornersOf(raw), from === 0)
+    // Fitted to the widths once settled, so the pen's landing and lifting
+    // do not split the ends into curves of their own.
+    const settled = widthsOver(
+      frozen.length ? 0 : from + hooks.first,
+      from + hooks.last,
+      false
+    )
+    const tail = raw.map((p, i) => ({ ...p, width: settled[from + i] }))
+    const segments: FittedSegment[] = []
+    const corners = hooks.corners
+    for (let c = 0; c + 1 < corners.length; c++) {
+      const first = corners[c],
+        last = corners[c + 1]
+      const leaving = c === 0 && from > 0 && tangent ? tangent : undefined
+      for (const segment of fitStroke(tail, first, last, width, leaving))
+        segments.push({
+          from: segments.at(-1)?.to ?? from + first,
+          to: from + segment.last,
+          out: segment.out,
+          in: segment.in,
+          cusp: segment.last === last && last !== hooks.last,
+        })
+    }
+    return { segments, start: from + hooks.first, end: from + hooks.last }
+  }
+
+  /** Each point's width once the ends have settled and tapered. */
+  function widthsOver(start: number, end: number, tapered = true): number[] {
+    const widths = points.map((p) => p.width)
+    const total = along[end] - along[start]
+    const reach = Math.min(total * SETTLE_SHARE, SETTLE_LENGTH)
+    if (reach > 0) {
+      let a = start
+      while (a < end && along[a] - along[start] < reach) a++
+      let b = end
+      while (b > start && along[end] - along[b] < reach) b--
+      if (a < b) {
+        for (let i = start; i < a; i++) widths[i] = points[a].width
+        for (let i = b + 1; i <= end; i++) widths[i] = points[b].width
+      }
+    }
+    if (tapered && taper && total > 0)
+      for (let i = start; i <= end; i++)
+        widths[i] *= taperScale(along[i] - along[start], total, taper)
+    return widths
+  }
+
+  /**
+   * The stroke as it stands; `ended` when the pen has lifted, after which
+   * nothing more is frozen.
+   */
+  function path(ended: boolean): BezierPath {
+    if (points.length === 1) {
+      const dot: PathNode = {
+        x: points[0].x,
+        y: points[0].y,
+        width: points[0].width,
+        in: null,
+        out: null,
+        type: "smooth",
+      }
+      pieces = []
+      return { kind: "path", nodes: [dot, { ...dot }], closed: false }
+    }
+    const tail = fitTail()
+    const { segments } = tail
+    let { start, end } = tail
+    if (!ended && along[end] - along[start] >= FREEZE_AFTER) {
+      let count = 0
+      while (
+        count < segments.length - KEEP_LIVE &&
+        along[end] - along[segments[count].to] >= FREEZE_LAG
+      )
+        count++
+      if (count) {
+        // The first freeze settles the start: a hook trimmed off it is gone.
+        if (!frozen.length && start > 0) {
+          points.splice(0, start)
+          const shift = along[start]
+          along.splice(0, start)
+          for (let i = 0; i < along.length; i++) along[i] -= shift
+          for (const segment of segments) {
+            segment.from -= start
+            segment.to -= start
+          }
+          end -= start
+          start = 0
+        }
+        const settled = segments.splice(0, count)
+        frozen.push(...settled)
+        const last = settled.at(-1)!
+        const to = points[last.to]
+        tangent = last.cusp ? null : unit(to.x - last.in.x, to.y - last.in.y)
+      }
+    }
+    if (frozen.length) start = 0
+    const widths = widthsOver(start, end)
+    const all = [...frozen, ...segments]
+    pieces = all.map((segment, index) => {
+      const nodes = splitForTaper(
+        points,
+        along,
+        widths,
+        segment,
+        index === 0 ? start : segment.from,
+        start,
+        end,
+        taper
+      )
+      return {
+        nodes,
+        frozen: index < frozen.length,
+        key: nodes.map((n) => n.width).join(","),
+      }
+    })
+    const nodes: PathNode[] = []
+    for (const piece of pieces) {
+      if (nodes.length) {
+        const joint = nodes.pop()!
+        nodes.push(
+          { ...joint, out: piece.nodes[0].out },
+          ...piece.nodes.slice(1)
+        )
+      } else nodes.push(...piece.nodes)
+    }
+    return { kind: "path", nodes, closed: false }
+  }
+
+  return {
+    add,
+    path,
+    /** The curves the last `path` was made of, for meshing piece by piece. */
+    pieces: (): readonly PressurePiece[] => pieces,
+  }
+}
+
+/** How much a taper narrows a point `at` this far along a stroke `total` long. */
+function taperScale(at: number, total: number, taper: Taper): number {
+  const clamp = (t: number) =>
+    Math.max(0, Math.min(MAX_TAPER, Number.isFinite(t) ? t : 0))
+  const start = clamp(taper.start) * total,
+    end = clamp(taper.end) * total
+  const ease = (t: number) => 1 - (1 - t) * (1 - t)
+  let scale = 1
+  if (start > 0 && at < start) scale *= ease(at / start)
+  if (end > 0 && total - at < end) scale *= ease((total - at) / end)
+  return scale
+}
+
+/**
+ * One fitted curve as nodes: its ends, and, where a taper meets full
+ * width on it, a node there, split off the curve exactly so its shape stays
+ * as fitted.
+ */
+function splitForTaper(
+  points: readonly Sample[],
+  along: readonly number[],
+  widths: readonly number[],
+  segment: FittedSegment,
+  from: number,
+  start: number,
+  end: number,
+  taper?: Taper
+): PathNode[] {
+  const a = points[from],
+    d = points[segment.to]
+  const first: PathNode = {
+    x: a.x,
+    y: a.y,
+    width: widths[from],
     in: null,
+    out: segment.out,
+    type: "smooth",
+  }
+  const last: PathNode = {
+    x: d.x,
+    y: d.y,
+    width: widths[segment.to],
+    in: segment.in,
     out: null,
-    type,
-  })
-  // A single press is a round dot, kept as a zero-length editable centre line.
-  if (points.length === 1) {
-    const dot = node(points[0], "smooth")
-    return { kind: "path", nodes: [dot, { ...dot }], closed: false }
+    type: segment.cusp ? "cusp" : "smooth",
   }
-  const corners = cornersOf(points)
-  const nodes: PathNode[] = [node(points[0], "smooth")]
-  for (let c = 0; c + 1 < corners.length; c++) {
-    const first = corners[c],
-      last = corners[c + 1]
-    for (const segment of fitStroke(points, first, last, width)) {
-      nodes[nodes.length - 1] = { ...nodes.at(-1)!, out: segment.out }
-      const end = points[segment.last]
-      const type =
-        segment.last === last && last !== points.length - 1 ? "cusp" : "smooth"
-      nodes.push({ ...node(end, type), in: segment.in })
-    }
+  const s0 = along[from],
+    s1 = along[segment.to]
+  if (!taper || s1 <= s0) return [first, last]
+  const total = along[end] - along[start]
+  const cuts: number[] = []
+  for (const [share, origin, sign] of [
+    [taper.start, along[start], 1],
+    [taper.end, along[end], -1],
+  ] as const) {
+    // One node where the taper meets full width: the eased width between
+    // it and the tip is the curve the widths are drawn along.
+    const zone = Math.max(0, Math.min(MAX_TAPER, share)) * total
+    const at = origin + sign * zone
+    if (zone > 0 && at > s0 && at < s1) cuts.push(at)
   }
-  return { kind: "path", nodes, closed: false }
+  if (!cuts.length) return [first, last]
+  cuts.sort((x, y) => x - y)
+  const nodes = [first]
+  const p3: Point = d
+  let p0: Point = a,
+    p1 = segment.out,
+    p2 = segment.in,
+    t0 = 0
+  for (const at of cuts) {
+    // Chord-length place on the curve; the split is exact wherever it falls.
+    const t = (at - s0) / (s1 - s0)
+    const u = (t - t0) / (1 - t0)
+    const q0 = mix(p0, p1, u),
+      q1 = mix(p1, p2, u),
+      q2 = mix(p2, p3, u),
+      r0 = mix(q0, q1, u),
+      r1 = mix(q1, q2, u),
+      m = mix(r0, r1, u)
+    nodes[nodes.length - 1] = { ...nodes.at(-1)!, out: q0 }
+    let i = from
+    while (i < segment.to && along[i] < at) i++
+    nodes.push({
+      x: m.x,
+      y: m.y,
+      width: widths[i],
+      in: r0,
+      out: null,
+      type: "smooth",
+    })
+    p0 = m
+    p1 = r1
+    p2 = q2
+    t0 = t
+  }
+  nodes[nodes.length - 1] = { ...nodes.at(-1)!, out: p1 }
+  nodes.push({ ...last, in: p2 })
+  return nodes
+}
+
+/** The share of a stroke at each end whose pressure is the pen landing or lifting. */
+const SETTLE_SHARE = 0.1
+/** …but never more than this many document pixels of it. */
+const SETTLE_LENGTH = 40
+
+/*
+ * A pen's pressure ramps up as it lands and falls as it lifts, which would
+ * draw every stroke with a wedge at each end. As Inkscape's pressure pencil,
+ * the first and last tenth of the stroke take the width where it settles
+ * rather than their own (`widthsOver`).
+ */
+
+/** A corner nearer an end than this, along the stroke, is a pen's hook. */
+const HOOK_LENGTH = 8
+
+/**
+ * Drops the hook a pen flicks as it lands or lifts: a sharp turn a few
+ * pixels from an end is the hand, not the drawing, so the stroke starts or
+ * ends at that corner instead. Returns where it starts and ends, and the
+ * corners left between; `fromStart` false keeps the start, already drawn.
+ */
+function trimHooks(
+  points: readonly Sample[],
+  corners: number[],
+  fromStart = true
+): { corners: number[]; first: number; last: number } {
+  const along = (from: number, to: number) => {
+    let length = 0
+    for (let i = from; i < to; i++)
+      length += Math.hypot(
+        points[i + 1].x - points[i].x,
+        points[i + 1].y - points[i].y
+      )
+    return length
+  }
+  let first = 0,
+    last = points.length - 1
+  if (fromStart && corners.length > 2 && along(0, corners[1]) < HOOK_LENGTH)
+    first = corners[1]
+  const end = corners.at(-2)!
+  if (
+    corners.length > 2 &&
+    end > first &&
+    along(end, points.length - 1) < HOOK_LENGTH
+  )
+    last = end
+  return {
+    corners: corners.filter((c) => c >= first && c <= last),
+    first,
+    last,
+  }
 }
 
 /**
@@ -198,7 +527,8 @@ function fitStroke(
   points: readonly Sample[],
   first: number,
   last: number,
-  width: number
+  width: number,
+  leaving?: Point
 ): Segment[] {
   const segments: Segment[] = []
   const widthAllowed = widthTolerance(width)
@@ -206,7 +536,7 @@ function fitStroke(
     [
       first,
       last,
-      tangentAt(points, first, last),
+      leaving ?? tangentAt(points, first, last),
       tangentAt(points, last, first),
     ],
   ]
@@ -929,7 +1259,12 @@ function retyped(path: BezierPath, index: number, type: NodeType): PathNode {
 /** Adaptive subdivision in object space, with error measured after placement. */
 export function flattenPath(
   path: BezierPath,
-  scale = 1
+  scale = 1,
+  /**
+   * The widths of the nodes either side of an open path drawn as one piece
+   * of a longer one, so its widths ease as the whole one's would.
+   */
+  around: Readonly<{ before?: number; after?: number }> = {}
 ): {
   points: Point[]
   widths: number[] | null
@@ -949,8 +1284,37 @@ export function flattenPath(
   }
   if (!path.nodes.length)
     return { points, widths, closed: path.closed, corners }
+  const slopes = widths
+    ? widthSlopes(
+        path.nodes.map((n) => n.width!),
+        path.closed,
+        around
+      )
+    : null
   emit(path.nodes[0], path.nodes[0].width ?? 0)
   if (path.nodes[0].type === "cusp") corners.push(0)
+  let segment = 0
+  // Width eases between nodes along a monotone cubic, as Inkscape's
+  // PowerStroke interpolates its knots: a swell or a taper is smooth with
+  // few nodes, and never overshoots the widths it passes through.
+  const widthAt = (u: number) => {
+    const nodes = path.nodes
+    const a = nodes[segment],
+      b = nodes[(segment + 1) % nodes.length]
+    const w0 = a.width ?? 0,
+      w1 = b.width ?? 0
+    if (!slopes) return w0 + (w1 - w0) * u
+    const m0 = slopes[segment],
+      m1 = slopes[(segment + 1) % nodes.length]
+    const u2 = u * u,
+      u3 = u2 * u
+    return (
+      (2 * u3 - 3 * u2 + 1) * w0 +
+      (u3 - 2 * u2 + u) * m0 +
+      (-2 * u3 + 3 * u2) * w1 +
+      (u3 - u2) * m1
+    )
+  }
   const walk = (
     a: Point,
     b: Point,
@@ -974,7 +1338,7 @@ export function flattenPath(
       return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy)
     }
     if (depth >= 16 || Math.max(distance(b), distance(c)) * scale <= 0.25) {
-      emit(d, wd)
+      emit(d, widthAt(wd))
       return
     }
     const p = mix(a, b, 0.5),
@@ -984,13 +1348,15 @@ export function flattenPath(
       u = mix(q, r, 0.5),
       m = mix(s, u, 0.5),
       wm = (wa + wd) / 2
+    // Here `wa` and `wd` are the parameters the half spans, not widths.
     walk(a, p, s, m, wa, wm, depth + 1)
     walk(m, u, r, d, wm, wd, depth + 1)
   }
   for (let i = 0; i < count; i++) {
     const a = path.nodes[i],
       b = path.nodes[(i + 1) % path.nodes.length]
-    walk(a, a.out ?? a, b.in ?? b, b, a.width ?? 0, b.width ?? 0, 0)
+    segment = i
+    walk(a, a.out ?? a, b.in ?? b, b, 0, 1, 0)
     if (b.type === "cusp" && (i + 1 < path.nodes.length || !path.closed))
       corners.push(points.length - 1)
   }
@@ -999,6 +1365,54 @@ export function flattenPath(
     widths?.pop()
   }
   return { points, widths, closed: path.closed, corners }
+}
+
+/**
+ * Each node's rate of change of width, per segment, for a monotone cubic
+ * through the widths (Fritsch and Carlson, 1980): level where the widths
+ * turn, so a swell peaks at its node rather than past it.
+ */
+function widthSlopes(
+  widths: readonly number[],
+  closed: boolean,
+  around: Readonly<{ before?: number; after?: number }>
+): number[] {
+  const n = widths.length
+  const at = (i: number) =>
+    closed
+      ? widths[(i + n) % n]
+      : i < 0
+        ? (around.before ?? widths[0])
+        : i >= n
+          ? (around.after ?? widths[n - 1])
+          : widths[i]
+  const slopes = widths.map((_, i) => {
+    const before = at(i) - at(i - 1),
+      after = at(i + 1) - at(i)
+    // An end with nothing beyond it leans on its one segment.
+    if (!closed && i === 0 && around.before === undefined) return after
+    if (!closed && i === n - 1 && around.after === undefined) return before
+    return before * after <= 0 ? 0 : (before + after) / 2
+  })
+  const count = closed ? n : n - 1
+  for (let i = 0; i < count; i++) {
+    const j = (i + 1) % n
+    const d = at(i + 1) - at(i)
+    if (d === 0) {
+      slopes[i] = 0
+      slopes[j] = 0
+      continue
+    }
+    const a = slopes[i] / d,
+      b = slopes[j] / d
+    const h = a * a + b * b
+    if (h > 9) {
+      const t = 3 / Math.sqrt(h)
+      slopes[i] = t * a * d
+      slopes[j] = t * b * d
+    }
+  }
+  return slopes
 }
 
 /** Nearest segment parameter for inserting a node, in document coordinates. */

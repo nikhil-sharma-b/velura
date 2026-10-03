@@ -37,6 +37,20 @@ async function open(page: Page) {
 async function path(page: Page) {
   return page.evaluate(() => window.engine.getSnapshot().vectorPaths[0])
 }
+/**
+ * A vector brush stroke lands unselected, as paint does; it is selected
+ * here so its path can be read back.
+ */
+async function selectStroke(page: Page) {
+  await page.waitForFunction(() => window.engine.historyUsage().steps > 0)
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().vectorSelection)
+  ).toEqual([])
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "selectVectorObjects", ids: ["shape-1"] })
+  )
+  await waitForObject(page)
+}
 async function waitForObject(page: Page) {
   await page.waitForFunction(
     () => window.engine.getSnapshot().vectorPaths.length === 1
@@ -269,18 +283,24 @@ test("pressure stroke keeps widths, remains editable, and survives save/import a
     await window.engine.dispatch({ type: "setTool", tool: "pressure" })
   })
   await pressureStroke(page)
-  await waitForObject(page)
+  await selectStroke(page)
   const object = (await path(page))!
   expect(object.geometry.kind).toBe("path")
   if (object.geometry.kind !== "path")
     throw new Error("Pressure is an editable path")
   expect(object.geometry.nodes[0]).toMatchObject({ x: 20, y: 70 })
-  expect(object.geometry.nodes[0].width).toBeCloseTo(4, 5)
+  // The pen's landing and lifting are not tapers: the ends take the width
+  // the stroke settles to a tenth of the way in.
+  const ends = [
+    object.geometry.nodes[0].width!,
+    object.geometry.nodes.at(-1)!.width!,
+  ]
+  for (const end of ends) expect(end).toBeGreaterThan(6)
   expect(object.geometry.nodes.at(-1)).toMatchObject({
     x: 175,
     y: 70,
   })
-  expect(object.geometry.nodes.at(-1)!.width).toBeCloseTo(4, 5)
+
   expect(
     Math.max(...object.geometry.nodes.map((n) => n.width!))
   ).toBeGreaterThan(19)
@@ -343,7 +363,7 @@ test("stabilized pressure strokes suppress tremor and flush the raw endpoint", a
     }
     send("pointerup", 100, 60)
   })
-  await waitForObject(page)
+  await selectStroke(page)
   const geometry = (await path(page))!.geometry
   if (geometry.kind !== "path") throw new Error("Expected a path")
   expect(geometry.nodes.at(-1)).toMatchObject({ x: 100, y: 60 })

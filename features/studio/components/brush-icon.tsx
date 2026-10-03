@@ -56,3 +56,26 @@ export function EraserToolIcon({
     </span>
   )
 }
+
+/** The vector brush, badged like the eraser when its width follows pressure. */
+export function VectorBrushToolIcon({
+  kind,
+  className,
+}: {
+  kind: "solid" | "pressure"
+  className?: string
+}) {
+  if (kind === "solid")
+    return <PaintBrushIcon className={className} weight="fill" />
+
+  return (
+    <span className="relative inline-flex size-5 items-center justify-center">
+      <PaintBrushIcon className={className} weight="regular" />
+      <WaveformIcon
+        aria-hidden="true"
+        className="absolute -right-1 -bottom-1 size-2.5 rounded-full bg-primary p-px text-primary-foreground"
+        weight="bold"
+      />
+    </span>
+  )
+}

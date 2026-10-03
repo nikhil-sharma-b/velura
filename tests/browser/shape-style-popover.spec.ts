@@ -168,3 +168,42 @@ test("with a vector tool in hand the size setting is the outline width", async (
   await page.getByRole("button", { name: "Brush tool", exact: true }).click()
   await expect(page.getByRole("button", { name: /^Size:/ })).toBeVisible()
 })
+
+test("two curves selected whole join from the objects' actions", async ({
+  page,
+}) => {
+  const box = await openStudio(page)
+  const layers = page.getByRole("region", { name: "Layers" })
+  await layers.getByRole("button", { name: "Add vector layer" }).click()
+  const cx = box.x + box.width / 2
+  const cy = box.y + box.height / 2
+  await page.getByRole("button", { name: "Pen tool" }).click()
+  for (const dy of [-40, 40]) {
+    for (const dx of [-60, 60]) {
+      await page.mouse.move(cx + dx, cy + dy)
+      await page.mouse.down()
+      await page.mouse.up()
+    }
+    await page.getByRole("button", { name: "Finish open path" }).click()
+  }
+  await page.getByRole("button", { name: "Select objects" }).click()
+  // A band round both curves selects them.
+  await page.mouse.move(cx - 100, cy - 80)
+  await page.mouse.down()
+  await page.mouse.move(cx + 100, cy + 80, { steps: 8 })
+  await page.mouse.up()
+  await page.getByRole("button", { name: /^Shape:/ }).click()
+  const actions = page
+    .getByRole("dialog", { name: "Shape adjustment" })
+    .getByRole("group", { name: "Object actions" })
+  await expect(
+    actions.getByRole("button", { name: "Join curves", exact: true })
+  ).toBeEnabled()
+  await actions
+    .getByRole("button", { name: "Join curves with a segment" })
+    .click()
+  // One curve left, so it can now only be closed.
+  await expect(
+    actions.getByRole("button", { name: "Join curves with a segment" })
+  ).toBeEnabled()
+})

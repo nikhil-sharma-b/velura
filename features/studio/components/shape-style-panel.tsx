@@ -11,6 +11,8 @@ import {
   ArrowLineUpIcon,
   BoundingBoxIcon,
   CopyIcon,
+  LineSegmentIcon,
+  LinkIcon,
   TrashIcon,
 } from "@phosphor-icons/react"
 import { memo, useEffect, useId, useRef, type ReactNode } from "react"
@@ -55,6 +57,8 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
   selected,
   outlineOnly = false,
   currentColor,
+  joinable = { merge: false, segment: false },
+  curves = false,
   runCommand,
 }: {
   engine: Engine | null
@@ -65,6 +69,10 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
   outlineOnly?: boolean
   /** What a paint with no colour of its own is drawn in. */
   currentColor: string
+  /** Whether the selected curves can be joined, merged or by a segment. */
+  joinable?: { merge: boolean; segment: boolean }
+  /** Curves are among the selected objects, so joining applies. */
+  curves?: boolean
   /** Runs a studio command by id, as its keybind or the palette would. */
   runCommand(id: string): void
 }) {
@@ -129,9 +137,10 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
       {selected && (
         <>
           <Separator />
+          {/* Grouped by what they do, one row each, so the panel's width
+              holds them and an action is found by its purpose. */}
           <div role="group" aria-label="Object actions" className="space-y-1">
-            <p className="text-xs text-muted-foreground">Objects</p>
-            <div className="flex gap-0.5">
+            <ActionRow label="Edit">
               <ActionButton
                 label="Transform objects"
                 command="object.transform"
@@ -153,7 +162,8 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
               >
                 <TrashIcon />
               </ActionButton>
-              <span aria-hidden className="mx-1 w-px self-stretch bg-border" />
+            </ActionRow>
+            <ActionRow label="Order">
               <ActionButton
                 label="Bring to front"
                 onClick={() =>
@@ -170,7 +180,28 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
               >
                 <ArrowLineDownIcon />
               </ActionButton>
-            </div>
+            </ActionRow>
+            {/* Only curves have ends to join; a rectangle never shows it. */}
+            {curves && (
+              <ActionRow label="Join">
+                <ActionButton
+                  label="Join curves"
+                  command="node.join"
+                  disabled={!joinable.merge}
+                  onClick={() => runCommand("node.join")}
+                >
+                  <LinkIcon />
+                </ActionButton>
+                <ActionButton
+                  label="Join curves with a segment"
+                  command="node.joinWithSegment"
+                  disabled={!joinable.segment}
+                  onClick={() => runCommand("node.joinWithSegment")}
+                >
+                  <LineSegmentIcon />
+                </ActionButton>
+              </ActionRow>
+            )}
           </div>
           <div role="group" aria-label="Align to canvas" className="space-y-1">
             <p className="text-xs text-muted-foreground">Align to canvas</p>
@@ -198,14 +229,35 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
   )
 })
 
+/**
+ * A named row of actions: what they are for, then the buttons, which start
+ * on one line down the rows so they read as a column.
+ */
+function ActionRow({
+  label,
+  children,
+}: {
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <div className="grid grid-cols-[3.5rem_1fr] items-center">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <div className="flex gap-0.5">{children}</div>
+    </div>
+  )
+}
+
 function ActionButton({
   label,
   command,
+  disabled,
   onClick,
   children,
 }: {
   label: string
   command?: string
+  disabled?: boolean
   onClick(): void
   children: ReactNode
 }) {
@@ -216,6 +268,7 @@ function ActionButton({
       variant="ghost"
       size="icon-sm"
       className="rounded-md"
+      disabled={disabled}
       onClick={onClick}
     >
       {children}
