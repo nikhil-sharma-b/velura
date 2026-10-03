@@ -3,6 +3,10 @@ import { applyAffine } from "./transform-session"
 import { selectObjects } from "./vector-objects"
 import {
   breakPath,
+  cutPathSegments,
+  joinPathEnds,
+  type JoinMode,
+  type PathEnd,
   deletePathNodes,
   editPathNode,
   handleOf,
@@ -78,9 +82,9 @@ export const isHandle = (part: NodeGrab["part"]): part is "in" | "out" =>
 const same = (a: VectorNode, b: VectorNode) =>
   a.objectId === b.objectId && a.index === b.index
 
-const isPath = (
-  o: VectorObject
-): o is VectorObject & { geometry: BezierPath } => o.geometry.kind === "path"
+type PathObject = VectorObject & { geometry: BezierPath }
+
+const isPath = (o: VectorObject): o is PathObject => o.geometry.kind === "path"
 
 /** Works out what a press of the node tool at `point` on `scene` does. */
 export function pressNode({
@@ -698,31 +702,174 @@ export function breakNodes(
   scene: VectorScene,
   nodes: readonly VectorNode[],
   nextId: () => string
-): { edits: SceneCommand[]; added: string[] } | null {
-  const edits: SceneCommand[] = []
-  const added: string[] = []
+): PiecesCommand | null {
+  return piecesCommand(scene, nodes, breakPath, nextId)
+}
+
+/**
+ * The scene edits of deleting every selected segment: a closed path opens
+ * there; an open one parts, each further piece a path of its own above it,
+ * as a break leaves them; a path with nothing left goes. Null when no
+ * segment is selected.
+ */
+export function deleteSegments(
+  scene: VectorScene,
+  nodes: readonly VectorNode[],
+  nextId: () => string
+): PiecesCommand | null {
+  return piecesCommand(
+    scene,
+    selectedSegments(scene.objects, nodes),
+    cutPathSegments,
+    nextId
+  )
+}
+
+/** Scene edits that cut paths up, with the paths they added and removed. */
+export type PiecesCommand = {
+  edits: SceneCommand[]
+  added: string[]
+  removed: string[]
+}
+
+/**
+ * The scene edits of cutting each path at its `at` indices into `cut`'s
+ * pieces: the first stays the path, each further one a path of its own in
+ * the same style, directly above it and in order along it, named by
+ * `nextId`; no pieces at all removes it. Null when nothing was cut.
+ */
+function piecesCommand(
+  scene: VectorScene,
+  cuts: readonly VectorNode[],
+  cut: (path: BezierPath, indices: readonly number[]) => BezierPath[],
+  nextId: () => string
+): PiecesCommand | null {
+  const result: PiecesCommand = { edits: [], added: [], removed: [] }
   // From the top down, so each add leaves the places below it be.
-  for (let at = scene.objects.length - 1; at >= 0; at--) {
-    const object = scene.objects[at]
+  for (let place = scene.objects.length - 1; place >= 0; place--) {
+    const object = scene.objects[place]
     if (!isPath(object)) continue
-    const indices = nodes
+    const indices = cuts
       .filter((n) => n.objectId === object.id)
       .map((n) => n.index)
     if (!indices.length) continue
-    const [first, ...rest] = breakPath(object.geometry, indices)
+    const [first, ...rest] = cut(object.geometry, indices)
     if (first === object.geometry) continue
-    edits.push({ type: "update", id: object.id, patch: { geometry: first } })
+    if (!first) {
+      result.edits.push({ type: "remove", id: object.id })
+      result.removed.push(object.id)
+      continue
+    }
+    result.edits.push({
+      type: "update",
+      id: object.id,
+      patch: { geometry: first },
+    })
     rest.forEach((geometry, k) => {
       const id = nextId()
-      added.push(id)
-      edits.push({
+      result.added.push(id)
+      result.edits.push({
         type: "add",
-        index: at + 1 + k,
+        index: place + 1 + k,
         object: { ...object, id, geometry },
       })
     })
   }
-  return edits.length ? { edits, added } : null
+  return result.edits.length ? result : null
+}
+
+/**
+ * The two selected nodes as ends of open paths, the first selected first;
+ * null unless exactly two are selected and each is such an end, and,
+ * merging a path's own ends, unless enough nodes would be left to close.
+ */
+function joinEnds(
+  paths: readonly VectorObject[],
+  nodes: readonly VectorNode[],
+  mode: JoinMode
+): [JoinEnd, JoinEnd] | null {
+  if (nodes.length !== 2) return null
+  const ends = nodes.map((n): JoinEnd | null => {
+    const object = paths.find((o) => o.id === n.objectId)
+    if (!object || !isPath(object) || object.geometry.closed) return null
+    const last = object.geometry.nodes.length - 1
+    return n.index === 0 || n.index === last
+      ? { object, end: n.index === 0 ? "start" : "end" }
+      : null
+  })
+  const [a, b] = ends
+  if (!a || !b) return null
+  if (a.object === b.object) {
+    if (a.end === b.end) return null
+    if (mode === "merge" && a.object.geometry.nodes.length < 3) return null
+  }
+  return [a, b]
+}
+
+type JoinEnd = { object: PathObject; end: PathEnd }
+
+/** Whether the selection is two ends of open paths a join can join. */
+export function canJoin(
+  paths: readonly VectorObject[],
+  nodes: readonly VectorNode[],
+  mode: JoinMode = "merge"
+): boolean {
+  return joinEnds(paths, nodes, mode) !== null
+}
+
+/**
+ * The scene edits of joining the two selected ends, merged or by a segment
+ * (`mode`). A path's own ends close it; two paths become the first
+ * selected's object, in its style, the second's nodes carried into its
+ * coordinates. The joined node or nodes stay selected. Null when the
+ * selection is not two ends to join.
+ */
+export function joinNodes(
+  scene: VectorScene,
+  nodes: readonly VectorNode[],
+  mode: JoinMode
+): {
+  edits: SceneCommand[]
+  nodes: VectorNode[]
+  removed: string[]
+} | null {
+  const ends = joinEnds(scene.objects, nodes, mode)
+  if (!ends) return null
+  const [a, b] = ends
+  const samePath = a.object === b.object
+  // The second path in the first's space: out to the scene, back into it.
+  const into = invertMatrix(a.object.transform)
+  const carry = (p: Point | null) =>
+    p && applyAffine(into, applyAffine(b.object.transform, p))
+  const other = samePath
+    ? null
+    : {
+        ...b.object.geometry,
+        nodes: b.object.geometry.nodes.map((n) => ({
+          ...n,
+          ...carry({ x: n.x, y: n.y }),
+          in: carry(n.in),
+          out: carry(n.out),
+        })),
+      }
+  const geometry = joinPathEnds(a.object.geometry, a.end, other, b.end, mode)
+  const id = a.object.id
+  // `a` runs on into the join, so it is where `a`'s nodes end.
+  const joint = samePath ? 0 : a.object.geometry.nodes.length - 1
+  const held =
+    mode === "merge"
+      ? [joint]
+      : samePath
+        ? [0, geometry.nodes.length - 1]
+        : [joint, joint + 1]
+  return {
+    edits: [
+      { type: "update", id, patch: { geometry } },
+      ...(samePath ? [] : [{ type: "remove" as const, id: b.object.id }]),
+    ],
+    nodes: held.map((index) => ({ objectId: id, index })),
+    removed: samePath ? [] : [b.object.id],
+  }
 }
 
 /**

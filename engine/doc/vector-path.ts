@@ -208,6 +208,137 @@ export function breakPath(
   })
 }
 
+/** Which end of an open path: its first node or its last. */
+export type PathEnd = "start" | "end"
+
+/** How two ends join: merged into one node, or linked by a straight segment. */
+export type JoinMode = "merge" | "segment"
+
+/** `path` run the other way, each node's handles swapping sides. */
+function reversed(path: BezierPath): BezierPath {
+  return {
+    ...path,
+    nodes: [...path.nodes]
+      .reverse()
+      .map((n) => ({ ...n, in: n.out, out: n.in })),
+  }
+}
+
+/**
+ * Open path `a`'s end `aEnd` joined to `b`'s end `bEnd`, or to its own other
+ * end when `b` is null, which closes it. Merging puts one node at the ends'
+ * midpoint, each end's outer handle moved with it; a segment links them
+ * straight. `b` is given in `a`'s coordinates; `a` runs on into `b`.
+ */
+export function joinPathEnds(
+  a: BezierPath,
+  aEnd: PathEnd,
+  b: BezierPath | null,
+  bEnd: PathEnd,
+  mode: JoinMode
+): BezierPath {
+  if (a.closed || b?.closed || (!b && aEnd === bEnd))
+    throw new Error("Choose two ends of open paths.")
+  if (!b) {
+    if (mode === "segment") {
+      // The closing segment is straight: neither end keeps a handle on it.
+      const nodes = a.nodes.map((n, i) => ({
+        ...n,
+        ...(i === 0 ? { in: null } : {}),
+        ...(i === a.nodes.length - 1 ? { out: null } : {}),
+      }))
+      return { ...a, closed: true, nodes: solveAuto(nodes, true) }
+    }
+    if (a.nodes.length < 3)
+      throw new Error("A closed path needs at least two anchors.")
+    const first = a.nodes[0],
+      last = a.nodes[a.nodes.length - 1]
+    return {
+      ...a,
+      closed: true,
+      nodes: solveAuto([merged(last, first), ...a.nodes.slice(1, -1)], true),
+    }
+  }
+  const head = aEnd === "end" ? a.nodes : reversed(a).nodes
+  const tail = bEnd === "start" ? b.nodes : reversed(b).nodes
+  const nodes =
+    mode === "segment"
+      ? [
+          ...head.slice(0, -1),
+          { ...head[head.length - 1], out: null },
+          { ...tail[0], in: null },
+          ...tail.slice(1),
+        ]
+      : [
+          ...head.slice(0, -1),
+          merged(head[head.length - 1], tail[0]),
+          ...tail.slice(1),
+        ]
+  return { ...a, closed: false, nodes: solveAuto(nodes, false) }
+}
+
+/**
+ * One node at the midpoint of `before`, an end that keeps its in-handle,
+ * and `after`, one that keeps its out-handle, each moved with its anchor.
+ */
+function merged(before: PathNode, after: PathNode): PathNode {
+  const mid = mix(before, after, 0.5)
+  const moved = (n: PathNode, h: Point | null) =>
+    h && { x: h.x + mid.x - n.x, y: h.y + mid.y - n.y }
+  return {
+    ...mid,
+    in: moved(before, before.in),
+    out: moved(after, after.out),
+    type: "cusp",
+    ...(before.width !== undefined && after.width !== undefined
+      ? { width: (before.width + after.width) / 2 }
+      : {}),
+  }
+}
+
+/**
+ * `path` without segments `indices` (each running from its node to the
+ * next), as the open paths left in order along it: a closed path opens at
+ * its first, an open one parts at each. A piece of one lone node goes.
+ */
+export function cutPathSegments(
+  path: BezierPath,
+  indices: readonly number[]
+): BezierPath[] {
+  const count = path.nodes.length
+  const cuts = [...new Set(indices)]
+    .filter((i) => i >= 0 && i < (path.closed ? count : count - 1))
+    .sort((a, b) => a - b)
+  if (!cuts.length) return [path]
+  // A closed path read from just after its first cut round to just before.
+  const start = path.closed ? cuts[0] + 1 : 0
+  const nodes = [...path.nodes.slice(start), ...path.nodes.slice(0, start)]
+  const ends = [
+    0,
+    ...cuts
+      .map((c) => (c - start + count) % count)
+      .filter((c) => c !== count - 1 || !path.closed)
+      .map((c) => c + 1),
+    count,
+  ]
+  return ends
+    .slice(1)
+    .map((last, k) => nodes.slice(ends[k], last))
+    .filter((piece) => piece.length > 1)
+    .map((piece) => ({
+      ...path,
+      closed: false,
+      nodes: solveAuto(
+        piece.map((n, i) => ({
+          ...n,
+          ...(i === 0 ? { in: null } : {}),
+          ...(i === piece.length - 1 ? { out: null } : {}),
+        })),
+        false
+      ),
+    }))
+}
+
 /** A straight segment, or one with handles to bend it. */
 export type SegmentShape = "line" | "curve"
 

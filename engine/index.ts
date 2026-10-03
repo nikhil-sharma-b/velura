@@ -14,7 +14,9 @@ import {
   moveNodes,
   breakNodes,
   deleteNodes,
+  deleteSegments,
   insertNodes,
+  joinNodes,
   nodeCommand,
   segmentCommand,
   isHandle,
@@ -368,11 +370,12 @@ export {
 export type { Curve, CurvePoint } from "./brush/curve"
 export {
   canBreak,
+  canJoin,
   handlesShown,
   selectedSegments,
   type VectorNode,
 } from "./doc/node-tool"
-export type { NodeType, SegmentShape } from "./doc/vector-path"
+export type { JoinMode, NodeType, SegmentShape } from "./doc/vector-path"
 export {
   DEFAULT_PRESSURE_CURVE,
   DEFAULT_PRESSURE_PRESET,
@@ -646,6 +649,13 @@ export type EngineCommand =
    * an open one parts into paths of its own.
    */
   | { type: "breakVectorNodes" }
+  /**
+   * Joins the two selected ends of open paths (Shift+J), merged into one
+   * node or, with `segment`, linked by a straight segment (Alt+J).
+   */
+  | { type: "joinVectorNodes"; segment?: boolean }
+  /** Deletes every selected segment, opening or parting its path (Alt+Delete). */
+  | { type: "deleteVectorSegments" }
   /** Makes every selected segment straight, or bendable (Shift+L, Shift+U). */
   | { type: "setVectorSegmentShape"; shape: SegmentShape }
   /** Makes every selected node cusp, smooth, symmetric or auto-smooth. */
@@ -3151,6 +3161,12 @@ export function createEngine(
     return message === CANNOT_INSERT || message === CANNOT_BREAK
       ? null
       : snapshot.problem
+  }
+
+  /** Ids for new objects, counting on from the highest `scene` has. */
+  function objectIds(scene: VectorScene): () => string {
+    let next = Number(nextObjectId(scene).slice("shape-".length))
+    return () => `shape-${next++}`
   }
 
   /** An id no object in `scene` has. */
@@ -5691,12 +5707,10 @@ export function createEngine(
           if (!snapshot.vectorNodes.length) break
           dropShapeDrag()
           const layer = selectedVectorLayer()
-          // New paths count on from the highest id the layer has.
-          let next = Number(nextObjectId(layer.scene).slice("shape-".length))
           const edit = breakNodes(
             layer.scene,
             snapshot.vectorNodes,
-            () => `shape-${next++}`
+            objectIds(layer.scene)
           )
           if (!edit) {
             publish({
@@ -5709,6 +5723,44 @@ export function createEngine(
             vectorNodes: [],
             vectorSelection: [...snapshot.vectorSelection, ...edit.added],
             problem: nodeProblemGone(),
+          })
+          break
+        }
+        case "joinVectorNodes": {
+          if (snapshot.vectorNodes.length !== 2) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const mode = command.segment ? "segment" : "merge"
+          const edit = joinNodes(layer.scene, snapshot.vectorNodes, mode)
+          if (!edit) break
+          editScene(layer.id, edit.edits, "join nodes")
+          publish({
+            vectorNodes: edit.nodes,
+            vectorSelection: snapshot.vectorSelection.filter(
+              (id) => !edit.removed.includes(id)
+            ),
+          })
+          break
+        }
+        case "deleteVectorSegments": {
+          if (!snapshot.vectorNodes.length) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const edit = deleteSegments(
+            layer.scene,
+            snapshot.vectorNodes,
+            objectIds(layer.scene)
+          )
+          if (!edit) break
+          editScene(layer.id, edit.edits, "delete segments")
+          publish({
+            vectorNodes: [],
+            vectorSelection: [
+              ...snapshot.vectorSelection.filter(
+                (id) => !edit.removed.includes(id)
+              ),
+              ...edit.added,
+            ],
           })
           break
         }

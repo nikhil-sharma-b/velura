@@ -582,6 +582,62 @@ describe("filter commands", () => {
     expect(run([])).toEqual([])
   })
 
+  test("Shift+J, Alt+J and Alt+Delete join ends and delete segments when they fit", () => {
+    const line = {
+      id: "p",
+      geometry: {
+        kind: "path",
+        closed: false,
+        nodes: [0, 1, 2].map((x) => ({ x, y: 0, in: null, out: null })),
+      },
+    }
+    const run = (vectorNodes: unknown[]) => {
+      const { engine, sent } = fakeEngine([raster("a")], "a", {
+        tool: "node",
+        vectorNodes,
+        vectorPaths: [line],
+      })
+      const resolver = createKeybindResolver(studioCommands, () =>
+        context(engine)
+      )
+      for (const [key, mods] of [
+        ["J", { shiftKey: true }],
+        ["j", { altKey: true }],
+        ["Delete", { altKey: true }],
+      ] as const)
+        resolver.keydown({
+          key,
+          shiftKey: false,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          repeat: false,
+          defaultPrevented: false,
+          target: null,
+          preventDefault: () => {},
+          ...mods,
+        })
+      return sent
+    }
+    // The two ends: joinable, but no segment between them.
+    expect(
+      run([
+        { objectId: "p", index: 0 },
+        { objectId: "p", index: 2 },
+      ])
+    ).toEqual([
+      { type: "joinVectorNodes" },
+      { type: "joinVectorNodes", segment: true },
+    ])
+    // A segment's two ends, one of them inside the path: no join.
+    expect(
+      run([
+        { objectId: "p", index: 0 },
+        { objectId: "p", index: 1 },
+      ])
+    ).toEqual([{ type: "deleteVectorSegments" }])
+  })
+
   test("Shift+C, S, Y and A set the selected nodes' type, and only then", () => {
     const run = (vectorNodes: unknown[]) => {
       const { engine, sent } = fakeEngine([raster("a")], "a", {

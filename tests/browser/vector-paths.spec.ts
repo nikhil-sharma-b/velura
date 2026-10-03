@@ -870,3 +870,100 @@ test("breaking an open path makes two objects above one another, one step", asyn
     await page.evaluate(() => window.engine.getSnapshot().layers.at(-1))
   ).toMatchObject({ objects: 1 })
 })
+
+test("a path broken and joined back has its shape again, each one step", async ({
+  page,
+}) => {
+  const box = await open(page)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "pen" })
+  )
+  await page.mouse.click(box.x + 20, box.y + 60)
+  await page.mouse.click(box.x + 100, box.y + 60)
+  await page.mouse.click(box.x + 180, box.y + 60)
+  await page.evaluate(() => window.engine.dispatch({ type: "finishPenPath" }))
+  await waitForObject(page)
+  const object = (await path(page))!
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "node" })
+  )
+  await page.mouse.click(box.x + 100, box.y + 60)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "breakVectorNodes" })
+  )
+  await page.waitForFunction(
+    () => window.engine.getSnapshot().vectorPaths.length === 2
+  )
+  // A band round the break takes hold of both coincident ends.
+  await page.mouse.move(box.x + 90, box.y + 40)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 110, box.y + 80, { steps: 5 })
+  await page.mouse.up()
+  await page.waitForFunction(
+    () => window.engine.getSnapshot().vectorNodes.length === 2
+  )
+  await page.evaluate(() => window.engine.dispatch({ type: "joinVectorNodes" }))
+  await page.waitForFunction(
+    () => window.engine.getSnapshot().vectorPaths.length === 1
+  )
+  const joined = (await path(page))!
+  expect(joined.style).toEqual(object.style)
+  const points = (o: typeof joined) =>
+    o.geometry.kind === "path"
+      ? o.geometry.nodes.map((n) => [n.x, n.y]).sort((a, b) => a[0] - b[0])
+      : []
+  expect(points(joined)).toEqual(points(object))
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().layers.at(-1))
+  ).toMatchObject({ objects: 1 })
+  // One undo parts them again; a second brings the original back.
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().layers.at(-1))
+  ).toMatchObject({ objects: 2 })
+  await page.evaluate(async (id) => {
+    await window.engine.dispatch({ type: "undo" })
+    await window.engine.dispatch({ type: "selectVectorObjects", ids: [id] })
+  }, object.id)
+  expect(await path(page)).toEqual(object)
+})
+
+test("deleting a segment of an open path parts it into two objects", async ({
+  page,
+}) => {
+  const box = await open(page)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "pen" })
+  )
+  for (const x of [20, 70, 130, 180])
+    await page.mouse.click(box.x + x, box.y + 60)
+  await page.evaluate(() => window.engine.dispatch({ type: "finishPenPath" }))
+  await waitForObject(page)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "node" })
+  )
+  await page.mouse.click(box.x + 70, box.y + 60)
+  await page.keyboard.down("Shift")
+  await page.mouse.click(box.x + 130, box.y + 60)
+  await page.keyboard.up("Shift")
+  await page.waitForFunction(
+    () => window.engine.getSnapshot().vectorNodes.length === 2
+  )
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "deleteVectorSegments" })
+  )
+  await page.waitForFunction(
+    () => window.engine.getSnapshot().vectorPaths.length === 2
+  )
+  const xs = await page.evaluate(() =>
+    window.engine
+      .getSnapshot()
+      .vectorPaths.map((o) =>
+        o.geometry.kind === "path" ? o.geometry.nodes.map((n) => n.x) : []
+      )
+  )
+  expect(xs).toEqual([
+    [20, 70],
+    [130, 180],
+  ])
+})

@@ -20,6 +20,7 @@ import {
   docToScreen,
   handlesShown,
   canBreak,
+  canJoin,
   selectedSegments,
   placementExtent,
   resolveSnap,
@@ -905,6 +906,41 @@ export function VectorNodes({
               onClick={() => void engine.dispatch({ type: "breakVectorNodes" })}
             >
               Break
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              title="Join the two selected end nodes (Shift+J)"
+              disabled={
+                !canJoin(snapshot.vectorPaths, snapshot.vectorNodes, "merge")
+              }
+              onClick={() => void engine.dispatch({ type: "joinVectorNodes" })}
+            >
+              Join
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              title="Join the two selected end nodes with a segment (Alt+J)"
+              disabled={
+                !canJoin(snapshot.vectorPaths, snapshot.vectorNodes, "segment")
+              }
+              onClick={() =>
+                void engine.dispatch({ type: "joinVectorNodes", segment: true })
+              }
+            >
+              Join with segment
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              title="Delete the selected segments (Alt+Delete)"
+              disabled={!hasSegments}
+              onClick={() =>
+                void engine.dispatch({ type: "deleteVectorSegments" })
+              }
+            >
+              Delete segment
             </Button>
             {NODE_TYPE_BUTTONS.map(({ nodeType, label, keys }) => (
               <Button

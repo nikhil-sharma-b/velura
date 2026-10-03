@@ -5,6 +5,8 @@ import {
   type EngineCommand,
   type FilterKind,
   type LayerSummary,
+  canJoin,
+  type JoinMode,
   selectedSegments,
 } from "@/engine"
 import { createRegistry, type Command } from "@/features/commands/lib/registry"
@@ -194,6 +196,21 @@ function nodesOr(
       nodesSelected(context.engine)
         ? nodes.run(context, input)
         : otherwise.run(context, input),
+  }
+}
+
+/** A join of the two selected end nodes, available only when they fit. */
+function onJoinableEnds(
+  command: EngineCommand,
+  mode: JoinMode
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    ...dispatching(command),
+    available: ({ engine }) => {
+      if (!nodesSelected(engine)) return false
+      const { vectorPaths, vectorNodes } = engine!.getSnapshot()
+      return canJoin(vectorPaths, vectorNodes, mode)
+    },
   }
 }
 
@@ -545,6 +562,27 @@ export const studioCommands = createRegistry<StudioContext>([
     category: "Tools",
     keybinds: ["shift+b"],
     ...onSelectedNodes({ type: "breakVectorNodes" }),
+  },
+  {
+    id: "node.join",
+    label: "Join selected end nodes",
+    category: "Tools",
+    keybinds: ["shift+j"],
+    ...onJoinableEnds({ type: "joinVectorNodes" }, "merge"),
+  },
+  {
+    id: "node.joinWithSegment",
+    label: "Join selected end nodes with a segment",
+    category: "Tools",
+    keybinds: ["alt+j"],
+    ...onJoinableEnds({ type: "joinVectorNodes", segment: true }, "segment"),
+  },
+  {
+    id: "segment.delete",
+    label: "Delete selected segments",
+    category: "Tools",
+    keybinds: ["alt+delete", "alt+backspace"],
+    ...onSelectedSegments({ type: "deleteVectorSegments" }),
   },
   {
     id: "segment.line",
