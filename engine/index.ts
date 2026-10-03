@@ -688,6 +688,8 @@ export type EngineCommand =
    * back to them.
    */
   | { type: "rasteriseLayer"; id: string }
+  /** Whether the vector brush follows the pen's pressure or keeps full width. */
+  | { type: "setVectorBrushPressure"; pressure: boolean }
   /** How the shape tools draw what comes next; unnamed fields are kept. */
   | {
       type: "setShapeStyle"
@@ -990,6 +992,8 @@ export type EngineSnapshot = Readonly<{
   tool: Tool
   /** What the shape tools give a new shape (19). */
   shapeStyle: ShapeStyle
+  /** Whether the vector brush's width follows pressure; off, it is solid. */
+  vectorBrushPressure: boolean
   /**
    * The selected objects' own style, which the shape options show and edit
    * in place of `shapeStyle` while there is one; null with none selected.
@@ -1138,6 +1142,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   straightEdge: null,
   tool: "brush",
   shapeStyle: DEFAULT_SHAPE_STYLE,
+  vectorBrushPressure: true,
   selectionStyle: null,
   vectorSelection: [],
   vectorPaths: [],
@@ -3363,7 +3368,11 @@ export function createEngine(
     const drag = shapeDrag!
     const pressureSink = (x: number, y: number, pressure: number) => {
       if (drag.pressurePoints!.length < 100_000)
-        drag.pressurePoints!.push({ x, y, pressure })
+        drag.pressurePoints!.push({
+          x,
+          y,
+          pressure: snapshot.vectorBrushPressure ? pressure : 1,
+        })
     }
     samples.drain((x, y, pressure, tiltX, tiltY, time) => {
       const point = { x: toDocX(x, y), y: toDocY(x, y) }
@@ -3432,7 +3441,7 @@ export function createEngine(
         drag.pressurePoints!.push({
           x: tail.x,
           y: tail.y,
-          pressure: tail.pressure,
+          pressure: snapshot.vectorBrushPressure ? tail.pressure : 1,
         })
     }
     const document = requireDocument()
@@ -6060,6 +6069,9 @@ export function createEngine(
           })
           break
         }
+        case "setVectorBrushPressure":
+          publish({ vectorBrushPressure: command.pressure === true })
+          break
         case "placeImage": {
           const document = requireDocument()
           const canvas = { width: document.width, height: document.height }

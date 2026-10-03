@@ -109,7 +109,7 @@ import { useRulersVisible } from "../lib/ruler-preference"
 import { EraserTrail } from "./eraser-trail"
 import { StraightEdgeOverlay } from "./straight-edge"
 import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor"
-import { BrushIcon, EraserToolIcon } from "./brush-icon"
+import { BrushIcon, EraserToolIcon, VectorBrushToolIcon } from "./brush-icon"
 import { BrushLibrary } from "./brush-library"
 import { TiltToggle } from "./tilt-toggle"
 import { IconButton } from "./icon-button"
@@ -640,6 +640,7 @@ export function CanvasHost({
   const layersToggle = useRef<HTMLButtonElement>(null)
   const layersToggled = useRef(false)
   const [eraserOpen, setEraserOpen] = useState(false)
+  const [vectorBrushOpen, setVectorBrushOpen] = useState(false)
   const [featherRadius, setFeatherRadius] = useState(10)
   const [featherOpen, setFeatherOpen] = useState(false)
   const [confirming, setConfirming] = useState<LayerConfirmation | null>(null)
@@ -1502,7 +1503,79 @@ export function CanvasHost({
                   aria-label="Brush adjustments"
                   className="flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
                 >
-                  {snapshot.tool === "eraser" ? (
+                  {snapshot.tool === "pressure" ? (
+                    <PopoverPrimitive.Root
+                      open={vectorBrushOpen}
+                      onOpenChange={setVectorBrushOpen}
+                    >
+                      <PopoverPrimitive.Trigger asChild>
+                        <IconButton
+                          variant="ghost"
+                          size="sm"
+                          label={`Choose vector brush: ${snapshot.vectorBrushPressure ? "Pressure" : "Solid"}`}
+                          side="right"
+                          className="size-8 rounded-lg p-0"
+                        >
+                          <VectorBrushToolIcon
+                            kind={
+                              snapshot.vectorBrushPressure
+                                ? "pressure"
+                                : "solid"
+                            }
+                          />
+                        </IconButton>
+                      </PopoverPrimitive.Trigger>
+                      <PopoverPrimitive.Portal>
+                        <PopoverPrimitive.Content
+                          side="right"
+                          align="end"
+                          sideOffset={10}
+                          collisionPadding={12}
+                          aria-label="Choose a vector brush"
+                          className="z-50 w-72 rounded-xl border bg-background p-3 shadow-xl"
+                        >
+                          <h2 className="mb-2 text-sm font-medium">
+                            Vector brushes
+                          </h2>
+                          {(["solid", "pressure"] as const).map((kind) => (
+                            <button
+                              key={kind}
+                              type="button"
+                              aria-pressed={
+                                snapshot.vectorBrushPressure ===
+                                (kind === "pressure")
+                              }
+                              className="mb-1 flex w-full items-center gap-3 rounded-lg border border-transparent p-3 text-left hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
+                              onClick={() => {
+                                void engine?.dispatch({
+                                  type: "setVectorBrushPressure",
+                                  pressure: kind === "pressure",
+                                })
+                                setVectorBrushOpen(false)
+                              }}
+                            >
+                              <VectorBrushToolIcon
+                                kind={kind}
+                                className="size-5"
+                              />
+                              <span>
+                                <span className="block text-xs font-medium">
+                                  {kind === "solid"
+                                    ? "Solid vector brush"
+                                    : "Pressure vector brush"}
+                                </span>
+                                <span className="block text-[10px] text-muted-foreground">
+                                  {kind === "solid"
+                                    ? "Constant width at any pressure"
+                                    : "Press harder for a wider line"}
+                                </span>
+                              </span>
+                            </button>
+                          ))}
+                        </PopoverPrimitive.Content>
+                      </PopoverPrimitive.Portal>
+                    </PopoverPrimitive.Root>
+                  ) : snapshot.tool === "eraser" ? (
                     <PopoverPrimitive.Root
                       open={eraserOpen}
                       onOpenChange={setEraserOpen}
