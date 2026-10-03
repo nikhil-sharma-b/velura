@@ -56,6 +56,8 @@ const COARSE_NUDGE = 10
 const SNAP_STEP = Math.PI / 12
 /** How near an edge or centre a drag is pulled onto it, in CSS pixels (15). */
 const SNAP_REACH = 6
+/** Behind every path control, whatever colour the artwork under it. */
+const NODE_HALO = "#fff"
 
 /**
  * Snapping is suspended while Ctrl or Cmd is held (15): Shift already means
@@ -745,6 +747,20 @@ export function VectorNodes({
           node.setAttribute(key, String(value))
         fragment.appendChild(node)
       }
+      // Each control is drawn over a white halo, so it reads on dark ink
+      // as well as light: the artwork can be any colour, the halo cannot.
+      const haloed = (
+        tag: "line" | "circle" | "rect" | "polygon",
+        attributes: Record<string, string | number>
+      ) => {
+        element(tag, {
+          ...attributes,
+          fill: tag === "line" ? "none" : NODE_HALO,
+          stroke: NODE_HALO,
+          "stroke-width": 3,
+        })
+        element(tag, attributes)
+      }
       for (const path of paths) {
         const [a, b, c, d, e, f] = path.transform
         const screen = (p: { x: number; y: number }) =>
@@ -759,7 +775,7 @@ export function VectorNodes({
           for (const handle of handles ? [node.in, node.out] : []) {
             if (!handle) continue
             const point = screen(handle)
-            element("line", {
+            haloed("line", {
               x1: anchor.x,
               y1: anchor.y,
               x2: point.x,
@@ -767,11 +783,11 @@ export function VectorNodes({
               stroke: "var(--primary)",
               "stroke-width": 1,
             })
-            element("circle", {
+            haloed("circle", {
               cx: point.x,
               cy: point.y,
               r: 3,
-              fill: "var(--background)",
+              fill: NODE_HALO,
               stroke: "var(--primary)",
             })
           }
@@ -782,19 +798,19 @@ export function VectorNodes({
           // smooth node a square, a symmetric one a square with a dot, an
           // auto node a circle.
           const paint = {
-            fill: selected ? "var(--primary)" : "var(--background)",
+            fill: selected ? "var(--primary)" : NODE_HALO,
             stroke: "var(--primary)",
           }
           const { x, y } = anchor
           if (node.type === "cusp")
-            element("polygon", {
+            haloed("polygon", {
               points: `${x},${y - 5} ${x + 5},${y} ${x},${y + 5} ${x - 5},${y}`,
               ...paint,
             })
           else if (node.type === "auto")
-            element("circle", { cx: x, cy: y, r: 4, ...paint })
+            haloed("circle", { cx: x, cy: y, r: 4, ...paint })
           else
-            element("rect", {
+            haloed("rect", {
               x: x - 4,
               y: y - 4,
               width: 8,
@@ -806,7 +822,7 @@ export function VectorNodes({
               cx: x,
               cy: y,
               r: 1.5,
-              fill: selected ? "var(--background)" : "var(--primary)",
+              fill: selected ? NODE_HALO : "var(--primary)",
             })
         })
       }

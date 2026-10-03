@@ -300,3 +300,41 @@ test("fitting keeps a node where pressure departs from a straight run", () => {
   expect(path.nodes.length).toBeGreaterThan(2)
   expect(path.nodes.length).toBeLessThanOrEqual(5)
 })
+
+describe("pressure stroke hooks", () => {
+  test("a hook flicked as the pen lands is not kept as a corner", () => {
+    const samples = [
+      { x: 3, y: 3, pressure: 0.3 },
+      { x: 1.5, y: 1.5, pressure: 0.4 },
+    ]
+    for (let i = 0; i <= 100; i++)
+      samples.push({ x: i * 2, y: 40 * Math.sin(i / 30), pressure: 0.6 })
+    const { nodes } = fitPressureStroke(samples, 4)
+    expect(nodes[0]).toMatchObject({ x: 0, y: 0 })
+    expect(nodes.every((n) => n.type !== "cusp")).toBe(true)
+  })
+
+  test("a corner well inside the stroke stays sharp", () => {
+    const samples = []
+    for (let i = 0; i <= 30; i++) samples.push({ x: i * 2, y: 0, pressure: 1 })
+    for (let i = 1; i <= 30; i++) samples.push({ x: 60, y: i * 2, pressure: 1 })
+    const { nodes } = fitPressureStroke(samples, 4)
+    expect(nodes.some((n) => n.type === "cusp")).toBe(true)
+  })
+})
+
+describe("pressure stroke ends", () => {
+  test("the pen landing and lifting does not taper the ends", () => {
+    const samples = []
+    for (let i = 0; i <= 100; i++)
+      samples.push({
+        x: i * 2,
+        y: 0,
+        // Ramps in over the first 6% and out over the last 6%.
+        pressure: Math.min(1, i / 6, (100 - i) / 6),
+      })
+    const { nodes } = fitPressureStroke(samples, 10)
+    expect(nodes[0].width).toBeCloseTo(10, 5)
+    expect(nodes.at(-1)!.width).toBeCloseTo(10, 5)
+  })
+})

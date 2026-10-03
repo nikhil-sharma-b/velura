@@ -105,8 +105,15 @@ function outline(object: VectorObject): {
       }
       return { points, closed: true }
     }
-    case "path":
-      return flattenPath(geometry, Math.hypot(...object.transform.slice(0, 4)))
+    case "path": {
+      // The screen draws the mesh at any zoom (sharp-zoom 02), and a
+      // pressure stroke is drawn close up; it is flattened finer for it.
+      const fine = geometry.nodes.some((n) => n.width !== undefined)
+      return flattenPath(
+        geometry,
+        Math.hypot(...object.transform.slice(0, 4)) * (fine ? 16 : 1)
+      )
+    }
     case "polygon":
       return { points: [...geometry.points], closed: geometry.closed }
   }
@@ -160,6 +167,12 @@ export function tessellateFill(
  */
 export const MITER_LIMIT = 4
 
+/**
+ * A pressure stroke turning more than this (cos 30°) at a point is joined
+ * with a disc there rather than a shared edge, which would pinch it.
+ */
+const SMOOTH_TURN_COS = Math.cos(Math.PI / 6)
+
 type Vector = { x: number; y: number }
 
 const add = (p: Point, v: Vector, scale = 1): Point => ({
@@ -193,15 +206,12 @@ function distinct<T extends Point>(points: readonly T[], closed: boolean): T[] {
  * The band `stroke.width` wide centred on a run of segments, with its joins
  * and, left open, its caps.
  *
- * With `widths`, a pressure stroke, the band is the area a disc sweeps as it
- * rides the line, its size following the pen — the shape tldraw's freehand
- * outline traces. Offsetting each chord by its ends' half-widths and joining
- * every chord to the next would put a join at each of the hundreds of points
- * a hand-drawn curve flattens to, and a hand turns sharply there often
- * enough that mitres spike out and quads poke past the curve. A disc at each
- * point and the hull between each pair cannot: the stroke's own join is kept
- * for its corner nodes (`corners`, indices into `input`), its cap for its
- * ends.
+ * With `widths`, a pressure stroke, the band's width follows the pen. A
+ * join at each of the hundreds of points a curve flattens to would spike
+ * mitres, so its quads instead share their edges, offset along each point's
+ * mean normal; only a sharp turn, or a corner node (`corners`, indices into
+ * `input`), is rounded with a disc and given the stroke's own join. Its
+ * ends take the stroke's cap.
  */
 export function tessellateStroke(
   input: readonly Point[],
@@ -309,39 +319,47 @@ export function tessellateStroke(
   }
 
   if (widths) {
+    // A strip whose quads share an edge at every point, offset along the
+    // mean of the two chords' normals: seamless however far it is zoomed,
+    // where a disc per point leaves its polygon's notches between hulls.
+    // A sharp turn would pinch the strip, so there each chord keeps its
+    // own normal and a disc rounds the gap, as the outline's round join.
+    const sharp = (i: number) => {
+      if (!closed && (i === 0 || i === points.length - 1)) return false
+      if (points[i].corner) return true
+      const a = edge((i - 1 + points.length) % points.length),
+        b = edge(i)
+      return a.x * b.x + a.y * b.y < SMOOTH_TURN_COS
+    }
+    const sideAt = (i: number, chord: number): Vector => {
+      if (sharp(i)) return normal(edge(chord))
+      const before =
+        !closed && i === 0
+          ? edge(0)
+          : edge((i - 1 + points.length) % points.length)
+      const after = !closed && i === points.length - 1 ? before : edge(i)
+      const mean = { x: before.x + after.x, y: before.y + after.y }
+      const length = Math.hypot(mean.x, mean.y)
+      return length > 1e-9
+        ? normal({ x: mean.x / length, y: mean.y / length })
+        : normal(after)
+    }
     points.forEach((point, i) => {
-      const end = !closed && (i === 0 || i === points.length - 1)
-      if (end || point.width <= 0) return
-      fan(point, 0, Math.PI * 2, point.width / 2)
-      // A disc already rounds the corner; a bevel lies inside it.
-      if (point.corner && stroke.join === "miter") join(i)
+      if (sharp(i) && point.width > 0) {
+        fan(point, 0, Math.PI * 2, point.width / 2)
+        if (stroke.join === "miter") join(i)
+      }
     })
     for (let i = 0; i < segments; i++) {
-      const a = points[i]
-      const b = points[(i + 1) % points.length]
-      const ra = a.width / 2
-      const rb = b.width / 2
-      const along = Math.hypot(b.x - a.x, b.y - a.y)
-      // One disc inside the other, which already covers the hull.
-      if (along <= Math.abs(ra - rb)) continue
-      // The outer tangents touch each disc where its radius leans back
-      // along the line by the slope the width changes at.
-      const u = direction(a, b)
-      const side = normal(u)
-      const lean = (ra - rb) / along
-      const reach = Math.sqrt(1 - lean * lean)
-      const touch = (sign: number): Vector => ({
-        x: u.x * lean + side.x * reach * sign,
-        y: u.y * lean + side.y * reach * sign,
-      })
-      // An open stroke's ends are cut square across the line, as the cap
-      // then extends them; the hull's own ends would lean with the taper.
-      const first = !closed && i === 0
-      const last = !closed && i === segments - 1
-      const a1 = add(a, first ? side : touch(1), ra)
-      const a2 = add(a, first ? side : touch(-1), first ? -ra : ra)
-      const b1 = add(b, last ? side : touch(1), rb)
-      const b2 = add(b, last ? side : touch(-1), last ? -rb : rb)
+      const j = (i + 1) % points.length
+      const a = points[i],
+        b = points[j]
+      const sa = sideAt(i, i),
+        sb = sideAt(j, i)
+      const a1 = add(a, sa, a.width / 2)
+      const a2 = add(a, sa, -a.width / 2)
+      const b1 = add(b, sb, b.width / 2)
+      const b2 = add(b, sb, -b.width / 2)
       mesh.triangle(a1, b1, b2)
       mesh.triangle(a1, b2, a2)
     }

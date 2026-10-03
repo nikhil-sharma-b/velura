@@ -2722,6 +2722,9 @@ export function createEngine(
         /** Ctrl was down at the press. A click then turns an anchor to the
          * next type, or retracts a handle. */
         ctrlClick?: boolean
+        /** The grabbed part has left its place: the pointer went past the
+         * drag threshold, so a click alone never moves it. */
+        nodeMoved?: boolean
         /** The node tool is drawing a rubber band, not moving a node. */
         nodeBox?: boolean
         anchor: Point
@@ -2941,6 +2944,34 @@ export function createEngine(
     )
   }
 
+  /**
+   * A pressure stroke's width lives on its nodes, so a new outline width
+   * scales them, keeping the shape of its swell.
+   */
+  function widthScaled(
+    o: VectorObject,
+    width: number | undefined
+  ): { geometry?: VectorObject["geometry"] } {
+    const was = o.style.stroke?.width
+    if (
+      width === undefined ||
+      !was ||
+      width === was ||
+      o.geometry.kind !== "path" ||
+      !o.geometry.nodes.some((n) => n.width !== undefined)
+    )
+      return {}
+    const scale = width / was
+    return {
+      geometry: {
+        ...o.geometry,
+        nodes: o.geometry.nodes.map((n) =>
+          n.width === undefined ? n : { ...n, width: n.width * scale }
+        ),
+      },
+    }
+  }
+
   function applySelectedStyle(
     color?: string,
     change?: Extract<EngineCommand, { type: "setShapeStyle" }>
@@ -2957,6 +2988,7 @@ export function createEngine(
         type: "update",
         id: o.id,
         patch: {
+          ...widthScaled(o, change?.strokeWidth),
           style: color
             ? {
                 fill: o.style.fill ? { ...o.style.fill, color } : null,
@@ -3375,7 +3407,20 @@ export function createEngine(
         })
     }
     samples.drain((x, y, pressure, tiltX, tiltY, time) => {
-      const point = { x: toDocX(x, y), y: toDocY(x, y) }
+      let point = { x: toDocX(x, y), y: toDocY(x, y) }
+      if (drag.node && drag.nodeAt) {
+        // A press near a part, not on it, grabs it where it sits: the part
+        // follows the pointer's travel, and only once it is a drag.
+        const dx = point.x - drag.anchor.x,
+          dy = point.y - drag.anchor.y
+        if (
+          !drag.nodeMoved &&
+          Math.hypot(dx, dy) * snapshot.view.zoom < NODE_DRAG_THRESHOLD
+        )
+          return
+        drag.nodeMoved = true
+        point = { x: drag.nodeAt.x + dx, y: drag.nodeAt.y + dy }
+      }
       // The grabbed node snaps; the rest follow its snapped offset. A
       // snap moves it along the locked axis only, never off it.
       // On a handle, Ctrl snaps the angle instead, in `dragNodes`.
@@ -3518,10 +3563,9 @@ export function createEngine(
           [{ type: "add", object: shape }],
           `draw ${drag.tool}`
         )
-        publish({
-          vectorSelection:
-            drag.tool === "pen" || drag.tool === "pressure" ? [shape.id] : [],
-        })
+        // A brush stroke is left unselected, as paint is: the width and
+        // colour then set up the next stroke rather than edit this one.
+        publish({ vectorSelection: drag.tool === "pen" ? [shape.id] : [] })
       } else {
         drawScene(layer.id, layer.scene)
         if (snapshot.status === "ready") render()
@@ -4620,6 +4664,9 @@ export function createEngine(
       modifiers: { ctrl: ctrlHeld, alt: altHeld, shift: shiftHeld },
     })
   }
+
+  /** Screen pixels the pointer travels before a press on a node drags it. */
+  const NODE_DRAG_THRESHOLD = 3
 
   function beginNodeDrag(layer: VectorLayer, point: Point, time: number) {
     const press = pressNode({

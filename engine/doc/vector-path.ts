@@ -87,7 +87,8 @@ export function fitPressureStroke(
     const dot = node(points[0], "smooth")
     return { kind: "path", nodes: [dot, { ...dot }], closed: false }
   }
-  const corners = cornersOf(points)
+  const corners = trimHooks(points, cornersOf(points))
+  settleEnds(points)
   const nodes: PathNode[] = [node(points[0], "smooth")]
   for (let c = 0; c + 1 < corners.length; c++) {
     const first = corners[c],
@@ -101,6 +102,72 @@ export function fitPressureStroke(
     }
   }
   return { kind: "path", nodes, closed: false }
+}
+
+/** The share of a stroke at each end whose pressure is the pen landing or lifting. */
+const SETTLE_SHARE = 0.1
+/** …but never more than this many document pixels of it. */
+const SETTLE_LENGTH = 40
+
+/**
+ * A pen's pressure ramps up as it lands and falls as it lifts, which would
+ * draw every stroke with a wedge at each end. As Inkscape's pressure pencil,
+ * the first and last tenth of the stroke take the width where it settles
+ * rather than their own. Mutates `points`.
+ */
+function settleEnds(points: Sample[]) {
+  const along = [0]
+  for (let i = 1; i < points.length; i++)
+    along.push(
+      along[i - 1] +
+        Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y)
+    )
+  const total = along.at(-1)!
+  const reach = Math.min(total * SETTLE_SHARE, SETTLE_LENGTH)
+  if (!reach) return
+  const start = along.findIndex((d) => d >= reach)
+  let end = points.length - 1
+  while (end > 0 && total - along[end] < reach) end--
+  if (start < 0 || start >= end) return
+  for (let i = 0; i < start; i++)
+    points[i] = { ...points[i], width: points[start].width }
+  for (let i = end + 1; i < points.length; i++)
+    points[i] = { ...points[i], width: points[end].width }
+}
+
+/** A corner nearer an end than this, along the stroke, is a pen's hook. */
+const HOOK_LENGTH = 8
+
+/**
+ * Drops the hook a pen flicks as it lands or lifts: a sharp turn a few
+ * pixels from an end is the hand, not the drawing, so the stroke starts or
+ * ends at that corner instead. Mutates `points`; returns the corners left.
+ */
+function trimHooks(points: Sample[], corners: number[]): number[] {
+  const along = (from: number, to: number) => {
+    let length = 0
+    for (let i = from; i < to; i++)
+      length += Math.hypot(
+        points[i + 1].x - points[i].x,
+        points[i + 1].y - points[i].y
+      )
+    return length
+  }
+  let first = 0,
+    last = points.length - 1
+  if (corners.length > 2 && along(0, corners[1]) < HOOK_LENGTH)
+    first = corners[1]
+  const end = corners.at(-2)!
+  if (
+    corners.length > 2 &&
+    end > first &&
+    along(end, points.length - 1) < HOOK_LENGTH
+  )
+    last = end
+  if (first === 0 && last === points.length - 1) return corners
+  points.splice(last + 1)
+  points.splice(0, first)
+  return corners.filter((c) => c >= first && c <= last).map((c) => c - first)
 }
 
 /**
