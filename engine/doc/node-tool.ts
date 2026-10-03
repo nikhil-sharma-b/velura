@@ -5,6 +5,7 @@ import {
   editPathNode,
   nearestPathSegment,
   pickPathNode,
+  segmentPoint,
   type BezierPath,
   type NodeEdit,
   type NodePart,
@@ -24,8 +25,13 @@ export const DOUBLE_CLICK_MS = 400
 /** A node of a path, by the path's id and the node's place along it. */
 export type VectorNode = { objectId: string; index: number }
 
-/** A node part taken hold of, with the path as it was when the press began. */
-export type NodeGrab = { object: VectorObject; index: number; part: NodePart }
+/**
+ * A node part taken hold of, with the path as it was when the press began;
+ * or segment `index`, held at `t` along it, to bend.
+ */
+export type NodeGrab =
+  | { object: VectorObject; index: number; part: NodePart }
+  | { object: VectorObject; index: number; part: "segment"; t: number }
 
 /** A press that may turn out to be the first of a double-click; `time` is
  * the pointer event's timestamp in milliseconds. */
@@ -170,19 +176,26 @@ export function pressNode({
         nodes: [{ objectId: hit.object.id, index: hit.hit.index + 1 }],
         lastClick: click,
       }
-    return shift
-      ? {
-          kind: "select",
-          selection: [...new Set([...selection, hit.object.id])],
-          nodes: [...nodes],
-          lastClick: click,
-        }
-      : {
-          kind: "select",
-          selection: [hit.object.id],
-          nodes: [],
-          lastClick: click,
-        }
+    // A press on a segment takes hold of it to bend, and selects its two
+    // end nodes, as a click without a drag leaves them.
+    const { index, t } = hit.hit
+    const count = hit.object.geometry.nodes.length
+    const ends = [index, (index + 1) % count].map((i) => ({
+      objectId: hit.object.id,
+      index: i,
+    }))
+    return {
+      kind: "grab",
+      grab: { object: hit.object, index, part: "segment", t },
+      at: placed(hit.object, segmentPoint(hit.object.geometry, index, t)),
+      selection: shift
+        ? [...new Set([...selection, hit.object.id])]
+        : [hit.object.id],
+      nodes: shift
+        ? [...nodes, ...ends.filter((e) => !nodes.some((n) => same(n, e)))]
+        : ends,
+      lastClick: click,
+    }
   }
   // Inside a filled path is on it too, as with the object tool.
   const [inside] = selectObjects(scene, point).filter((id) =>
@@ -290,6 +303,19 @@ export function dragNode(grab: NodeGrab, point: Point): VectorObject {
   const { object, index, part } = grab
   if (!isPath(object)) return object
   const local = applyAffine(invertMatrix(object.transform), point)
+  if (part === "segment") {
+    const was = segmentPoint(object.geometry, index, grab.t)
+    if (was.x === local.x && was.y === local.y) return object
+    return {
+      ...object,
+      geometry: editPathNode(object.geometry, {
+        type: "bend",
+        index,
+        t: grab.t,
+        point: local,
+      }),
+    }
+  }
   const original = object.geometry.nodes[index]
   const at = part === "anchor" ? original : original[part]
   if (at && at.x === local.x && at.y === local.y) return object

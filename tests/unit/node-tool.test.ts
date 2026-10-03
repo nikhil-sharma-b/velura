@@ -167,11 +167,12 @@ test("dragging back to where it started returns the same object", () => {
   expect(dragNode(result.grab, { x: 100, y: 0 })).toBe(result.grab.object)
 })
 
-test("a click on a segment selects its path without a node", () => {
-  expect(press(scene(triangle("a")), { x: 50, y: 1 })).toEqual({
-    kind: "select",
+test("a press on a segment grabs it and selects its path and end nodes", () => {
+  expect(press(scene(triangle("a")), { x: 50, y: 1 })).toMatchObject({
+    kind: "grab",
+    grab: { part: "segment", index: 0 },
     selection: ["a"],
-    nodes: [],
+    nodes: [node("a", 0), node("a", 1)],
     lastClick: { point: { x: 50, y: 1 }, time: 0 },
   })
 })
@@ -208,7 +209,7 @@ test("a slow second click on a segment does not add a node", () => {
         lastClick: first.lastClick,
       }
     ).kind
-  ).toBe("select")
+  ).toBe("grab")
 })
 
 test("a click inside a filled path selects it; empty canvas starts a box", () => {
@@ -505,7 +506,11 @@ test("Shift+click on a segment or fill adds its path and keeps the nodes", () =>
   const nodes = [node("a", 0)]
   expect(
     press(s, { x: 350, y: 0 }, { selection: ["a"], nodes, shift: true })
-  ).toMatchObject({ kind: "select", selection: ["a", "b"], nodes })
+  ).toMatchObject({
+    kind: "grab",
+    selection: ["a", "b"],
+    nodes: [...nodes, node("b", 0), node("b", 1)],
+  })
   expect(
     press(s, { x: 350, y: 40 }, { selection: ["a"], nodes, shift: true })
   ).toMatchObject({ kind: "select", selection: ["a", "b"], nodes })

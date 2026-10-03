@@ -3400,7 +3400,11 @@ export function createEngine(
         publish({ vectorNodes: [clicked] })
       }
       if (moved?.length) {
-        editScene(layer.id, moved, "move nodes")
+        editScene(
+          layer.id,
+          moved,
+          drag.node?.part === "segment" ? "bend segment" : "move nodes"
+        )
       } else if (shape && !drag.node) {
         editScene(
           layer.id,

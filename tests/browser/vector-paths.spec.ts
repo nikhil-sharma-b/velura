@@ -700,3 +700,44 @@ test("selected segments become curves and lines, each one step", async ({
   await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
   expect(await path(page)).toEqual(object)
 })
+
+test("dragging a segment bends it through the pointer, as one step; a click selects its ends", async ({
+  page,
+}) => {
+  const box = await open(page)
+  const object = await penTriangle(page, box)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "node" })
+  )
+  // The closing segment runs from the last corner back to the first.
+  await page.mouse.click(box.x + 100, box.y + 95)
+  expect(
+    await page.evaluate(() =>
+      window.engine.getSnapshot().vectorNodes.map((n) => n.index)
+    )
+  ).toEqual([2, 0])
+  // Long enough after the click that the press is not a double-click.
+  await page.waitForTimeout(450)
+  const before = await page.evaluate(() => window.engine.historyUsage().steps)
+  await page.mouse.move(box.x + 100, box.y + 95)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 100, box.y + 125, { steps: 5 })
+  await page.mouse.up()
+  await page.waitForFunction(
+    (n) => window.engine.historyUsage().steps === n + 1,
+    before
+  )
+  const geometry = (await path(page))!.geometry
+  if (geometry.kind !== "path") throw new Error("A pen path is a path")
+  const a = geometry.nodes[2],
+    d = geometry.nodes[0]
+  // A straight segment has grown handles, and its middle follows the pointer.
+  expect(a.out).not.toBeNull()
+  expect(d.in).not.toBeNull()
+  const middle = (k: "x" | "y") =>
+    (a[k] + 3 * a.out![k] + 3 * d.in![k] + d[k]) / 8
+  expect(Math.abs(middle("x") - 100)).toBeLessThan(0.5)
+  expect(Math.abs(middle("y") - 125)).toBeLessThan(0.5)
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await path(page)).toEqual(object)
+})

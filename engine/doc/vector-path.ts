@@ -175,9 +175,13 @@ export type NodeEdit =
   /** Segment `index` runs from node `index` to the next, round if closed. */
   | { type: "segment"; index: number; shape: SegmentShape }
   | { type: "split"; index: number; t?: number }
+  /** Segment `index` bent so its point at `t` passes through `point`. */
+  | { type: "bend"; index: number; t: number; point: Point }
 
 export function editPathNode(path: BezierPath, edit: NodeEdit): BezierPath {
   if (edit.type === "split") return splitPathSegment(path, edit.index, edit.t)
+  if (edit.type === "bend")
+    return bendPathSegment(path, edit.index, edit.t, edit.point)
   const node = path.nodes[edit.index]
   if (!node || !Number.isInteger(edit.index))
     throw new Error("Choose an existing anchor.")
@@ -244,6 +248,85 @@ export function editPathNode(path: BezierPath, edit: NodeEdit): BezierPath {
     }
   }
   return { ...path, nodes: solveAuto(nodes, path.closed) }
+}
+
+/** The point at `t` along segment `index` of `path`, in its own coordinates. */
+export const segmentPoint = (
+  path: BezierPath,
+  index: number,
+  t: number
+): Point => {
+  const a = path.nodes[index],
+    d = path.nodes[(index + 1) % path.nodes.length],
+    b = a.out ?? a,
+    c = d.in ?? d,
+    u = 1 - t
+  const along = (k: "x" | "y") =>
+    u * u * u * a[k] +
+    3 * u * u * t * b[k] +
+    3 * u * t * t * c[k] +
+    t * t * t * d[k]
+  return { x: along("x"), y: along("y") }
+}
+
+/**
+ * Segment `index` bent, as Inkscape bends it, so its point at `t` lands on
+ * `point`: both handles move, the nearer one more, weighted by where along
+ * the segment it was grabbed. A straight segment grows handles; each end
+ * node then keeps its own type's rule for its opposite handle.
+ */
+export function bendPathSegment(
+  path: BezierPath,
+  index: number,
+  t: number,
+  point: Point
+): BezierPath {
+  const next = (index + 1) % path.nodes.length
+  if (
+    !Number.isInteger(index) ||
+    index < 0 ||
+    index >= path.nodes.length ||
+    (!path.closed && next === 0) ||
+    !(t > 0 && t < 1)
+  )
+    throw new Error("Choose a point inside an existing path segment.")
+  if (![point.x, point.y].every(Number.isFinite))
+    throw new Error("A segment needs a finite point to pass through.")
+  const a = path.nodes[index],
+    b = path.nodes[next],
+    p1 = a.out ?? a,
+    p2 = b.in ?? b,
+    u = 1 - t
+  const was = segmentPoint(path, index, t)
+  const dx = point.x - was.x,
+    dy = point.y - was.y
+  // Inkscape's weighting: a grab in the first sixth moves only the near
+  // handle, one in the last sixth only the far one, easing between.
+  const weight =
+    t <= 1 / 6
+      ? 0
+      : t <= 0.5
+        ? ((6 * t - 1) / 2) ** 3 / 2
+        : t <= 5 / 6
+          ? (1 - ((6 * u - 1) / 2) ** 3) / 2 + 0.5
+          : 1
+  // The point at `t` moves by 3u²t of the first handle's offset and 3ut² of
+  // the second's: these shares add up to exactly the pointer's offset.
+  const near = (1 - weight) / (3 * t * u * u),
+    far = weight / (3 * t * t * u)
+  let bent = editPathNode(path, {
+    type: "move",
+    index,
+    part: "out",
+    point: { x: p1.x + dx * near, y: p1.y + dy * near },
+  })
+  bent = editPathNode(bent, {
+    type: "move",
+    index: next,
+    part: "in",
+    point: { x: p2.x + dx * far, y: p2.y + dy * far },
+  })
+  return bent
 }
 
 /** The anchors either side of node `i`; at an open end, the node itself. */
@@ -411,22 +494,8 @@ export function nearestPathSegment(
   let best: { index: number; t: number; distance: number } | null = null
   const count = path.closed ? path.nodes.length : path.nodes.length - 1
   for (let index = 0; index < count; index++) {
-    const a = path.nodes[index],
-      d = path.nodes[(index + 1) % path.nodes.length],
-      b = a.out ?? a,
-      c = d.in ?? d
     const at = (t: number) => {
-      const u = 1 - t,
-        x =
-          u * u * u * a.x +
-          3 * u * u * t * b.x +
-          3 * u * t * t * c.x +
-          t * t * t * d.x,
-        y =
-          u * u * u * a.y +
-          3 * u * u * t * b.y +
-          3 * u * t * t * c.y +
-          t * t * t * d.y
+      const { x, y } = segmentPoint(path, index, t)
       return {
         x: transform[0] * x + transform[2] * y + transform[4],
         y: transform[1] * x + transform[3] * y + transform[5],
