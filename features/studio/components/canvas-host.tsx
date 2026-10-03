@@ -111,7 +111,11 @@ import { useRasterMagnification } from "../lib/magnification-preference"
 import { useRulersVisible } from "../lib/ruler-preference"
 import { EraserTrail } from "./eraser-trail"
 import { StraightEdgeOverlay } from "./straight-edge"
-import { SAMPLING_CURSOR, TOOL_CURSOR } from "../lib/tool-cursor"
+import {
+  SAMPLING_CURSOR,
+  TOOL_CURSOR,
+  VECTOR_CURSORS,
+} from "../lib/tool-cursor"
 import { BrushIcon, EraserToolIcon, VectorBrushToolIcon } from "./brush-icon"
 import { BrushLibrary } from "./brush-library"
 import { TiltToggle } from "./tilt-toggle"
@@ -1263,9 +1267,11 @@ export function CanvasHost({
             ? SAMPLING_CURSOR
             : snapshot.tool === "moveSelection"
               ? "move"
-              : isSelectionTool(snapshot.tool) || isVectorTool(snapshot.tool)
-                ? "crosshair"
-                : TOOL_CURSOR,
+              : isVectorTool(snapshot.tool)
+                ? VECTOR_CURSORS[snapshot.tool]
+                : isSelectionTool(snapshot.tool)
+                  ? "crosshair"
+                  : TOOL_CURSOR,
         }}
       />
       {/* Guides and the straight-edge (16, 17) are drawn with the canvas, so
