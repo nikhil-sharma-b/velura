@@ -942,6 +942,23 @@ export function VectorNodes({
             >
               Delete segment
             </Button>
+            {(["horizontal", "vertical"] as const).map((axis) => (
+              <Button
+                key={axis}
+                size="sm"
+                variant="outline"
+                title={`Flip the selected nodes ${axis}ly (${axis === "horizontal" ? "H" : "V"})`}
+                disabled={!snapshot.vectorNodes.length}
+                onClick={() =>
+                  void engine.dispatch({
+                    type: "transformVectorNodes",
+                    transform: { kind: "flip", axis },
+                  })
+                }
+              >
+                {axis === "horizontal" ? "Flip H" : "Flip V"}
+              </Button>
+            ))}
             {NODE_TYPE_BUTTONS.map(({ nodeType, label, keys }) => (
               <Button
                 key={nodeType}

@@ -5,6 +5,7 @@ import {
   type EngineCommand,
   type FilterKind,
   type LayerSummary,
+  type NodeTransform,
   canJoin,
   type JoinMode,
   selectedSegments,
@@ -23,6 +24,11 @@ const PAN_STEP = 40
 /** One arrow press on selected nodes, in document pixels, and with Shift. */
 const NODE_NUDGE = 2
 const NODE_NUDGE_FAR = 20
+
+/** Document px a scale key grows the selected nodes' bounds by each side. */
+const NODE_SCALE_STEP = 2
+/** A rotate key's turn of the selected nodes: 15°, as in Inkscape. */
+const NODE_ROTATE_STEP = Math.PI / 12
 
 /**
  * One press of a size key. Multiplicative, because the step an artist wants
@@ -185,10 +191,10 @@ function onSelectedSegments(
 
 /** `command` with nodes selected, else what `otherwise` does. */
 function nodesOr(
-  command: EngineCommand,
+  command: EngineCommand | Pick<StudioCommand, "available" | "run">,
   otherwise: Pick<StudioCommand, "available" | "run">
 ): Pick<StudioCommand, "available" | "run"> {
-  const nodes = onSelectedNodes(command)
+  const nodes = "type" in command ? onSelectedNodes(command) : command
   return {
     available: (context) =>
       nodesSelected(context.engine) || !!otherwise.available?.(context),
@@ -198,6 +204,27 @@ function nodesOr(
         : otherwise.run(context, input),
   }
 }
+
+/**
+ * Transforms the selected nodes by `step` (`<` `>` `[` `]` `H` `V`); a held
+ * key's repeats join the first press as one undo step.
+ */
+function transforming(
+  step: (engine: Engine) => NodeTransform
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    available: ({ engine }) => nodesSelected(engine),
+    run: ({ engine }, input) =>
+      void engine?.dispatch({
+        type: "transformVectorNodes",
+        transform: step(engine),
+        repeat: input?.repeat,
+      }),
+  }
+}
+
+/** One screen pixel, in document pixels. */
+const screenPixel = (engine: Engine) => 1 / engine.getSnapshot().view.zoom
 
 /** A join of the two selected end nodes, available only when they fit. */
 function onJoinableEnds(
@@ -627,6 +654,54 @@ export const studioCommands = createRegistry<StudioContext>([
     ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "auto" }),
   },
   {
+    id: "node.flipHorizontal",
+    label: "Flip selected nodes horizontally",
+    category: "Tools",
+    // H reaches it through the canvas flip's binding, which hands over to
+    // the nodes while any are selected.
+    ...transforming(() => ({ kind: "flip", axis: "horizontal" })),
+  },
+  {
+    id: "node.flipVertical",
+    label: "Flip selected nodes vertically",
+    category: "Tools",
+    keybinds: ["v"],
+    ...transforming(() => ({ kind: "flip", axis: "vertical" })),
+  },
+  // Alt steps by one screen pixel. A Mac's Option turns these keys into
+  // other characters, so those are bound beside the plain ones.
+  {
+    id: "node.scaleDownPixel",
+    label: "Scale selected nodes down one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+,", "alt+<", "alt+≤", "alt+¯"],
+    ...transforming((engine) => ({ kind: "scale", by: -screenPixel(engine) })),
+  },
+  {
+    id: "node.scaleUpPixel",
+    label: "Scale selected nodes up one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+.", "alt+>", "alt+≥", "alt+˘"],
+    ...transforming((engine) => ({ kind: "scale", by: screenPixel(engine) })),
+  },
+  {
+    id: "node.rotateLeftPixel",
+    label: "Rotate selected nodes left one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+[", "alt+“"],
+    ...transforming((engine) => ({
+      kind: "rotate",
+      arc: -screenPixel(engine),
+    })),
+  },
+  {
+    id: "node.rotateRightPixel",
+    label: "Rotate selected nodes right one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+]", "alt+‘"],
+    ...transforming((engine) => ({ kind: "rotate", arc: screenPixel(engine) })),
+  },
+  {
     id: "tool.objectSelect",
     label: "Select objects tool",
     category: "Tools",
@@ -723,14 +798,21 @@ export const studioCommands = createRegistry<StudioContext>([
     label: "Increase brush size",
     category: "Brush",
     keybinds: ["]"],
-    ...resize(1),
+    // With nodes selected the brackets turn them, as in Inkscape.
+    ...nodesOr(
+      transforming(() => ({ kind: "rotate", angle: NODE_ROTATE_STEP })),
+      resize(1)
+    ),
   },
   {
     id: "brush.sizeDown",
     label: "Decrease brush size",
     category: "Brush",
     keybinds: ["["],
-    ...resize(-1),
+    ...nodesOr(
+      transforming(() => ({ kind: "rotate", angle: -NODE_ROTATE_STEP })),
+      resize(-1)
+    ),
   },
   {
     id: "layer.add",
@@ -954,21 +1036,31 @@ export const studioCommands = createRegistry<StudioContext>([
     label: "Rotate left",
     category: "View",
     keybinds: [",", "<"],
-    ...dispatching({ type: "rotateView", radians: -ROTATE_STEP }),
+    // With nodes selected the pair scales them, as in Inkscape.
+    ...nodesOr(
+      transforming(() => ({ kind: "scale", by: -NODE_SCALE_STEP })),
+      dispatching({ type: "rotateView", radians: -ROTATE_STEP })
+    ),
   },
   {
     id: "view.rotateRight",
     label: "Rotate right",
     category: "View",
     keybinds: [".", ">"],
-    ...dispatching({ type: "rotateView", radians: ROTATE_STEP }),
+    ...nodesOr(
+      transforming(() => ({ kind: "scale", by: NODE_SCALE_STEP })),
+      dispatching({ type: "rotateView", radians: ROTATE_STEP })
+    ),
   },
   {
     id: "view.flip",
     label: "Flip canvas horizontally",
     category: "View",
     keybinds: ["h"],
-    ...dispatching({ type: "flipView" }),
+    ...nodesOr(
+      transforming(() => ({ kind: "flip", axis: "horizontal" })),
+      dispatching({ type: "flipView" })
+    ),
   },
   {
     id: "view.toggleSnapping",

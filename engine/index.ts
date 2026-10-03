@@ -26,6 +26,8 @@ import {
   boxNodes,
   allNodes,
   stepNode,
+  transformNodes,
+  type NodeTransform,
   type NodeClick,
   type NodeGrab,
   type VectorNode,
@@ -373,6 +375,7 @@ export {
   canJoin,
   handlesShown,
   selectedSegments,
+  type NodeTransform,
   type VectorNode,
 } from "./doc/node-tool"
 export type { JoinMode, NodeType, SegmentShape } from "./doc/vector-path"
@@ -667,6 +670,16 @@ export type EngineCommand =
    * — the key held — joins the nudge before it as one undo step.
    */
   | { type: "nudgeVectorNodes"; dx: number; dy: number; repeat?: boolean }
+  /**
+   * Scales, turns or flips the selected nodes about their centre, or one
+   * node's handles about it (`<` `>` `[` `]` `H` `V`). A `repeat` joins the
+   * step before it as one undo step.
+   */
+  | {
+      type: "transformVectorNodes"
+      transform: NodeTransform
+      repeat?: boolean
+    }
   | { type: "editVectorLayer"; id: string; commands: readonly SceneCommand[] }
   /**
    * Turns a vector layer into a paint layer holding exactly what it showed
@@ -4549,7 +4562,7 @@ export function createEngine(
 
   let lastNodeClick: NodeClick | undefined
   /** Counts arrow presses, so a held key's nudges are one step, two presses two. */
-  let nudgeRun = 0
+  let nodeKeyRun = 0
 
   function snapVectorPoint(point: Point, layerId: string): Point {
     if (!snapping || altHeld) return point
@@ -5799,8 +5812,27 @@ export function createEngine(
             x: command.dx,
             y: command.dy,
           })
-          if (!command.repeat) nudgeRun++
-          editScene(layer.id, edits, "nudge nodes", `nudge-nodes:${nudgeRun}`)
+          if (!command.repeat) nodeKeyRun++
+          editScene(layer.id, edits, "nudge nodes", `nudge-nodes:${nodeKeyRun}`)
+          break
+        }
+        case "transformVectorNodes": {
+          if (tool !== "node" || !snapshot.vectorNodes.length) break
+          if (shapeDrag?.node) break
+          const layer = selectedVectorLayer()
+          const edits = transformNodes(
+            layer.scene,
+            snapshot.vectorNodes,
+            command.transform
+          )
+          // Its own run, so a held scale never joins a nudge before it.
+          if (!command.repeat) nodeKeyRun++
+          editScene(
+            layer.id,
+            edits,
+            "transform nodes",
+            `transform-nodes:${nodeKeyRun}`
+          )
           break
         }
         case "stepVectorNode":

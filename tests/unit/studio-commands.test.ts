@@ -1,5 +1,10 @@
 import { describe, expect, mock, test } from "bun:test"
-import type { Engine, EngineCommand, LayerSummary } from "../../engine"
+import type {
+  Engine,
+  EngineCommand,
+  LayerSummary,
+  NodeTransform,
+} from "../../engine"
 import { createKeybindResolver } from "../../features/commands/lib/resolver"
 import {
   runStudioCommand,
@@ -636,6 +641,58 @@ describe("filter commands", () => {
         { objectId: "p", index: 1 },
       ])
     ).toEqual([{ type: "deleteVectorSegments" }])
+  })
+
+  test("< > [ ] H V transform selected nodes, and do what they did without", () => {
+    const run = (vectorNodes: unknown[]) => {
+      const { engine, sent } = fakeEngine([raster("a")], "a", {
+        tool: "node",
+        vectorNodes,
+        view: { zoom: 4 },
+      })
+      const resolver = createKeybindResolver(studioCommands, () =>
+        context(engine)
+      )
+      for (const [key, mods] of [
+        ["<", { shiftKey: true }],
+        ["]", {}],
+        ["h", {}],
+        ["v", {}],
+        ["≥", { altKey: true }],
+        ["[", { altKey: true, repeat: true }],
+      ] as const)
+        resolver.keydown({
+          key,
+          shiftKey: false,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          repeat: false,
+          defaultPrevented: false,
+          target: null,
+          preventDefault: () => {},
+          ...mods,
+        })
+      return sent
+    }
+    const step = (transform: NodeTransform, repeat = false) => ({
+      type: "transformVectorNodes" as const,
+      transform,
+      repeat,
+    })
+    expect(run([{ objectId: "p", index: 0 }])).toEqual([
+      step({ kind: "scale", by: -2 }),
+      step({ kind: "rotate", angle: Math.PI / 12 }),
+      step({ kind: "flip", axis: "horizontal" }),
+      step({ kind: "flip", axis: "vertical" }),
+      step({ kind: "scale", by: 0.25 }),
+      step({ kind: "rotate", arc: -0.25 }, true),
+    ])
+    expect(run([]).map((c) => c.type)).toEqual([
+      "rotateView",
+      "setBrush",
+      "flipView",
+    ])
   })
 
   test("Shift+C, S, Y and A set the selected nodes' type, and only then", () => {

@@ -967,3 +967,41 @@ test("deleting a segment of an open path parts it into two objects", async ({
     [130, 180],
   ])
 })
+
+test("a held scale of selected nodes is one undo step", async ({ page }) => {
+  const box = await open(page)
+  const object = await penTriangle(page, box)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "node" })
+  )
+  await page.mouse.click(box.x + 30, box.y + 95)
+  await page.keyboard.down("Shift")
+  await page.mouse.click(box.x + 170, box.y + 95)
+  await page.keyboard.up("Shift")
+  await page.waitForFunction(
+    () => window.engine.getSnapshot().vectorNodes.length === 2
+  )
+  // The last click's release lands on a later frame; keys wait for it.
+  await page.evaluate(
+    () =>
+      new Promise((done) =>
+        requestAnimationFrame(() => requestAnimationFrame(done))
+      )
+  )
+  await page.evaluate(async () => {
+    for (const repeat of [false, true, true])
+      await window.engine.dispatch({
+        type: "transformVectorNodes",
+        transform: { kind: "scale", by: 2 },
+        repeat,
+      })
+  })
+  const xs = async () => {
+    const g = (await path(page))!.geometry
+    return g.kind === "path" ? g.nodes.map((n) => Math.round(n.x)) : []
+  }
+  // Three steps of 2 px each side about x = 100.
+  expect(await xs()).toEqual([24, 100, 176])
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await path(page)).toEqual(object)
+})

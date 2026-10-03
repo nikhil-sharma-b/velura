@@ -12,6 +12,7 @@ import {
   handleOf,
   nearestPathSegment,
   pickPathNode,
+  replacePathNodes,
   segmentPoint,
   type BezierPath,
   type NodeEdit,
@@ -461,6 +462,143 @@ export function moveNodes(
       })
     }, object.geometry)
     return [{ type: "update", id: object.id, patch: { geometry } }]
+  })
+}
+
+/**
+ * A step of Inkscape's node transforms: a scale growing the selection's
+ * bounds by `by` document px each side, a turn by `angle` radians
+ * (clockwise on an unflipped view) or by an `arc` of document px at the selection's
+ * radius, or a flip across its centre.
+ */
+export type NodeTransform =
+  | { kind: "scale"; by: number }
+  | { kind: "rotate"; angle: number }
+  | { kind: "rotate"; arc: number }
+  | { kind: "flip"; axis: "horizontal" | "vertical" }
+
+/**
+ * The scene edits of transforming the selected nodes on the canvas about
+ * the centre of their bounds, handles going with their anchors. One node
+ * alone stays put: its handles scale, turn or flip about it instead. None
+ * when there is nothing to transform.
+ */
+export function transformNodes(
+  scene: VectorScene,
+  nodes: readonly VectorNode[],
+  transform: NodeTransform
+): SceneCommand[] {
+  const held = scene.objects
+    .filter(isPath)
+    .flatMap((object) =>
+      [
+        ...new Set(
+          nodes.filter((n) => n.objectId === object.id).map((n) => n.index)
+        ),
+      ]
+        .filter((index) => object.geometry.nodes[index])
+        .map((index) => ({ object, index }))
+    )
+  if (!held.length) return []
+  const onCanvas = held.map(({ object, index }) =>
+    applyAffine(object.transform, object.geometry.nodes[index])
+  )
+  const xs = onCanvas.map((p) => p.x),
+    ys = onCanvas.map((p) => p.y)
+  const centre = {
+    x: (Math.min(...xs) + Math.max(...xs)) / 2,
+    y: (Math.min(...ys) + Math.max(...ys)) / 2,
+  }
+  const lone = held.length === 1
+  // How far the selection reaches from its centre: the bounds' half size
+  // for a scale, its farthest node for an arc. One node reaches as far as
+  // its longest handle.
+  const handleReach = () => {
+    const { object, index } = held[0]
+    const n = object.geometry.nodes[index]
+    return Math.max(
+      0,
+      ...[n.in, n.out].map((h) => {
+        const p = h && handleOf(n, h) && applyAffine(object.transform, h)
+        return p ? Math.hypot(p.x - centre.x, p.y - centre.y) : 0
+      })
+    )
+  }
+  let map: (p: Point) => Point
+  if (transform.kind === "flip") {
+    const h = transform.axis === "horizontal"
+    map = (p) => ({
+      x: h ? 2 * centre.x - p.x : p.x,
+      y: h ? p.y : 2 * centre.y - p.y,
+    })
+  } else if (transform.kind === "rotate") {
+    const reach = lone
+      ? handleReach()
+      : Math.max(
+          ...onCanvas.map((p) => Math.hypot(p.x - centre.x, p.y - centre.y))
+        )
+    const angle = "angle" in transform ? transform.angle : transform.arc / reach
+    if (!Number.isFinite(angle) || angle === 0) return []
+    const cos = Math.cos(angle),
+      sin = Math.sin(angle)
+    map = (p) => {
+      const dx = p.x - centre.x,
+        dy = p.y - centre.y
+      return {
+        x: centre.x + dx * cos - dy * sin,
+        y: centre.y + dx * sin + dy * cos,
+      }
+    }
+  } else if (lone) {
+    // Each handle grows by the step, a shrink stopping at its anchor.
+    map = (p) => {
+      const dx = p.x - centre.x,
+        dy = p.y - centre.y,
+        length = Math.hypot(dx, dy)
+      if (!length) return p
+      const k = Math.max(0, length + transform.by) / length
+      return { x: centre.x + dx * k, y: centre.y + dy * k }
+    }
+  } else {
+    const half =
+      Math.max(
+        Math.max(...xs) - Math.min(...xs),
+        Math.max(...ys) - Math.min(...ys)
+      ) / 2
+    const k = (half + transform.by) / half
+    if (!(half > 0 && k > 0)) return []
+    map = (p) => ({
+      x: centre.x + (p.x - centre.x) * k,
+      y: centre.y + (p.y - centre.y) * k,
+    })
+  }
+  return scene.objects.filter(isPath).flatMap((object): SceneCommand[] => {
+    const indices = held.filter((h) => h.object === object).map((h) => h.index)
+    if (!indices.length) return []
+    const back = invertMatrix(object.transform)
+    const moved = (p: Point) =>
+      applyAffine(back, map(applyAffine(object.transform, p)))
+    const changes = new Map(
+      indices.map((index) => {
+        const n = object.geometry.nodes[index]
+        const anchor = lone ? { x: n.x, y: n.y } : moved(n)
+        return [
+          index,
+          {
+            ...n,
+            ...anchor,
+            // One node's handles turned by hand are taken from the solver.
+            ...(lone && n.type === "auto" ? { type: "smooth" as const } : {}),
+            in: n.in && (handleOf(n, n.in) ? moved(n.in) : anchor),
+            out: n.out && (handleOf(n, n.out) ? moved(n.out) : anchor),
+          },
+        ] as const
+      })
+    )
+    const geometry = replacePathNodes(object.geometry, changes)
+    return JSON.stringify(geometry) === JSON.stringify(object.geometry)
+      ? []
+      : [{ type: "update", id: object.id, patch: { geometry } }]
   })
 }
 

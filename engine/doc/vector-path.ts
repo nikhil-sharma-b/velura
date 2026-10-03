@@ -596,6 +596,20 @@ function newtonPlace(
   return Math.max(0, Math.min(1, t - (ex * fx + ey * fy) / step))
 }
 
+/** `path` with the nodes in `changes` put in, its auto nodes worked out again. */
+export function replacePathNodes(
+  path: BezierPath,
+  changes: ReadonlyMap<number, PathNode>
+): BezierPath {
+  return {
+    ...path,
+    nodes: solveAuto(
+      path.nodes.map((n, i) => changes.get(i) ?? n),
+      path.closed
+    ),
+  }
+}
+
 /** The point at `t` along segment `index` of `path`, in its own coordinates. */
 export const segmentPoint = (
   path: BezierPath,
