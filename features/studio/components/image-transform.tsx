@@ -18,6 +18,10 @@ import type {
 } from "@/engine"
 import {
   docToScreen,
+  handlesShown,
+  canBreak,
+  canJoin,
+  selectedSegments,
   placementExtent,
   resolveSnap,
   flippedPlacement,
@@ -28,7 +32,9 @@ import {
   rotatedPlacement,
   invertMatrix,
   scaledPlacement,
+  type NodeType,
   type PlacementHandle,
+  type SegmentShape,
   type ViewMatrix,
 } from "@/engine"
 import { Button } from "@/components/ui/button"
@@ -696,6 +702,28 @@ function PlacementFields({
   )
 }
 
+/** What the hint bar can make of the selected segments. */
+const SEGMENT_BUTTONS: readonly {
+  shape: SegmentShape
+  label: string
+  keys: string
+}[] = [
+  { shape: "line", label: "Line", keys: "Shift+L" },
+  { shape: "curve", label: "Curve", keys: "Shift+U" },
+]
+
+/** The node types the hint bar offers, in Inkscape's order. */
+const NODE_TYPE_BUTTONS: readonly {
+  nodeType: NodeType
+  label: string
+  keys: string
+}[] = [
+  { nodeType: "cusp", label: "Cusp", keys: "Shift+C" },
+  { nodeType: "smooth", label: "Smooth", keys: "Shift+S" },
+  { nodeType: "symmetric", label: "Symmetric", keys: "Shift+Y" },
+  { nodeType: "auto", label: "Auto-smooth", keys: "Shift+A" },
+]
+
 /** The engine owns pointer input; this overlay only displays editable nodes. */
 export function VectorNodes({
   engine,
@@ -719,6 +747,7 @@ export function VectorNodes({
                 id: "draft",
                 transform: [1, 0, 0, 1, 0, 0] as const,
                 nodes: penNodes,
+                object: null,
               },
             ]
           : objects.flatMap((o) =>
@@ -728,13 +757,14 @@ export function VectorNodes({
                       id: o.id,
                       transform: o.transform,
                       nodes: o.geometry.nodes,
+                      object: o,
                     },
                   ]
                 : []
             )
       const fragment = document.createDocumentFragment()
       const element = (
-        tag: "line" | "circle" | "rect",
+        tag: "line" | "circle" | "rect" | "polygon",
         attributes: Record<string, string | number>
       ) => {
         const node = document.createElementNS("http://www.w3.org/2000/svg", tag)
@@ -748,7 +778,12 @@ export function VectorNodes({
           toCss({ x: a * p.x + c * p.y + e, y: b * p.x + d * p.y + f })
         path.nodes.forEach((node, index) => {
           const anchor = screen(node)
-          for (const handle of [node.in, node.out]) {
+          // The pen shows every handle it is drawing; the node tool only
+          // those of the selected nodes and their neighbours, as Inkscape.
+          const handles =
+            !path.object ||
+            handlesShown(path.object, index, snapshot.vectorNodes)
+          for (const handle of handles ? [node.in, node.out] : []) {
             if (!handle) continue
             const point = screen(handle)
             element("line", {
@@ -767,23 +802,47 @@ export function VectorNodes({
               stroke: "var(--primary)",
             })
           }
-          const selected =
-            snapshot.vectorNode?.objectId === path.id &&
-            snapshot.vectorNode.index === index
-          element("rect", {
-            x: anchor.x - 4,
-            y: anchor.y - 4,
-            width: 8,
-            height: 8,
+          const selected = snapshot.vectorNodes.some(
+            (n) => n.objectId === path.id && n.index === index
+          )
+          // Each type its own marker, as Inkscape: a cusp a diamond, a
+          // smooth node a square, a symmetric one a square with a dot, an
+          // auto node a circle.
+          const paint = {
             fill: selected ? "var(--primary)" : "var(--background)",
             stroke: "var(--primary)",
-          })
+          }
+          const { x, y } = anchor
+          if (node.type === "cusp")
+            element("polygon", {
+              points: `${x},${y - 5} ${x + 5},${y} ${x},${y + 5} ${x - 5},${y}`,
+              ...paint,
+            })
+          else if (node.type === "auto")
+            element("circle", { cx: x, cy: y, r: 4, ...paint })
+          else
+            element("rect", {
+              x: x - 4,
+              y: y - 4,
+              width: 8,
+              height: 8,
+              ...paint,
+            })
+          if (node.type === "symmetric")
+            element("circle", {
+              cx: x,
+              cy: y,
+              r: 1.5,
+              fill: selected ? "var(--background)" : "var(--primary)",
+            })
         })
       }
       svg.replaceChildren(fragment)
     })
-  }, [engine, snapshot.tool, snapshot.vectorNode, toCss])
+  }, [engine, snapshot.tool, snapshot.vectorNodes, toCss])
   if (snapshot.tool !== "node" && snapshot.tool !== "pen") return null
+  const hasSegments =
+    selectedSegments(snapshot.vectorPaths, snapshot.vectorNodes).length > 0
   return (
     <>
       <svg
@@ -806,28 +865,140 @@ export function VectorNodes({
           </>
         ) : (
           <>
-            <span>Drag nodes or handles · double-click a segment to add</span>
+            <span>
+              {snapshot.vectorHandleHeld
+                ? "Ctrl snaps to 15° · Alt keeps the length · Shift mirrors a cusp · Ctrl+click retracts"
+                : "Click or drag to select nodes · Shift adds · double-click a segment to add · Shift+drag a bare anchor pulls a handle"}
+            </span>
+            <span className="text-muted-foreground tabular-nums">
+              {nodeCount(snapshot)}
+            </span>
+            {SEGMENT_BUTTONS.map(({ shape, label, keys }) => (
+              <Button
+                key={shape}
+                size="sm"
+                variant="outline"
+                title={`Make selected segments ${shape}s (${keys})`}
+                disabled={!hasSegments}
+                onClick={() =>
+                  void engine.dispatch({ type: "setVectorSegmentShape", shape })
+                }
+              >
+                {label}
+              </Button>
+            ))}
             <Button
               size="sm"
               variant="outline"
-              disabled={!snapshot.vectorNode}
-              onClick={() => void engine.dispatch({ type: "toggleVectorNode" })}
+              title="Insert a node in each selected segment (Insert)"
+              disabled={!hasSegments}
+              onClick={() =>
+                void engine.dispatch({ type: "insertVectorNodes" })
+              }
             >
-              Smooth / corner
+              Insert
             </Button>
             <Button
               size="sm"
               variant="outline"
-              disabled={!snapshot.vectorNode}
+              title="Break the path at the selected nodes (Shift+B)"
+              disabled={!canBreak(snapshot.vectorPaths, snapshot.vectorNodes)}
+              onClick={() => void engine.dispatch({ type: "breakVectorNodes" })}
+            >
+              Break
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              title="Join the two selected end nodes (Shift+J)"
+              disabled={
+                !canJoin(snapshot.vectorPaths, snapshot.vectorNodes, "merge")
+              }
+              onClick={() => void engine.dispatch({ type: "joinVectorNodes" })}
+            >
+              Join
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              title="Join the two selected end nodes with a segment (Alt+J)"
+              disabled={
+                !canJoin(snapshot.vectorPaths, snapshot.vectorNodes, "segment")
+              }
+              onClick={() =>
+                void engine.dispatch({ type: "joinVectorNodes", segment: true })
+              }
+            >
+              Join with segment
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              title="Delete the selected segments (Alt+Delete)"
+              disabled={!hasSegments}
+              onClick={() =>
+                void engine.dispatch({ type: "deleteVectorSegments" })
+              }
+            >
+              Delete segment
+            </Button>
+            {(["horizontal", "vertical"] as const).map((axis) => (
+              <Button
+                key={axis}
+                size="sm"
+                variant="outline"
+                title={`Flip the selected nodes ${axis}ly (${axis === "horizontal" ? "H" : "V"})`}
+                disabled={!snapshot.vectorNodes.length}
+                onClick={() =>
+                  void engine.dispatch({
+                    type: "transformVectorNodes",
+                    transform: { kind: "flip", axis },
+                  })
+                }
+              >
+                {axis === "horizontal" ? "Flip H" : "Flip V"}
+              </Button>
+            ))}
+            {NODE_TYPE_BUTTONS.map(({ nodeType, label, keys }) => (
+              <Button
+                key={nodeType}
+                size="sm"
+                variant="outline"
+                title={`Make ${label.toLowerCase()} (${keys})`}
+                disabled={!snapshot.vectorNodes.length}
+                onClick={() =>
+                  void engine.dispatch({ type: "setVectorNodeType", nodeType })
+                }
+              >
+                {label}
+              </Button>
+            ))}
+            <Button
+              size="sm"
+              variant="outline"
+              title="Delete nodes, keeping the shape (Delete) · without keeping it (Ctrl+Delete)"
+              disabled={!snapshot.vectorNodes.length}
               onClick={() => void engine.dispatch({ type: "deleteVectorNode" })}
             >
-              Delete anchor
+              Delete
             </Button>
           </>
         )}
       </ToolHint>
     </>
   )
+}
+
+/** "3 of 12 nodes selected", over the paths being edited. */
+function nodeCount(snapshot: EngineSnapshot) {
+  const total = snapshot.vectorPaths.reduce(
+    (sum, o) =>
+      sum + (o.geometry.kind === "path" ? o.geometry.nodes.length : 0),
+    0
+  )
+  return total
+    ? `${snapshot.vectorNodes.length} of ${total} nodes selected`
+    : "No path selected"
 }
 
 /** How a polygon is closed, shown while the tool is in the hand. */

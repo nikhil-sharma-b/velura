@@ -41,11 +41,11 @@ export interface StrokeHandlers {
   /** Samples the canvas instead of opening a stroke while Alt/Option is held. */
   sample?(x: number, y: number): void
   /**
-   * Whether Shift and Alt/Option are held, told as the pen goes down and with
+   * Whether Shift, Alt/Option and Ctrl are held, told as the pen goes down and with
    * every move, so a drag can be constrained mid-gesture and a selection
    * know how to combine.
    */
-  modifiers?(shift: boolean, alt: boolean): void
+  modifiers?(shift: boolean, alt: boolean, ctrl: boolean): void
 }
 
 export interface SamplerOptions {
@@ -188,7 +188,7 @@ export function attachPointerSampler(
     }
     event.preventDefault()
     buffer.clear()
-    handlers.modifiers?.(event.shiftKey, event.altKey)
+    handlers.modifiers?.(event.shiftKey, event.altKey, event.ctrlKey)
     strokeStart = event.timeStamp
     const [tiltX, tiltY] = canvasTilt(event)
     handlers.begin(
@@ -206,7 +206,7 @@ export function attachPointerSampler(
   function onPointerUpdate(event: PointerEvent) {
     if (event.pointerId !== activePointer) return
     event.preventDefault()
-    handlers.modifiers?.(event.shiftKey, event.altKey)
+    handlers.modifiers?.(event.shiftKey, event.altKey, event.ctrlKey)
     // Coalesced events are the samples the browser withheld between frames.
     // The event itself is the last of them, so it is never read separately.
     const coalesced = event.getCoalescedEvents?.()

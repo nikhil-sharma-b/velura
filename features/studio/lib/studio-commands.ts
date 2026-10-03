@@ -5,6 +5,10 @@ import {
   type EngineCommand,
   type FilterKind,
   type LayerSummary,
+  type NodeTransform,
+  canJoin,
+  type JoinMode,
+  selectedSegments,
 } from "@/engine"
 import { createRegistry, type Command } from "@/features/commands/lib/registry"
 
@@ -17,6 +21,15 @@ export const ZOOM_STEP = 1.25
 export const ROTATE_STEP = Math.PI / 12
 /** One press of an arrow key, in CSS pixels: a nudge, not a leap. */
 const PAN_STEP = 40
+/** One arrow press on selected nodes, in document pixels, and with Shift. */
+const NODE_NUDGE = 2
+const NODE_NUDGE_FAR = 20
+
+/** Document px a scale key grows the selected nodes' bounds by each side. */
+const NODE_SCALE_STEP = 2
+/** A rotate key's turn of the selected nodes: 15°, as in Inkscape. */
+const NODE_ROTATE_STEP = Math.PI / 12
+
 /**
  * One press of a size key. Multiplicative, because the step an artist wants
  * between 2px and 3px is not the step they want between 100px and 101px.
@@ -80,6 +93,151 @@ function dispatching(
       void context.engine?.dispatch(
         typeof command === "function" ? command(context) : command
       ),
+  }
+}
+
+/** A command for the node tool only, so its keys stay free elsewhere. */
+function onNodeTool(
+  command: EngineCommand
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    ...dispatching(command),
+    available: ({ engine }) =>
+      !!engine &&
+      engine.getSnapshot().tool === "node" &&
+      engine.getSnapshot().vectorPaths.length > 0,
+  }
+}
+
+/** Whether the arrows would move nodes: the node tool, with some selected. */
+const nodesSelected = (engine: Engine | null) =>
+  !!engine &&
+  engine.getSnapshot().tool === "node" &&
+  engine.getSnapshot().vectorNodes.length > 0
+
+/**
+ * Nudges the selected nodes by `step` document pixels in the direction
+ * (`x`, `y`); a held key's repeats join the first press as one undo step.
+ */
+function nudging(
+  x: number,
+  y: number,
+  step: (engine: Engine) => number
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    available: ({ engine }) => nodesSelected(engine),
+    run: ({ engine }, input) => {
+      if (!engine) return
+      const by = step(engine)
+      void engine.dispatch({
+        type: "nudgeVectorNodes",
+        dx: x * by,
+        dy: y * by,
+        repeat: input?.repeat,
+      })
+    },
+  }
+}
+
+/**
+ * An arrow: nudges the selected nodes on the node tool by `step`, pans the
+ * view otherwise, as the arrows always have with or without a modifier.
+ */
+function panOrNudge(
+  x: number,
+  y: number,
+  step: (engine: Engine) => number = () => NODE_NUDGE
+): Pick<StudioCommand, "available" | "run"> {
+  const nudge = nudging(x, y, step)
+  return {
+    available: hasEngine,
+    run: (context, input) =>
+      nodesSelected(context.engine)
+        ? nudge.run(context, input)
+        : void context.engine?.dispatch({
+            type: "panView",
+            dx: -x * PAN_STEP,
+            dy: -y * PAN_STEP,
+          }),
+  }
+}
+
+/** A command for the selected nodes, unavailable with none selected. */
+function onSelectedNodes(
+  command: EngineCommand
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    ...dispatching(command),
+    available: ({ engine }) => nodesSelected(engine),
+  }
+}
+
+/** Whether the node tool has a segment selected: both its ends. */
+function segmentsSelected(engine: Engine | null): boolean {
+  if (!nodesSelected(engine)) return false
+  const { vectorPaths, vectorNodes } = engine!.getSnapshot()
+  return selectedSegments(vectorPaths, vectorNodes).length > 0
+}
+
+/** A command for the selected segments, unavailable with none selected. */
+function onSelectedSegments(
+  command: EngineCommand
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    ...dispatching(command),
+    available: ({ engine }) => segmentsSelected(engine),
+  }
+}
+
+/** `command` with nodes selected, else what `otherwise` does. */
+function nodesOr(
+  command: EngineCommand | Pick<StudioCommand, "available" | "run">,
+  otherwise: Pick<StudioCommand, "available" | "run">
+): Pick<StudioCommand, "available" | "run"> {
+  const nodes = "type" in command ? onSelectedNodes(command) : command
+  return {
+    available: (context) =>
+      nodesSelected(context.engine) || !!otherwise.available?.(context),
+    run: (context, input) =>
+      nodesSelected(context.engine)
+        ? nodes.run(context, input)
+        : otherwise.run(context, input),
+  }
+}
+
+/**
+ * Transforms the selected nodes by `step` (`<` `>` `[` `]` `H` `V`); a held
+ * key's repeats join the first press as one undo step.
+ */
+function transforming(
+  step: (engine: Engine) => NodeTransform
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    available: ({ engine }) => nodesSelected(engine),
+    run: ({ engine }, input) =>
+      void engine?.dispatch({
+        type: "transformVectorNodes",
+        transform: step(engine),
+        repeat: input?.repeat,
+      }),
+  }
+}
+
+/** One screen pixel, in document pixels. */
+const screenPixel = (engine: Engine) => 1 / engine.getSnapshot().view.zoom
+
+/** A join of the two selected end nodes, available only when they fit. */
+function onJoinableEnds(
+  command: EngineCommand,
+  mode: JoinMode
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    ...dispatching(command),
+    available: ({ engine }) => {
+      if (!nodesSelected(engine)) return false
+      const { vectorPaths, vectorNodes } = engine!.getSnapshot()
+      return canJoin(vectorPaths, vectorNodes, mode)
+    },
   }
 }
 
@@ -299,8 +457,16 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "tool.polygonLasso",
     label: "Polygonal lasso tool",
     category: "Tools",
+    // On the node tool with segments selected, the key makes them lines
+    // (Inkscape); everywhere else, and from the palette, it is the lasso.
     keybinds: ["shift+l"],
-    ...dispatching({ type: "setTool", tool: "polygonLasso" }),
+    available: hasEngine,
+    run: (context, key) =>
+      void context.engine?.dispatch(
+        key && segmentsSelected(context.engine)
+          ? { type: "setVectorSegmentShape", shape: "line" }
+          : { type: "setTool", tool: "polygonLasso" }
+      ),
   },
   {
     // W, the wand in every editor the hand learned on.
@@ -355,7 +521,22 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "tool.node",
     label: "Node tool",
     category: "Tools",
+    keybinds: ["n"],
     ...dispatching({ type: "setTool", tool: "node" }),
+  },
+  {
+    id: "node.next",
+    label: "Select next node",
+    category: "Tools",
+    keybinds: ["tab"],
+    ...onNodeTool({ type: "stepVectorNode", direction: 1 }),
+  },
+  {
+    id: "node.previous",
+    label: "Select previous node",
+    category: "Tools",
+    keybinds: ["shift+tab"],
+    ...onNodeTool({ type: "stepVectorNode", direction: -1 }),
   },
   {
     id: "tool.pressure",
@@ -384,15 +565,141 @@ export const studioCommands = createRegistry<StudioContext>([
   },
   {
     id: "node.delete",
-    label: "Delete selected anchor",
+    label: "Delete selected nodes",
     category: "Tools",
-    ...dispatching({ type: "deleteVectorNode" }),
+    ...onSelectedNodes({ type: "deleteVectorNode" }),
   },
   {
-    id: "node.toggle",
-    label: "Toggle smooth or corner anchor",
+    id: "node.deleteWithoutRefit",
+    label: "Delete selected nodes without keeping the shape",
     category: "Tools",
-    ...dispatching({ type: "toggleVectorNode" }),
+    keybinds: ["mod+delete", "mod+backspace"],
+    ...onSelectedNodes({ type: "deleteVectorNode", refit: false }),
+  },
+  {
+    id: "node.insert",
+    label: "Insert nodes in selected segments",
+    category: "Tools",
+    keybinds: ["insert"],
+    ...onSelectedNodes({ type: "insertVectorNodes" }),
+  },
+  {
+    id: "node.break",
+    label: "Break path at selected nodes",
+    category: "Tools",
+    keybinds: ["shift+b"],
+    ...onSelectedNodes({ type: "breakVectorNodes" }),
+  },
+  {
+    id: "node.join",
+    label: "Join selected end nodes",
+    category: "Tools",
+    keybinds: ["shift+j"],
+    ...onJoinableEnds({ type: "joinVectorNodes" }, "merge"),
+  },
+  {
+    id: "node.joinWithSegment",
+    label: "Join selected end nodes with a segment",
+    category: "Tools",
+    keybinds: ["alt+j"],
+    ...onJoinableEnds({ type: "joinVectorNodes", segment: true }, "segment"),
+  },
+  {
+    id: "segment.delete",
+    label: "Delete selected segments",
+    category: "Tools",
+    keybinds: ["alt+delete", "alt+backspace"],
+    ...onSelectedSegments({ type: "deleteVectorSegments" }),
+  },
+  {
+    id: "segment.line",
+    label: "Make selected segments lines",
+    category: "Tools",
+    // Shift+L reaches it through the polygonal lasso's binding, above.
+    ...onSelectedSegments({ type: "setVectorSegmentShape", shape: "line" }),
+  },
+  {
+    id: "segment.curve",
+    label: "Make selected segments curves",
+    category: "Tools",
+    keybinds: ["shift+u"],
+    ...onSelectedSegments({ type: "setVectorSegmentShape", shape: "curve" }),
+  },
+  {
+    id: "node.cusp",
+    label: "Make selected nodes cusp",
+    category: "Tools",
+    keybinds: ["shift+c"],
+    ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "cusp" }),
+  },
+  {
+    id: "node.smooth",
+    label: "Make selected nodes smooth",
+    category: "Tools",
+    keybinds: ["shift+s"],
+    ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "smooth" }),
+  },
+  {
+    id: "node.symmetric",
+    label: "Make selected nodes symmetric",
+    category: "Tools",
+    keybinds: ["shift+y"],
+    ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "symmetric" }),
+  },
+  {
+    id: "node.auto",
+    label: "Make selected nodes auto-smooth",
+    category: "Tools",
+    keybinds: ["shift+a"],
+    ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "auto" }),
+  },
+  {
+    id: "node.flipHorizontal",
+    label: "Flip selected nodes horizontally",
+    category: "Tools",
+    // H reaches it through the canvas flip's binding, which hands over to
+    // the nodes while any are selected.
+    ...transforming(() => ({ kind: "flip", axis: "horizontal" })),
+  },
+  {
+    id: "node.flipVertical",
+    label: "Flip selected nodes vertically",
+    category: "Tools",
+    keybinds: ["v"],
+    ...transforming(() => ({ kind: "flip", axis: "vertical" })),
+  },
+  // Alt steps by one screen pixel. A Mac's Option turns these keys into
+  // other characters, so those are bound beside the plain ones.
+  {
+    id: "node.scaleDownPixel",
+    label: "Scale selected nodes down one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+,", "alt+<", "alt+≤", "alt+¯"],
+    ...transforming((engine) => ({ kind: "scale", by: -screenPixel(engine) })),
+  },
+  {
+    id: "node.scaleUpPixel",
+    label: "Scale selected nodes up one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+.", "alt+>", "alt+≥", "alt+˘"],
+    ...transforming((engine) => ({ kind: "scale", by: screenPixel(engine) })),
+  },
+  {
+    id: "node.rotateLeftPixel",
+    label: "Rotate selected nodes left one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+[", "alt+“"],
+    ...transforming((engine) => ({
+      kind: "rotate",
+      arc: -screenPixel(engine),
+    })),
+  },
+  {
+    id: "node.rotateRightPixel",
+    label: "Rotate selected nodes right one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+]", "alt+‘"],
+    ...transforming((engine) => ({ kind: "rotate", arc: screenPixel(engine) })),
   },
   {
     id: "tool.objectSelect",
@@ -416,8 +723,13 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "object.delete",
     label: "Delete objects",
     category: "Tools",
+    // With nodes selected the key deletes them, keeping the shape, as the
+    // node tool's own Delete does in Inkscape.
     keybinds: ["delete", "backspace"],
-    ...onVectorSelection({ type: "deleteVectorObjects" }),
+    ...nodesOr(
+      { type: "deleteVectorNode" },
+      onVectorSelection({ type: "deleteVectorObjects" })
+    ),
   },
   {
     // Escape lets go of an outline half drawn, the polygonal lasso's above
@@ -486,14 +798,21 @@ export const studioCommands = createRegistry<StudioContext>([
     label: "Increase brush size",
     category: "Brush",
     keybinds: ["]"],
-    ...resize(1),
+    // With nodes selected the brackets turn them, as in Inkscape.
+    ...nodesOr(
+      transforming(() => ({ kind: "rotate", angle: NODE_ROTATE_STEP })),
+      resize(1)
+    ),
   },
   {
     id: "brush.sizeDown",
     label: "Decrease brush size",
     category: "Brush",
     keybinds: ["["],
-    ...resize(-1),
+    ...nodesOr(
+      transforming(() => ({ kind: "rotate", angle: -NODE_ROTATE_STEP })),
+      resize(-1)
+    ),
   },
   {
     id: "layer.add",
@@ -717,21 +1036,31 @@ export const studioCommands = createRegistry<StudioContext>([
     label: "Rotate left",
     category: "View",
     keybinds: [",", "<"],
-    ...dispatching({ type: "rotateView", radians: -ROTATE_STEP }),
+    // With nodes selected the pair scales them, as in Inkscape.
+    ...nodesOr(
+      transforming(() => ({ kind: "scale", by: -NODE_SCALE_STEP })),
+      dispatching({ type: "rotateView", radians: -ROTATE_STEP })
+    ),
   },
   {
     id: "view.rotateRight",
     label: "Rotate right",
     category: "View",
     keybinds: [".", ">"],
-    ...dispatching({ type: "rotateView", radians: ROTATE_STEP }),
+    ...nodesOr(
+      transforming(() => ({ kind: "scale", by: NODE_SCALE_STEP })),
+      dispatching({ type: "rotateView", radians: ROTATE_STEP })
+    ),
   },
   {
     id: "view.flip",
     label: "Flip canvas horizontally",
     category: "View",
     keybinds: ["h"],
-    ...dispatching({ type: "flipView" }),
+    ...nodesOr(
+      transforming(() => ({ kind: "flip", axis: "horizontal" })),
+      dispatching({ type: "flipView" })
+    ),
   },
   {
     id: "view.toggleSnapping",
@@ -818,34 +1147,90 @@ export const studioCommands = createRegistry<StudioContext>([
     })),
   },
   // The arrows nudge the canvas, for the artist who has no wheel under the
-  // hand that is free.
+  // hand that is free; with nodes selected on the node tool, they nudge those.
   {
     id: "view.panLeft",
     label: "Pan left",
     category: "View",
     keybinds: ["arrowleft"],
-    ...dispatching({ type: "panView", dx: PAN_STEP, dy: 0 }),
+    ...panOrNudge(-1, 0),
   },
   {
     id: "view.panRight",
     label: "Pan right",
     category: "View",
     keybinds: ["arrowright"],
-    ...dispatching({ type: "panView", dx: -PAN_STEP, dy: 0 }),
+    ...panOrNudge(1, 0),
   },
   {
     id: "view.panUp",
     label: "Pan up",
     category: "View",
     keybinds: ["arrowup"],
-    ...dispatching({ type: "panView", dx: 0, dy: PAN_STEP }),
+    ...panOrNudge(0, -1),
   },
   {
     id: "view.panDown",
     label: "Pan down",
     category: "View",
     keybinds: ["arrowdown"],
-    ...dispatching({ type: "panView", dx: 0, dy: -PAN_STEP }),
+    ...panOrNudge(0, 1),
+  },
+  {
+    id: "node.nudgeLeftFar",
+    label: "Nudge nodes left far",
+    category: "Tools",
+    keybinds: ["shift+arrowleft"],
+    ...panOrNudge(-1, 0, () => NODE_NUDGE_FAR),
+  },
+  {
+    id: "node.nudgeLeftPixel",
+    label: "Nudge nodes left one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+arrowleft"],
+    ...panOrNudge(-1, 0, (engine) => 1 / engine.getSnapshot().view.zoom),
+  },
+  {
+    id: "node.nudgeRightFar",
+    label: "Nudge nodes right far",
+    category: "Tools",
+    keybinds: ["shift+arrowright"],
+    ...panOrNudge(1, 0, () => NODE_NUDGE_FAR),
+  },
+  {
+    id: "node.nudgeRightPixel",
+    label: "Nudge nodes right one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+arrowright"],
+    ...panOrNudge(1, 0, (engine) => 1 / engine.getSnapshot().view.zoom),
+  },
+  {
+    id: "node.nudgeUpFar",
+    label: "Nudge nodes up far",
+    category: "Tools",
+    keybinds: ["shift+arrowup"],
+    ...panOrNudge(0, -1, () => NODE_NUDGE_FAR),
+  },
+  {
+    id: "node.nudgeUpPixel",
+    label: "Nudge nodes up one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+arrowup"],
+    ...panOrNudge(0, -1, (engine) => 1 / engine.getSnapshot().view.zoom),
+  },
+  {
+    id: "node.nudgeDownFar",
+    label: "Nudge nodes down far",
+    category: "Tools",
+    keybinds: ["shift+arrowdown"],
+    ...panOrNudge(0, 1, () => NODE_NUDGE_FAR),
+  },
+  {
+    id: "node.nudgeDownPixel",
+    label: "Nudge nodes down one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+arrowdown"],
+    ...panOrNudge(0, 1, (engine) => 1 / engine.getSnapshot().view.zoom),
   },
 ])
 

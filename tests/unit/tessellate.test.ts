@@ -223,7 +223,12 @@ describe("stroking", () => {
   const pressure = (points: { x: number; y: number; width: number }[]) =>
     ({
       kind: "path",
-      nodes: points.map((p) => ({ ...p, in: null, out: null, smooth: true })),
+      nodes: points.map((p) => ({
+        ...p,
+        in: null,
+        out: null,
+        type: "smooth" as const,
+      })),
       closed: false,
     }) as const
 

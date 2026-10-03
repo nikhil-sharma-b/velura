@@ -1,5 +1,10 @@
 import { describe, expect, mock, test } from "bun:test"
-import type { Engine, EngineCommand, LayerSummary } from "../../engine"
+import type {
+  Engine,
+  EngineCommand,
+  LayerSummary,
+  NodeTransform,
+} from "../../engine"
 import { createKeybindResolver } from "../../features/commands/lib/resolver"
 import {
   runStudioCommand,
@@ -28,12 +33,12 @@ function fakeEngine(
   const sent: EngineCommand[] = []
   const engine = {
     getSnapshot: () => ({
-      ...extra,
       layers,
       activeLayerId,
       tool: "brush",
       brush: { shape: { radius: 10 } },
       eraser: { shape: { radius: 10 } },
+      ...extra,
     }),
     dispatch: mock(async (command: EngineCommand) => void sent.push(command)),
   } as unknown as Engine
@@ -470,5 +475,311 @@ describe("filter commands", () => {
         expect(command.available!(context(engine, id))).toBe(false)
       expect(command.available!(context(engine, "ok"))).toBe(true)
     }
+  })
+
+  test("the arrows nudge selected nodes on the node tool, a held key as one", () => {
+    const { engine, sent } = fakeEngine([raster("a")], "a", {
+      tool: "node",
+      vectorNodes: [{ objectId: "p", index: 0 }],
+      view: { zoom: 4 },
+    })
+    const resolver = createKeybindResolver(studioCommands, () =>
+      context(engine)
+    )
+    const key = (
+      key: string,
+      mods: { shiftKey?: boolean; altKey?: boolean; repeat?: boolean } = {}
+    ) =>
+      resolver.keydown({
+        key,
+        shiftKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+        repeat: false,
+        defaultPrevented: false,
+        target: null,
+        preventDefault: () => {},
+        ...mods,
+      })
+    key("ArrowLeft")
+    key("ArrowLeft", { repeat: true })
+    key("ArrowDown", { shiftKey: true })
+    key("ArrowRight", { altKey: true })
+    expect(sent).toEqual([
+      { type: "nudgeVectorNodes", dx: -2, dy: 0, repeat: false },
+      { type: "nudgeVectorNodes", dx: -2, dy: 0, repeat: true },
+      { type: "nudgeVectorNodes", dx: 0, dy: 20, repeat: false },
+      { type: "nudgeVectorNodes", dx: 0.25, dy: 0, repeat: false },
+    ])
+  })
+
+  test("Delete keeps the shape of selected nodes, Ctrl+Delete does not, objects otherwise", () => {
+    const run = (extra: Record<string, unknown>) => {
+      const { engine, sent } = fakeEngine([raster("a")], "a", extra)
+      const resolver = createKeybindResolver(studioCommands, () =>
+        context(engine)
+      )
+      for (const [key, ctrlKey] of [
+        ["Delete", false],
+        ["Backspace", true],
+      ] as const)
+        resolver.keydown({
+          key,
+          shiftKey: false,
+          metaKey: false,
+          ctrlKey,
+          altKey: false,
+          repeat: false,
+          defaultPrevented: false,
+          target: null,
+          preventDefault: () => {},
+        })
+      return sent
+    }
+    expect(
+      run({ tool: "node", vectorNodes: [{ objectId: "p", index: 0 }] })
+    ).toEqual([
+      { type: "deleteVectorNode" },
+      { type: "deleteVectorNode", refit: false },
+    ])
+    expect(
+      run({
+        layers: [{ ...raster("v"), kind: "vector" }],
+        activeLayerId: "v",
+        tool: "objectSelect",
+        vectorNodes: [],
+        vectorSelection: ["p"],
+      })
+    ).toEqual([{ type: "deleteVectorObjects" }])
+  })
+
+  test("Insert and Shift+B insert and break at the selected nodes, and only then", () => {
+    const run = (vectorNodes: unknown[]) => {
+      const { engine, sent } = fakeEngine([raster("a")], "a", {
+        tool: "node",
+        vectorNodes,
+      })
+      const resolver = createKeybindResolver(studioCommands, () =>
+        context(engine)
+      )
+      for (const [key, shiftKey] of [
+        ["Insert", false],
+        ["B", true],
+      ] as const)
+        resolver.keydown({
+          key,
+          shiftKey,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          repeat: false,
+          defaultPrevented: false,
+          target: null,
+          preventDefault: () => {},
+        })
+      return sent
+    }
+    expect(run([{ objectId: "p", index: 0 }])).toEqual([
+      { type: "insertVectorNodes" },
+      { type: "breakVectorNodes" },
+    ])
+    expect(run([])).toEqual([])
+  })
+
+  test("Shift+J, Alt+J and Alt+Delete join ends and delete segments when they fit", () => {
+    const line = {
+      id: "p",
+      geometry: {
+        kind: "path",
+        closed: false,
+        nodes: [0, 1, 2].map((x) => ({ x, y: 0, in: null, out: null })),
+      },
+    }
+    const run = (vectorNodes: unknown[]) => {
+      const { engine, sent } = fakeEngine([raster("a")], "a", {
+        tool: "node",
+        vectorNodes,
+        vectorPaths: [line],
+      })
+      const resolver = createKeybindResolver(studioCommands, () =>
+        context(engine)
+      )
+      for (const [key, mods] of [
+        ["J", { shiftKey: true }],
+        ["j", { altKey: true }],
+        ["Delete", { altKey: true }],
+      ] as const)
+        resolver.keydown({
+          key,
+          shiftKey: false,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          repeat: false,
+          defaultPrevented: false,
+          target: null,
+          preventDefault: () => {},
+          ...mods,
+        })
+      return sent
+    }
+    // The two ends: joinable, but no segment between them.
+    expect(
+      run([
+        { objectId: "p", index: 0 },
+        { objectId: "p", index: 2 },
+      ])
+    ).toEqual([
+      { type: "joinVectorNodes" },
+      { type: "joinVectorNodes", segment: true },
+    ])
+    // A segment's two ends, one of them inside the path: no join.
+    expect(
+      run([
+        { objectId: "p", index: 0 },
+        { objectId: "p", index: 1 },
+      ])
+    ).toEqual([{ type: "deleteVectorSegments" }])
+  })
+
+  test("< > [ ] H V transform selected nodes, and do what they did without", () => {
+    const run = (vectorNodes: unknown[]) => {
+      const { engine, sent } = fakeEngine([raster("a")], "a", {
+        tool: "node",
+        vectorNodes,
+        view: { zoom: 4 },
+      })
+      const resolver = createKeybindResolver(studioCommands, () =>
+        context(engine)
+      )
+      for (const [key, mods] of [
+        ["<", { shiftKey: true }],
+        ["]", {}],
+        ["h", {}],
+        ["v", {}],
+        ["≥", { altKey: true }],
+        ["[", { altKey: true, repeat: true }],
+      ] as const)
+        resolver.keydown({
+          key,
+          shiftKey: false,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          repeat: false,
+          defaultPrevented: false,
+          target: null,
+          preventDefault: () => {},
+          ...mods,
+        })
+      return sent
+    }
+    const step = (transform: NodeTransform, repeat = false) => ({
+      type: "transformVectorNodes" as const,
+      transform,
+      repeat,
+    })
+    expect(run([{ objectId: "p", index: 0 }])).toEqual([
+      step({ kind: "scale", by: -2 }),
+      step({ kind: "rotate", angle: Math.PI / 12 }),
+      step({ kind: "flip", axis: "horizontal" }),
+      step({ kind: "flip", axis: "vertical" }),
+      step({ kind: "scale", by: 0.25 }),
+      step({ kind: "rotate", arc: -0.25 }, true),
+    ])
+    expect(run([]).map((c) => c.type)).toEqual([
+      "rotateView",
+      "setBrush",
+      "flipView",
+    ])
+  })
+
+  test("Shift+C, S, Y and A set the selected nodes' type, and only then", () => {
+    const run = (vectorNodes: unknown[]) => {
+      const { engine, sent } = fakeEngine([raster("a")], "a", {
+        tool: "node",
+        vectorNodes,
+      })
+      const resolver = createKeybindResolver(studioCommands, () =>
+        context(engine)
+      )
+      for (const key of ["C", "S", "Y", "A"])
+        resolver.keydown({
+          key,
+          shiftKey: true,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          repeat: false,
+          defaultPrevented: false,
+          target: null,
+          preventDefault: () => {},
+        })
+      return sent
+    }
+    expect(run([{ objectId: "p", index: 0 }])).toEqual(
+      (["cusp", "smooth", "symmetric", "auto"] as const).map((nodeType) => ({
+        type: "setVectorNodeType",
+        nodeType,
+      }))
+    )
+    expect(run([])).toEqual([])
+  })
+
+  test("Shift+L and Shift+U shape selected segments; Shift+L lassos otherwise", () => {
+    const line = {
+      id: "p",
+      geometry: {
+        kind: "path",
+        closed: false,
+        nodes: [
+          { x: 0, y: 0, in: null, out: null, type: "cusp" },
+          { x: 9, y: 0, in: null, out: null, type: "cusp" },
+        ],
+      },
+    }
+    const run = (vectorNodes: unknown[]) => {
+      const { engine, sent } = fakeEngine([raster("a")], "a", {
+        tool: "node",
+        vectorPaths: [line],
+        vectorNodes,
+      })
+      const resolver = createKeybindResolver(studioCommands, () =>
+        context(engine)
+      )
+      for (const key of ["L", "U"])
+        resolver.keydown({
+          key,
+          shiftKey: true,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          repeat: false,
+          defaultPrevented: false,
+          target: null,
+          preventDefault: () => {},
+        })
+      return sent
+    }
+    const both = [
+      { objectId: "p", index: 0 },
+      { objectId: "p", index: 1 },
+    ]
+    expect(run(both)).toEqual([
+      { type: "setVectorSegmentShape", shape: "line" },
+      { type: "setVectorSegmentShape", shape: "curve" },
+    ])
+    expect(run(both.slice(0, 1))).toEqual([
+      { type: "setTool", tool: "polygonLasso" },
+    ])
+    // From the palette, the lasso is the lasso whatever is selected.
+    const { engine, sent } = fakeEngine([raster("a")], "a", {
+      tool: "node",
+      vectorPaths: [line],
+      vectorNodes: both,
+    })
+    runStudioCommand("tool.polygonLasso", context(engine))
+    expect(sent).toEqual([{ type: "setTool", tool: "polygonLasso" }])
   })
 })

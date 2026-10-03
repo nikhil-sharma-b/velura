@@ -8,7 +8,7 @@
  * diff — the commands that put the scene back — instead of a copy of it.
  */
 
-import type { BezierPath } from "./vector-path"
+import { NODE_TYPES, type BezierPath, type PathNode } from "./vector-path"
 import { parseHex } from "../color/hex"
 import type { Affine } from "./transform-session"
 
@@ -133,7 +133,7 @@ function checkGeometry(geometry: VectorGeometry): void {
         !geometry.nodes.every(
           (n) =>
             finite(n?.x, n?.y) &&
-            typeof n.smooth === "boolean" &&
+            NODE_TYPES.includes(n.type) &&
             [n.in, n.out].every((h) => h === null || (h && finite(h.x, h.y))) &&
             (n.width === undefined || (finite(n.width) && n.width >= 0))
         ) ||
@@ -206,6 +206,24 @@ export function checkObject(object: VectorObject): void {
 }
 
 /**
+ * An object as saved before nodes had types: a path node's `smooth` flag
+ * read as a smooth node or a cusp, and not carried on.
+ */
+function migrateObject(raw: VectorObject): VectorObject {
+  const geometry = raw?.geometry
+  if (geometry?.kind !== "path" || !Array.isArray(geometry.nodes)) return raw
+  const nodes = geometry.nodes.map((node) => {
+    // Saved data, not yet checked: the flag may be there with or without a
+    // type, and is dropped either way.
+    const { smooth, ...rest } = node as PathNode & { smooth?: unknown }
+    return rest.type === undefined && typeof smooth === "boolean"
+      ? { ...rest, type: smooth ? ("smooth" as const) : ("cusp" as const) }
+      : rest
+  })
+  return { ...raw, geometry: { ...geometry, nodes } }
+}
+
+/**
  * A scene read back from a save or a file: checked whole, and copied down to
  * the fields a scene has, so nothing else it carried comes in with it.
  */
@@ -215,11 +233,12 @@ export function parseScene(value: unknown): VectorScene {
   const seen = new Set<string>()
   return {
     objects: objects.map((raw: VectorObject) => {
-      checkObject(raw)
-      if (seen.has(raw.id))
-        throw new Error(`The object ${raw.id} appears twice.`)
-      seen.add(raw.id)
-      const { id, geometry, transform, style } = raw
+      const object = migrateObject(raw)
+      checkObject(object)
+      if (seen.has(object.id))
+        throw new Error(`The object ${object.id} appears twice.`)
+      seen.add(object.id)
+      const { id, geometry, transform, style } = object
       return { id, geometry, transform, style }
     }),
   }
