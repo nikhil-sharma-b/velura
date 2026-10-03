@@ -258,3 +258,45 @@ describe("pickPathNode", () => {
     })
   })
 })
+
+test("fitting a wobbly hand-drawn line with noisy pressure keeps it to a few nodes", () => {
+  // The line from the bug report: 500 px, drifting 15 px, half-pixel jitter,
+  // pressure wandering a few percent.
+  const samples = Array.from({ length: 250 }, (_, i) => ({
+    x: i * 2,
+    y: i * 0.06 + Math.sin(i * 1.7) * 0.5,
+    pressure: 0.6 + Math.sin(i * 2.3) * 0.03,
+  }))
+  const path = fitPressureStroke(samples, 4)
+  expect(path.nodes.length).toBeLessThanOrEqual(3)
+  expect(path.nodes[0]).toMatchObject({ x: 0, y: 0 })
+  expect(path.nodes.at(-1)).toMatchObject({ x: 498 })
+})
+
+test("fitting a smooth arc uses few nodes and stays within a pixel and a half", async () => {
+  const { flattenPath } = await import("../../engine/doc/vector-path")
+  const samples = Array.from({ length: 200 }, (_, i) => {
+    const angle = (i / 199) * Math.PI
+    return {
+      x: 100 - Math.cos(angle) * 100,
+      y: Math.sin(angle) * 100,
+      pressure: 1,
+    }
+  })
+  const path = fitPressureStroke(samples, 4)
+  expect(path.nodes.length).toBeLessThanOrEqual(4)
+  expect(path.nodes.every((n) => n.type === "smooth")).toBe(true)
+  for (const p of flattenPath(path).points)
+    expect(Math.abs(Math.hypot(p.x - 100, p.y) - 100)).toBeLessThanOrEqual(1.5)
+})
+
+test("fitting keeps a node where pressure departs from a straight run", () => {
+  const samples = Array.from({ length: 101 }, (_, x) => ({
+    x,
+    y: 0,
+    pressure: x < 50 ? 0.2 : 1,
+  }))
+  const path = fitPressureStroke(samples, 10)
+  expect(path.nodes.length).toBeGreaterThan(2)
+  expect(path.nodes.length).toBeLessThanOrEqual(5)
+})

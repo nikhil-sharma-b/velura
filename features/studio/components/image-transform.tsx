@@ -19,9 +19,6 @@ import type {
 import {
   docToScreen,
   handlesShown,
-  canBreak,
-  canJoin,
-  selectedSegments,
   placementExtent,
   resolveSnap,
   flippedPlacement,
@@ -32,9 +29,7 @@ import {
   rotatedPlacement,
   invertMatrix,
   scaledPlacement,
-  type NodeType,
   type PlacementHandle,
-  type SegmentShape,
   type ViewMatrix,
 } from "@/engine"
 import { Button } from "@/components/ui/button"
@@ -702,28 +697,6 @@ function PlacementFields({
   )
 }
 
-/** What the hint bar can make of the selected segments. */
-const SEGMENT_BUTTONS: readonly {
-  shape: SegmentShape
-  label: string
-  keys: string
-}[] = [
-  { shape: "line", label: "Line", keys: "Shift+L" },
-  { shape: "curve", label: "Curve", keys: "Shift+U" },
-]
-
-/** The node types the hint bar offers, in Inkscape's order. */
-const NODE_TYPE_BUTTONS: readonly {
-  nodeType: NodeType
-  label: string
-  keys: string
-}[] = [
-  { nodeType: "cusp", label: "Cusp", keys: "Shift+C" },
-  { nodeType: "smooth", label: "Smooth", keys: "Shift+S" },
-  { nodeType: "symmetric", label: "Symmetric", keys: "Shift+Y" },
-  { nodeType: "auto", label: "Auto-smooth", keys: "Shift+A" },
-]
-
 /** The engine owns pointer input; this overlay only displays editable nodes. */
 export function VectorNodes({
   engine,
@@ -841,8 +814,6 @@ export function VectorNodes({
     })
   }, [engine, snapshot.tool, snapshot.vectorNodes, toCss])
   if (snapshot.tool !== "node" && snapshot.tool !== "pen") return null
-  const hasSegments =
-    selectedSegments(snapshot.vectorPaths, snapshot.vectorNodes).length > 0
   return (
     <>
       <svg
@@ -873,115 +844,6 @@ export function VectorNodes({
             <span className="text-muted-foreground tabular-nums">
               {nodeCount(snapshot)}
             </span>
-            {SEGMENT_BUTTONS.map(({ shape, label, keys }) => (
-              <Button
-                key={shape}
-                size="sm"
-                variant="outline"
-                title={`Make selected segments ${shape}s (${keys})`}
-                disabled={!hasSegments}
-                onClick={() =>
-                  void engine.dispatch({ type: "setVectorSegmentShape", shape })
-                }
-              >
-                {label}
-              </Button>
-            ))}
-            <Button
-              size="sm"
-              variant="outline"
-              title="Insert a node in each selected segment (Insert)"
-              disabled={!hasSegments}
-              onClick={() =>
-                void engine.dispatch({ type: "insertVectorNodes" })
-              }
-            >
-              Insert
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              title="Break the path at the selected nodes (Shift+B)"
-              disabled={!canBreak(snapshot.vectorPaths, snapshot.vectorNodes)}
-              onClick={() => void engine.dispatch({ type: "breakVectorNodes" })}
-            >
-              Break
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              title="Join the two selected end nodes (Shift+J)"
-              disabled={
-                !canJoin(snapshot.vectorPaths, snapshot.vectorNodes, "merge")
-              }
-              onClick={() => void engine.dispatch({ type: "joinVectorNodes" })}
-            >
-              Join
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              title="Join the two selected end nodes with a segment (Alt+J)"
-              disabled={
-                !canJoin(snapshot.vectorPaths, snapshot.vectorNodes, "segment")
-              }
-              onClick={() =>
-                void engine.dispatch({ type: "joinVectorNodes", segment: true })
-              }
-            >
-              Join with segment
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              title="Delete the selected segments (Alt+Delete)"
-              disabled={!hasSegments}
-              onClick={() =>
-                void engine.dispatch({ type: "deleteVectorSegments" })
-              }
-            >
-              Delete segment
-            </Button>
-            {(["horizontal", "vertical"] as const).map((axis) => (
-              <Button
-                key={axis}
-                size="sm"
-                variant="outline"
-                title={`Flip the selected nodes ${axis}ly (${axis === "horizontal" ? "H" : "V"})`}
-                disabled={!snapshot.vectorNodes.length}
-                onClick={() =>
-                  void engine.dispatch({
-                    type: "transformVectorNodes",
-                    transform: { kind: "flip", axis },
-                  })
-                }
-              >
-                {axis === "horizontal" ? "Flip H" : "Flip V"}
-              </Button>
-            ))}
-            {NODE_TYPE_BUTTONS.map(({ nodeType, label, keys }) => (
-              <Button
-                key={nodeType}
-                size="sm"
-                variant="outline"
-                title={`Make ${label.toLowerCase()} (${keys})`}
-                disabled={!snapshot.vectorNodes.length}
-                onClick={() =>
-                  void engine.dispatch({ type: "setVectorNodeType", nodeType })
-                }
-              >
-                {label}
-              </Button>
-            ))}
-            <Button
-              size="sm"
-              variant="outline"
-              title="Delete nodes, keeping the shape (Delete) · without keeping it (Ctrl+Delete)"
-              disabled={!snapshot.vectorNodes.length}
-              onClick={() => void engine.dispatch({ type: "deleteVectorNode" })}
-            >
-              Delete
-            </Button>
           </>
         )}
       </ToolHint>

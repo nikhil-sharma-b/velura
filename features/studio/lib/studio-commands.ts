@@ -580,7 +580,8 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "node.insert",
     label: "Insert nodes in selected segments",
     category: "Tools",
-    keybinds: ["insert"],
+    // Mac keyboards have no Insert key.
+    keybinds: ["insert", "shift+i"],
     ...onSelectedNodes({ type: "insertVectorNodes" }),
   },
   {
