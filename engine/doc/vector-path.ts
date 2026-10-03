@@ -386,7 +386,8 @@ export function pickPathNode(
   point: Point,
   transform: readonly number[],
   reach: number,
-  options: { handles?: boolean } = {}
+  /** Which nodes' handles can be taken: all, none, or those it says. */
+  options: { handles?: boolean | ((index: number) => boolean) } = {}
 ): { index: number; part: NodePart; at: Point; distance: number } | null {
   const place = (p: Point) => ({
     x: transform[0] * p.x + transform[2] * p.y + transform[4],
@@ -406,7 +407,8 @@ export function pickPathNode(
   path.nodes.forEach((node, index) => {
     const anchor = place(node)
     consider(index, "anchor", anchor)
-    if (options.handles === false) return
+    const { handles = true } = options
+    if (handles === false || (handles !== true && !handles(index))) return
     for (const part of ["in", "out"] as const) {
       const handle = node[part]
       if (!handle) continue

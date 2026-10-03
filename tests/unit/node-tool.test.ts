@@ -1,9 +1,16 @@
 import { expect, test } from "bun:test"
 import {
+  allNodes,
+  boxNodes,
   dragNode,
+  editNode,
+  handlesShown,
   nodeCommand,
   pressNode,
-  pruneVectorNode,
+  pruneNodes,
+  releaseNode,
+  stepNode,
+  type VectorNode,
 } from "../../engine/doc/node-tool"
 import type { VectorObject, VectorScene } from "../../engine/doc/vector-scene"
 
@@ -27,28 +34,115 @@ const triangle = (id: string, dx = 0): VectorObject => ({
 })
 
 const scene = (...objects: VectorObject[]): VectorScene => ({ objects })
+const node = (objectId: string, index: number): VectorNode => ({
+  objectId,
+  index,
+})
 const press = (
   s: VectorScene,
   point: { x: number; y: number },
-  selection: string[] = [],
-  time = 0,
-  lastClick?: { point: { x: number; y: number }; time: number }
-) => pressNode({ scene: s, selection, point, reach: 6, time, lastClick })
+  {
+    selection = [],
+    nodes = [],
+    shift = false,
+    time = 0,
+    lastClick,
+  }: {
+    selection?: string[]
+    nodes?: VectorNode[]
+    shift?: boolean
+    time?: number
+    lastClick?: { point: { x: number; y: number }; time: number }
+  } = {}
+) =>
+  pressNode({
+    scene: s,
+    selection,
+    nodes,
+    shift,
+    point,
+    reach: 6,
+    time,
+    lastClick,
+  })
 
-test("pressing an anchor grabs it and selects its path", () => {
-  const press1 = press(scene(triangle("a")), { x: 101, y: 1 })
-  expect(press1.kind).toBe("grab")
-  if (press1.kind !== "grab") return
-  expect(press1.selection).toEqual(["a"])
-  expect(press1.vectorNode).toEqual({ objectId: "a", index: 1 })
-  expect(press1.grab).toMatchObject({ index: 1, part: "anchor" })
-  expect(press1.at).toEqual({ x: 100, y: 0 })
+test("pressing an anchor grabs it, selects its path, and only that node", () => {
+  const result = press(
+    scene(triangle("a")),
+    { x: 101, y: 1 },
+    {
+      nodes: [node("a", 0)],
+      selection: ["a"],
+    }
+  )
+  expect(result.kind).toBe("grab")
+  if (result.kind !== "grab") return
+  expect(result.selection).toEqual(["a"])
+  expect(result.nodes).toEqual([node("a", 1)])
+  expect(result.grab).toMatchObject({ index: 1, part: "anchor" })
+  expect(result.at).toEqual({ x: 100, y: 0 })
+})
+
+test("pressing an already selected anchor keeps the whole node selection", () => {
+  const nodes = [node("a", 0), node("a", 1)]
+  const result = press(
+    scene(triangle("a")),
+    { x: 100, y: 0 },
+    {
+      nodes,
+      selection: ["a"],
+    }
+  )
+  expect(result.kind === "grab" && result.nodes).toEqual(nodes)
+})
+
+test("Shift+click toggles a node in and out of the selection", () => {
+  const s = scene(triangle("a"))
+  const added = press(
+    s,
+    { x: 100, y: 0 },
+    {
+      nodes: [node("a", 0)],
+      selection: ["a"],
+      shift: true,
+    }
+  )
+  expect(added).toMatchObject({
+    kind: "select",
+    selection: ["a"],
+    nodes: [node("a", 0), node("a", 1)],
+  })
+  const removed = press(
+    s,
+    { x: 100, y: 0 },
+    {
+      nodes: added.nodes,
+      selection: ["a"],
+      shift: true,
+    }
+  )
+  expect(removed.nodes).toEqual([node("a", 0)])
+})
+
+test("Shift+click on another path's node adds that path to the edit", () => {
+  const s = scene(triangle("a"), triangle("b", 300))
+  const result = press(
+    s,
+    { x: 300, y: 0 },
+    {
+      nodes: [node("a", 0)],
+      selection: ["a"],
+      shift: true,
+    }
+  )
+  expect(result.selection).toEqual(["a", "b"])
+  expect(result.nodes).toEqual([node("a", 0), node("b", 0)])
 })
 
 test("a node of the selected path wins over one of a path above it", () => {
   const s = scene(triangle("below"), triangle("above"))
-  const result = press(s, { x: 0, y: 0 }, ["below"])
-  expect(result.kind === "grab" && result.vectorNode?.objectId).toBe("below")
+  const result = press(s, { x: 0, y: 0 }, { selection: ["below"] })
+  expect(result.kind === "grab" && result.nodes[0].objectId).toBe("below")
 })
 
 test("dragging a grabbed anchor moves it in the object's own coordinates", () => {
@@ -70,7 +164,7 @@ test("a click on a segment selects its path without a node", () => {
   expect(press(scene(triangle("a")), { x: 50, y: 1 })).toEqual({
     kind: "select",
     selection: ["a"],
-    vectorNode: null,
+    nodes: [],
     lastClick: { point: { x: 50, y: 1 }, time: 0 },
   })
 })
@@ -78,10 +172,18 @@ test("a click on a segment selects its path without a node", () => {
 test("a double-click on a segment adds a node there", () => {
   const s = scene(triangle("a"))
   const first = press(s, { x: 50, y: 0 })
-  const second = press(s, { x: 50, y: 0 }, ["a"], 100, first.lastClick)
+  const second = press(
+    s,
+    { x: 50, y: 0 },
+    {
+      selection: ["a"],
+      time: 100,
+      lastClick: first.lastClick,
+    }
+  )
   expect(second.kind).toBe("split")
   if (second.kind !== "split") return
-  expect(second.vectorNode).toEqual({ objectId: "a", index: 1 })
+  expect(second.nodes).toEqual([node("a", 1)])
   expect(second.geometry.nodes).toHaveLength(4)
   expect(second.geometry.nodes[1]).toMatchObject({ x: 50, y: 0 })
 })
@@ -89,52 +191,127 @@ test("a double-click on a segment adds a node there", () => {
 test("a slow second click on a segment does not add a node", () => {
   const s = scene(triangle("a"))
   const first = press(s, { x: 50, y: 0 })
-  expect(press(s, { x: 50, y: 0 }, ["a"], 1000, first.lastClick).kind).toBe(
-    "select"
-  )
+  expect(
+    press(
+      s,
+      { x: 50, y: 0 },
+      {
+        selection: ["a"],
+        time: 1000,
+        lastClick: first.lastClick,
+      }
+    ).kind
+  ).toBe("select")
 })
 
-test("a click inside a filled path selects it; on empty canvas clears", () => {
+test("a click inside a filled path selects it; empty canvas starts a box", () => {
   const s = scene(triangle("a"))
-  expect(press(s, { x: 50, y: 40 }, [])).toMatchObject({
+  expect(press(s, { x: 50, y: 40 })).toMatchObject({
     kind: "select",
     selection: ["a"],
+    nodes: [],
   })
-  expect(press(s, { x: 500, y: 500 }, ["a"])).toMatchObject({
-    kind: "select",
-    selection: [],
+  const nodes = [node("a", 0)]
+  expect(
+    press(s, { x: 500, y: 500 }, { selection: ["a"], nodes })
+  ).toMatchObject({ kind: "box", selection: ["a"], nodes })
+})
+
+test("a box selects the edited paths' nodes inside it; Shift adds", () => {
+  const paths = [triangle("a"), triangle("b", 300)]
+  const box = { x: -10, y: -10, width: 120, height: 20 }
+  expect(boxNodes(paths, [], box, false)).toEqual([node("a", 0), node("a", 1)])
+  expect(boxNodes(paths, [node("b", 2)], box, true)).toEqual([
+    node("b", 2),
+    node("a", 0),
+    node("a", 1),
+  ])
+  expect(boxNodes(paths, [node("b", 2)], box, false)).toEqual([
+    node("a", 0),
+    node("a", 1),
+  ])
+})
+
+test("select all takes every node of every edited path", () => {
+  expect(allNodes([triangle("a"), triangle("b")])).toHaveLength(6)
+})
+
+test("Tab steps to the next node, round all the paths; Shift+Tab back", () => {
+  const paths = [triangle("a"), triangle("b")]
+  expect(stepNode(paths, [], 1)).toEqual([node("a", 0)])
+  expect(stepNode(paths, [], -1)).toEqual([node("b", 2)])
+  expect(stepNode(paths, [node("a", 1)], 1)).toEqual([node("a", 2)])
+  expect(stepNode(paths, [node("a", 0)], -1)).toEqual([node("b", 2)])
+  expect(stepNode([], [], 1)).toEqual([])
+})
+
+test("handles show for selected nodes and their neighbours only", () => {
+  const square: VectorObject = {
+    ...triangle("a"),
+    geometry: {
+      kind: "path",
+      closed: false,
+      nodes: [0, 1, 2, 3, 4].map((x) => ({
+        x: x * 10,
+        y: 0,
+        in: null,
+        out: null,
+        smooth: false,
+      })),
+    },
+  }
+  const shown = [0, 1, 2, 3, 4].map((i) =>
+    handlesShown(square, i, [node("a", 2)])
+  )
+  expect(shown).toEqual([false, true, true, true, false])
+  // A closed path's first and last are neighbours.
+  expect(handlesShown(triangle("a"), 2, [node("a", 0)])).toBe(true)
+})
+
+test("toggle acts on every selected node, delete removes them all", () => {
+  const s = scene(triangle("a"), triangle("b", 300))
+  const toggled = nodeCommand(s, [node("a", 0), node("b", 1)], "toggle")
+  expect(toggled?.edits).toHaveLength(2)
+  expect(toggled?.nodes).toEqual([node("a", 0), node("b", 1)])
+  const square = scene({
+    ...triangle("a"),
+    geometry: {
+      kind: "path",
+      closed: true,
+      nodes: [0, 1, 2, 3].map((i) => ({
+        x: i,
+        y: 0,
+        in: null,
+        out: null,
+        smooth: false,
+      })),
+    },
   })
+  const deleted = nodeCommand(square, [node("a", 0), node("a", 2)], "delete")
+  expect(deleted?.nodes).toEqual([])
+  const [edit] = deleted!.edits
+  expect(
+    edit.type === "update" &&
+      edit.patch.geometry?.kind === "path" &&
+      edit.patch.geometry.nodes.map((n) => n.x)
+  ).toEqual([1, 3])
 })
 
-test("toggle and delete act on the selected node", () => {
+test("commands do nothing without nodes; a path never drops below two", () => {
   const s = scene(triangle("a"))
-  const toggled = nodeCommand(s, { objectId: "a", index: 0 }, "toggle")
-  expect(toggled?.geometry.nodes[0].smooth).toBe(true)
-  expect(toggled?.vectorNode).toEqual({ objectId: "a", index: 0 })
-  const deleted = nodeCommand(s, { objectId: "a", index: 0 }, "delete")
-  expect(deleted?.geometry.nodes).toHaveLength(2)
-  expect(deleted?.vectorNode).toBeNull()
+  expect(nodeCommand(s, [], "toggle")).toBeNull()
+  expect(nodeCommand(s, [node("a", 0), node("a", 1)], "delete")).toBeNull()
 })
 
-test("commands do nothing without a node, or when a path would fall below two", () => {
-  const s = scene(triangle("a"))
-  expect(nodeCommand(s, null, "toggle")).toBeNull()
-  const two = nodeCommand(s, { objectId: "a", index: 0 }, "delete")!
-  const shorter = scene({ ...triangle("a"), geometry: two.geometry })
-  expect(nodeCommand(shorter, { objectId: "a", index: 0 }, "delete")).toBeNull()
-})
-
-test("a node is forgotten once its path or index is gone", () => {
+test("selected nodes are forgotten once their path or index is gone", () => {
   const paths = [triangle("a")]
-  const kept = { objectId: "a", index: 2 }
-  expect(pruneVectorNode(paths, kept)).toBe(kept)
-  expect(pruneVectorNode(paths, { objectId: "a", index: 3 })).toBeNull()
-  expect(pruneVectorNode([], kept)).toBeNull()
-  expect(pruneVectorNode(paths, null)).toBeNull()
+  const kept = [node("a", 2)]
+  expect(pruneNodes(paths, kept)).toBe(kept)
+  expect(pruneNodes(paths, [node("a", 2), node("a", 3)])).toEqual(kept)
+  expect(pruneNodes([], kept)).toEqual([])
 })
 
-test("releasing a moved node is one update to its path; unmoved is none", async () => {
-  const { releaseNode } = await import("../../engine/doc/node-tool")
+test("releasing a moved node is one update to its path; unmoved is none", () => {
   const result = press(scene(triangle("a")), { x: 100, y: 0 })
   if (result.kind !== "grab") throw new Error("expected a grab")
   expect(releaseNode(result.grab, { x: 100, y: 0 })).toEqual([])
@@ -147,18 +324,88 @@ test("releasing a moved node is one update to its path; unmoved is none", async 
   ).toMatchObject({ x: 90, y: 10 })
 })
 
-test("an edit by command keeps the node it lands on in hand", async () => {
-  const { editNode } = await import("../../engine/doc/node-tool")
+test("an edit by command keeps the node it lands on in hand", () => {
   const s = scene(triangle("a"))
-  expect(editNode(s, "a", { type: "split", index: 0 }).vectorNode).toEqual({
-    objectId: "a",
-    index: 1,
-  })
-  expect(editNode(s, "a", { type: "delete", index: 2 }).vectorNode).toEqual({
-    objectId: "a",
-    index: 1,
-  })
+  expect(editNode(s, "a", { type: "split", index: 0 }).node).toEqual(
+    node("a", 1)
+  )
+  expect(editNode(s, "a", { type: "delete", index: 2 }).node).toEqual(
+    node("a", 1)
+  )
   expect(() => editNode(s, "missing", { type: "toggle", index: 0 })).toThrow(
     "Select an editable path."
   )
+})
+
+test("only a handle that is shown can be taken hold of", () => {
+  const curved: VectorObject = {
+    ...triangle("a"),
+    geometry: {
+      kind: "path",
+      closed: false,
+      nodes: [0, 1, 2, 3].map((i) => ({
+        x: i * 100,
+        y: 0,
+        in: null,
+        out: { x: i * 100 + 20, y: 40 },
+        smooth: false,
+      })),
+    },
+  }
+  const s = scene(curved)
+  // Node 3's handle is beside node 2, so shown with 2 selected, not with 0.
+  const at = { x: 320, y: 40 }
+  expect(
+    press(s, at, { selection: ["a"], nodes: [node("a", 2)] })
+  ).toMatchObject({ kind: "grab", grab: { index: 3, part: "out" } })
+  expect(
+    press(s, at, { selection: ["a"], nodes: [node("a", 0)] }).kind
+  ).not.toBe("grab")
+})
+
+test("a delete keeps the selected nodes of a path it had to leave alone", () => {
+  const s = scene(triangle("a"), {
+    ...triangle("b"),
+    geometry: {
+      kind: "path",
+      closed: false,
+      nodes: [0, 1].map((x) => ({
+        x,
+        y: 0,
+        in: null,
+        out: null,
+        smooth: false,
+      })),
+    },
+  })
+  const result = nodeCommand(s, [node("a", 0), node("b", 0)], "delete")
+  expect(result?.edits).toHaveLength(1)
+  expect(result?.nodes).toEqual([node("b", 0)])
+})
+
+test("Tab goes on to the next path at a path's end", () => {
+  const paths = [triangle("a"), triangle("b")]
+  expect(stepNode(paths, [node("a", 2)], 1)).toEqual([node("b", 0)])
+  expect(stepNode(paths, [node("b", 0)], -1)).toEqual([node("a", 2)])
+  expect(stepNode(paths, [node("b", 2)], 1)).toEqual([node("a", 0)])
+})
+
+test("a path that gained or lost nodes lets go of its selected nodes", () => {
+  const before = [triangle("a"), triangle("b")]
+  const grown = editNode({ objects: before }, "a", { type: "split", index: 0 })
+  const after = [{ ...before[0], geometry: grown.geometry }, before[1]]
+  expect(pruneNodes(after, [node("a", 1), node("b", 1)], before)).toEqual([
+    node("b", 1),
+  ])
+})
+
+test("Shift+click on a segment or fill adds its path and keeps the nodes", () => {
+  const s = scene(triangle("a"), triangle("b", 300))
+  const nodes = [node("a", 0)]
+  expect(
+    press(s, { x: 350, y: 0 }, { selection: ["a"], nodes, shift: true })
+  ).toMatchObject({ kind: "select", selection: ["a", "b"], nodes })
+  expect(
+    press(s, { x: 350, y: 40 }, { selection: ["a"], nodes, shift: true })
+  ).toMatchObject({ kind: "select", selection: ["a", "b"], nodes })
 })

@@ -18,6 +18,7 @@ import type {
 } from "@/engine"
 import {
   docToScreen,
+  handlesShown,
   placementExtent,
   resolveSnap,
   flippedPlacement,
@@ -719,6 +720,7 @@ export function VectorNodes({
                 id: "draft",
                 transform: [1, 0, 0, 1, 0, 0] as const,
                 nodes: penNodes,
+                object: null,
               },
             ]
           : objects.flatMap((o) =>
@@ -728,6 +730,7 @@ export function VectorNodes({
                       id: o.id,
                       transform: o.transform,
                       nodes: o.geometry.nodes,
+                      object: o,
                     },
                   ]
                 : []
@@ -748,7 +751,12 @@ export function VectorNodes({
           toCss({ x: a * p.x + c * p.y + e, y: b * p.x + d * p.y + f })
         path.nodes.forEach((node, index) => {
           const anchor = screen(node)
-          for (const handle of [node.in, node.out]) {
+          // The pen shows every handle it is drawing; the node tool only
+          // those of the selected nodes and their neighbours, as Inkscape.
+          const handles =
+            !path.object ||
+            handlesShown(path.object, index, snapshot.vectorNodes)
+          for (const handle of handles ? [node.in, node.out] : []) {
             if (!handle) continue
             const point = screen(handle)
             element("line", {
@@ -767,9 +775,9 @@ export function VectorNodes({
               stroke: "var(--primary)",
             })
           }
-          const selected =
-            snapshot.vectorNode?.objectId === path.id &&
-            snapshot.vectorNode.index === index
+          const selected = snapshot.vectorNodes.some(
+            (n) => n.objectId === path.id && n.index === index
+          )
           element("rect", {
             x: anchor.x - 4,
             y: anchor.y - 4,
@@ -782,7 +790,7 @@ export function VectorNodes({
       }
       svg.replaceChildren(fragment)
     })
-  }, [engine, snapshot.tool, snapshot.vectorNode, toCss])
+  }, [engine, snapshot.tool, snapshot.vectorNodes, toCss])
   if (snapshot.tool !== "node" && snapshot.tool !== "pen") return null
   return (
     <>
@@ -806,11 +814,17 @@ export function VectorNodes({
           </>
         ) : (
           <>
-            <span>Drag nodes or handles · double-click a segment to add</span>
+            <span>
+              Click or drag to select nodes · Shift adds · double-click a
+              segment to add
+            </span>
+            <span className="text-muted-foreground tabular-nums">
+              {nodeCount(snapshot)}
+            </span>
             <Button
               size="sm"
               variant="outline"
-              disabled={!snapshot.vectorNode}
+              disabled={!snapshot.vectorNodes.length}
               onClick={() => void engine.dispatch({ type: "toggleVectorNode" })}
             >
               Smooth / corner
@@ -818,7 +832,7 @@ export function VectorNodes({
             <Button
               size="sm"
               variant="outline"
-              disabled={!snapshot.vectorNode}
+              disabled={!snapshot.vectorNodes.length}
               onClick={() => void engine.dispatch({ type: "deleteVectorNode" })}
             >
               Delete anchor
@@ -828,6 +842,18 @@ export function VectorNodes({
       </ToolHint>
     </>
   )
+}
+
+/** "3 of 12 nodes selected", over the paths being edited. */
+function nodeCount(snapshot: EngineSnapshot) {
+  const total = snapshot.vectorPaths.reduce(
+    (sum, o) =>
+      sum + (o.geometry.kind === "path" ? o.geometry.nodes.length : 0),
+    0
+  )
+  return total
+    ? `${snapshot.vectorNodes.length} of ${total} nodes selected`
+    : "No path selected"
 }
 
 /** How a polygon is closed, shown while the tool is in the hand. */

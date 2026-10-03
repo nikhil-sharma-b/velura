@@ -83,6 +83,19 @@ function dispatching(
   }
 }
 
+/** A command for the node tool only, so its keys stay free elsewhere. */
+function onNodeTool(
+  command: EngineCommand
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    ...dispatching(command),
+    available: ({ engine }) =>
+      !!engine &&
+      engine.getSnapshot().tool === "node" &&
+      engine.getSnapshot().vectorPaths.length > 0,
+  }
+}
+
 function onVectorSelection(
   command: EngineCommand
 ): Pick<StudioCommand, "available" | "run"> {
@@ -355,7 +368,22 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "tool.node",
     label: "Node tool",
     category: "Tools",
+    keybinds: ["n"],
     ...dispatching({ type: "setTool", tool: "node" }),
+  },
+  {
+    id: "node.next",
+    label: "Select next node",
+    category: "Tools",
+    keybinds: ["tab"],
+    ...onNodeTool({ type: "stepVectorNode", direction: 1 }),
+  },
+  {
+    id: "node.previous",
+    label: "Select previous node",
+    category: "Tools",
+    keybinds: ["shift+tab"],
+    ...onNodeTool({ type: "stepVectorNode", direction: -1 }),
   },
   {
     id: "tool.pressure",

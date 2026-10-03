@@ -452,3 +452,75 @@ test("live pen handles bypass snapshot subscribers and nodes insert through doub
   if (geometry.kind !== "path") throw new Error("Expected a path")
   expect(geometry.nodes[1].x).toBeCloseTo(100, 1)
 })
+
+test("the node tool selects many nodes: band, Shift+click, all, Tab, Escape", async ({
+  page,
+}) => {
+  const box = await open(page)
+  const object = await penTriangle(page, box)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "node" })
+  )
+  const nodes = () =>
+    page.evaluate(() =>
+      window.engine.getSnapshot().vectorNodes.map((n) => n.index)
+    )
+  // Select the path, then band the two bottom corners from empty canvas.
+  await page.mouse.click(box.x + 100, box.y + 70)
+  await page.mouse.move(box.x + 5, box.y + 80)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 195, box.y + 115, { steps: 5 })
+  await page.mouse.up()
+  expect((await nodes()).sort()).toEqual([0, 2])
+  // Shift+click adds the apex, and takes it away again.
+  await page.keyboard.down("Shift")
+  await page.mouse.click(box.x + 100, box.y + 20)
+  expect((await nodes()).sort()).toEqual([0, 1, 2])
+  await page.mouse.click(box.x + 100, box.y + 20)
+  expect((await nodes()).sort()).toEqual([0, 2])
+  await page.keyboard.up("Shift")
+  // A plain click on a selected-off node makes it the only one.
+  await page.mouse.click(box.x + 100, box.y + 20)
+  expect(await nodes()).toEqual([1])
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "stepVectorNode", direction: 1 })
+  )
+  expect(await nodes()).toEqual([2])
+  await page.evaluate(() => window.engine.dispatch({ type: "selectAll" }))
+  expect(await nodes()).toHaveLength(3)
+  // Escape lets go of the nodes, then of the path.
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "abandonSelectionGesture" })
+  )
+  expect(await nodes()).toEqual([])
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().vectorSelection)
+  ).toEqual([object.id])
+  // Nothing was edited along the way.
+  expect(await path(page)).toEqual(object)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "abandonSelectionGesture" })
+  )
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().vectorSelection)
+  ).toEqual([])
+})
+
+test("a click on one of several selected nodes selects it alone", async ({
+  page,
+}) => {
+  const box = await open(page)
+  await penTriangle(page, box)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setTool", tool: "node" })
+  })
+  await page.mouse.click(box.x + 100, box.y + 70)
+  await page.evaluate(() => window.engine.dispatch({ type: "selectAll" }))
+  await page.mouse.click(box.x + 170, box.y + 95)
+  await page.waitForFunction(
+    () => window.engine.getSnapshot().vectorNodes.length === 1
+  )
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().vectorNodes)
+  ).toEqual([{ objectId: expect.any(String), index: 2 }])
+})

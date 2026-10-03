@@ -166,7 +166,7 @@ type FamilyMember = {
  */
 const VECTOR_TOOL_RAIL = {
   objectSelect: { label: "Select objects", icon: <CursorIcon weight="fill" /> },
-  node: { label: "Edit points tool", icon: <CursorIcon /> },
+  node: { label: "Node tool", icon: <CursorIcon /> },
   pen: { label: "Pen tool", icon: <PenNibIcon /> },
   pressure: { label: "Vector brush tool", icon: <PaintBrushIcon /> },
   rectangle: { label: "Rectangle tool", icon: <RectangleIcon /> },

@@ -10,7 +10,10 @@ import {
   nodeCommand,
   releaseNode,
   pressNode,
-  pruneVectorNode,
+  pruneNodes,
+  boxNodes,
+  allNodes,
+  stepNode,
   type NodeClick,
   type NodeGrab,
   type VectorNode,
@@ -347,6 +350,7 @@ export {
   isBuiltinBrush,
 } from "./brush/presets"
 export type { Curve, CurvePoint } from "./brush/curve"
+export { handlesShown, type VectorNode } from "./doc/node-tool"
 export {
   DEFAULT_PRESSURE_CURVE,
   DEFAULT_PRESSURE_PRESET,
@@ -609,6 +613,8 @@ export type EngineCommand =
   | { type: "editVectorNode"; objectId: string; edit: NodeEdit }
   | { type: "deleteVectorNode" }
   | { type: "toggleVectorNode" }
+  /** Selects the one node after or before the last selected (Tab). */
+  | { type: "stepVectorNode"; direction: 1 | -1 }
   | { type: "editVectorLayer"; id: string; commands: readonly SceneCommand[] }
   /**
    * Turns a vector layer into a paint layer holding exactly what it showed
@@ -926,7 +932,8 @@ export type EngineSnapshot = Readonly<{
   vectorSelection: readonly string[]
   vectorPaths: readonly VectorObject[]
   penNodes: readonly PathNode[]
-  vectorNode: VectorNode | null
+  /** The nodes selected with the node tool, on the paths being edited. */
+  vectorNodes: readonly VectorNode[]
   vectorSelectionBounds: Extent | null
   vectorTransform: {
     placement: ImagePlacement
@@ -1067,7 +1074,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   vectorSelection: [],
   vectorPaths: [],
   penNodes: [],
-  vectorNode: null,
+  vectorNodes: [],
   vectorSelectionBounds: null,
   vectorTransform: null,
   color: Object.freeze({
@@ -1715,7 +1722,13 @@ export function createEngine(
                 o.geometry.kind === "path"
             )
           : [])
-      next.vectorNode = pruneVectorNode(next.vectorPaths, next.vectorNode)
+      // Nodes handed in with the update are the caller's word on which are
+      // selected after an edit; any others are pruned against it.
+      next.vectorNodes = pruneNodes(
+        next.vectorPaths,
+        next.vectorNodes,
+        update.vectorNodes ? next.vectorPaths : snapshot.vectorPaths
+      )
       next.vectorSelectionBounds =
         layer.kind === "vector"
           ? objectsBounds(layer.scene, next.vectorSelection)
@@ -2630,6 +2643,8 @@ export function createEngine(
         }
         pressureResampler?: ReturnType<typeof createStrokeResampler>
         node?: NodeGrab
+        /** The node tool is drawing a rubber band, not moving a node. */
+        nodeBox?: boolean
         anchor: Point
         point: Point
         ended: boolean
@@ -3323,15 +3338,24 @@ export function createEngine(
       shapeDrag = undefined
       forgetGestureInput()
       publish({ penNodes: [] })
-      if (drag.tool === "objectSelect") {
-        const region = boxSelection(drag.anchor, drag.point)
-        selectVectorRegion(region, shiftHeld)
+      if (isBand(drag)) {
+        if (drag.nodeBox) endNodeBox(drag)
+        else
+          selectVectorRegion(boxSelection(drag.anchor, drag.point), shiftHeld)
         drawScene(layer.id, layer.scene)
         showSelection(selection)
         render()
         return
       }
       const moved = drag.node && releaseNode(drag.node, drag.point)
+      // A click, not a drag, on one of several selected nodes selects it
+      // alone; the press kept them all in case it became a drag.
+      if (drag.node?.part === "anchor" && !moved?.length)
+        publish({
+          vectorNodes: [
+            { objectId: drag.node.object.id, index: drag.node.index },
+          ],
+        })
       if (moved?.length) {
         editScene(layer.id, moved, "move node")
         publish({ vectorSelection: [drag.node!.object.id] })
@@ -3352,26 +3376,25 @@ export function createEngine(
       return
     }
     drag.previewAt = { ...drag.point, square: constrained() }
-    drag.preview =
-      drag.tool === "objectSelect"
-        ? layer.scene
-        : shape
-          ? applySceneEdit(
-              layer.scene,
-              drag.node
-                ? [
-                    {
-                      type: "update",
-                      id: shape.id,
-                      patch: { geometry: shape.geometry },
-                    },
-                  ]
-                : [{ type: "add", object: shape }]
-            ).scene
-          : layer.scene
+    drag.preview = isBand(drag)
+      ? layer.scene
+      : shape
+        ? applySceneEdit(
+            layer.scene,
+            drag.node
+              ? [
+                  {
+                    type: "update",
+                    id: shape.id,
+                    patch: { geometry: shape.geometry },
+                  },
+                ]
+              : [{ type: "add", object: shape }]
+          ).scene
+        : layer.scene
     drawScene(layer.id, drag.preview)
     notifyVectorControls()
-    if (drag.tool === "objectSelect")
+    if (isBand(drag))
       renderer?.setSelection(
         rectSelection(document, dragRect(drag.anchor, drag.point, false))
       )
@@ -3407,6 +3430,10 @@ export function createEngine(
     drag.ended = true
   }
 
+  /** A drag that draws a selection band rather than a shape. */
+  const isBand = (drag: NonNullable<typeof shapeDrag>) =>
+    drag.tool === "objectSelect" || !!drag.nodeBox
+
   /** Drops a shape drag, its layer drawn as it was. */
   function dropShapeDrag() {
     const drag = shapeDrag
@@ -3414,7 +3441,7 @@ export function createEngine(
     shapeDrag = undefined
     forgetGestureInput()
     publish({ penNodes: [], vectorSelection: snapshot.vectorSelection })
-    if (drag.tool === "objectSelect") showSelection(selection)
+    if (isBand(drag)) showSelection(selection)
     const layer = doc && findNodeIn(doc.layers, drag.layerId)
     if (layer?.kind === "vector") drawScene(layer.id, layer.scene)
     if (snapshot.status === "ready") render()
@@ -4432,34 +4459,36 @@ export function createEngine(
     const press = pressNode({
       scene: layer.scene,
       selection: snapshot.vectorSelection,
+      nodes: snapshot.vectorNodes,
+      shift: shiftHeld,
       point,
       reach: 6 / snapshot.view.zoom,
       time,
       lastClick: lastNodeClick,
     })
-    // A grab on a path already being edited leaves the selection be.
     if (
-      press.kind !== "grab" ||
-      press.selection[0] !== press.grab.object.id ||
-      !snapshot.vectorSelection.includes(press.grab.object.id)
+      press.selection.length !== snapshot.vectorSelection.length ||
+      press.selection.some((id) => !snapshot.vectorSelection.includes(id))
     )
       setVectorSelection(press.selection)
-    if (press.kind === "grab") {
-      publish({ vectorNode: press.vectorNode })
+    lastNodeClick = press.lastClick
+    if (press.kind === "grab" || press.kind === "box") {
+      publish({ vectorNodes: press.nodes })
       shapeDrag = {
         layerId: layer.id,
         tool: "node",
         anchor: point,
-        point: press.at,
+        point: press.kind === "grab" ? press.at : point,
         ended: false,
-        node: press.grab,
+        ...(press.kind === "grab"
+          ? { node: press.grab }
+          : { nodeBox: true as const }),
       }
       scheduleFrame()
       return
     }
-    lastNodeClick = press.lastClick
     if (press.kind === "split") {
-      publish({ vectorNode: null })
+      publish({ vectorNodes: [] })
       editScene(
         layer.id,
         [
@@ -4472,7 +4501,30 @@ export function createEngine(
         "add node"
       )
     }
-    publish({ vectorNode: press.vectorNode })
+    publish({ vectorNodes: press.nodes })
+  }
+
+  /**
+   * Where a node-tool rubber band ends: a click on empty canvas lets go of
+   * every path, as it always has; a band selects the nodes inside it.
+   */
+  function endNodeBox(drag: NonNullable<typeof shapeDrag>) {
+    const region = boxSelection(drag.anchor, drag.point)
+    if (!("width" in region)) {
+      if (!shiftHeld) {
+        setVectorSelection([])
+        publish({ vectorNodes: [] })
+      }
+      return
+    }
+    publish({
+      vectorNodes: boxNodes(
+        snapshot.vectorPaths,
+        snapshot.vectorNodes,
+        region,
+        shiftHeld
+      ),
+    })
   }
 
   function beginStroke(
@@ -4767,6 +4819,14 @@ export function createEngine(
       }
       if (shapeDrag.tool === "polygon" && !shapeDrag.ended) return
       shapeDrag.ended = true
+      // A node band settles which nodes are selected the moment it is let
+      // go, as a click on empty canvas always has, not a frame later.
+      if (shapeDrag.nodeBox) {
+        if (frame !== undefined) cancelAnimationFrame(frame)
+        frame = undefined
+        drawShapeDrag()
+        return
+      }
       scheduleFrame()
       return
     }
@@ -5467,7 +5527,7 @@ export function createEngine(
         case "editVectorNode": {
           dropShapeDrag()
           const layer = selectedVectorLayer()
-          const { geometry, vectorNode } = editNode(
+          const { geometry, node } = editNode(
             layer.scene,
             command.objectId,
             command.edit
@@ -5477,35 +5537,35 @@ export function createEngine(
             [{ type: "update", id: command.objectId, patch: { geometry } }],
             "edit node"
           )
-          publish({ vectorNode })
+          publish({ vectorNodes: [node] })
           break
         }
         case "deleteVectorNode":
         case "toggleVectorNode": {
-          if (!snapshot.vectorNode) break
+          if (!snapshot.vectorNodes.length) break
           dropShapeDrag()
           const layer = selectedVectorLayer()
           const edit = nodeCommand(
             layer.scene,
-            snapshot.vectorNode,
+            snapshot.vectorNodes,
             command.type === "deleteVectorNode" ? "delete" : "toggle"
           )
           if (edit) {
-            editScene(
-              layer.id,
-              [
-                {
-                  type: "update",
-                  id: edit.objectId,
-                  patch: { geometry: edit.geometry },
-                },
-              ],
-              "edit node"
-            )
-            publish({ vectorNode: edit.vectorNode })
+            editScene(layer.id, edit.edits, "edit node")
+            publish({ vectorNodes: edit.nodes })
           }
           break
         }
+        case "stepVectorNode":
+          if (tool !== "node") break
+          publish({
+            vectorNodes: stepNode(
+              snapshot.vectorPaths,
+              snapshot.vectorNodes,
+              command.direction
+            ),
+          })
+          break
         case "editVectorLayer":
           editScene(command.id, command.commands, "edit shapes")
           break
@@ -6165,9 +6225,20 @@ export function createEngine(
           break
         }
         case "selectAll":
+          // With the node tool, every node of the paths being edited.
+          if (tool === "node" && snapshot.vectorPaths.length) {
+            publish({ vectorNodes: allNodes(snapshot.vectorPaths) })
+            break
+          }
           commitSelection("select all", selectAll(requireDocument()))
           break
         case "abandonSelectionGesture":
+          // The node tool lets go of its nodes first, then of the paths.
+          if (tool === "node" && snapshot.vectorNodes.length) {
+            dropShapeDrag()
+            publish({ vectorNodes: [] })
+            break
+          }
           dropShapeDrag()
           cancelVectorTransform()
           publish({ vectorSelection: [] })
