@@ -19,6 +19,20 @@ test("pressure fitting retains the centre line endpoints and pressure extrema", 
   ])
 })
 
+test("pressure fitting keeps a sharp turn as a corner that never overshoots", async () => {
+  const { flattenPath } = await import("../../engine/doc/vector-path")
+  const samples = []
+  for (let x = 0; x <= 100; x += 2) samples.push({ x, y: 0, pressure: 1 })
+  for (let y = 2; y <= 100; y += 2) samples.push({ x: 100, y, pressure: 1 })
+  const path = fitPressureStroke(samples, 4)
+  const corner = path.nodes.find((n) => n.x === 100 && n.y === 0)
+  expect(corner?.smooth).toBe(false)
+  for (const p of flattenPath(path).points) {
+    expect(p.x).toBeLessThanOrEqual(100 + 1e-9)
+    expect(p.y).toBeGreaterThanOrEqual(-1e-9)
+  }
+})
+
 test("splitting a curved pressure path preserves its centre line and interpolates width", async () => {
   const { flattenPath, splitPathSegment } =
     await import("../../engine/doc/vector-path")

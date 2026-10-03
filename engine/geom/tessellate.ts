@@ -73,6 +73,7 @@ function outline(object: VectorObject): {
   points: Point[]
   closed: boolean
   widths?: number[] | null
+  corners?: number[]
 } {
   const geometry = object.geometry
   switch (geometry.kind) {
@@ -191,16 +192,32 @@ function distinct<T extends Point>(points: readonly T[], closed: boolean): T[] {
 /**
  * The band `stroke.width` wide centred on a run of segments, with its joins
  * and, left open, its caps.
+ *
+ * With `widths`, a pressure stroke, the band is the area a disc sweeps as it
+ * rides the line, its size following the pen — the shape tldraw's freehand
+ * outline traces. Offsetting each chord by its ends' half-widths and joining
+ * every chord to the next would put a join at each of the hundreds of points
+ * a hand-drawn curve flattens to, and a hand turns sharply there often
+ * enough that mitres spike out and quads poke past the curve. A disc at each
+ * point and the hull between each pair cannot: the stroke's own join is kept
+ * for its corner nodes (`corners`, indices into `input`), its cap for its
+ * ends.
  */
 export function tessellateStroke(
   input: readonly Point[],
   closed: boolean,
   stroke: Pick<VectorStroke, "width" | "cap" | "join">,
-  widths?: readonly number[] | null
+  widths?: readonly number[] | null,
+  corners: readonly number[] = []
 ): Mesh {
   const mesh = createBuilder("union")
+  const corner = new Set(corners)
   const points = distinct(
-    input.map((p, i) => ({ ...p, width: widths?.[i] ?? stroke.width })),
+    input.map((p, i) => ({
+      ...p,
+      width: widths?.[i] ?? stroke.width,
+      corner: corner.has(i),
+    })),
     closed
   )
   const segments = closed ? points.length : points.length - 1
@@ -220,35 +237,21 @@ export function tessellateStroke(
   }
 
   if (points.length < 2) {
-    if (points.length && stroke.cap === "round")
+    if (points.length && (widths || stroke.cap === "round"))
       fan(points[0], 0, Math.PI * 2, points[0].width / 2)
     return mesh.finish()
   }
-  for (let i = 0; i < segments; i++) {
-    const a = points[i]
-    const b = points[(i + 1) % points.length]
-    const side = normal(edge(i))
-    const a1 = add(a, side, a.width / 2)
-    const b1 = add(b, side, b.width / 2)
-    const b2 = add(b, side, -b.width / 2)
-    const a2 = add(a, side, -a.width / 2)
-    mesh.triangle(a1, b1, b2)
-    mesh.triangle(a1, b2, a2)
-  }
 
-  // A join wherever two segments meet: every point of a closed outline, the
-  // inner points of an open one. The band's inner side is already covered by
-  // the overlapping quads; only the gap on the outer side needs filling.
-  const firstJoin = closed ? 0 : 1
-  const lastJoin = closed ? points.length - 1 : points.length - 2
-  for (let i = firstJoin; i <= lastJoin; i++) {
+  // The outer side of the join at point `i`: the band's inner side is
+  // already covered by the overlapping segments; only the gap needs filling.
+  const join = (i: number) => {
     const center = points[i]
     const half = center.width / 2
     const incoming = edge((i - 1 + points.length) % points.length)
     const outgoing = edge(i)
     const turn = incoming.x * outgoing.y - incoming.y * outgoing.x
     const straight = incoming.x * outgoing.x + incoming.y * outgoing.y
-    if (Math.abs(turn) < 1e-9 && straight > 0) continue
+    if (Math.abs(turn) < 1e-9 && straight > 0) return
     // The outer side is the one the path turns away from.
     const away = turn > 0 ? -1 : 1
     const from = { x: normal(incoming).x * away, y: normal(incoming).y * away }
@@ -261,7 +264,7 @@ export function tessellateStroke(
       if (sweep > Math.PI) sweep -= Math.PI * 2
       if (sweep < -Math.PI) sweep += Math.PI * 2
       fan(center, start, sweep, half)
-      continue
+      return
     }
     // cos of half the angle between the two outer edges.
     const bisector = { x: from.x + to.x, y: from.y + to.y }
@@ -275,12 +278,13 @@ export function tessellateStroke(
       const tip = add(center, bisector, half / cosHalf / length)
       mesh.triangle(center, o0, tip)
       mesh.triangle(center, tip, o1)
-      continue
+      return
     }
     mesh.triangle(center, o0, o1)
   }
 
-  if (!closed && stroke.cap !== "butt") {
+  const caps = () => {
+    if (closed || stroke.cap === "butt") return
     const ends = [
       { at: points[0], out: edge(0), sign: -1 },
       { at: points.at(-1)!, out: edge(segments - 1), sign: 1 },
@@ -303,6 +307,65 @@ export function tessellateStroke(
       mesh.triangle(s1, s3, s4)
     }
   }
+
+  if (widths) {
+    points.forEach((point, i) => {
+      const end = !closed && (i === 0 || i === points.length - 1)
+      if (end || point.width <= 0) return
+      fan(point, 0, Math.PI * 2, point.width / 2)
+      // A disc already rounds the corner; a bevel lies inside it.
+      if (point.corner && stroke.join === "miter") join(i)
+    })
+    for (let i = 0; i < segments; i++) {
+      const a = points[i]
+      const b = points[(i + 1) % points.length]
+      const ra = a.width / 2
+      const rb = b.width / 2
+      const along = Math.hypot(b.x - a.x, b.y - a.y)
+      // One disc inside the other, which already covers the hull.
+      if (along <= Math.abs(ra - rb)) continue
+      // The outer tangents touch each disc where its radius leans back
+      // along the line by the slope the width changes at.
+      const u = direction(a, b)
+      const side = normal(u)
+      const lean = (ra - rb) / along
+      const reach = Math.sqrt(1 - lean * lean)
+      const touch = (sign: number): Vector => ({
+        x: u.x * lean + side.x * reach * sign,
+        y: u.y * lean + side.y * reach * sign,
+      })
+      // An open stroke's ends are cut square across the line, as the cap
+      // then extends them; the hull's own ends would lean with the taper.
+      const first = !closed && i === 0
+      const last = !closed && i === segments - 1
+      const a1 = add(a, first ? side : touch(1), ra)
+      const a2 = add(a, first ? side : touch(-1), first ? -ra : ra)
+      const b1 = add(b, last ? side : touch(1), rb)
+      const b2 = add(b, last ? side : touch(-1), last ? -rb : rb)
+      mesh.triangle(a1, b1, b2)
+      mesh.triangle(a1, b2, a2)
+    }
+    caps()
+    return mesh.finish()
+  }
+
+  for (let i = 0; i < segments; i++) {
+    const a = points[i]
+    const b = points[(i + 1) % points.length]
+    const side = normal(edge(i))
+    const a1 = add(a, side, a.width / 2)
+    const b1 = add(b, side, b.width / 2)
+    const b2 = add(b, side, -b.width / 2)
+    const a2 = add(a, side, -a.width / 2)
+    mesh.triangle(a1, b1, b2)
+    mesh.triangle(a1, b2, a2)
+  }
+  // A join wherever two segments meet: every point of a closed outline, the
+  // inner points of an open one.
+  const firstJoin = closed ? 0 : 1
+  const lastJoin = closed ? points.length - 1 : points.length - 2
+  for (let i = firstJoin; i <= lastJoin; i++) join(i)
+  caps()
   return mesh.finish()
 }
 
@@ -324,7 +387,8 @@ export function tessellateObject(object: VectorObject): {
             ...stroke,
             width: stroke.width * lengthScale(object.transform),
           },
-          shape.widths?.map((w) => w * lengthScale(object.transform))
+          shape.widths?.map((w) => w * lengthScale(object.transform)),
+          shape.corners
         )
       : null,
   }

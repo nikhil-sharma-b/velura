@@ -220,6 +220,36 @@ describe("stroking", () => {
     expect(covers(stroke!, 105, 5)).toBe(false)
   })
 
+  const pressure = (points: { x: number; y: number; width: number }[]) =>
+    ({
+      kind: "path",
+      nodes: points.map((p) => ({ ...p, in: null, out: null, smooth: true })),
+      closed: false,
+    }) as const
+
+  test("a pressure stroke turning sharply stays within its width of the line", () => {
+    const hairpin = pressure([
+      { x: 0, y: 0, width: 2 },
+      { x: 100, y: 5, width: 8 },
+      { x: 0, y: 10, width: 2 },
+    ])
+    const { stroke } = stroked(hairpin, pen(4, "butt", "miter"))
+    // Smooth nodes round the turn, whatever the join: no mitre spike.
+    expect(covers(stroke!, 103.5, 5)).toBe(true)
+    expect(covers(stroke!, 104.5, 5)).toBe(false)
+    expect(covers(stroke!, 20, 5)).toBe(false)
+  })
+
+  test("a pressure stroke tapers with the pen", () => {
+    const taper = pressure([
+      { x: 0, y: 0, width: 2 },
+      { x: 40, y: 0, width: 10 },
+    ])
+    const { stroke } = stroked(taper, pen(4, "butt", "miter"))
+    expect(covers(stroke!, 20, 2.8)).toBe(true)
+    expect(covers(stroke!, 20, 3.2)).toBe(false)
+  })
+
   test("a stroke widens with the object's scale", () => {
     const { stroke } = stroked(square, pen(4), [2, 0, 0, 2, 0, 0])
     // The top edge is at y = 20 now, and the band four pixels either side.
