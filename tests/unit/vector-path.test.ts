@@ -338,3 +338,33 @@ describe("pressure stroke ends", () => {
     expect(nodes.at(-1)!.width).toBeCloseTo(10, 5)
   })
 })
+
+describe("tapered strokes", () => {
+  const line = () => {
+    const samples = []
+    for (let i = 0; i <= 100; i++) samples.push({ x: i * 2, y: 0, pressure: 1 })
+    return samples
+  }
+
+  test("a start taper narrows the first share of the stroke to a point", () => {
+    const { nodes } = fitPressureStroke(line(), 10, { start: 0.25, end: 0 })
+    expect(nodes[0].width).toBeCloseTo(0, 5)
+    expect(nodes.at(-1)!.width).toBeCloseTo(10, 5)
+    // Full width again by a quarter of the way along.
+    const past = nodes.filter((n) => n.x >= 50)
+    expect(past.every((n) => n.width! > 9.9)).toBe(true)
+  })
+
+  test("both ends taper, each by its own share", () => {
+    const { nodes } = fitPressureStroke(line(), 10, { start: 0.1, end: 0.5 })
+    expect(nodes[0].width).toBeCloseTo(0, 5)
+    expect(nodes.at(-1)!.width).toBeCloseTo(0, 5)
+    const middle = nodes.find((n) => n.x > 60 && n.x < 140)
+    expect(middle?.width ?? 10).toBeLessThan(10)
+  })
+
+  test("no taper leaves the width whole", () => {
+    const { nodes } = fitPressureStroke(line(), 10, { start: 0, end: 0 })
+    expect(nodes.every((n) => n.width === 10)).toBe(true)
+  })
+})

@@ -59,6 +59,8 @@ import type { ComponentProps } from "react"
 import type { Brush } from "@/engine/brush/brush"
 import {
   canJoin,
+  MAX_TAPER,
+  type Taper,
   type CloudOptions,
   createEngine,
   type Engine,
@@ -437,6 +439,32 @@ const WORKS_ON = {
   selection: "Works on any layer",
   vector: "Works on vector layers",
 } as const
+
+const percent = (share: number) => Math.round(share * 100)
+
+/** "Start 30%, end 50%", or "None" for a stroke left whole. */
+function taperSummary(taper: Taper) {
+  if (!taper.start && !taper.end) return "None"
+  return `Start ${percent(taper.start)}%, end ${percent(taper.end)}%`
+}
+
+/** Start and end under the icon, as "30·50"; a lone 0 for no taper. */
+function taperReadout(taper: Taper) {
+  if (!taper.start && !taper.end) return "0"
+  return `${percent(taper.start)}·${percent(taper.end)}`
+}
+
+/** A stroke swelling from a point at one tip to a point at the other. */
+function TaperIcon() {
+  return (
+    <svg viewBox="0 0 256 256" className="size-4" aria-hidden="true">
+      <path
+        d="M24 168 C 80 120, 176 104, 232 88 C 180 124, 96 152, 24 168 Z"
+        fill="currentColor"
+      />
+    </svg>
+  )
+}
 
 /** Compact triggers keep adjustments close without covering the artwork. */
 function QuickSetting({
@@ -1533,6 +1561,9 @@ export function CanvasHost({
                           sideOffset={10}
                           collisionPadding={12}
                           aria-label="Choose a vector brush"
+                          // Focus handed back to the trigger would open its
+                          // tooltip over the taper setting beside it.
+                          onCloseAutoFocus={(event) => event.preventDefault()}
                           className="z-50 w-72 rounded-xl border bg-background p-3 shadow-xl"
                         >
                           <h2 className="mb-2 text-sm font-medium">
@@ -2001,7 +2032,7 @@ export function CanvasHost({
                 <div
                   data-testid="tool-options"
                   aria-label="Tool options"
-                  className="pointer-events-auto flex items-start gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
+                  className="pointer-events-auto flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
                 >
                   {/* What a new shape is given (19), shown while a shape tool
                 is in the hand: filled, outlined, or both, in the current
@@ -2045,6 +2076,43 @@ export function CanvasHost({
                       />
                     </QuickSetting>
                   )}
+                  {/* How far a solid vector stroke narrows to each tip. It
+                comes and goes with the brush, so it is here with the shape
+                options, never on the rail, whose height stays put. */}
+                  {snapshot.tool === "pressure" &&
+                    !snapshot.vectorBrushPressure && (
+                      <QuickSetting
+                        label="Taper"
+                        value={taperSummary(snapshot.vectorBrushTaper)}
+                        readout={taperReadout(snapshot.vectorBrushTaper)}
+                        icon={<TaperIcon />}
+                      >
+                        <div className="space-y-2">
+                          {(["start", "end"] as const).map((end) => (
+                            <SliderSetting
+                              key={end}
+                              label={
+                                end === "start" ? "Start taper" : "End taper"
+                              }
+                              value={snapshot.vectorBrushTaper[end]}
+                              min={0}
+                              max={MAX_TAPER}
+                              step={0.01}
+                              scale={100}
+                              unit="%"
+                              onChange={(share) =>
+                                void engine
+                                  ?.dispatch({
+                                    type: "setVectorBrushTaper",
+                                    [end]: share,
+                                  })
+                                  .catch(() => {})
+                              }
+                            />
+                          ))}
+                        </div>
+                      </QuickSetting>
+                    )}
                   {/* The wand's own options (10), shown while it is in the hand:
                 how far a colour may stray, and whether it reads the layer
                 or the picture as a whole. */}

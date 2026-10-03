@@ -53,9 +53,16 @@ type Segment = { last: number; out: Point; in: Point }
  * linearly along each segment, so pressure only adds a node where it
  * strays from that line. Sharp turns are kept as cusps.
  */
+/** How much of a stroke, as a share of its length, narrows to each tip. */
+export type Taper = Readonly<{ start: number; end: number }>
+
+/** The most of a stroke one taper may take: half, so two meet at most. */
+export const MAX_TAPER = 0.5
+
 export function fitPressureStroke(
   samples: readonly PressurePoint[],
-  width: number
+  width: number,
+  taper?: Taper
 ): BezierPath {
   if (!Number.isFinite(width) || width <= 0 || !samples.length)
     throw new Error("A pressure stroke needs samples and a positive width.")
@@ -89,6 +96,7 @@ export function fitPressureStroke(
   }
   const corners = trimHooks(points, cornersOf(points))
   settleEnds(points)
+  if (taper) taperEnds(points, taper, "width")
   const nodes: PathNode[] = [node(points[0], "smooth")]
   for (let c = 0; c + 1 < corners.length; c++) {
     const first = corners[c],
@@ -133,6 +141,39 @@ function settleEnds(points: Sample[]) {
     points[i] = { ...points[i], width: points[start].width }
   for (let i = end + 1; i < points.length; i++)
     points[i] = { ...points[i], width: points[end].width }
+}
+
+/**
+ * Narrows a stroke to a point over the share of its length `taper` gives
+ * each end, easing out so the tip is fine and the swell into full width
+ * gentle. Mutates the `field` of each point, a width or a pressure.
+ */
+export function taperEnds<K extends string>(
+  points: (Point & Record<K, number>)[],
+  taper: Taper,
+  field: K
+) {
+  const along = [0]
+  for (let i = 1; i < points.length; i++)
+    along.push(
+      along[i - 1] +
+        Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y)
+    )
+  const total = along.at(-1)!
+  if (!total) return
+  const clamp = (t: number) =>
+    Math.max(0, Math.min(MAX_TAPER, Number.isFinite(t) ? t : 0))
+  const start = clamp(taper.start) * total,
+    end = clamp(taper.end) * total
+  const ease = (t: number) => 1 - (1 - t) * (1 - t)
+  points.forEach((p, i) => {
+    let scale = 1
+    if (start > 0 && along[i] < start) scale *= ease(along[i] / start)
+    if (end > 0 && total - along[i] < end)
+      scale *= ease((total - along[i]) / end)
+    if (scale < 1)
+      points[i] = { ...p, [field]: p[field] * scale } as (typeof points)[number]
+  })
 }
 
 /** A corner nearer an end than this, along the stroke, is a pen's hook. */

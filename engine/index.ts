@@ -1,5 +1,8 @@
 import {
   fitPressureStroke,
+  MAX_TAPER,
+  taperEnds,
+  type Taper,
   nextNodeType,
   type NodeType,
   type BezierPath,
@@ -381,6 +384,7 @@ export {
   type VectorNode,
 } from "./doc/node-tool"
 export type { JoinMode, NodeType, SegmentShape } from "./doc/vector-path"
+export { MAX_TAPER, type Taper } from "./doc/vector-path"
 export {
   DEFAULT_PRESSURE_CURVE,
   DEFAULT_PRESSURE_PRESET,
@@ -691,6 +695,8 @@ export type EngineCommand =
   | { type: "rasteriseLayer"; id: string }
   /** Whether the vector brush follows the pen's pressure or keeps full width. */
   | { type: "setVectorBrushPressure"; pressure: boolean }
+  /** How much of a solid vector brush stroke narrows to each tip; unnamed ends are kept. */
+  | { type: "setVectorBrushTaper"; start?: number; end?: number }
   /** How the shape tools draw what comes next; unnamed fields are kept. */
   | {
       type: "setShapeStyle"
@@ -995,6 +1001,8 @@ export type EngineSnapshot = Readonly<{
   shapeStyle: ShapeStyle
   /** Whether the vector brush's width follows pressure; off, it is solid. */
   vectorBrushPressure: boolean
+  /** The solid vector brush's tapers, as shares of a stroke's length. */
+  vectorBrushTaper: Taper
   /**
    * The selected objects' own style, which the shape options show and edit
    * in place of `shapeStyle` while there is one; null with none selected.
@@ -1144,6 +1152,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   tool: "brush",
   shapeStyle: DEFAULT_SHAPE_STYLE,
   vectorBrushPressure: true,
+  vectorBrushTaper: { start: 0, end: 0 },
   selectionStyle: null,
   vectorSelection: [],
   vectorPaths: [],
@@ -3240,7 +3249,16 @@ export function createEngine(
     points: readonly PressurePoint[],
     width: number
   ): BezierPath {
-    const nodes: PathNode[] = points.map((p) => ({
+    // Where the stroke will end is not known until the pen lifts, so only
+    // the start's taper is drawn while it is drawn.
+    const tapered = points.map((p) => ({ ...p }))
+    if (!snapshot.vectorBrushPressure)
+      taperEnds(
+        tapered,
+        { start: snapshot.vectorBrushTaper.start, end: 0 },
+        "pressure"
+      )
+    const nodes: PathNode[] = tapered.map((p) => ({
       x: p.x,
       y: p.y,
       width: width * Math.max(0, Math.min(1, p.pressure)),
@@ -3290,7 +3308,13 @@ export function createEngine(
             }
           : drag.tool === "pressure"
             ? drag.ended
-              ? fitPressureStroke(drag.pressurePoints!, style.strokeWidth)
+              ? fitPressureStroke(
+                  drag.pressurePoints!,
+                  style.strokeWidth,
+                  snapshot.vectorBrushPressure
+                    ? undefined
+                    : snapshot.vectorBrushTaper
+                )
               : pressurePreview(drag.pressurePoints!, style.strokeWidth)
             : drag.tool === "ellipse"
               ? {
@@ -6120,6 +6144,22 @@ export function createEngine(
               fillColor: command.fillColor ?? snapshot.shapeStyle.fillColor,
               strokeColor:
                 command.strokeColor ?? snapshot.shapeStyle.strokeColor,
+            }),
+          })
+          break
+        }
+        case "setVectorBrushTaper": {
+          const share = (t: number | undefined, was: number) => {
+            if (t === undefined) return was
+            if (!Number.isFinite(t) || t < 0 || t > MAX_TAPER)
+              throw new Error("A taper is a share of the stroke, 0 to 0.5.")
+            return t
+          }
+          const was = snapshot.vectorBrushTaper
+          publish({
+            vectorBrushTaper: Object.freeze({
+              start: share(command.start, was.start),
+              end: share(command.end, was.end),
             }),
           })
           break
