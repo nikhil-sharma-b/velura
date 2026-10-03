@@ -26,7 +26,7 @@ test("pressure fitting keeps a sharp turn as a corner that never overshoots", as
   for (let y = 2; y <= 100; y += 2) samples.push({ x: 100, y, pressure: 1 })
   const path = fitPressureStroke(samples, 4)
   const corner = path.nodes.find((n) => n.x === 100 && n.y === 0)
-  expect(corner?.smooth).toBe(false)
+  expect(corner?.type).toBe("cusp")
   for (const p of flattenPath(path).points) {
     expect(p.x).toBeLessThanOrEqual(100 + 1e-9)
     expect(p.y).toBeGreaterThanOrEqual(-1e-9)
@@ -40,13 +40,20 @@ test("splitting a curved pressure path preserves its centre line and interpolate
     kind: "path" as const,
     closed: false,
     nodes: [
-      { x: 0, y: 0, in: null, out: { x: 0, y: 20 }, smooth: false, width: 2 },
+      {
+        x: 0,
+        y: 0,
+        in: null,
+        out: { x: 0, y: 20 },
+        type: "cusp" as const,
+        width: 2,
+      },
       {
         x: 20,
         y: 0,
         in: { x: 20, y: 20 },
         out: null,
-        smooth: false,
+        type: "cusp" as const,
         width: 10,
       },
     ],
@@ -80,7 +87,11 @@ test("moving anchors carries handles; smooth handles stay aligned and corner han
     point: { x: 6, y: 9 },
   })
   expect(handled.nodes[1].in).toEqual({ x: 6, y: 3 })
-  const corner = editPathNode(handled, { type: "toggle", index: 1 })
+  const corner = editPathNode(handled, {
+    type: "retype",
+    index: 1,
+    nodeType: "cusp",
+  })
   expect(
     editPathNode(corner, {
       type: "move",
@@ -118,9 +129,9 @@ test("pressure outlines taper and honor butt, square, round caps and corner join
       kind: "path" as const,
       closed: false,
       nodes: [
-        { x: 10, y: 20, width: 4, in: null, out: null, smooth: false },
-        { x: 30, y: 20, width: 12, in: null, out: null, smooth: false },
-        { x: 30, y: 40, width: 12, in: null, out: null, smooth: false },
+        { x: 10, y: 20, width: 4, in: null, out: null, type: "cusp" as const },
+        { x: 30, y: 20, width: 12, in: null, out: null, type: "cusp" as const },
+        { x: 30, y: 40, width: 12, in: null, out: null, type: "cusp" as const },
       ],
     },
     style: {
@@ -163,7 +174,7 @@ describe("pickPathNode", () => {
     y,
     in: null,
     out: null,
-    smooth: false,
+    type: "cusp" as const,
   })
   const square = {
     kind: "path" as const,

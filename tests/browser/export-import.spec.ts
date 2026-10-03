@@ -307,9 +307,21 @@ test("SVG facade preserves pen curves and transformed pressure outlines without 
               kind: "path",
               closed: true,
               nodes: [
-                { x: 10, y: 10, in: null, out: { x: 10, y: 0 }, smooth: false },
-                { x: 50, y: 10, in: { x: 50, y: 0 }, out: null, smooth: false },
-                { x: 50, y: 30, in: null, out: null, smooth: false },
+                {
+                  x: 10,
+                  y: 10,
+                  in: null,
+                  out: { x: 10, y: 0 },
+                  type: "cusp" as const,
+                },
+                {
+                  x: 50,
+                  y: 10,
+                  in: { x: 50, y: 0 },
+                  out: null,
+                  type: "cusp" as const,
+                },
+                { x: 50, y: 30, in: null, out: null, type: "cusp" as const },
               ],
             },
             style: {
@@ -327,9 +339,30 @@ test("SVG facade preserves pen curves and transformed pressure outlines without 
               kind: "path",
               closed: false,
               nodes: [
-                { x: 10, y: 40, width: 4, in: null, out: null, smooth: false },
-                { x: 30, y: 40, width: 12, in: null, out: null, smooth: false },
-                { x: 50, y: 40, width: 20, in: null, out: null, smooth: false },
+                {
+                  x: 10,
+                  y: 40,
+                  width: 4,
+                  in: null,
+                  out: null,
+                  type: "cusp" as const,
+                },
+                {
+                  x: 30,
+                  y: 40,
+                  width: 12,
+                  in: null,
+                  out: null,
+                  type: "cusp" as const,
+                },
+                {
+                  x: 50,
+                  y: 40,
+                  width: 20,
+                  in: null,
+                  out: null,
+                  type: "cusp" as const,
+                },
               ],
             },
             style: {

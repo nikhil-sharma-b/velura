@@ -1,12 +1,31 @@
 import type { Point } from "./vector-scene"
 
+/**
+ * How a node's handles hang together, as Inkscape has it: a cusp's move
+ * independently; a smooth node's stay in line, each its own length; a
+ * symmetric node's stay in line and equal; an auto node's are worked out
+ * from its neighbours whenever it or they move.
+ */
+export type NodeType = "cusp" | "smooth" | "symmetric" | "auto"
+
+export const NODE_TYPES: readonly NodeType[] = [
+  "cusp",
+  "smooth",
+  "symmetric",
+  "auto",
+]
+
+/** The type after `type`, round again after the last (Ctrl+click). */
+export const nextNodeType = (type: NodeType): NodeType =>
+  NODE_TYPES[(NODE_TYPES.indexOf(type) + 1) % NODE_TYPES.length]
+
 /** Handles are absolute positions in the object's coordinates. Width is the
  * pressure stroke's full diameter; absent widths use the object's stroke. */
 export type PathNode = Readonly<
   Point & {
     in: Point | null
     out: Point | null
-    smooth: boolean
+    type: NodeType
     width?: number
   }
 >
@@ -35,7 +54,7 @@ export function fitPressureStroke(
       width: width * Math.max(0, Math.min(1, p.pressure)),
       in: null,
       out: null,
-      smooth: true,
+      type: "smooth" as const,
     }
   })
   // Simplify in both position and width: a straight line still needs an
@@ -93,22 +112,8 @@ export function fitPressureStroke(
             (inLength * outLength)
           : 1
       if (turn < CORNER_COS && i > 0 && i < nodes.length - 1)
-        return { ...n, in: null, out: null, smooth: false }
-      // Tangent along the neighbours' chord, each handle a third of its own
-      // segment, so an uneven spacing never makes a handle outrun its
-      // segment and loop.
-      const tx = after.x - before.x,
-        ty = after.y - before.y,
-        tangent = Math.hypot(tx, ty) || 1
-      const handle = (length: number, sign: number) => ({
-        x: n.x + (sign * tx * length) / 3 / tangent,
-        y: n.y + (sign * ty * length) / 3 / tangent,
-      })
-      return {
-        ...n,
-        in: i ? handle(inLength, -1) : null,
-        out: i < nodes.length - 1 ? handle(outLength, 1) : null,
-      }
+        return { ...n, in: null, out: null, type: "cusp" as const }
+      return { ...n, ...chordHandles(nodes, i, false) }
     }),
     closed: false,
   }
@@ -149,7 +154,7 @@ export function splitPathSegment(
     ...at,
     in: s,
     out: u,
-    smooth: true,
+    type: "smooth",
     ...(a.width !== undefined && b.width !== undefined
       ? { width: a.width + (b.width - a.width) * t }
       : {}),
@@ -163,7 +168,7 @@ export type NodePart = "anchor" | "in" | "out"
 export type NodeEdit =
   | { type: "move"; index: number; part: NodePart; point: Point }
   | { type: "delete"; index: number }
-  | { type: "toggle"; index: number }
+  | { type: "retype"; index: number; nodeType: NodeType }
   | { type: "split"; index: number; t?: number }
 
 export function editPathNode(path: BezierPath, edit: NodeEdit): BezierPath {
@@ -175,29 +180,8 @@ export function editPathNode(path: BezierPath, edit: NodeEdit): BezierPath {
   if (edit.type === "delete") {
     if (nodes.length <= 2) throw new Error("A path needs at least two anchors.")
     nodes.splice(edit.index, 1)
-  } else if (edit.type === "toggle") {
-    const before =
-      nodes[
-        path.closed
-          ? (edit.index - 1 + nodes.length) % nodes.length
-          : Math.max(0, edit.index - 1)
-      ]
-    const after =
-      nodes[
-        path.closed
-          ? (edit.index + 1) % nodes.length
-          : Math.min(nodes.length - 1, edit.index + 1)
-      ]
-    const dx = (after.x - before.x) / 6,
-      dy = (after.y - before.y) / 6
-    nodes[edit.index] = node.smooth
-      ? { ...node, smooth: false }
-      : {
-          ...node,
-          smooth: true,
-          in: { x: node.x - dx, y: node.y - dy },
-          out: { x: node.x + dx, y: node.y + dy },
-        }
+  } else if (edit.type === "retype") {
+    nodes[edit.index] = retyped(path, edit.index, edit.nodeType)
   } else {
     if (![edit.point.x, edit.point.y].every(Number.isFinite))
       throw new Error("A node needs a finite position.")
@@ -217,13 +201,17 @@ export function editPathNode(path: BezierPath, edit: NodeEdit): BezierPath {
       const dx = edit.point.x - node.x,
         dy = edit.point.y - node.y,
         length = Math.hypot(dx, dy)
-      const reach = handle
-        ? Math.hypot(handle.x - node.x, handle.y - node.y)
-        : length
+      // Taking hold of an auto node's handle is taking over from the solver.
+      const type = node.type === "auto" ? "smooth" : node.type
+      const reach =
+        handle && type === "smooth"
+          ? Math.hypot(handle.x - node.x, handle.y - node.y)
+          : length
       nodes[edit.index] = {
         ...node,
+        type,
         [edit.part]: edit.point,
-        ...(node.smooth && length > 0
+        ...(type !== "cusp" && length > 0
           ? {
               [opposite]: {
                 x: node.x - (dx * reach) / length,
@@ -234,7 +222,88 @@ export function editPathNode(path: BezierPath, edit: NodeEdit): BezierPath {
       }
     }
   }
-  return { ...path, nodes }
+  return { ...path, nodes: solveAuto(nodes, path.closed) }
+}
+
+/** The anchors either side of node `i`; at an open end, the node itself. */
+function neighbours(
+  nodes: readonly PathNode[],
+  i: number,
+  closed: boolean
+): [PathNode, PathNode] {
+  const count = nodes.length
+  return closed
+    ? [nodes[(i - 1 + count) % count], nodes[(i + 1) % count]]
+    : [nodes[Math.max(0, i - 1)], nodes[Math.min(count - 1, i + 1)]]
+}
+
+/**
+ * Node `i`'s handles along its neighbours' chord, each a third of its own
+ * segment, so an uneven spacing never makes a handle outrun its segment
+ * and loop. An open path's end has no handle off the end.
+ */
+function chordHandles(
+  nodes: readonly PathNode[],
+  i: number,
+  closed: boolean
+): { in: Point | null; out: Point | null } {
+  const n = nodes[i]
+  const [before, after] = neighbours(nodes, i, closed)
+  const tx = after.x - before.x,
+    ty = after.y - before.y,
+    tangent = Math.hypot(tx, ty) || 1
+  const handle = (to: Point, sign: number) => {
+    const length = Math.hypot(to.x - n.x, to.y - n.y)
+    return {
+      x: n.x + (sign * tx * length) / 3 / tangent,
+      y: n.y + (sign * ty * length) / 3 / tangent,
+    }
+  }
+  return {
+    in: closed || i > 0 ? handle(before, -1) : null,
+    out: closed || i < nodes.length - 1 ? handle(after, 1) : null,
+  }
+}
+
+/** Every auto node's handles worked out afresh from where its neighbours are. */
+function solveAuto(nodes: PathNode[], closed: boolean): PathNode[] {
+  return nodes.map((n, i) =>
+    n.type === "auto" ? { ...n, ...chordHandles(nodes, i, closed) } : n
+  )
+}
+
+/** A handle that sits on its anchor is no handle at all. */
+const handleOf = (n: PathNode, h: Point | null) =>
+  h && (h.x !== n.x || h.y !== n.y) ? h : null
+
+/**
+ * Node `index` of `path` made `type`. A cusp keeps its handles as they are;
+ * a smooth or symmetric node pulls out any it lacks along the neighbour
+ * chord, then lines them up, a symmetric one evening their lengths.
+ */
+function retyped(path: BezierPath, index: number, type: NodeType): PathNode {
+  const node = path.nodes[index]
+  // An auto node's handles are `solveAuto`'s to work out, as every edit ends.
+  if (type === "cusp" || type === "auto") return { ...node, type }
+  const pulled = chordHandles(path.nodes, index, path.closed)
+  const before = handleOf(node, node.in) ?? pulled.in
+  const after = handleOf(node, node.out) ?? pulled.out
+  if (!before || !after) return { ...node, type, in: before, out: after }
+  let dx = after.x - before.x,
+    dy = after.y - before.y
+  const span = Math.hypot(dx, dy)
+  if (!span) return { ...node, type, in: before, out: after }
+  dx /= span
+  dy /= span
+  let reachIn = Math.hypot(before.x - node.x, before.y - node.y),
+    reachOut = Math.hypot(after.x - node.x, after.y - node.y)
+  if (type === "symmetric") reachIn = reachOut = (reachIn + reachOut) / 2
+  return {
+    ...node,
+    type,
+    in: { x: node.x - dx * reachIn, y: node.y - dy * reachIn },
+    out: { x: node.x + dx * reachOut, y: node.y + dy * reachOut },
+  }
 }
 
 /** Adaptive subdivision in object space, with error measured after placement. */
@@ -261,7 +330,7 @@ export function flattenPath(
   if (!path.nodes.length)
     return { points, widths, closed: path.closed, corners }
   emit(path.nodes[0], path.nodes[0].width ?? 0)
-  if (!path.nodes[0].smooth) corners.push(0)
+  if (path.nodes[0].type === "cusp") corners.push(0)
   const walk = (
     a: Point,
     b: Point,
@@ -302,7 +371,7 @@ export function flattenPath(
     const a = path.nodes[i],
       b = path.nodes[(i + 1) % path.nodes.length]
     walk(a, a.out ?? a, b.in ?? b, b, a.width ?? 0, b.width ?? 0, 0)
-    if (!b.smooth && (i + 1 < path.nodes.length || !path.closed))
+    if (b.type === "cusp" && (i + 1 < path.nodes.length || !path.closed))
       corners.push(points.length - 1)
   }
   if (path.closed) {

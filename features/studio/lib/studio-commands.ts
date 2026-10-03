@@ -153,6 +153,16 @@ function panOrNudge(
   }
 }
 
+/** A command for the selected nodes, unavailable with none selected. */
+function onSelectedNodes(
+  command: EngineCommand
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    ...dispatching(command),
+    available: ({ engine }) => nodesSelected(engine),
+  }
+}
+
 function onVectorSelection(
   command: EngineCommand
 ): Pick<StudioCommand, "available" | "run"> {
@@ -474,10 +484,32 @@ export const studioCommands = createRegistry<StudioContext>([
     ...dispatching({ type: "deleteVectorNode" }),
   },
   {
-    id: "node.toggle",
-    label: "Toggle smooth or corner anchor",
+    id: "node.cusp",
+    label: "Make selected nodes cusp",
     category: "Tools",
-    ...dispatching({ type: "toggleVectorNode" }),
+    keybinds: ["shift+c"],
+    ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "cusp" }),
+  },
+  {
+    id: "node.smooth",
+    label: "Make selected nodes smooth",
+    category: "Tools",
+    keybinds: ["shift+s"],
+    ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "smooth" }),
+  },
+  {
+    id: "node.symmetric",
+    label: "Make selected nodes symmetric",
+    category: "Tools",
+    keybinds: ["shift+y"],
+    ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "symmetric" }),
+  },
+  {
+    id: "node.auto",
+    label: "Make selected nodes auto-smooth",
+    category: "Tools",
+    keybinds: ["shift+a"],
+    ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "auto" }),
   },
   {
     id: "tool.objectSelect",

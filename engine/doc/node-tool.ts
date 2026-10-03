@@ -8,6 +8,7 @@ import {
   type BezierPath,
   type NodeEdit,
   type NodePart,
+  type NodeType,
 } from "./vector-path"
 import type {
   Point,
@@ -403,14 +404,14 @@ export function editNode(
 }
 
 /**
- * The scene edits of toggling or deleting every selected node, with the
+ * The scene edits of giving every selected node a type, or deleting it, with the
  * nodes to keep selected after; null when there is nothing to do. A path a
  * delete would leave with fewer than two anchors is left as it is.
  */
 export function nodeCommand(
   scene: VectorScene,
   nodes: readonly VectorNode[],
-  type: "toggle" | "delete"
+  type: NodeType | "delete"
 ): { edits: SceneCommand[]; nodes: VectorNode[] } | null {
   const edits: SceneCommand[] = []
   const edited = new Set<string>()
@@ -425,7 +426,13 @@ export function nodeCommand(
     if (type === "delete" && object.geometry.nodes.length - indices.length < 2)
       continue
     const geometry = indices.reduce(
-      (path, index) => editPathNode(path, { type, index }),
+      (path, index) =>
+        editPathNode(
+          path,
+          type === "delete"
+            ? { type, index }
+            : { type: "retype", index, nodeType: type }
+        ),
       object.geometry
     )
     edits.push({ type: "update", id: object.id, patch: { geometry } })

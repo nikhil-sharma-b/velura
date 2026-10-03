@@ -161,14 +161,14 @@ test("SVG preserves cubic handles and closing segments, but does not fill open p
         y: 20,
         in: { x: 5, y: 30 },
         out: { x: 15, y: 0 },
-        smooth: false,
+        type: "cusp" as const,
       },
       {
         x: 40,
         y: 20,
         in: { x: 35, y: 0 },
         out: { x: 45, y: 30 },
-        smooth: false,
+        type: "cusp" as const,
       },
     ],
   }

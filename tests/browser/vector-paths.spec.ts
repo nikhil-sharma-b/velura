@@ -69,7 +69,7 @@ test("pen drag handles, closing, node edits, and undo through the facade", async
         y: 25,
         in: { x: 55, y: 25 },
         out: { x: 125, y: 25 },
-        smooth: true,
+        type: "smooth" as const,
       },
       { x: 170, y: 85 },
     ],
@@ -102,7 +102,10 @@ test("pen drag handles, closing, node edits, and undo through the facade", async
       objectId: id,
       edit: { type: "split", index: 0 },
     })
-    await window.engine.dispatch({ type: "toggleVectorNode" })
+    await window.engine.dispatch({
+      type: "setVectorNodeType",
+      nodeType: "smooth",
+    })
     await window.engine.dispatch({ type: "deleteVectorNode" })
   }, object.id)
   expect((await path(page))!.geometry).toMatchObject({
@@ -537,9 +540,9 @@ test("dragging a selected node moves every selected node, across paths, as one s
       kind: "path" as const,
       closed: true,
       nodes: [
-        { x: 10, y: 5, in: null, out: null, smooth: false },
-        { x: 50, y: 5, in: null, out: null, smooth: false },
-        { x: 30, y: 35, in: null, out: null, smooth: false },
+        { x: 10, y: 5, in: null, out: null, type: "cusp" as const },
+        { x: 50, y: 5, in: null, out: null, type: "cusp" as const },
+        { x: 30, y: 35, in: null, out: null, type: "cusp" as const },
       ],
     },
   }
@@ -610,4 +613,47 @@ test("dragging a selected node moves every selected node, across paths, as one s
   expect(await nodesOf()).toEqual(after)
   await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
   expect(await nodesOf()).toEqual(before)
+})
+
+test("node types: set on the selection, Ctrl+click cycles, undo restores", async ({
+  page,
+}) => {
+  const box = await open(page)
+  const object = await penTriangle(page, box)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "node" })
+  )
+  const types = async () => {
+    const geometry = (await path(page))!.geometry
+    return geometry.kind === "path" ? geometry.nodes.map((n) => n.type) : []
+  }
+  expect(await types()).toEqual(["cusp", "cusp", "cusp"])
+  // Click the apex, make it symmetric: it pulls out even, level handles.
+  await page.mouse.click(box.x + 100, box.y + 20)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setVectorNodeType", nodeType: "symmetric" })
+  )
+  expect(await types()).toEqual(["cusp", "symmetric", "cusp"])
+  const apex = async () => {
+    const geometry = (await path(page))!.geometry
+    if (geometry.kind !== "path") throw new Error("Expected a path")
+    return geometry.nodes[1]
+  }
+  const node = await apex()
+  expect(node.in!.y).toBeCloseTo(node.y, 3)
+  expect(node.out!.y).toBeCloseTo(node.y, 3)
+  expect(node.x - node.in!.x).toBeCloseTo(node.out!.x - node.x, 3)
+  // Ctrl+click on the apex turns it to the next type: auto-smooth.
+  await page.keyboard.down("Control")
+  await page.mouse.click(box.x + 100, box.y + 20)
+  await page.keyboard.up("Control")
+  await page.waitForFunction(() => {
+    const g = window.engine.getSnapshot().vectorPaths[0]?.geometry
+    return g?.kind === "path" && g.nodes[1].type === "auto"
+  })
+  // Each change was one step.
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await types()).toEqual(["cusp", "symmetric", "cusp"])
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await path(page)).toEqual(object)
 })

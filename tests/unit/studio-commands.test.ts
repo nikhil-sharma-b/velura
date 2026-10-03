@@ -508,4 +508,36 @@ describe("filter commands", () => {
       { type: "nudgeVectorNodes", dx: 0.25, dy: 0, repeat: false },
     ])
   })
+
+  test("Shift+C, S, Y and A set the selected nodes' type, and only then", () => {
+    const run = (vectorNodes: unknown[]) => {
+      const { engine, sent } = fakeEngine([raster("a")], "a", {
+        tool: "node",
+        vectorNodes,
+      })
+      const resolver = createKeybindResolver(studioCommands, () =>
+        context(engine)
+      )
+      for (const key of ["C", "S", "Y", "A"])
+        resolver.keydown({
+          key,
+          shiftKey: true,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          repeat: false,
+          defaultPrevented: false,
+          target: null,
+          preventDefault: () => {},
+        })
+      return sent
+    }
+    expect(run([{ objectId: "p", index: 0 }])).toEqual(
+      (["cusp", "smooth", "symmetric", "auto"] as const).map((nodeType) => ({
+        type: "setVectorNodeType",
+        nodeType,
+      }))
+    )
+    expect(run([])).toEqual([])
+  })
 })

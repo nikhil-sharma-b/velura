@@ -33,9 +33,9 @@ const triangle = (id: string, dx = 0): VectorObject => ({
     kind: "path",
     closed: true,
     nodes: [
-      { x: 0, y: 0, in: null, out: null, smooth: false },
-      { x: 100, y: 0, in: null, out: null, smooth: false },
-      { x: 50, y: 100, in: null, out: null, smooth: false },
+      { x: 0, y: 0, in: null, out: null, type: "cusp" as const },
+      { x: 100, y: 0, in: null, out: null, type: "cusp" as const },
+      { x: 50, y: 100, in: null, out: null, type: "cusp" as const },
     ],
   },
 })
@@ -263,7 +263,7 @@ test("handles show for selected nodes and their neighbours only", () => {
         y: 0,
         in: null,
         out: null,
-        smooth: false,
+        type: "cusp" as const,
       })),
     },
   }
@@ -275,9 +275,9 @@ test("handles show for selected nodes and their neighbours only", () => {
   expect(handlesShown(triangle("a"), 2, [node("a", 0)])).toBe(true)
 })
 
-test("toggle acts on every selected node, delete removes them all", () => {
+test("a type goes to every selected node, delete removes them all", () => {
   const s = scene(triangle("a"), triangle("b", 300))
-  const toggled = nodeCommand(s, [node("a", 0), node("b", 1)], "toggle")
+  const toggled = nodeCommand(s, [node("a", 0), node("b", 1)], "symmetric")
   expect(toggled?.edits).toHaveLength(2)
   expect(toggled?.nodes).toEqual([node("a", 0), node("b", 1)])
   const square = scene({
@@ -290,7 +290,7 @@ test("toggle acts on every selected node, delete removes them all", () => {
         y: 0,
         in: null,
         out: null,
-        smooth: false,
+        type: "cusp" as const,
       })),
     },
   })
@@ -306,7 +306,7 @@ test("toggle acts on every selected node, delete removes them all", () => {
 
 test("commands do nothing without nodes; a path never drops below two", () => {
   const s = scene(triangle("a"))
-  expect(nodeCommand(s, [], "toggle")).toBeNull()
+  expect(nodeCommand(s, [], "smooth")).toBeNull()
   expect(nodeCommand(s, [node("a", 0), node("a", 1)], "delete")).toBeNull()
 })
 
@@ -356,7 +356,7 @@ test("moving nodes moves every one, across paths, handles along", () => {
     y: 0,
     in: { x: -10, y: 0 },
     out: { x: 10, y: 0 },
-    smooth: true,
+    type: "smooth" as const,
   })
   const s = scene(triangle("a"), curved)
   const edits = moveNodes(s, [node("a", 1), node("b", 0)], { x: 5, y: -3 })
@@ -369,7 +369,7 @@ test("moving nodes moves every one, across paths, handles along", () => {
     y: -3,
     in: { x: -5, y: -3 },
     out: { x: 15, y: -3 },
-    smooth: true,
+    type: "smooth" as const,
   })
   expect(moveNodes(s, [node("a", 1)], { x: 0, y: 0 })).toEqual([])
   expect(moveNodes(s, [], { x: 1, y: 1 })).toEqual([])
@@ -406,7 +406,7 @@ test("dragging a handle bends only its own node", () => {
     y: 0,
     in: { x: 90, y: 0 },
     out: null,
-    smooth: false,
+    type: "cusp" as const,
   })
   const s = scene(curved)
   const edits = dragNodes({
@@ -433,7 +433,7 @@ test("an edit by command keeps the node it lands on in hand", () => {
   expect(editNode(s, "a", { type: "delete", index: 2 }).node).toEqual(
     node("a", 1)
   )
-  expect(() => editNode(s, "missing", { type: "toggle", index: 0 })).toThrow(
+  expect(() => editNode(s, "missing", { type: "delete", index: 0 })).toThrow(
     "Select an editable path."
   )
 })
@@ -449,7 +449,7 @@ test("only a handle that is shown can be taken hold of", () => {
         y: 0,
         in: null,
         out: { x: i * 100 + 20, y: 40 },
-        smooth: false,
+        type: "cusp" as const,
       })),
     },
   }
@@ -475,7 +475,7 @@ test("a delete keeps the selected nodes of a path it had to leave alone", () => 
         y: 0,
         in: null,
         out: null,
-        smooth: false,
+        type: "cusp" as const,
       })),
     },
   })

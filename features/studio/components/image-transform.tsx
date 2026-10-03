@@ -29,6 +29,7 @@ import {
   rotatedPlacement,
   invertMatrix,
   scaledPlacement,
+  type NodeType,
   type PlacementHandle,
   type ViewMatrix,
 } from "@/engine"
@@ -697,6 +698,18 @@ function PlacementFields({
   )
 }
 
+/** The node types the hint bar offers, in Inkscape's order. */
+const NODE_TYPE_BUTTONS: readonly {
+  nodeType: NodeType
+  label: string
+  keys: string
+}[] = [
+  { nodeType: "cusp", label: "Cusp", keys: "Shift+C" },
+  { nodeType: "smooth", label: "Smooth", keys: "Shift+S" },
+  { nodeType: "symmetric", label: "Symmetric", keys: "Shift+Y" },
+  { nodeType: "auto", label: "Auto-smooth", keys: "Shift+A" },
+]
+
 /** The engine owns pointer input; this overlay only displays editable nodes. */
 export function VectorNodes({
   engine,
@@ -737,7 +750,7 @@ export function VectorNodes({
             )
       const fragment = document.createDocumentFragment()
       const element = (
-        tag: "line" | "circle" | "rect",
+        tag: "line" | "circle" | "rect" | "polygon",
         attributes: Record<string, string | number>
       ) => {
         const node = document.createElementNS("http://www.w3.org/2000/svg", tag)
@@ -778,14 +791,36 @@ export function VectorNodes({
           const selected = snapshot.vectorNodes.some(
             (n) => n.objectId === path.id && n.index === index
           )
-          element("rect", {
-            x: anchor.x - 4,
-            y: anchor.y - 4,
-            width: 8,
-            height: 8,
+          // Each type its own marker, as Inkscape: a cusp a diamond, a
+          // smooth node a square, a symmetric one a square with a dot, an
+          // auto node a circle.
+          const paint = {
             fill: selected ? "var(--primary)" : "var(--background)",
             stroke: "var(--primary)",
-          })
+          }
+          const { x, y } = anchor
+          if (node.type === "cusp")
+            element("polygon", {
+              points: `${x},${y - 5} ${x + 5},${y} ${x},${y + 5} ${x - 5},${y}`,
+              ...paint,
+            })
+          else if (node.type === "auto")
+            element("circle", { cx: x, cy: y, r: 4, ...paint })
+          else
+            element("rect", {
+              x: x - 4,
+              y: y - 4,
+              width: 8,
+              height: 8,
+              ...paint,
+            })
+          if (node.type === "symmetric")
+            element("circle", {
+              cx: x,
+              cy: y,
+              r: 1.5,
+              fill: selected ? "var(--background)" : "var(--primary)",
+            })
         })
       }
       svg.replaceChildren(fragment)
@@ -821,14 +856,20 @@ export function VectorNodes({
             <span className="text-muted-foreground tabular-nums">
               {nodeCount(snapshot)}
             </span>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!snapshot.vectorNodes.length}
-              onClick={() => void engine.dispatch({ type: "toggleVectorNode" })}
-            >
-              Smooth / corner
-            </Button>
+            {NODE_TYPE_BUTTONS.map(({ nodeType, label, keys }) => (
+              <Button
+                key={nodeType}
+                size="sm"
+                variant="outline"
+                title={`Make ${label.toLowerCase()} (${keys})`}
+                disabled={!snapshot.vectorNodes.length}
+                onClick={() =>
+                  void engine.dispatch({ type: "setVectorNodeType", nodeType })
+                }
+              >
+                {label}
+              </Button>
+            ))}
             <Button
               size="sm"
               variant="outline"

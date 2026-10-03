@@ -1,5 +1,7 @@
 import {
   fitPressureStroke,
+  nextNodeType,
+  type NodeType,
   type PathNode,
   type PressurePoint,
   type NodeEdit,
@@ -352,6 +354,7 @@ export {
 } from "./brush/presets"
 export type { Curve, CurvePoint } from "./brush/curve"
 export { handlesShown, type VectorNode } from "./doc/node-tool"
+export type { NodeType } from "./doc/vector-path"
 export {
   DEFAULT_PRESSURE_CURVE,
   DEFAULT_PRESSURE_PRESET,
@@ -613,7 +616,8 @@ export type EngineCommand =
   | { type: "closePolygon" }
   | { type: "editVectorNode"; objectId: string; edit: NodeEdit }
   | { type: "deleteVectorNode" }
-  | { type: "toggleVectorNode" }
+  /** Makes every selected node cusp, smooth, symmetric or auto-smooth. */
+  | { type: "setVectorNodeType"; nodeType: NodeType }
   /** Selects the one node after or before the last selected (Tab). */
   | { type: "stepVectorNode"; direction: 1 | -1 }
   /**
@@ -2651,6 +2655,8 @@ export function createEngine(
         node?: NodeGrab
         /** Where the grabbed part sat as the press began, for the axis lock. */
         nodeAt?: Point
+        /** Ctrl was down as the anchor was pressed: a click turns its type. */
+        nodeCycle?: boolean
         /** The node tool is drawing a rubber band, not moving a node. */
         nodeBox?: boolean
         anchor: Point
@@ -3284,7 +3290,7 @@ export function createEngine(
           ...node,
           in: { x: node.x - dx, y: node.y - dy },
           out: drag.point,
-          smooth: Math.hypot(dx, dy) > 0,
+          type: Math.hypot(dx, dy) > 0 ? "smooth" : "cusp",
         }
       }
       if (drag.tool === "pressure") {
@@ -3365,13 +3371,26 @@ export function createEngine(
       }
       const moved = drag.node && nodeDragEdits(drag, layer.scene)
       // A click, not a drag, on one of several selected nodes selects it
-      // alone; the press kept them all in case it became a drag.
-      if (drag.node?.part === "anchor" && !moved?.length)
-        publish({
-          vectorNodes: [
-            { objectId: drag.node.object.id, index: drag.node.index },
-          ],
-        })
+      // alone; the press kept them all in case it became a drag. With Ctrl
+      // it also turns the node to the next type (Inkscape); Ctrl dragged
+      // is the axis lock instead.
+      if (drag.node?.part === "anchor" && !moved?.length) {
+        const clicked = {
+          objectId: drag.node.object.id,
+          index: drag.node.index,
+        }
+        const geometry = drag.node.object.geometry
+        const cycled =
+          drag.nodeCycle &&
+          geometry.kind === "path" &&
+          nodeCommand(
+            layer.scene,
+            [clicked],
+            nextNodeType(geometry.nodes[clicked.index].type)
+          )
+        if (cycled) editScene(layer.id, cycled.edits, "edit node")
+        publish({ vectorNodes: [clicked] })
+      }
       if (moved?.length) {
         editScene(layer.id, moved, "move nodes")
       } else if (shape && !drag.node) {
@@ -4504,7 +4523,11 @@ export function createEngine(
         point: press.kind === "grab" ? press.at : point,
         ended: false,
         ...(press.kind === "grab"
-          ? { node: press.grab, nodeAt: press.at }
+          ? {
+              node: press.grab,
+              nodeAt: press.at,
+              nodeCycle: ctrlHeld && press.grab.part === "anchor",
+            }
           : { nodeBox: true as const }),
       }
       scheduleFrame()
@@ -4639,7 +4662,7 @@ export function createEngine(
               ...point,
               in: null,
               out: null,
-              smooth: false,
+              type: "cusp",
             })
             shapeDrag.placing = true
             shapeDrag.point = point
@@ -4650,7 +4673,7 @@ export function createEngine(
             tool,
             anchor: point,
             point,
-            nodes: [{ ...point, in: null, out: null, smooth: false }],
+            nodes: [{ ...point, in: null, out: null, type: "cusp" }],
             placing: true,
             ended: false,
           }
@@ -5565,14 +5588,14 @@ export function createEngine(
           break
         }
         case "deleteVectorNode":
-        case "toggleVectorNode": {
+        case "setVectorNodeType": {
           if (!snapshot.vectorNodes.length) break
           dropShapeDrag()
           const layer = selectedVectorLayer()
           const edit = nodeCommand(
             layer.scene,
             snapshot.vectorNodes,
-            command.type === "deleteVectorNode" ? "delete" : "toggle"
+            command.type === "deleteVectorNode" ? "delete" : command.nodeType
           )
           if (edit) {
             editScene(layer.id, edit.edits, "edit node")
