@@ -6,6 +6,7 @@ import {
   applyMatrix,
   type CanvasView,
   docToScreen,
+  screenToDoc,
 } from "../../engine/view/view-transform"
 
 /**
@@ -677,6 +678,66 @@ test("shapes stay sharp at any zoom, rotation and flip, and redrawing loses noth
   ] as const)
     await edit(page, id, [{ type: "update", id: "a", patch: { transform } }])
   expect(await pixels(page)).toEqual(drawn)
+})
+
+test("an ellipse is a true curve close up, not a polygon", async ({ page }) => {
+  await openCanvas(page)
+  const id = await addVectorLayer(page)
+  const centre = { x: 100, y: 60 },
+    radius = 50
+  await edit(page, id, [
+    {
+      type: "add",
+      object: {
+        id: "o",
+        geometry: {
+          kind: "ellipse",
+          cx: centre.x,
+          cy: centre.y,
+          rx: radius,
+          ry: radius,
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: {
+          fill: { color: "#000000", opacity: 1, rule: "nonzero" },
+          stroke: null,
+        },
+      },
+    },
+  ])
+  const size = { width: WIDTH, height: HEIGHT }
+  // Magnified 32 times about a point on the rim, between where a coarse
+  // polygon's corners would fall.
+  const rim = {
+    x: centre.x + radius * Math.cos(0.7),
+    y: centre.y + radius * Math.sin(0.7),
+  }
+  const view0 = await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "resetView" })
+    return window.engine.getSnapshot().view as CanvasView
+  })
+  const anchor = applyMatrix(docToScreen(view0, size, size), rim.x, rim.y)
+  const view = await page.evaluate(async (anchor) => {
+    await window.engine.dispatch({ type: "zoomView", factor: 32, anchor })
+    return window.engine.getSnapshot().view as CanvasView
+  }, anchor)
+  await pixels(page)
+  const screen = PNG.sync.read(await page.locator("canvas").screenshot())
+  const shown = { width: screen.width, height: screen.height }
+  const toDoc = screenToDoc(view, size, shown)
+  const toScreen = docToScreen(view, size, shown)
+  const scale = Math.hypot(toScreen[0], toScreen[1])
+  // Every pixel more than a pixel and a half from the true rim, on screen,
+  // is wholly ink inside it and wholly paper outside.
+  let wrong = 0
+  for (let y = 0; y < screen.height; y++)
+    for (let x = 0; x < screen.width; x++) {
+      const p = applyMatrix(toDoc, x + 0.5, y + 0.5)
+      const off = (Math.hypot(p.x - centre.x, p.y - centre.y) - radius) * scale
+      const red = screen.data[(y * screen.width + x) * 4]
+      if ((off < -1.5 && red > 64) || (off > 1.5 && red < 192)) wrong++
+    }
+  expect(wrong).toBe(0)
 })
 
 test("a shape being dragged out previews sharp on a magnified view", async ({

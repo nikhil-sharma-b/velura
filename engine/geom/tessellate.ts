@@ -61,15 +61,22 @@ function lengthScale(matrix: Affine): number {
   return Math.sqrt(Math.abs(a * d - b * c))
 }
 
-/** Enough chords that none strays from an arc of `radius` by more than the tolerance. */
-function arcSegments(radius: number, sweep: number): number {
-  if (radius <= TOLERANCE) return 1
-  const step = 2 * Math.acos(1 - TOLERANCE / radius)
+/**
+ * Enough chords that none strays from an arc of `radius` by more than the
+ * tolerance, `detail` times finer for a view that magnifies it.
+ */
+function arcSegments(radius: number, sweep: number, detail = 1): number {
+  const tolerance = TOLERANCE / detail
+  if (radius <= tolerance) return 1
+  const step = 2 * Math.acos(1 - tolerance / radius)
   return Math.max(1, Math.ceil(Math.abs(sweep) / step))
 }
 
 /** The object's outline in its own coordinates, and whether it closes. */
-function outline(object: VectorObject): {
+function outline(
+  object: VectorObject,
+  detail: number
+): {
   points: Point[]
   closed: boolean
   widths?: number[] | null
@@ -94,7 +101,7 @@ function outline(object: VectorObject): {
       // Chords are chosen in document pixels, after the transform, so a
       // small ellipse scaled up is still smooth.
       const radius = Math.max(rx, ry) * lengthScale(object.transform)
-      const count = Math.max(8, arcSegments(radius, Math.PI * 2))
+      const count = Math.max(8, arcSegments(radius, Math.PI * 2, detail))
       const points: Point[] = []
       for (let i = 0; i < count; i++) {
         const angle = (i / count) * Math.PI * 2
@@ -105,15 +112,11 @@ function outline(object: VectorObject): {
       }
       return { points, closed: true }
     }
-    case "path": {
-      // The screen draws the mesh at any zoom (sharp-zoom 02), and a
-      // pressure stroke is drawn close up; it is flattened finer for it.
-      const fine = geometry.nodes.some((n) => n.width !== undefined)
+    case "path":
       return flattenPath(
         geometry,
-        Math.hypot(...object.transform.slice(0, 4)) * (fine ? 16 : 1)
+        Math.hypot(...object.transform.slice(0, 4)) * detail
       )
-    }
     case "polygon":
       return { points: [...geometry.points], closed: geometry.closed }
   }
@@ -218,7 +221,8 @@ export function tessellateStroke(
   closed: boolean,
   stroke: Pick<VectorStroke, "width" | "cap" | "join">,
   widths?: readonly number[] | null,
-  corners: readonly number[] = []
+  corners: readonly number[] = [],
+  detail = 1
 ): Mesh {
   const mesh = createBuilder("union")
   const corner = new Set(corners)
@@ -236,7 +240,7 @@ export function tessellateStroke(
 
   // An arc of triangles round `center`, from `start` turning by `sweep`.
   const fan = (center: Point, start: number, sweep: number, half: number) => {
-    const count = arcSegments(half, sweep)
+    const count = arcSegments(half, sweep, detail)
     let previous = add(center, { x: Math.cos(start), y: Math.sin(start) }, half)
     for (let i = 1; i <= count; i++) {
       const angle = start + (sweep * i) / count
@@ -387,12 +391,20 @@ export function tessellateStroke(
   return mesh.finish()
 }
 
-/** The meshes that draw one object, in document pixels. */
-export function tessellateObject(object: VectorObject): {
+/**
+ * The meshes that draw one object, in document pixels. `detail` is how many
+ * times finer than a document pixel its curves are cut, for a view zoomed
+ * that far in: as Inkscape and tldraw draw a curve as a curve at any zoom,
+ * the screen asks for its zoom's detail rather than enlarging the page's.
+ */
+export function tessellateObject(
+  object: VectorObject,
+  detail = 1
+): {
   fill: Mesh | null
   stroke: Mesh | null
 } {
-  const shape = outline(object)
+  const shape = outline(object, detail)
   const points = transformed(object.transform, shape.points)
   const { fill, stroke } = object.style
   return {
@@ -406,7 +418,8 @@ export function tessellateObject(object: VectorObject): {
             width: stroke.width * lengthScale(object.transform),
           },
           shape.widths?.map((w) => w * lengthScale(object.transform)),
-          shape.corners
+          shape.corners,
+          detail
         )
       : null,
   }

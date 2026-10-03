@@ -542,6 +542,12 @@ const SAMPLE_CAPACITY = 512
 /** Fresh strokes follow the hand directly until the artist asks for smoothing. */
 export const DEFAULT_STABILIZATION = 0
 
+/**
+ * The finest a vector's curves are cut, in pieces per document pixel's
+ * tolerance: the most zoom and a dense display ask of them.
+ */
+const MAX_VECTOR_DETAIL = 256
+
 /** How near a guide, in CSS pixels, a stroke opens to be held to it (17). */
 const GUIDE_STROKE_REACH = 8
 
@@ -2005,6 +2011,7 @@ export function createEngine(
     const matrix = docToScreen(view, size, viewportSize)
     toDoc = screenToDoc(view, size, viewportSize)
     renderer?.setView(matrix, viewportSize)
+    refreshVectorDetail()
   }
 
   /**
@@ -2700,11 +2707,16 @@ export function createEngine(
   // it was drawn" is one comparison, and what changed is a diff of two lists
   // of objects that share everything an edit did not touch.
   const drawnScenes = new Map<string, VectorScene>()
-  /** Triangles per object, made once for as long as the object exists. */
+  /**
+   * Triangles per object and level of detail, each made once for as long as
+   * the object exists.
+   */
   const meshes = new WeakMap<
     VectorObject,
-    { fill: Mesh | null; stroke: Mesh | null }
+    Map<number, { fill: Mesh | null; stroke: Mesh | null }>
   >()
+  /** The detail the screen's vector scenes were last cut at. */
+  let screenDetail = 1
   /** A shape being dragged out (19), shown in its layer but not yet in it. */
   let shapeDrag:
     | {
@@ -2766,13 +2778,38 @@ export function createEngine(
     drawnScenes.delete(id)
   }
 
-  function meshesOf(object: VectorObject) {
-    let found = meshes.get(object)
+  function meshesOf(object: VectorObject, detail = 1) {
+    let levels = meshes.get(object)
+    if (!levels) meshes.set(object, (levels = new Map()))
+    let found = levels.get(detail)
     if (!found) {
-      found = tessellateObject(object)
-      meshes.set(object, found)
+      found = tessellateObject(object, detail)
+      levels.set(detail, found)
     }
     return found
+  }
+
+  /**
+   * How many times finer than a document pixel the view needs its curves:
+   * screen pixels per document pixel, rounded up to a power of two so a
+   * zoom re-cuts them only when it crosses one, as a map's tiles do.
+   */
+  function viewDetail(): number {
+    const magnified = 1 / Math.max(1e-9, Math.hypot(toDoc[0], toDoc[1]))
+    if (!(magnified > 1)) return 1
+    return Math.min(
+      MAX_VECTOR_DETAIL,
+      2 ** Math.ceil(Math.log2(magnified - 1e-6))
+    )
+  }
+
+  /** Re-cuts the screen's vector scenes when the zoom has crossed a level. */
+  function refreshVectorDetail() {
+    const detail = viewDetail()
+    if (detail === screenDetail) return
+    screenDetail = detail
+    for (const [layerId, scene] of drawnScenes)
+      renderer?.setVectorScene(layerId, vectorDraws(scene, undefined, detail))
   }
 
   /** Whole pixels round an object, a pixel out for its antialiased edge. */
@@ -2837,7 +2874,11 @@ export function createEngine(
    * What the renderer draws of a scene within a region, bottom first: all of
    * it without one.
    */
-  function vectorDraws(scene: VectorScene, region?: PixelRect): VectorDraw[] {
+  function vectorDraws(
+    scene: VectorScene,
+    region?: PixelRect,
+    detail = 1
+  ): VectorDraw[] {
     const draws: VectorDraw[] = []
     const add = (
       mesh: Mesh | null,
@@ -2861,7 +2902,7 @@ export function createEngine(
       })
     }
     for (const object of scene.objects) {
-      const { fill, stroke } = meshesOf(object)
+      const { fill, stroke } = meshesOf(object, detail)
       if (object.style.fill) add(fill, object.style.fill)
       if (object.style.stroke) add(stroke, object.style.stroke)
     }
@@ -2882,7 +2923,10 @@ export function createEngine(
       renderer.rasterizeVector(layerId, vectorDraws(scene, region), region)
     // The screen draws the layer from its geometry, sharp at any zoom
     // (sharp-zoom 02); the pixels above stay what everything else reads.
-    renderer.setVectorScene(layerId, vectorDraws(scene))
+    renderer.setVectorScene(
+      layerId,
+      vectorDraws(scene, undefined, screenDetail)
+    )
     // A scene's content box is its objects', and shrinks when they go.
     contentBounds.forget(layerId)
     const box = unionOf(scene.objects.map(objectBounds))
@@ -6273,7 +6317,10 @@ export function createEngine(
             const drawn = drawnScenes.get(command.id)
             if (drawn) {
               drawnScenes.set(copyId, drawn)
-              renderer?.setVectorScene(copyId, vectorDraws(drawn))
+              renderer?.setVectorScene(
+                copyId,
+                vectorDraws(drawn, undefined, screenDetail)
+              )
             }
             if (source.mask && copy.mask)
               renderer?.duplicateLayer(source.mask.id, copy.mask.id)
