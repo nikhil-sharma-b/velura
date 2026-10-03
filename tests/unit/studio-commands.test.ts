@@ -540,4 +540,60 @@ describe("filter commands", () => {
     )
     expect(run([])).toEqual([])
   })
+
+  test("Shift+L and Shift+U shape selected segments; Shift+L lassos otherwise", () => {
+    const line = {
+      id: "p",
+      geometry: {
+        kind: "path",
+        closed: false,
+        nodes: [
+          { x: 0, y: 0, in: null, out: null, type: "cusp" },
+          { x: 9, y: 0, in: null, out: null, type: "cusp" },
+        ],
+      },
+    }
+    const run = (vectorNodes: unknown[]) => {
+      const { engine, sent } = fakeEngine([raster("a")], "a", {
+        tool: "node",
+        vectorPaths: [line],
+        vectorNodes,
+      })
+      const resolver = createKeybindResolver(studioCommands, () =>
+        context(engine)
+      )
+      for (const key of ["L", "U"])
+        resolver.keydown({
+          key,
+          shiftKey: true,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          repeat: false,
+          defaultPrevented: false,
+          target: null,
+          preventDefault: () => {},
+        })
+      return sent
+    }
+    const both = [
+      { objectId: "p", index: 0 },
+      { objectId: "p", index: 1 },
+    ]
+    expect(run(both)).toEqual([
+      { type: "setVectorSegmentShape", shape: "line" },
+      { type: "setVectorSegmentShape", shape: "curve" },
+    ])
+    expect(run(both.slice(0, 1))).toEqual([
+      { type: "setTool", tool: "polygonLasso" },
+    ])
+    // From the palette, the lasso is the lasso whatever is selected.
+    const { engine, sent } = fakeEngine([raster("a")], "a", {
+      tool: "node",
+      vectorPaths: [line],
+      vectorNodes: both,
+    })
+    runStudioCommand("tool.polygonLasso", context(engine))
+    expect(sent).toEqual([{ type: "setTool", tool: "polygonLasso" }])
+  })
 })

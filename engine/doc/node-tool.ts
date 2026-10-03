@@ -9,6 +9,7 @@ import {
   type NodeEdit,
   type NodePart,
   type NodeType,
+  type SegmentShape,
 } from "./vector-path"
 import type {
   Point,
@@ -447,6 +448,57 @@ export function nodeCommand(
         ? nodes.filter((n) => !edited.has(n.objectId))
         : [...nodes],
   }
+}
+
+/**
+ * The selected segments of the edited `paths`, each named by its first node:
+ * those both of whose ends are selected, a closed path's last-to-first
+ * among them.
+ */
+export function selectedSegments(
+  paths: readonly VectorObject[],
+  nodes: readonly VectorNode[]
+): VectorNode[] {
+  return paths.filter(isPath).flatMap((object) => {
+    const { closed, nodes: all } = object.geometry
+    const held = new Set(
+      nodes.filter((n) => n.objectId === object.id).map((n) => n.index)
+    )
+    return all.flatMap((_, index) =>
+      (closed || index < all.length - 1) &&
+      held.has(index) &&
+      held.has((index + 1) % all.length)
+        ? [{ objectId: object.id, index }]
+        : []
+    )
+  })
+}
+
+/**
+ * The scene edits of making every selected segment a line or a curve;
+ * null when no segment is selected or every one is that shape already.
+ */
+export function segmentCommand(
+  scene: VectorScene,
+  nodes: readonly VectorNode[],
+  shape: SegmentShape
+): SceneCommand[] | null {
+  const segments = selectedSegments(scene.objects, nodes)
+  const edits = scene.objects
+    .filter(isPath)
+    .flatMap((object): SceneCommand[] => {
+      const geometry = segments
+        .filter((s) => s.objectId === object.id)
+        .reduce(
+          (path, { index }) =>
+            editPathNode(path, { type: "segment", index, shape }),
+          object.geometry
+        )
+      return JSON.stringify(geometry) === JSON.stringify(object.geometry)
+        ? []
+        : [{ type: "update", id: object.id, patch: { geometry } }]
+    })
+  return edits.length ? edits : null
 }
 
 /**

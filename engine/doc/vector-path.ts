@@ -162,6 +162,9 @@ export function splitPathSegment(
   return { ...path, nodes }
 }
 
+/** A straight segment, or one with handles to bend it. */
+export type SegmentShape = "line" | "curve"
+
 /** The parts of a node that can be taken hold of and moved. */
 export type NodePart = "anchor" | "in" | "out"
 
@@ -169,6 +172,8 @@ export type NodeEdit =
   | { type: "move"; index: number; part: NodePart; point: Point }
   | { type: "delete"; index: number }
   | { type: "retype"; index: number; nodeType: NodeType }
+  /** Segment `index` runs from node `index` to the next, round if closed. */
+  | { type: "segment"; index: number; shape: SegmentShape }
   | { type: "split"; index: number; t?: number }
 
 export function editPathNode(path: BezierPath, edit: NodeEdit): BezierPath {
@@ -180,6 +185,22 @@ export function editPathNode(path: BezierPath, edit: NodeEdit): BezierPath {
   if (edit.type === "delete") {
     if (nodes.length <= 2) throw new Error("A path needs at least two anchors.")
     nodes.splice(edit.index, 1)
+  } else if (edit.type === "segment") {
+    const next = (edit.index + 1) % nodes.length
+    if (!path.closed && next === 0)
+      throw new Error("Choose a segment of the path.")
+    const a = nodes[edit.index],
+      b = nodes[next]
+    if (edit.shape === "line") {
+      // An auto node would only work its handle out again: a cusp keeps
+      // the segment straight.
+      const cusp = (n: PathNode) => (n.type === "auto" ? "cusp" : n.type)
+      nodes[edit.index] = { ...a, out: null, type: cusp(a) }
+      nodes[next] = { ...b, in: null, type: cusp(b) }
+    } else if (!handleOf(a, a.out) && !handleOf(b, b.in)) {
+      nodes[edit.index] = { ...a, out: mix(a, b, 1 / 3) }
+      nodes[next] = { ...b, in: mix(a, b, 2 / 3) }
+    }
   } else if (edit.type === "retype") {
     nodes[edit.index] = retyped(path, edit.index, edit.nodeType)
   } else {

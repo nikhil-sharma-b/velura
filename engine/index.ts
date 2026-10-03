@@ -3,6 +3,7 @@ import {
   nextNodeType,
   type NodeType,
   type PathNode,
+  type SegmentShape,
   type PressurePoint,
   type NodeEdit,
 } from "./doc/vector-path"
@@ -12,6 +13,7 @@ import {
   lockAxis,
   moveNodes,
   nodeCommand,
+  segmentCommand,
   pressNode,
   pruneNodes,
   boxNodes,
@@ -353,8 +355,12 @@ export {
   isBuiltinBrush,
 } from "./brush/presets"
 export type { Curve, CurvePoint } from "./brush/curve"
-export { handlesShown, type VectorNode } from "./doc/node-tool"
-export type { NodeType } from "./doc/vector-path"
+export {
+  handlesShown,
+  selectedSegments,
+  type VectorNode,
+} from "./doc/node-tool"
+export type { NodeType, SegmentShape } from "./doc/vector-path"
 export {
   DEFAULT_PRESSURE_CURVE,
   DEFAULT_PRESSURE_PRESET,
@@ -616,6 +622,8 @@ export type EngineCommand =
   | { type: "closePolygon" }
   | { type: "editVectorNode"; objectId: string; edit: NodeEdit }
   | { type: "deleteVectorNode" }
+  /** Makes every selected segment straight, or bendable (Shift+L, Shift+U). */
+  | { type: "setVectorSegmentShape"; shape: SegmentShape }
   /** Makes every selected node cusp, smooth, symmetric or auto-smooth. */
   | { type: "setVectorNodeType"; nodeType: NodeType }
   /** Selects the one node after or before the last selected (Tab). */
@@ -5601,6 +5609,18 @@ export function createEngine(
             editScene(layer.id, edit.edits, "edit node")
             publish({ vectorNodes: edit.nodes })
           }
+          break
+        }
+        case "setVectorSegmentShape": {
+          if (!snapshot.vectorNodes.length) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const edits = segmentCommand(
+            layer.scene,
+            snapshot.vectorNodes,
+            command.shape
+          )
+          if (edits) editScene(layer.id, edits, `make ${command.shape}`)
           break
         }
         case "nudgeVectorNodes": {

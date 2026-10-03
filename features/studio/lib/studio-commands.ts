@@ -5,6 +5,7 @@ import {
   type EngineCommand,
   type FilterKind,
   type LayerSummary,
+  selectedSegments,
 } from "@/engine"
 import { createRegistry, type Command } from "@/features/commands/lib/registry"
 
@@ -160,6 +161,23 @@ function onSelectedNodes(
   return {
     ...dispatching(command),
     available: ({ engine }) => nodesSelected(engine),
+  }
+}
+
+/** Whether the node tool has a segment selected: both its ends. */
+function segmentsSelected(engine: Engine | null): boolean {
+  if (!nodesSelected(engine)) return false
+  const { vectorPaths, vectorNodes } = engine!.getSnapshot()
+  return selectedSegments(vectorPaths, vectorNodes).length > 0
+}
+
+/** A command for the selected segments, unavailable with none selected. */
+function onSelectedSegments(
+  command: EngineCommand
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    ...dispatching(command),
+    available: ({ engine }) => segmentsSelected(engine),
   }
 }
 
@@ -379,8 +397,16 @@ export const studioCommands = createRegistry<StudioContext>([
     id: "tool.polygonLasso",
     label: "Polygonal lasso tool",
     category: "Tools",
+    // On the node tool with segments selected, the key makes them lines
+    // (Inkscape); everywhere else, and from the palette, it is the lasso.
     keybinds: ["shift+l"],
-    ...dispatching({ type: "setTool", tool: "polygonLasso" }),
+    available: hasEngine,
+    run: (context, key) =>
+      void context.engine?.dispatch(
+        key && segmentsSelected(context.engine)
+          ? { type: "setVectorSegmentShape", shape: "line" }
+          : { type: "setTool", tool: "polygonLasso" }
+      ),
   },
   {
     // W, the wand in every editor the hand learned on.
@@ -482,6 +508,20 @@ export const studioCommands = createRegistry<StudioContext>([
     label: "Delete selected anchor",
     category: "Tools",
     ...dispatching({ type: "deleteVectorNode" }),
+  },
+  {
+    id: "segment.line",
+    label: "Make selected segments lines",
+    category: "Tools",
+    // Shift+L reaches it through the polygonal lasso's binding, above.
+    ...onSelectedSegments({ type: "setVectorSegmentShape", shape: "line" }),
+  },
+  {
+    id: "segment.curve",
+    label: "Make selected segments curves",
+    category: "Tools",
+    keybinds: ["shift+u"],
+    ...onSelectedSegments({ type: "setVectorSegmentShape", shape: "curve" }),
   },
   {
     id: "node.cusp",

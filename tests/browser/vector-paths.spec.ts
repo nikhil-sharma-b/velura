@@ -657,3 +657,46 @@ test("node types: set on the selection, Ctrl+click cycles, undo restores", async
   await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
   expect(await path(page)).toEqual(object)
 })
+
+test("selected segments become curves and lines, each one step", async ({
+  page,
+}) => {
+  const box = await open(page)
+  const object = await penTriangle(page, box)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "node" })
+  )
+  await page.mouse.click(box.x + 100, box.y + 70)
+  await page.evaluate(() => window.engine.dispatch({ type: "selectAll" }))
+  const handles = async () => {
+    const geometry = (await path(page))!.geometry
+    return geometry.kind === "path"
+      ? geometry.nodes.map((n) => [!!n.in, !!n.out])
+      : []
+  }
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setVectorSegmentShape", shape: "curve" })
+  )
+  // Every segment, the closing one too, is bendable now.
+  expect(await handles()).toEqual([
+    [true, true],
+    [true, true],
+    [true, true],
+  ])
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setVectorSegmentShape", shape: "line" })
+  )
+  expect(await handles()).toEqual([
+    [false, false],
+    [false, false],
+    [false, false],
+  ])
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await handles()).toEqual([
+    [true, true],
+    [true, true],
+    [true, true],
+  ])
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await path(page)).toEqual(object)
+})

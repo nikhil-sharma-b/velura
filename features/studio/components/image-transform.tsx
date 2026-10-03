@@ -19,6 +19,7 @@ import type {
 import {
   docToScreen,
   handlesShown,
+  selectedSegments,
   placementExtent,
   resolveSnap,
   flippedPlacement,
@@ -31,6 +32,7 @@ import {
   scaledPlacement,
   type NodeType,
   type PlacementHandle,
+  type SegmentShape,
   type ViewMatrix,
 } from "@/engine"
 import { Button } from "@/components/ui/button"
@@ -698,6 +700,16 @@ function PlacementFields({
   )
 }
 
+/** What the hint bar can make of the selected segments. */
+const SEGMENT_BUTTONS: readonly {
+  shape: SegmentShape
+  label: string
+  keys: string
+}[] = [
+  { shape: "line", label: "Line", keys: "Shift+L" },
+  { shape: "curve", label: "Curve", keys: "Shift+U" },
+]
+
 /** The node types the hint bar offers, in Inkscape's order. */
 const NODE_TYPE_BUTTONS: readonly {
   nodeType: NodeType
@@ -827,6 +839,8 @@ export function VectorNodes({
     })
   }, [engine, snapshot.tool, snapshot.vectorNodes, toCss])
   if (snapshot.tool !== "node" && snapshot.tool !== "pen") return null
+  const hasSegments =
+    selectedSegments(snapshot.vectorPaths, snapshot.vectorNodes).length > 0
   return (
     <>
       <svg
@@ -856,6 +870,20 @@ export function VectorNodes({
             <span className="text-muted-foreground tabular-nums">
               {nodeCount(snapshot)}
             </span>
+            {SEGMENT_BUTTONS.map(({ shape, label, keys }) => (
+              <Button
+                key={shape}
+                size="sm"
+                variant="outline"
+                title={`Make selected segments ${shape}s (${keys})`}
+                disabled={!hasSegments}
+                onClick={() =>
+                  void engine.dispatch({ type: "setVectorSegmentShape", shape })
+                }
+              >
+                {label}
+              </Button>
+            ))}
             {NODE_TYPE_BUTTONS.map(({ nodeType, label, keys }) => (
               <Button
                 key={nodeType}
