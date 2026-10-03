@@ -28,12 +28,12 @@ function fakeEngine(
   const sent: EngineCommand[] = []
   const engine = {
     getSnapshot: () => ({
-      ...extra,
       layers,
       activeLayerId,
       tool: "brush",
       brush: { shape: { radius: 10 } },
       eraser: { shape: { radius: 10 } },
+      ...extra,
     }),
     dispatch: mock(async (command: EngineCommand) => void sent.push(command)),
   } as unknown as Engine
@@ -470,5 +470,42 @@ describe("filter commands", () => {
         expect(command.available!(context(engine, id))).toBe(false)
       expect(command.available!(context(engine, "ok"))).toBe(true)
     }
+  })
+
+  test("the arrows nudge selected nodes on the node tool, a held key as one", () => {
+    const { engine, sent } = fakeEngine([raster("a")], "a", {
+      tool: "node",
+      vectorNodes: [{ objectId: "p", index: 0 }],
+      view: { zoom: 4 },
+    })
+    const resolver = createKeybindResolver(studioCommands, () =>
+      context(engine)
+    )
+    const key = (
+      key: string,
+      mods: { shiftKey?: boolean; altKey?: boolean; repeat?: boolean } = {}
+    ) =>
+      resolver.keydown({
+        key,
+        shiftKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+        repeat: false,
+        defaultPrevented: false,
+        target: null,
+        preventDefault: () => {},
+        ...mods,
+      })
+    key("ArrowLeft")
+    key("ArrowLeft", { repeat: true })
+    key("ArrowDown", { shiftKey: true })
+    key("ArrowRight", { altKey: true })
+    expect(sent).toEqual([
+      { type: "nudgeVectorNodes", dx: -2, dy: 0, repeat: false },
+      { type: "nudgeVectorNodes", dx: -2, dy: 0, repeat: true },
+      { type: "nudgeVectorNodes", dx: 0, dy: 20, repeat: false },
+      { type: "nudgeVectorNodes", dx: 0.25, dy: 0, repeat: false },
+    ])
   })
 })

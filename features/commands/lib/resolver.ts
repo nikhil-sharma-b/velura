@@ -84,7 +84,7 @@ export function createKeybindResolver<Context>(
       if (command.available && !command.available(ctx)) return false
       event.preventDefault()
       if (event.repeat && command.repeat === false) return true
-      command.run(ctx)
+      command.run(ctx, { repeat: event.repeat })
       return true
     },
     keyup(event) {

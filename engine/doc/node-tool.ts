@@ -302,12 +302,80 @@ export function dragNode(grab: NodeGrab, point: Point): VectorObject {
   }
 }
 
-/** The scene edit a drag ends in: none when the node never moved. */
-export function releaseNode(grab: NodeGrab, point: Point): SceneCommand[] {
-  const moved = dragNode(grab, point)
-  return moved === grab.object
-    ? []
-    : [{ type: "update", id: moved.id, patch: { geometry: moved.geometry } }]
+/**
+ * The scene edits of moving `nodes` by `offset`, in document coordinates,
+ * each with its handles: one update per path they are on, none for no move.
+ */
+export function moveNodes(
+  scene: VectorScene,
+  nodes: readonly VectorNode[],
+  offset: Point
+): SceneCommand[] {
+  if (offset.x === 0 && offset.y === 0) return []
+  return scene.objects.filter(isPath).flatMap((object): SceneCommand[] => {
+    const indices = nodes
+      .filter((n) => n.objectId === object.id && object.geometry.nodes[n.index])
+      .map((n) => n.index)
+    if (!indices.length) return []
+    // The offset as the path's own coordinates see it: its transform's
+    // linear part undone, the translation having nothing to say about a move.
+    const [a, b, c, d] = invertMatrix(object.transform)
+    const dx = a * offset.x + c * offset.y,
+      dy = b * offset.x + d * offset.y
+    const geometry = [...new Set(indices)].reduce((path, index) => {
+      const n = path.nodes[index]
+      return editPathNode(path, {
+        type: "move",
+        index,
+        part: "anchor",
+        point: { x: n.x + dx, y: n.y + dy },
+      })
+    }, object.geometry)
+    return [{ type: "update", id: object.id, patch: { geometry } }]
+  })
+}
+
+/**
+ * The scene edits a node-tool drag to `point` makes of `scene` as it was
+ * when the press began. A grabbed anchor carries every selected node by its
+ * own offset; a grabbed handle bends only its node. None when nothing moved.
+ */
+export function dragNodes({
+  scene,
+  grab,
+  nodes,
+  point,
+}: {
+  scene: VectorScene
+  grab: NodeGrab
+  nodes: readonly VectorNode[]
+  /** Where the grabbed part is now, in document coordinates. */
+  point: Point
+}): SceneCommand[] {
+  const { object, index, part } = grab
+  if (!isPath(object)) return []
+  if (part !== "anchor") {
+    const moved = dragNode(grab, point)
+    return moved === object
+      ? []
+      : [{ type: "update", id: moved.id, patch: { geometry: moved.geometry } }]
+  }
+  const from = placed(object, object.geometry.nodes[index])
+  const held = { objectId: object.id, index }
+  return moveNodes(scene, nodes.some((n) => same(n, held)) ? nodes : [held], {
+    x: point.x - from.x,
+    y: point.y - from.y,
+  })
+}
+
+/**
+ * `to` held to the horizontal or the vertical through `from`, whichever it
+ * has moved further along.
+ */
+export function lockAxis(from: Point, to: Point): Point {
+  return Math.abs(to.x - from.x) >= Math.abs(to.y - from.y)
+    ? { x: to.x, y: from.y }
+    : { x: from.x, y: to.y }
 }
 
 /**

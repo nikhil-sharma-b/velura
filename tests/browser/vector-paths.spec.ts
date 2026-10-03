@@ -524,3 +524,90 @@ test("a click on one of several selected nodes selects it alone", async ({
     await page.evaluate(() => window.engine.getSnapshot().vectorNodes)
   ).toEqual([{ objectId: expect.any(String), index: 2 }])
 })
+
+test("dragging a selected node moves every selected node, across paths, as one step", async ({
+  page,
+}) => {
+  const box = await open(page)
+  const triangle = await penTriangle(page, box)
+  const small = {
+    ...triangle,
+    id: "small",
+    geometry: {
+      kind: "path" as const,
+      closed: true,
+      nodes: [
+        { x: 10, y: 5, in: null, out: null, smooth: false },
+        { x: 50, y: 5, in: null, out: null, smooth: false },
+        { x: 30, y: 35, in: null, out: null, smooth: false },
+      ],
+    },
+  }
+  await page.evaluate(async (object) => {
+    const engine = window.engine
+    await engine.dispatch({
+      type: "editVectorLayer",
+      id: engine.getSnapshot().activeLayerId,
+      commands: [{ type: "add", object }],
+    })
+    await engine.dispatch({ type: "setTool", tool: "node" })
+  }, small)
+  const nodesOf = () =>
+    page.evaluate(() =>
+      Object.fromEntries(
+        window.engine
+          .getSnapshot()
+          .vectorPaths.map((o) => [
+            o.id,
+            o.geometry.kind === "path"
+              ? o.geometry.nodes.map((n) => [Math.round(n.x), Math.round(n.y)])
+              : [],
+          ])
+      )
+    )
+  // Select the triangle, then Shift+click a corner of each path.
+  await page.mouse.click(box.x + 100, box.y + 70)
+  await page.keyboard.down("Shift")
+  await page.mouse.click(box.x + 10, box.y + 5)
+  await page.mouse.click(box.x + 100, box.y + 20)
+  await page.keyboard.up("Shift")
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().vectorNodes.length)
+  ).toBe(2)
+  // Only the paths being edited are listed, so both are now.
+  const before = await nodesOf()
+  // Drag the triangle's apex; the small path's corner follows it.
+  await page.mouse.move(box.x + 100, box.y + 20)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 110, box.y + 30, { steps: 5 })
+  await page.mouse.up()
+  await page.waitForFunction(() =>
+    window.engine
+      .getSnapshot()
+      .vectorPaths.some(
+        (o) =>
+          o.id === "small" &&
+          o.geometry.kind === "path" &&
+          o.geometry.nodes[0].x !== 10
+      )
+  )
+  const after = await nodesOf()
+  expect(after[triangle.id][1]).toEqual([110, 30])
+  expect(after.small[0]).toEqual([20, 15])
+  expect(after.small[1]).toEqual([50, 5])
+  // A held arrow's nudges are one step, as the drag was.
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "nudgeVectorNodes", dx: 2, dy: 0 })
+    await window.engine.dispatch({
+      type: "nudgeVectorNodes",
+      dx: 2,
+      dy: 0,
+      repeat: true,
+    })
+  })
+  expect((await nodesOf()).small[0]).toEqual([24, 15])
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await nodesOf()).toEqual(after)
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await nodesOf()).toEqual(before)
+})

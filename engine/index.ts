@@ -5,10 +5,11 @@ import {
   type NodeEdit,
 } from "./doc/vector-path"
 import {
-  dragNode,
+  dragNodes,
   editNode,
+  lockAxis,
+  moveNodes,
   nodeCommand,
-  releaseNode,
   pressNode,
   pruneNodes,
   boxNodes,
@@ -615,6 +616,11 @@ export type EngineCommand =
   | { type: "toggleVectorNode" }
   /** Selects the one node after or before the last selected (Tab). */
   | { type: "stepVectorNode"; direction: 1 | -1 }
+  /**
+   * Moves the selected nodes by a document offset (arrow keys). A `repeat`
+   * — the key held — joins the nudge before it as one undo step.
+   */
+  | { type: "nudgeVectorNodes"; dx: number; dy: number; repeat?: boolean }
   | { type: "editVectorLayer"; id: string; commands: readonly SceneCommand[] }
   /**
    * Turns a vector layer into a paint layer holding exactly what it showed
@@ -2643,6 +2649,8 @@ export function createEngine(
         }
         pressureResampler?: ReturnType<typeof createStrokeResampler>
         node?: NodeGrab
+        /** Where the grabbed part sat as the press began, for the axis lock. */
+        nodeAt?: Point
         /** The node tool is drawing a rubber band, not moving a node. */
         nodeBox?: boolean
         anchor: Point
@@ -3114,7 +3122,6 @@ export function createEngine(
     scene: VectorScene
   ): VectorObject | null {
     const style = snapshot.shapeStyle
-    if (drag.node) return dragNode(drag.node, drag.point)
     if (drag.tool === "node") return null
     if (
       !style.fill &&
@@ -3257,8 +3264,17 @@ export function createEngine(
     }
     samples.drain((x, y, pressure, tiltX, tiltY, time) => {
       const point = { x: toDocX(x, y), y: toDocY(x, y) }
+      // The grabbed node snaps; the rest follow its snapped offset. A
+      // snap moves it along the locked axis only, never off it.
+      const lock = ctrlHeld ? drag.nodeAt : undefined
+      const locked = lock ? lockAxis(lock, point) : point
       drag.point =
-        drag.tool === "pressure" ? point : snapVectorPoint(point, drag.layerId)
+        drag.tool === "pressure" ? point : snapVectorPoint(locked, drag.layerId)
+      if (lock)
+        drag.point =
+          locked.y === lock.y
+            ? { x: drag.point.x, y: lock.y }
+            : { x: lock.x, y: drag.point.y }
       if (drag.tool === "pen" && drag.placing && !drag.ended) {
         const at = drag.nodes!.length - 1,
           node = drag.nodes![at]
@@ -3347,7 +3363,7 @@ export function createEngine(
         render()
         return
       }
-      const moved = drag.node && releaseNode(drag.node, drag.point)
+      const moved = drag.node && nodeDragEdits(drag, layer.scene)
       // A click, not a drag, on one of several selected nodes selects it
       // alone; the press kept them all in case it became a drag.
       if (drag.node?.part === "anchor" && !moved?.length)
@@ -3357,8 +3373,7 @@ export function createEngine(
           ],
         })
       if (moved?.length) {
-        editScene(layer.id, moved, "move node")
-        publish({ vectorSelection: [drag.node!.object.id] })
+        editScene(layer.id, moved, "move nodes")
       } else if (shape && !drag.node) {
         editScene(
           layer.id,
@@ -3378,20 +3393,11 @@ export function createEngine(
     drag.previewAt = { ...drag.point, square: constrained() }
     drag.preview = isBand(drag)
       ? layer.scene
-      : shape
-        ? applySceneEdit(
-            layer.scene,
-            drag.node
-              ? [
-                  {
-                    type: "update",
-                    id: shape.id,
-                    patch: { geometry: shape.geometry },
-                  },
-                ]
-              : [{ type: "add", object: shape }]
-          ).scene
-        : layer.scene
+      : drag.node
+        ? applySceneEdit(layer.scene, nodeDragEdits(drag, layer.scene)).scene
+        : shape
+          ? applySceneEdit(layer.scene, [{ type: "add", object: shape }]).scene
+          : layer.scene
     drawScene(layer.id, drag.preview)
     notifyVectorControls()
     if (isBand(drag))
@@ -3655,6 +3661,8 @@ export function createEngine(
   let shiftHeld = false
   let wand: WandOptions = DEFAULT_WAND
   let altHeld = false
+  /** Ctrl, which locks a node drag to one axis. */
+  let ctrlHeld = false
   /**
    * Shift chose the combine mode as the pen went down, so it is not also a
    * constraint until it has been let go and pressed again — the way a
@@ -4444,6 +4452,8 @@ export function createEngine(
   }
 
   let lastNodeClick: NodeClick | undefined
+  /** Counts arrow presses, so a held key's nudges are one step, two presses two. */
+  let nudgeRun = 0
 
   function snapVectorPoint(point: Point, layerId: string): Point {
     if (!snapping || altHeld) return point
@@ -4453,6 +4463,19 @@ export function createEngine(
       6 / snapshot.view.zoom
     )
     return { x: point.x + snap.dx, y: point.y + snap.dy }
+  }
+
+  /** What a node drag to where it is now makes of the layer's scene. */
+  function nodeDragEdits(
+    drag: NonNullable<typeof shapeDrag>,
+    scene: VectorScene
+  ): SceneCommand[] {
+    return dragNodes({
+      scene,
+      grab: drag.node!,
+      nodes: snapshot.vectorNodes,
+      point: drag.point,
+    })
   }
 
   function beginNodeDrag(layer: VectorLayer, point: Point, time: number) {
@@ -4481,7 +4504,7 @@ export function createEngine(
         point: press.kind === "grab" ? press.at : point,
         ended: false,
         ...(press.kind === "grab"
-          ? { node: press.grab }
+          ? { node: press.grab, nodeAt: press.at }
           : { nodeBox: true as const }),
       }
       scheduleFrame()
@@ -5137,9 +5160,10 @@ export function createEngine(
           {
             begin: beginStroke,
             end: endStroke,
-            modifiers: (shift, alt) => {
+            modifiers: (shift, alt, ctrl) => {
               shiftHeld = shift
               altHeld = alt
+              ctrlHeld = ctrl
               if (!shift) shiftLatched = false
             },
             // A colour that could not be read is a colour the artist did not
@@ -5554,6 +5578,18 @@ export function createEngine(
             editScene(layer.id, edit.edits, "edit node")
             publish({ vectorNodes: edit.nodes })
           }
+          break
+        }
+        case "nudgeVectorNodes": {
+          if (tool !== "node" || !snapshot.vectorNodes.length) break
+          if (shapeDrag?.node) break
+          const layer = selectedVectorLayer()
+          const edits = moveNodes(layer.scene, snapshot.vectorNodes, {
+            x: command.dx,
+            y: command.dy,
+          })
+          if (!command.repeat) nudgeRun++
+          editScene(layer.id, edits, "nudge nodes", `nudge-nodes:${nudgeRun}`)
           break
         }
         case "stepVectorNode":

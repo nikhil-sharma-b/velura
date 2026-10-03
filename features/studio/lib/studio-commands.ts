@@ -17,6 +17,10 @@ export const ZOOM_STEP = 1.25
 export const ROTATE_STEP = Math.PI / 12
 /** One press of an arrow key, in CSS pixels: a nudge, not a leap. */
 const PAN_STEP = 40
+/** One arrow press on selected nodes, in document pixels, and with Shift. */
+const NODE_NUDGE = 2
+const NODE_NUDGE_FAR = 20
+
 /**
  * One press of a size key. Multiplicative, because the step an artist wants
  * between 2px and 3px is not the step they want between 100px and 101px.
@@ -93,6 +97,59 @@ function onNodeTool(
       !!engine &&
       engine.getSnapshot().tool === "node" &&
       engine.getSnapshot().vectorPaths.length > 0,
+  }
+}
+
+/** Whether the arrows would move nodes: the node tool, with some selected. */
+const nodesSelected = (engine: Engine | null) =>
+  !!engine &&
+  engine.getSnapshot().tool === "node" &&
+  engine.getSnapshot().vectorNodes.length > 0
+
+/**
+ * Nudges the selected nodes by `step` document pixels in the direction
+ * (`x`, `y`); a held key's repeats join the first press as one undo step.
+ */
+function nudging(
+  x: number,
+  y: number,
+  step: (engine: Engine) => number
+): Pick<StudioCommand, "available" | "run"> {
+  return {
+    available: ({ engine }) => nodesSelected(engine),
+    run: ({ engine }, input) => {
+      if (!engine) return
+      const by = step(engine)
+      void engine.dispatch({
+        type: "nudgeVectorNodes",
+        dx: x * by,
+        dy: y * by,
+        repeat: input?.repeat,
+      })
+    },
+  }
+}
+
+/**
+ * An arrow: nudges the selected nodes on the node tool by `step`, pans the
+ * view otherwise, as the arrows always have with or without a modifier.
+ */
+function panOrNudge(
+  x: number,
+  y: number,
+  step: (engine: Engine) => number = () => NODE_NUDGE
+): Pick<StudioCommand, "available" | "run"> {
+  const nudge = nudging(x, y, step)
+  return {
+    available: hasEngine,
+    run: (context, input) =>
+      nodesSelected(context.engine)
+        ? nudge.run(context, input)
+        : void context.engine?.dispatch({
+            type: "panView",
+            dx: -x * PAN_STEP,
+            dy: -y * PAN_STEP,
+          }),
   }
 }
 
@@ -846,34 +903,90 @@ export const studioCommands = createRegistry<StudioContext>([
     })),
   },
   // The arrows nudge the canvas, for the artist who has no wheel under the
-  // hand that is free.
+  // hand that is free; with nodes selected on the node tool, they nudge those.
   {
     id: "view.panLeft",
     label: "Pan left",
     category: "View",
     keybinds: ["arrowleft"],
-    ...dispatching({ type: "panView", dx: PAN_STEP, dy: 0 }),
+    ...panOrNudge(-1, 0),
   },
   {
     id: "view.panRight",
     label: "Pan right",
     category: "View",
     keybinds: ["arrowright"],
-    ...dispatching({ type: "panView", dx: -PAN_STEP, dy: 0 }),
+    ...panOrNudge(1, 0),
   },
   {
     id: "view.panUp",
     label: "Pan up",
     category: "View",
     keybinds: ["arrowup"],
-    ...dispatching({ type: "panView", dx: 0, dy: PAN_STEP }),
+    ...panOrNudge(0, -1),
   },
   {
     id: "view.panDown",
     label: "Pan down",
     category: "View",
     keybinds: ["arrowdown"],
-    ...dispatching({ type: "panView", dx: 0, dy: -PAN_STEP }),
+    ...panOrNudge(0, 1),
+  },
+  {
+    id: "node.nudgeLeftFar",
+    label: "Nudge nodes left far",
+    category: "Tools",
+    keybinds: ["shift+arrowleft"],
+    ...panOrNudge(-1, 0, () => NODE_NUDGE_FAR),
+  },
+  {
+    id: "node.nudgeLeftPixel",
+    label: "Nudge nodes left one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+arrowleft"],
+    ...panOrNudge(-1, 0, (engine) => 1 / engine.getSnapshot().view.zoom),
+  },
+  {
+    id: "node.nudgeRightFar",
+    label: "Nudge nodes right far",
+    category: "Tools",
+    keybinds: ["shift+arrowright"],
+    ...panOrNudge(1, 0, () => NODE_NUDGE_FAR),
+  },
+  {
+    id: "node.nudgeRightPixel",
+    label: "Nudge nodes right one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+arrowright"],
+    ...panOrNudge(1, 0, (engine) => 1 / engine.getSnapshot().view.zoom),
+  },
+  {
+    id: "node.nudgeUpFar",
+    label: "Nudge nodes up far",
+    category: "Tools",
+    keybinds: ["shift+arrowup"],
+    ...panOrNudge(0, -1, () => NODE_NUDGE_FAR),
+  },
+  {
+    id: "node.nudgeUpPixel",
+    label: "Nudge nodes up one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+arrowup"],
+    ...panOrNudge(0, -1, (engine) => 1 / engine.getSnapshot().view.zoom),
+  },
+  {
+    id: "node.nudgeDownFar",
+    label: "Nudge nodes down far",
+    category: "Tools",
+    keybinds: ["shift+arrowdown"],
+    ...panOrNudge(0, 1, () => NODE_NUDGE_FAR),
+  },
+  {
+    id: "node.nudgeDownPixel",
+    label: "Nudge nodes down one screen pixel",
+    category: "Tools",
+    keybinds: ["alt+arrowdown"],
+    ...panOrNudge(0, 1, (engine) => 1 / engine.getSnapshot().view.zoom),
   },
 ])
 

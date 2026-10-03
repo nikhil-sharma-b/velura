@@ -8,11 +8,18 @@ import {
   nodeCommand,
   pressNode,
   pruneNodes,
-  releaseNode,
+  dragNodes,
+  lockAxis,
+  moveNodes,
   stepNode,
   type VectorNode,
 } from "../../engine/doc/node-tool"
-import type { VectorObject, VectorScene } from "../../engine/doc/vector-scene"
+import type { PathNode } from "../../engine/doc/vector-path"
+import type {
+  SceneCommand,
+  VectorObject,
+  VectorScene,
+} from "../../engine/doc/vector-scene"
 
 const triangle = (id: string, dx = 0): VectorObject => ({
   id,
@@ -312,16 +319,110 @@ test("selected nodes are forgotten once their path or index is gone", () => {
 })
 
 test("releasing a moved node is one update to its path; unmoved is none", () => {
-  const result = press(scene(triangle("a")), { x: 100, y: 0 })
+  const s = scene(triangle("a"))
+  const result = press(s, { x: 100, y: 0 })
   if (result.kind !== "grab") throw new Error("expected a grab")
-  expect(releaseNode(result.grab, { x: 100, y: 0 })).toEqual([])
-  const [command] = releaseNode(result.grab, { x: 90, y: 10 })
+  const drag = (point: { x: number; y: number }) =>
+    dragNodes({ scene: s, grab: result.grab, nodes: result.nodes, point })
+  expect(drag({ x: 100, y: 0 })).toEqual([])
+  const [command] = drag({ x: 90, y: 10 })
   expect(command).toMatchObject({ type: "update", id: "a" })
   expect(
     command.type === "update" &&
       command.patch.geometry?.kind === "path" &&
       command.patch.geometry.nodes[1]
   ).toMatchObject({ x: 90, y: 10 })
+})
+
+const withNode = (
+  object: VectorObject,
+  index: number,
+  replacement: PathNode
+): VectorObject => {
+  if (object.geometry.kind !== "path") throw new Error("expected a path")
+  const nodes = [...object.geometry.nodes]
+  nodes[index] = replacement
+  return { ...object, geometry: { ...object.geometry, nodes } }
+}
+
+const nodesOf = (command: SceneCommand) =>
+  command.type === "update" && command.patch.geometry?.kind === "path"
+    ? command.patch.geometry.nodes
+    : []
+
+test("moving nodes moves every one, across paths, handles along", () => {
+  const curved = withNode(triangle("b", 200), 0, {
+    x: 0,
+    y: 0,
+    in: { x: -10, y: 0 },
+    out: { x: 10, y: 0 },
+    smooth: true,
+  })
+  const s = scene(triangle("a"), curved)
+  const edits = moveNodes(s, [node("a", 1), node("b", 0)], { x: 5, y: -3 })
+  expect(edits.map((e) => e.type === "update" && e.id)).toEqual(["a", "b"])
+  const [a, b] = edits.map(nodesOf)
+  expect(a[0]).toMatchObject({ x: 0, y: 0 })
+  expect(a[1]).toMatchObject({ x: 105, y: -3 })
+  expect(b[0]).toEqual({
+    x: 5,
+    y: -3,
+    in: { x: -5, y: -3 },
+    out: { x: 15, y: -3 },
+    smooth: true,
+  })
+  expect(moveNodes(s, [node("a", 1)], { x: 0, y: 0 })).toEqual([])
+  expect(moveNodes(s, [], { x: 1, y: 1 })).toEqual([])
+})
+
+test("moving nodes reads the offset in document space on a scaled path", () => {
+  const big = { ...triangle("a"), transform: [2, 0, 0, 2, 0, 0] as const }
+  const [edit] = moveNodes(scene(big as VectorObject), [node("a", 1)], {
+    x: 10,
+    y: 4,
+  })
+  expect(nodesOf(edit)[1]).toMatchObject({ x: 105, y: 2 })
+})
+
+test("dragging a selected anchor moves the rest by the grabbed one's offset", () => {
+  const s = scene(triangle("a"), triangle("b", 200))
+  const nodes = [node("a", 1), node("b", 2)]
+  const result = press(s, { x: 100, y: 0 }, { selection: ["a", "b"], nodes })
+  if (result.kind !== "grab") throw new Error("expected a grab")
+  expect(result.nodes).toEqual(nodes)
+  const edits = dragNodes({
+    scene: s,
+    grab: result.grab,
+    nodes: result.nodes,
+    point: { x: 110, y: 20 },
+  })
+  expect(nodesOf(edits[0])[1]).toMatchObject({ x: 110, y: 20 })
+  expect(nodesOf(edits[1])[2]).toMatchObject({ x: 60, y: 120 })
+})
+
+test("dragging a handle bends only its own node", () => {
+  const curved = withNode(triangle("a"), 1, {
+    x: 100,
+    y: 0,
+    in: { x: 90, y: 0 },
+    out: null,
+    smooth: false,
+  })
+  const s = scene(curved)
+  const edits = dragNodes({
+    scene: s,
+    grab: { object: curved, index: 1, part: "in" },
+    nodes: [node("a", 0), node("a", 1)],
+    point: { x: 90, y: 10 },
+  })
+  expect(nodesOf(edits[0])[0]).toMatchObject({ x: 0, y: 0 })
+  expect(nodesOf(edits[0])[1]).toMatchObject({ x: 100, in: { x: 90, y: 10 } })
+})
+
+test("an axis lock keeps the direction moved furthest along", () => {
+  const from = { x: 10, y: 10 }
+  expect(lockAxis(from, { x: 30, y: 15 })).toEqual({ x: 30, y: 10 })
+  expect(lockAxis(from, { x: 5, y: -20 })).toEqual({ x: 10, y: -20 })
 })
 
 test("an edit by command keeps the node it lands on in hand", () => {

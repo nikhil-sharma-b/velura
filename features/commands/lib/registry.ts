@@ -12,7 +12,8 @@ export interface Command<Context> {
   category: string
   /** Whether running would do anything right now. Absent means always. */
   available?: (context: Context) => boolean
-  run: (context: Context) => void
+  /** `repeat` is whether a held key's auto-repeat is what ran it. */
+  run: (context: Context, input?: { repeat: boolean }) => void
   keybinds?: readonly string[]
   /** Whether a held key's auto-repeat runs it again. Absent means it does. */
   repeat?: boolean
