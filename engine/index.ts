@@ -5011,6 +5011,18 @@ export function createEngine(
     landStroke()
   }
 
+  /**
+   * A released shape or node-tool gesture finishes on the next frame; a
+   * command arriving before then would otherwise be undone by it, as a Tab
+   * straight after a node click once was.
+   */
+  function landEndedShapeDrag() {
+    if (!shapeDrag?.ended) return
+    if (frame !== undefined) cancelAnimationFrame(frame)
+    frame = undefined
+    drawShapeDrag()
+  }
+
   function render(): GPUTexture {
     if (!device || !context || !renderer)
       throw new Error("The graphics device is not ready.")
@@ -5506,6 +5518,7 @@ export function createEngine(
     async dispatch(command) {
       if (disposed) return
       landLiftedStroke()
+      landEndedShapeDrag()
       if (filterSession && !FILTER_PASSTHROUGH.has(command.type)) cancelFilter()
       switch (command.type) {
         case "initialize":
