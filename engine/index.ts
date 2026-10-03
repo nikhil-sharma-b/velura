@@ -1,7 +1,6 @@
 import {
-  fitPressureStroke,
+  createPressureFit,
   MAX_TAPER,
-  taperEnds,
   type Taper,
   nextNodeType,
   type NodeType,
@@ -153,6 +152,7 @@ import {
   type VectorScene,
 } from "./doc/vector-scene"
 import { tessellateObject, type Mesh } from "./geom/tessellate"
+import { createLiveStrokeMesh } from "./geom/live-stroke"
 import {
   centeredPlacement,
   flippedPlacement,
@@ -2738,6 +2738,12 @@ export function createEngine(
           time: number
         }
         pressureResampler?: ReturnType<typeof createStrokeResampler>
+        /** The stroke fitted and meshed as it is drawn, and how many samples it has had. */
+        pressureFit?: {
+          fit: ReturnType<typeof createPressureFit>
+          fed: number
+          mesh: ReturnType<typeof createLiveStrokeMesh>
+        }
         node?: NodeGrab
         /** Where the grabbed part sat as the press began, for the axis lock. */
         nodeAt?: Point
@@ -3285,33 +3291,22 @@ export function createEngine(
   }
 
   /**
-   * A pressure stroke still being drawn, as its samples joined straight.
-   * Fitting the whole stroke each frame would reshape curves already
-   * drawn as the end moves, so the fit waits for the pen to lift.
+   * The vector brush's stroke as fitted so far, fed the samples it has not
+   * seen. Its width and taper are the ones it began with.
    */
-  function pressurePreview(
-    points: readonly PressurePoint[],
-    width: number
-  ): BezierPath {
-    // Where the stroke will end is not known until the pen lifts, so only
-    // the start's taper is drawn while it is drawn.
-    const tapered = points.map((p) => ({ ...p }))
-    if (!snapshot.vectorBrushPressure)
-      taperEnds(
-        tapered,
-        { start: snapshot.vectorBrushTaper.start, end: 0 },
-        "pressure"
-      )
-    const nodes: PathNode[] = tapered.map((p) => ({
-      x: p.x,
-      y: p.y,
-      width: width * Math.max(0, Math.min(1, p.pressure)),
-      in: null,
-      out: null,
-      type: "smooth",
-    }))
-    if (nodes.length === 1) nodes.push({ ...nodes[0] })
-    return { kind: "path", nodes, closed: false }
+  function pressureStroke(drag: NonNullable<typeof shapeDrag>): BezierPath {
+    drag.pressureFit ??= {
+      fit: createPressureFit(
+        snapshot.shapeStyle.strokeWidth,
+        snapshot.vectorBrushPressure ? undefined : snapshot.vectorBrushTaper
+      ),
+      fed: 0,
+      mesh: createLiveStrokeMesh(),
+    }
+    const live = drag.pressureFit
+    live.fit.add(drag.pressurePoints!.slice(live.fed))
+    live.fed = drag.pressurePoints!.length
+    return live.fit.path(drag.ended)
   }
 
   /**
@@ -3351,15 +3346,7 @@ export function createEngine(
               closed: drag.closed ?? false,
             }
           : drag.tool === "pressure"
-            ? drag.ended
-              ? fitPressureStroke(
-                  drag.pressurePoints!,
-                  style.strokeWidth,
-                  snapshot.vectorBrushPressure
-                    ? undefined
-                    : snapshot.vectorBrushTaper
-                )
-              : pressurePreview(drag.pressurePoints!, style.strokeWidth)
+            ? pressureStroke(drag)
             : drag.tool === "ellipse"
               ? {
                   kind: "ellipse",
@@ -3580,6 +3567,25 @@ export function createEngine(
       return
     }
     const shape = draggedShape(drag, layer.scene)
+    // A stroke being drawn is meshed piece by piece, its finished curves
+    // kept from frame to frame, rather than whole as any other object is.
+    const live = drag.pressureFit
+    if (live && shape?.style.stroke) {
+      const pieces = live.fit.pieces()
+      if (pieces.length) {
+        const stroke = shape.style.stroke
+        const levels = new Map<
+          number,
+          { fill: Mesh | null; stroke: Mesh | null }
+        >()
+        for (const detail of new Set([1, screenDetail]))
+          levels.set(detail, {
+            fill: null,
+            stroke: live.mesh.mesh(pieces, stroke, detail),
+          })
+        meshes.set(shape, levels)
+      }
+    }
     if (drag.ended) {
       shapeDrag = undefined
       forgetGestureInput()

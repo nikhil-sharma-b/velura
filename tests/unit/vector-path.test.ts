@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { fitPressureStroke, pickPathNode } from "../../engine/doc/vector-path"
+import {
+  createPressureFit,
+  fitPressureStroke,
+  flattenPath,
+  pickPathNode,
+  type BezierPath,
+  type Taper,
+} from "../../engine/doc/vector-path"
 
 test("pressure fitting retains the centre line endpoints and pressure extrema", () => {
   const path = fitPressureStroke(
@@ -355,16 +362,80 @@ describe("tapered strokes", () => {
     expect(past.every((n) => n.width! > 9.9)).toBe(true)
   })
 
-  test("both ends taper, each by its own share", () => {
-    const { nodes } = fitPressureStroke(line(), 10, { start: 0.1, end: 0.5 })
+  test("both ends taper, each by its own share, with a node apiece", () => {
+    const path = fitPressureStroke(line(), 10, { start: 0.1, end: 0.5 })
+    const { nodes } = path
     expect(nodes[0].width).toBeCloseTo(0, 5)
     expect(nodes.at(-1)!.width).toBeCloseTo(0, 5)
-    const middle = nodes.find((n) => n.x > 60 && n.x < 140)
-    expect(middle?.width ?? 10).toBeLessThan(10)
+    // A straight line: its two tips, and where each taper meets full width.
+    expect(nodes.map((n) => Math.round(n.x))).toEqual([0, 20, 100, 200])
+    // Drawn, the end's width eases down from x = 100, never past full.
+    const { points, widths } = flattenPath(path, 4)
+    const end = points
+      .map((p, i) => ({ x: p.x, w: widths![i] }))
+      .filter((p) => p.x >= 100)
+    for (let i = 1; i < end.length; i++)
+      expect(end[i].w).toBeLessThanOrEqual(end[i - 1].w + 1e-9)
+    expect(Math.max(...widths!)).toBeLessThanOrEqual(10 + 1e-9)
   })
 
   test("no taper leaves the width whole", () => {
     const { nodes } = fitPressureStroke(line(), 10, { start: 0, end: 0 })
     expect(nodes.every((n) => n.width === 10)).toBe(true)
   })
+})
+
+describe("a pressure stroke fitted as it is drawn", () => {
+  const sample = (i: number) => ({
+    x: i * 2,
+    y: 30 * Math.sin(i / 20),
+    pressure: 0.5 + 0.4 * Math.sin(i / 13),
+  })
+  const draw = (count: number, perFrame: number, taper?: Taper) => {
+    const fit = createPressureFit(8, taper)
+    const frames: BezierPath[] = []
+    for (let i = 0; i < count; i += perFrame) {
+      fit.add(
+        Array.from({ length: Math.min(perFrame, count - i) }, (_, k) =>
+          sample(i + k)
+        )
+      )
+      frames.push(fit.path(false))
+    }
+    return { frames, lifted: fit.path(true) }
+  }
+
+  test("lifting the pen keeps the stroke as it was last drawn", () => {
+    for (const taper of [undefined, { start: 0.2, end: 0.3 }]) {
+      const { frames, lifted } = draw(400, 4, taper)
+      expect(lifted).toEqual(frames.at(-1)!)
+    }
+  })
+
+  test("curves well behind the pen keep their shape as it moves on", () => {
+    const { frames } = draw(400, 4)
+    const early = frames[60].nodes,
+      late = frames.at(-1)!.nodes
+    // The early frame's curves, all but those near its pen, are unchanged.
+    const settled = early.filter((n) => n.x < early.at(-1)!.x - 60)
+    expect(settled.length).toBeGreaterThan(1)
+    settled.forEach((node, i) => {
+      const same = late.find((m) => m.x === node.x && m.y === node.y)
+      expect(same).toBeDefined()
+      expect(same!.in).toEqual(node.in)
+      // The last one's way out is the next curve's, which is still live.
+      if (i < settled.length - 1) expect(same!.out).toEqual(node.out)
+    })
+  })
+})
+
+test("the pen landing and lifting adds no nodes at the ends", () => {
+  const samples = []
+  for (let i = 0; i <= 100; i++)
+    samples.push({
+      x: i * 2,
+      y: 0,
+      pressure: Math.min(1, i / 6, (100 - i) / 6),
+    })
+  expect(fitPressureStroke(samples, 10).nodes).toHaveLength(2)
 })

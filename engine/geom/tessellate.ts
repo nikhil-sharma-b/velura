@@ -222,7 +222,12 @@ export function tessellateStroke(
   stroke: Pick<VectorStroke, "width" | "cap" | "join">,
   widths?: readonly number[] | null,
   corners: readonly number[] = [],
-  detail = 1
+  detail = 1,
+  /**
+   * Which ends are the stroke's own, capped; an end that is not joins on to
+   * a piece drawn apart, and is rounded so the two meet without a seam.
+   */
+  ends: Readonly<{ start: boolean; end: boolean }> = { start: true, end: true }
 ): Mesh {
   const mesh = createBuilder("union")
   const corner = new Set(corners)
@@ -299,11 +304,12 @@ export function tessellateStroke(
 
   const caps = () => {
     if (closed || stroke.cap === "butt") return
-    const ends = [
-      { at: points[0], out: edge(0), sign: -1 },
-      { at: points.at(-1)!, out: edge(segments - 1), sign: 1 },
+    const capped = [
+      { at: points[0], out: edge(0), sign: -1, own: ends.start },
+      { at: points.at(-1)!, out: edge(segments - 1), sign: 1, own: ends.end },
     ]
-    for (const { at, out, sign } of ends) {
+    for (const { at, out, sign, own } of capped) {
+      if (!own) continue
       const half = at.width / 2
       const forward = { x: out.x * sign, y: out.y * sign }
       const side = normal(out)
@@ -354,6 +360,12 @@ export function tessellateStroke(
         if (stroke.join === "miter") join(i)
       }
     })
+    if (!closed)
+      for (const [own, point] of [
+        [ends.start, points[0]],
+        [ends.end, points.at(-1)!],
+      ] as const)
+        if (!own && point.width > 0) fan(point, 0, Math.PI * 2, point.width / 2)
     for (let i = 0; i < segments; i++) {
       const j = (i + 1) % points.length
       const a = points[i],
@@ -389,6 +401,29 @@ export function tessellateStroke(
   for (let i = firstJoin; i <= lastJoin; i++) join(i)
   caps()
   return mesh.finish()
+}
+
+/** One mesh of the triangles of several, as one stroke is drawn in pieces. */
+export function mergeMeshes(parts: readonly Mesh[], rule: CoverageRule): Mesh {
+  const size = parts.reduce((sum, part) => sum + part.vertices.length, 0)
+  const vertices = new Float32Array(size)
+  let offset = 0,
+    bounds: Bounds | null = null
+  for (const part of parts) {
+    vertices.set(part.vertices, offset)
+    offset += part.vertices.length
+    const b = part.bounds
+    if (!b) continue
+    bounds = bounds
+      ? {
+          minX: Math.min(bounds.minX, b.minX),
+          minY: Math.min(bounds.minY, b.minY),
+          maxX: Math.max(bounds.maxX, b.maxX),
+          maxY: Math.max(bounds.maxY, b.maxY),
+        }
+      : { ...b }
+  }
+  return { vertices, rule, bounds }
 }
 
 /**
