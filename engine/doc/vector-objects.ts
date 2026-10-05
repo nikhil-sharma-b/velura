@@ -111,6 +111,8 @@ export function selectObjects(
   scene: VectorScene,
   region: Point | Extent | readonly Point[]
 ): string[] {
+  // An eraser's marks are part of what is drawn, never something picked.
+  scene = { objects: scene.objects.filter((o) => !o.erase) }
   // A band on a turned view: the objects drawn wholly inside it.
   if (Array.isArray(region))
     return scene.objects
@@ -162,11 +164,13 @@ export function selectObjects(
  * is walked in half-tip steps, so a quick swipe cannot jump a thin line.
  */
 export function objectEraser(scene: VectorScene, radius: number) {
-  const meshes = scene.objects.map((object) => ({
-    id: object.id,
-    box: objectBounds(object),
-    ...tessellateObject(object),
-  }))
+  const meshes = scene.objects
+    .filter((object) => !object.erase)
+    .map((object) => ({
+      id: object.id,
+      box: objectBounds(object),
+      ...tessellateObject(object),
+    }))
   const r = Math.max(0.5, radius)
   // The tip is tested at its centre and on two rings, which leaves no gap a
   // shape could pass through unseen.

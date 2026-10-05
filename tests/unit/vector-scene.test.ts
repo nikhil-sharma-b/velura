@@ -175,3 +175,18 @@ describe("objects from outside", () => {
     ).toThrow()
   })
 })
+
+describe("an eraser's marks", () => {
+  test("are kept through a save, and nothing but true is a mark", () => {
+    const mark: VectorObject = { ...rect("m"), erase: true }
+    expect(parseScene({ objects: [rect("a"), mark] }).objects[1].erase).toBe(
+      true
+    )
+    expect("erase" in parseScene({ objects: [rect("a")] }).objects[0]).toBe(
+      false
+    )
+    expect(() =>
+      parseScene({ objects: [{ ...rect("a"), erase: "yes" }] })
+    ).toThrow()
+  })
+})

@@ -116,7 +116,12 @@ import {
   TOOL_CURSOR,
   VECTOR_CURSORS,
 } from "../lib/tool-cursor"
-import { BrushIcon, EraserToolIcon, VectorBrushToolIcon } from "./brush-icon"
+import {
+  BrushIcon,
+  EraserToolIcon,
+  ShapeEraserIcon,
+  VectorBrushToolIcon,
+} from "./brush-icon"
 import { BrushLibrary } from "./brush-library"
 import { TiltToggle } from "./tilt-toggle"
 import { IconButton } from "./icon-button"
@@ -261,23 +266,32 @@ function ToolFamilySlot({
       className="relative"
     >
       {shown.icon}
-      {/* A dot per sibling, the one in the slot filled: unlike the brush
-        button's corner notch, which opens a menu, this says a press swaps. */}
-      <span
-        aria-hidden
-        className="pointer-events-none absolute bottom-0.5 left-1/2 flex -translate-x-1/2 gap-0.5"
-      >
-        {members.map((member) => (
-          <span
-            key={member.tool}
-            className={cn(
-              "size-0.75 rounded-full bg-current",
-              member === shown ? "opacity-80" : "opacity-30"
-            )}
-          />
-        ))}
-      </span>
+      <FamilyDots count={members.length} shown={members.indexOf(shown)} />
     </RailAction>
+  )
+}
+
+/**
+ * A dot per sibling in a rail slot, the one in the slot filled: unlike the
+ * brush button's corner notch, which opens a menu, this says a press swaps.
+ * Its button is `relative`.
+ */
+function FamilyDots({ count, shown }: { count: number; shown: number }) {
+  return (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute bottom-0.5 left-1/2 flex -translate-x-1/2 gap-0.5"
+    >
+      {Array.from({ length: count }, (_, index) => (
+        <span
+          key={index}
+          className={cn(
+            "size-0.75 rounded-full bg-current",
+            index === shown ? "opacity-80" : "opacity-30"
+          )}
+        />
+      ))}
+    </span>
   )
 }
 
@@ -997,6 +1011,10 @@ export function CanvasHost({
   const brushDimmed =
     untouchable || (onVectorLayer && !intoMask) || onPlacedPhoto
   const eraserDimmed = untouchable || onPlacedPhoto
+  // On a vector layer the eraser is two, as the selection pairs are: one
+  // takes the pixels under its tip, the other whole shapes.
+  const vectorErasing = onVectorLayer && !intoMask
+  const shapeEraser = vectorErasing && snapshot.vectorEraser === "object"
   const vectorDimmed = untouchable || !onVectorLayer
   // The artist's own keybinds over the defaults. While preferences are open
   // the keys are being rebound, not used.
@@ -1920,27 +1938,55 @@ export function CanvasHost({
                       <BrushIcon id={snapshot.brush.id} />
                     </RailAction>
                     <RailAction
-                      label="Eraser tool"
-                      detail={WORKS_ON.eraser}
+                      label={
+                        !vectorErasing
+                          ? "Eraser tool"
+                          : shapeEraser
+                            ? "Shape eraser tool"
+                            : "Pixel eraser tool"
+                      }
+                      detail={
+                        vectorErasing
+                          ? `${WORKS_ON.eraser}. Press again for the ${shapeEraser ? "pixel" : "shape"} eraser`
+                          : WORKS_ON.eraser
+                      }
                       command="tool.eraser"
                       variant={snapshot.tool === "eraser" ? "default" : "ghost"}
                       size="icon"
                       aria-pressed={snapshot.tool === "eraser"}
                       onClick={() => {
                         setLibraryOpen(false)
-                        if (snapshot.tool === "eraser")
-                          setEraserOpen((open) => !open)
+                        if (snapshot.tool === "eraser") {
+                          // On a vector layer a second press swaps the
+                          // eraser; its tip is chosen beside it, as ever.
+                          if (vectorErasing)
+                            void engine?.dispatch({
+                              type: "setVectorEraser",
+                              mode: shapeEraser ? "pixel" : "object",
+                            })
+                          else setEraserOpen((open) => !open)
+                        }
                         runStudioCommand("tool.eraser", commandContext)
                       }}
-                      className={cn("rounded-lg", eraserDimmed && DIMMED_TOOL)}
+                      className={cn(
+                        "relative rounded-lg",
+                        eraserDimmed && DIMMED_TOOL
+                      )}
                     >
-                      <EraserToolIcon
-                        kind={
-                          snapshot.eraser.id === "eraser:pressure"
-                            ? "pressure"
-                            : "solid"
-                        }
-                      />
+                      {shapeEraser ? (
+                        <ShapeEraserIcon />
+                      ) : (
+                        <EraserToolIcon
+                          kind={
+                            snapshot.eraser.id === "eraser:pressure"
+                              ? "pressure"
+                              : "solid"
+                          }
+                        />
+                      )}
+                      {vectorErasing && (
+                        <FamilyDots count={2} shown={shapeEraser ? 1 : 0} />
+                      )}
                     </RailAction>
                   </ToolGroup>
                   <RailDivider />

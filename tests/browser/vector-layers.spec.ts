@@ -239,9 +239,10 @@ test("the eraser takes whole objects it touches from a vector layer, as one step
     },
   ])
   const drawn = await pixels(page)
-  await page.evaluate(() =>
-    window.engine.dispatch({ type: "setTool", tool: "eraser" })
-  )
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setVectorEraser", mode: "object" })
+    await window.engine.dispatch({ type: "setTool", tool: "eraser" })
+  })
   const recorded = await steps(page)
   // A swipe across one corner of "a" alone, never reaching "b".
   await page.mouse.move(origin.x + 10, origin.y + 70)
@@ -258,6 +259,54 @@ test("the eraser takes whole objects it touches from a vector layer, as one step
   expect(at(erased, 140, 40)).toEqual([208, 64, 42, 255])
 
   await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await pixels(page)).toEqual(drawn)
+})
+
+test("the eraser takes only the pixels under its tip from a vector layer, as one step", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const id = await addVectorLayer(page)
+  const blank = await pixels(page)
+  await edit(page, id, [
+    { type: "add", object: rect("a", { x: 20, y: 20, width: 40, height: 40 }) },
+    {
+      type: "add",
+      object: rect("b", { x: 120, y: 20, width: 40, height: 40 }),
+    },
+  ])
+  const drawn = await pixels(page)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "eraser" })
+  )
+  const recorded = await steps(page)
+  // Across the middle of "a" from its left, stopping short of its right.
+  await page.mouse.move(origin.x + 4, origin.y + 40)
+  await page.mouse.down()
+  await page.mouse.move(origin.x + 36, origin.y + 40, { steps: 6 })
+  await page.mouse.up()
+  await page.waitForFunction(
+    (n) => window.engine.historyUsage().steps > n,
+    recorded
+  )
+  expect(await steps(page)).toBe(recorded + 1)
+  const erased = await pixels(page)
+  expect(at(erased, 30, 40)).toEqual(at(blank, 30, 40))
+  // What the tip never covered of "a" is still there, and "b" is whole.
+  expect(at(erased, 56, 56)).toEqual([208, 64, 42, 255])
+  expect(at(erased, 30, 22)).toEqual([208, 64, 42, 255])
+  expect(at(erased, 140, 40)).toEqual([208, 64, 42, 255])
+
+  // A shape drawn afterwards sits above the mark, not under it.
+  await edit(page, id, [
+    { type: "add", object: rect("c", { x: 24, y: 34, width: 12, height: 12 }) },
+  ])
+  expect(at(await pixels(page), 30, 40)).toEqual([208, 64, 42, 255])
+
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "undo" })
+    await window.engine.dispatch({ type: "undo" })
+  })
   expect(await pixels(page)).toEqual(drawn)
 })
 

@@ -85,7 +85,9 @@ const same = (a: VectorNode, b: VectorNode) =>
 
 type PathObject = VectorObject & { geometry: BezierPath }
 
-const isPath = (o: VectorObject): o is PathObject => o.geometry.kind === "path"
+// An eraser's mark is a path too, but not one the artist drew to edit.
+const isPath = (o: VectorObject): o is PathObject =>
+  o.geometry.kind === "path" && !o.erase
 
 /** Works out what a press of the node tool at `point` on `scene` does. */
 export function pressNode({

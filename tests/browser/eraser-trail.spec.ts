@@ -56,3 +56,26 @@ test("erasing on a vector layer is not turned away", async ({ page }) => {
   await page.waitForTimeout(300)
   await expect(page.getByText("holds shapes")).toHaveCount(0)
 })
+
+test("on a vector layer a second press of the eraser swaps pixels for shapes", async ({
+  page,
+}) => {
+  await page.goto("/")
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  await page.getByRole("button", { name: "Add vector layer" }).click()
+  const pixel = page.getByRole("button", { name: "Pixel eraser tool" })
+  const shape = page.getByRole("button", { name: "Shape eraser tool" })
+  await pixel.click()
+  await expect(pixel).toHaveAttribute("aria-pressed", "true")
+  await pixel.click()
+  await expect(shape).toHaveAttribute("aria-pressed", "true")
+  await shape.click()
+  await expect(pixel).toHaveAttribute("aria-pressed", "true")
+  // The tip is still chosen beside it, not by the second press.
+  await expect(
+    page.getByRole("dialog", { name: "Choose an eraser" })
+  ).toHaveCount(0)
+})

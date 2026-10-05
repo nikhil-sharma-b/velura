@@ -146,10 +146,12 @@ import {
 } from "./doc/structure"
 import {
   applySceneEdit,
+  MAX_POLYGON_POINTS,
   type SceneChange,
   type SceneCommand,
   type VectorObject,
   type VectorScene,
+  type VectorStyle,
 } from "./doc/vector-scene"
 import { tessellateObject, type Mesh } from "./geom/tessellate"
 import { createLiveStrokeMesh } from "./geom/live-stroke"
@@ -445,6 +447,9 @@ export type {
 } from "./doc/vector-scene"
 
 export type PaintTool = "brush" | "eraser"
+
+/** What the eraser takes on a vector layer: pixels, or objects whole. */
+export type VectorEraserMode = "pixel" | "object"
 /** Tools that draw out a selection (07) instead of making a mark. */
 const SELECTION_TOOLS = [
   "rectSelect",
@@ -703,6 +708,8 @@ export type EngineCommand =
   | { type: "rasteriseLayer"; id: string }
   /** Whether the vector brush follows the pen's pressure or keeps full width. */
   | { type: "setVectorBrushPressure"; pressure: boolean }
+  /** Whether the eraser on a vector layer takes pixels or whole objects. */
+  | { type: "setVectorEraser"; mode: VectorEraserMode }
   /** How much of a solid vector brush stroke narrows to each tip; unnamed ends are kept. */
   | { type: "setVectorBrushTaper"; start?: number; end?: number }
   /** How the shape tools draw what comes next; unnamed fields are kept. */
@@ -1012,6 +1019,11 @@ export type EngineSnapshot = Readonly<{
   /** The solid vector brush's tapers, as shares of a stroke's length. */
   vectorBrushTaper: Taper
   /**
+   * What the eraser takes on a vector layer: the pixels under its tip, as a
+   * mark kept in the scene, or every object it touches, whole.
+   */
+  vectorEraser: VectorEraserMode
+  /**
    * The selected objects' own style, which the shape options show and edit
    * in place of `shapeStyle` while there is one; null with none selected.
    */
@@ -1161,6 +1173,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   shapeStyle: DEFAULT_SHAPE_STYLE,
   vectorBrushPressure: true,
   vectorBrushTaper: { start: 0, end: 0 },
+  vectorEraser: "pixel",
   selectionStyle: null,
   vectorSelection: [],
   vectorPaths: [],
@@ -2890,7 +2903,8 @@ export function createEngine(
     const draws: VectorDraw[] = []
     const add = (
       mesh: Mesh | null,
-      paint: { color: string; opacity: number }
+      paint: { color: string; opacity: number },
+      erase = false
     ) => {
       if (!mesh?.bounds) return
       const { minX, minY, maxX, maxY } = mesh.bounds
@@ -2907,12 +2921,14 @@ export function createEngine(
         rule: mesh.rule,
         color: workingPaint(paint),
         bounds: mesh.bounds,
+        erase,
       })
     }
     for (const object of scene.objects) {
       const { fill, stroke } = meshesOf(object, detail)
-      if (object.style.fill) add(fill, object.style.fill)
-      if (object.style.stroke) add(stroke, object.style.stroke)
+      const erase = object.erase === true
+      if (object.style.fill) add(fill, object.style.fill, erase)
+      if (object.style.stroke) add(stroke, object.style.stroke, erase)
     }
     return draws
   }
@@ -2937,7 +2953,7 @@ export function createEngine(
     )
     // A scene's content box is its objects', and shrinks when they go.
     contentBounds.forget(layerId)
-    const box = unionOf(scene.objects.map(objectBounds))
+    const box = unionOf(scene.objects.filter((o) => !o.erase).map(objectBounds))
     if (box) contentBounds.grow(layerId, box)
     invalidateThumbnailsOf(layerId)
   }
@@ -3178,7 +3194,7 @@ export function createEngine(
     const local = snapTargets(
       requireDocument(),
       scene.objects
-        .filter((o) => !ids.includes(o.id))
+        .filter((o) => !o.erase && !ids.includes(o.id))
         .map(vectorObjectBounds)
         .filter((b) => b != null)
     )
@@ -3210,7 +3226,7 @@ export function createEngine(
       const box = objectsBounds(scene, transform.ids)
       if (box) {
         const others = transform.scene.objects
-          .filter((o) => !transform.ids.includes(o.id))
+          .filter((o) => !o.erase && !transform.ids.includes(o.id))
           .map((o) => vectorObjectBounds(o))
           .filter((b) => b != null)
         const base = snapTargetsBesides(transform.layerId)
@@ -3416,24 +3432,103 @@ export function createEngine(
 
   /** One frame of a shape drag: drawn into its layer, added as the pen lifts. */
   /**
-   * The eraser on a vector layer (19): the objects its tip touches drop out
-   * of the layer as it moves, and lifting it removes them as one step.
+   * The eraser on a vector layer (19). Taking objects, those its tip touches
+   * drop out of the layer as it moves, and lifting it removes them as one
+   * step. Taking pixels, its path is fitted as the vector brush's is and
+   * kept in the scene as an eraser's mark, above what it erased.
    */
   let vectorErase:
     | {
+        mode: "object"
         layerId: string
         scene: VectorScene
         eraser: ReturnType<typeof objectEraser>
         ended: boolean
       }
+    | {
+        mode: "pixel"
+        layerId: string
+        scene: VectorScene
+        id: string
+        points: PressurePoint[]
+        fit: ReturnType<typeof createPressureFit>
+        fed: number
+        style: VectorStyle
+        ended: boolean
+      }
     | undefined
+
+  /** The eraser's mark as drawn so far, or null before it has a point. */
+  function eraseMark(
+    erase: Extract<NonNullable<typeof vectorErase>, { mode: "pixel" }>
+  ): VectorObject | null {
+    if (!erase.points.length) return null
+    erase.fit.add(erase.points.slice(erase.fed))
+    erase.fed = erase.points.length
+    let geometry = erase.fit.path(erase.ended)
+    // A dab, not a drag: a path needs two nodes, so it gets a hair's length.
+    if (geometry.nodes.length < 2) {
+      const [node] = geometry.nodes
+      geometry = {
+        ...geometry,
+        nodes: [node, { ...node, x: node.x + 0.01 }],
+      }
+    }
+    return {
+      id: erase.id,
+      geometry,
+      transform: [1, 0, 0, 1, 0, 0],
+      style: erase.style,
+      erase: true,
+    }
+  }
 
   function drawVectorErase() {
     const erase = vectorErase!
     let took = false
-    samples.drain((x, y) => {
-      if (erase.eraser.moveTo({ x: toDocX(x, y), y: toDocY(x, y) })) took = true
+    samples.drain((x, y, pressure) => {
+      const at = { x: toDocX(x, y), y: toDocY(x, y) }
+      if (erase.mode === "object") {
+        if (erase.eraser.moveTo(at)) took = true
+        return
+      }
+      // Half a pixel apart is as fine as a mark needs to follow the hand.
+      const last = erase.points.at(-1)
+      if (last && Math.hypot(at.x - last.x, at.y - last.y) < 0.5) return
+      if (erase.points.length >= MAX_POLYGON_POINTS) return
+      erase.points.push({
+        ...at,
+        // The pressure eraser's tip, as on paint: a tenth of it at a touch.
+        pressure:
+          eraser.id === "eraser:pressure"
+            ? 0.1 + 0.9 * Math.max(0, Math.min(1, pressure))
+            : 1,
+      })
+      took = true
     })
+    if (erase.mode === "pixel") {
+      const mark = eraseMark(erase)
+      if (erase.ended) {
+        vectorErase = undefined
+        forgetGestureInput()
+        if (mark)
+          editScene(
+            erase.layerId,
+            [{ type: "add", object: mark }],
+            "erase pixels"
+          )
+        if (snapshot.status === "ready") render()
+        return
+      }
+      if (took && mark) {
+        drawScene(erase.layerId, {
+          objects: [...erase.scene.objects, mark],
+        })
+        if (snapshot.status === "ready") render()
+      }
+      frame = requestAnimationFrame(drawFrame)
+      return
+    }
     const { hit } = erase.eraser
     if (erase.ended) {
       vectorErase = undefined
@@ -5019,8 +5114,9 @@ export function createEngine(
     // An image or vector layer refuses it too, unless the stroke is going to
     // its mask: its pixels are drawn from a picture or from shapes.
     const layer = activeLayer(doc)
-    // The eraser on a vector layer takes whole objects rather than pixels,
-    // which it has none of; on its mask it erases the mask as anywhere else.
+    // The eraser on a vector layer erases its shapes, not pixels it has none
+    // of: by a mark kept with them, or whole; on its mask it erases the mask
+    // as anywhere else.
     if (
       tool === "eraser" &&
       layer.kind === "vector" &&
@@ -5028,12 +5124,37 @@ export function createEngine(
       !(doc.paintingMask && layer.mask)
     ) {
       cancelVectorTransform()
-      vectorErase = {
-        layerId: layer.id,
-        scene: layer.scene,
-        eraser: objectEraser(layer.scene, eraser.shape.radius),
-        ended: false,
-      }
+      const radius = eraser.shape.radius
+      vectorErase =
+        snapshot.vectorEraser === "object"
+          ? {
+              mode: "object",
+              layerId: layer.id,
+              scene: layer.scene,
+              eraser: objectEraser(layer.scene, radius),
+              ended: false,
+            }
+          : {
+              mode: "pixel",
+              layerId: layer.id,
+              scene: layer.scene,
+              id: nextObjectId(layer.scene),
+              points: [],
+              fit: createPressureFit(radius * 2),
+              fed: 0,
+              style: {
+                fill: null,
+                stroke: {
+                  // Never seen: the mark's alpha is all it uses.
+                  color: "#000000",
+                  opacity: eraser.rendering.opacity,
+                  width: radius * 2,
+                  cap: "round",
+                  join: "round",
+                },
+              },
+              ended: false,
+            }
       samples.push(screenX, screenY, pressure, tiltX, tiltY, time)
       scheduleFrame()
       return
@@ -6054,7 +6175,7 @@ export function createEngine(
           const layer = selectedVectorLayer()
           setVectorSelection(
             layer.scene.objects
-              .filter((o) => command.ids.includes(o.id))
+              .filter((o) => !o.erase && command.ids.includes(o.id))
               .map((o) => o.id)
           )
           break
@@ -6242,6 +6363,12 @@ export function createEngine(
         }
         case "setVectorBrushPressure":
           publish({ vectorBrushPressure: command.pressure === true })
+          break
+        case "setVectorEraser":
+          if (command.mode !== "pixel" && command.mode !== "object")
+            throw new Error("A vector eraser takes pixels or objects.")
+          cancelStroke()
+          publish({ vectorEraser: command.mode })
           break
         case "placeImage": {
           const document = requireDocument()

@@ -135,6 +135,19 @@ describe("zooming", () => {
     expect(MAX_ZOOM).toBeGreaterThan(1)
   })
 
+  test("without an anchor, holds what is at the viewport's centre, panned or turned", () => {
+    const start = rotateView(panView(DEFAULT_VIEW, 60, -25), 0.7)
+    const centre = applyMatrix(screenToDoc(start, DOC, VIEWPORT), 100, 50)
+    for (const factor of [2, 0.5]) {
+      const view = zoomView(start, factor)
+      closePoint(
+        applyMatrix(screenToDoc(view, DOC, VIEWPORT), 100, 50),
+        [centre.x, centre.y],
+        1e-4
+      )
+    }
+  })
+
   test("refuses a factor that is not a positive number", () => {
     expect(() => zoomView(DEFAULT_VIEW, 0)).toThrow()
     expect(() => zoomView(DEFAULT_VIEW, -2)).toThrow()

@@ -67,6 +67,12 @@ export type VectorObject = Readonly<{
   geometry: VectorGeometry
   transform: Affine
   style: VectorStyle
+  /**
+   * An eraser's mark rather than a shape: its paint takes coverage away from
+   * the objects under it in the stack, and those above are untouched. Its
+   * colour is never seen; its opacity is how much it takes.
+   */
+  erase?: true
 }>
 
 export type VectorScene = Readonly<{ objects: readonly VectorObject[] }>
@@ -203,6 +209,8 @@ export function checkObject(object: VectorObject): void {
   checkGeometry(object.geometry)
   checkTransform(object.transform)
   checkStyle(object.style)
+  if (object.erase !== undefined && object.erase !== true)
+    throw new Error("An eraser's mark is marked true or not at all.")
 }
 
 /**
@@ -238,8 +246,10 @@ export function parseScene(value: unknown): VectorScene {
       if (seen.has(object.id))
         throw new Error(`The object ${object.id} appears twice.`)
       seen.add(object.id)
-      const { id, geometry, transform, style } = object
-      return { id, geometry, transform, style }
+      const { id, geometry, transform, style, erase } = object
+      return erase
+        ? { id, geometry, transform, style, erase }
+        : { id, geometry, transform, style }
     }),
   }
 }
