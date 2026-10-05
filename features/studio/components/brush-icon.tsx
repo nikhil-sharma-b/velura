@@ -6,6 +6,7 @@ import {
   SprayBottleIcon,
   MarkerCircleIcon,
   EraserIcon,
+  SquareIcon,
   WaveformIcon,
 } from "@phosphor-icons/react"
 
@@ -52,6 +53,20 @@ export function EraserToolIcon({
         aria-hidden="true"
         className="absolute -right-1 -bottom-1 size-2.5 rounded-full bg-primary p-px text-primary-foreground"
         weight="bold"
+      />
+    </span>
+  )
+}
+
+/** The eraser that takes whole shapes, badged with one. */
+export function ShapeEraserIcon({ className }: { className?: string }) {
+  return (
+    <span className="relative inline-flex size-5 items-center justify-center">
+      <EraserIcon className={className} weight="regular" />
+      <SquareIcon
+        aria-hidden="true"
+        className="absolute -right-1 -bottom-1 size-2.5 rounded-full bg-primary p-px text-primary-foreground"
+        weight="fill"
       />
     </span>
   )

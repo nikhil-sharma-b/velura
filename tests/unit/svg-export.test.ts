@@ -194,3 +194,61 @@ test("SVG preserves cubic handles and closing segments, but does not fill open p
   expect(svg).toContain('d="M10 20 C15 0 35 0 40 20 C45 30 5 30 10 20 Z"')
   expect(svg).toContain('fill-opacity="0.5" fill-rule="evenodd"')
 })
+
+test("an eraser's mark masks what is under it and leaves what is above", () => {
+  const doc = createBlankDocument({ width: 40, height: 20 })
+  const id = addVectorLayer(doc)
+  const node = findNode(doc, id)
+  if (node.kind !== "vector") throw new Error("Expected vector")
+  const fill = { color: "#ff0000", opacity: 1, rule: "nonzero" } as const
+  node.scene = {
+    objects: [
+      {
+        id: "under",
+        geometry: { kind: "rect", x: 0, y: 0, width: 10, height: 10 },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: { fill, stroke: null },
+      },
+      {
+        id: "mark",
+        geometry: {
+          kind: "polygon",
+          points: [
+            { x: 0, y: 5 },
+            { x: 10, y: 5 },
+          ],
+          closed: false,
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: {
+          fill: null,
+          stroke: {
+            color: "#123456",
+            opacity: 1,
+            width: 4,
+            cap: "round",
+            join: "round",
+          },
+        },
+        erase: true,
+      },
+      {
+        id: "over",
+        geometry: { kind: "rect", x: 20, y: 0, width: 10, height: 10 },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: { fill, stroke: null },
+      },
+    ],
+  }
+  const { svg } = serializeSvg(doc, { raster: "omit" })
+  const mask =
+    /<mask id="([^"]+)"[^>]*><rect[^>]*fill="#ffffff"\/>(.*?)<\/mask>/.exec(svg)
+  expect(mask).not.toBeNull()
+  expect(mask![2]).toContain('stroke="#000000"')
+  expect(mask![2]).not.toContain("#123456")
+  expect(svg).toMatch(
+    new RegExp(
+      `<g mask="url\\(#${mask![1]}\\)"><rect x="0"[^>]*/></g><rect x="20"`
+    )
+  )
+})

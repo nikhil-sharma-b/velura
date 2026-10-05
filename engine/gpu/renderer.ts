@@ -141,6 +141,11 @@ export type VectorDraw = {
   rule: "nonzero" | "evenodd" | "union"
   color: readonly [number, number, number, number]
   bounds: Bounds
+  /**
+   * An eraser's mark: its coverage, times its alpha, is taken from what is
+   * drawn under it rather than painted over it.
+   */
+  erase?: boolean
 }
 
 /**
@@ -969,6 +974,8 @@ export function createRenderer(
         /** Cover by any count (nonzero, union), or by an odd one (evenodd). */
         cover: GPURenderPipeline
         coverOdd: GPURenderPipeline
+        erase: GPURenderPipeline
+        eraseOdd: GPURenderPipeline
         uniform: GPUBuffer
         bindGroup: GPUBindGroup
         color: GPUTextureView
@@ -1027,7 +1034,7 @@ export function createRenderer(
         },
         multisample,
       })
-    const coverPipeline = (label: string, readMask: number) =>
+    const coverPipeline = (label: string, readMask: number, erase = false) =>
       device.createRenderPipeline({
         label: `vector-cover:${label}`,
         layout: pipelineLayout,
@@ -1051,10 +1058,29 @@ export function createRenderer(
             {
               format: LAYER_FORMAT,
               // Premultiplied "over": each object lands on those below it.
-              blend: {
-                color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-                alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-              },
+              // An eraser's mark is "destination out": those below lose what
+              // it covers, and nothing of its own colour lands.
+              blend: erase
+                ? {
+                    color: {
+                      srcFactor: "zero",
+                      dstFactor: "one-minus-src-alpha",
+                    },
+                    alpha: {
+                      srcFactor: "zero",
+                      dstFactor: "one-minus-src-alpha",
+                    },
+                  }
+                : {
+                    color: {
+                      srcFactor: "one",
+                      dstFactor: "one-minus-src-alpha",
+                    },
+                    alpha: {
+                      srcFactor: "one",
+                      dstFactor: "one-minus-src-alpha",
+                    },
+                  },
             },
           ],
         },
@@ -1116,6 +1142,8 @@ export function createRenderer(
       },
       cover: coverPipeline("any", 0xff),
       coverOdd: coverPipeline("odd", 1),
+      erase: coverPipeline("erase-any", 0xff, true),
+      eraseOdd: coverPipeline("erase-odd", 1, true),
       uniform,
       bindGroup: device.createBindGroup({
         layout,
@@ -1271,7 +1299,13 @@ export function createRenderer(
           pass.setVertexBuffer(0, buffers.triangles)
           pass.draw(draw.vertices.length / 2, 1, buffers.firsts[index])
           pass.setPipeline(
-            draw.rule === "evenodd" ? targets.coverOdd : targets.cover
+            draw.erase
+              ? draw.rule === "evenodd"
+                ? targets.eraseOdd
+                : targets.erase
+              : draw.rule === "evenodd"
+                ? targets.coverOdd
+                : targets.cover
           )
           pass.setStencilReference(0)
           pass.setVertexBuffer(0, buffers.quads)

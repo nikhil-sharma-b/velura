@@ -93,6 +93,37 @@ function shape(object: VectorObject): string {
   }
 }
 
+/**
+ * A scene's objects bottom first. An eraser's mark takes from everything
+ * drawn before it, so what is below one goes under a mask it cuts black.
+ */
+function sceneContent(
+  objects: readonly VectorObject[],
+  width: number,
+  height: number,
+  defs: string[],
+  nextId: () => string
+): string {
+  let content = ""
+  for (const object of objects) {
+    if (!object.erase) {
+      content += shape(object)
+      continue
+    }
+    const stroke = object.style.stroke && {
+      ...object.style.stroke,
+      color: "#000000",
+    }
+    const fill = object.style.fill && { ...object.style.fill, color: "#000000" }
+    const id = nextId()
+    defs.push(
+      `<mask id="${id}" maskUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}"><rect width="${width}" height="${height}" fill="#ffffff"/>${shape({ ...object, style: { fill, stroke } })}</mask>`
+    )
+    content = `<g mask="url(#${id})">${content}</g>`
+  }
+  return content
+}
+
 /** Serializes the authored tree, never the display's flattened vector cache. */
 export function serializeSvg(
   doc: PaintDocument,
@@ -104,6 +135,7 @@ export function serializeSvg(
   ]
   const defs: string[] = []
   let sequence = 0
+  let erasures = 0
   const image = (url: string) =>
     `<image width="${doc.width}" height="${doc.height}" href="${escape(url)}"/>`
   function level(nodes: readonly LayerNode[]): string {
@@ -123,7 +155,13 @@ export function serializeSvg(
           node.kind === "group"
             ? level(node.children)
             : node.kind === "vector"
-              ? node.scene.objects.map(shape).join("")
+              ? sceneContent(
+                  node.scene.objects,
+                  doc.width,
+                  doc.height,
+                  defs,
+                  () => `${id}-erase-${++erasures}`
+                )
               : ""
         if (node.kind === "raster") {
           if (options.raster === "omit")
