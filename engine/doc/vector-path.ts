@@ -38,8 +38,12 @@ export type PressurePoint = Point & { pressure: number }
 
 /** Turns sharper than this (cos 60°) are kept as corners when fitting. */
 const CORNER_COS = 0.5
-/** How far, in document pixels, a fitted stroke may stray from the hand. */
-const FIT_TOLERANCE = 1.5
+/**
+ * How far, in document pixels, a fitted stroke may stray from the hand when
+ * no tolerance is given. A stroke drawn on screen should pass its own, sized
+ * to the zoom (see `createPressureFit`).
+ */
+export const FIT_TOLERANCE = 1.5
 /** How far a fitted width may stray: a tenth of the brush, at least half a pixel. */
 const widthTolerance = (width: number) => Math.max(0.5, width / 10)
 
@@ -62,21 +66,20 @@ export const MAX_TAPER = 0.5
 export function fitPressureStroke(
   samples: readonly PressurePoint[],
   width: number,
-  taper?: Taper
+  taper?: Taper,
+  tolerance = FIT_TOLERANCE
 ): BezierPath {
   if (!samples.length)
     throw new Error("A pressure stroke needs samples and a positive width.")
-  const fit = createPressureFit(width, taper)
+  const fit = createPressureFit(width, taper, tolerance)
   fit.add(samples)
   return fit.path(true)
 }
 
-/** Curves this far behind the pen, along the stroke, are left as they are. */
-const FREEZE_LAG = 48
 /** No curve is left alone before the stroke is this long: its start may yet hook. */
 const FREEZE_AFTER = 64
-/** The last curves before the pen are always refitted, frozen or not. */
-const KEEP_LIVE = 2
+/** Samples in each straight run a stroke is drawn as while the pen is down. */
+const RAW_RUN = 32
 
 /**
  * One fitted curve of a stroke being drawn, as the nodes that draw it: its
@@ -104,8 +107,19 @@ type FittedSegment = {
  * lifts: what was shown is what is kept. Settling and tapering only set
  * widths, never positions, and a taper splits curves exactly where it
  * needs more nodes, so it reshapes nothing either.
+ *
+ * `tolerance` is how far, in document pixels, the curves may stray from the
+ * samples. Inkscape's pencil sets it in screen pixels (divided by the zoom),
+ * so the hand's jitter — a constant size on screen — is smoothed away at
+ * any zoom rather than traced faithfully when zoomed out.
  */
-export function createPressureFit(width: number, taper?: Taper) {
+export function createPressureFit(
+  width: number,
+  taper?: Taper,
+  tolerance = FIT_TOLERANCE
+) {
+  if (!Number.isFinite(tolerance) || tolerance <= 0)
+    throw new Error("A pressure fit needs a positive tolerance.")
   if (!Number.isFinite(width) || width <= 0)
     throw new Error("A pressure stroke needs samples and a positive width.")
   const points: Sample[] = []
@@ -142,7 +156,7 @@ export function createPressureFit(width: number, taper?: Taper) {
   function fitTail() {
     const from = frozen.at(-1)?.to ?? 0
     const raw = points.slice(from)
-    const hooks = trimHooks(raw, cornersOf(raw), from === 0)
+    const hooks = trimHooks(raw, cornersOf(raw, tolerance), from === 0)
     // Fitted to the widths once settled, so the pen's landing and lifting
     // do not split the ends into curves of their own.
     const settled = widthsOver(
@@ -157,7 +171,14 @@ export function createPressureFit(width: number, taper?: Taper) {
       const first = corners[c],
         last = corners[c + 1]
       const leaving = c === 0 && from > 0 && tangent ? tangent : undefined
-      for (const segment of fitStroke(tail, first, last, width, leaving))
+      for (const segment of fitStroke(
+        tail,
+        first,
+        last,
+        width,
+        tolerance,
+        leaving
+      ))
         segments.push({
           from: segments.at(-1)?.to ?? from + first,
           to: from + segment.last,
@@ -191,6 +212,37 @@ export function createPressureFit(width: number, taper?: Taper) {
   }
 
   /**
+   * Samples `start` to `end` as straight runs of `RAW_RUN` samples each.
+   * A run is frozen once the pen has passed it, so its mesh is kept while
+   * its points and widths stay as they are.
+   */
+  function rawPieces(
+    start: number,
+    end: number,
+    widths: readonly number[]
+  ): PressurePiece[] {
+    const runs: PressurePiece[] = []
+    for (let from = start; from < end || !runs.length; from += RAW_RUN) {
+      const to = Math.min(end, from + RAW_RUN)
+      const nodes = points.slice(from, to + 1).map((p, i): PathNode => ({
+        x: p.x,
+        y: p.y,
+        width: widths[from + i],
+        in: null,
+        out: null,
+        type: "cusp",
+      }))
+      if (nodes.length === 1) nodes.push({ ...nodes[0] })
+      runs.push({
+        nodes,
+        frozen: to < end,
+        key: `${nodes[0].x},${nodes[0].y}|${nodes.map((n) => n.width).join(",")}`,
+      })
+    }
+    return runs
+  }
+
+  /**
    * The stroke as it stands; `ended` when the pen has lifted, after which
    * nothing more is frozen.
    */
@@ -212,11 +264,9 @@ export function createPressureFit(width: number, taper?: Taper) {
     let { start, end } = tail
     if (!ended && along[end] - along[start] >= FREEZE_AFTER) {
       let count = 0
-      while (
-        count < segments.length - KEEP_LIVE &&
-        along[end] - along[segments[count].to] >= FREEZE_LAG
-      )
-        count++
+      // Every curve but the one reaching the pen is final once the fit has
+      // split it off, as Inkscape's pencil commits each curve it outgrows.
+      while (count < segments.length - 1) count++
       if (count) {
         // The first freeze settles the start: a hook trimmed off it is gone.
         if (!frozen.length && start > 0) {
@@ -240,24 +290,29 @@ export function createPressureFit(width: number, taper?: Taper) {
     }
     if (frozen.length) start = 0
     const widths = widthsOver(start, end)
-    const all = [...frozen, ...segments]
-    pieces = all.map((segment, index) => {
-      const nodes = splitForTaper(
-        points,
-        along,
-        widths,
-        segment,
-        index === 0 ? start : segment.from,
-        start,
-        end,
-        taper
-      )
-      return {
-        nodes,
-        frozen: index < frozen.length,
-        key: nodes.map((n) => n.width).join(","),
-      }
-    })
+    // While the pen is down the stroke is drawn as the samples themselves,
+    // each placed once and never moved, as tldraw and Excalidraw draw
+    // (perfect-freehand). Refitted curves would shift under the pen; the
+    // curves frozen so far only keep the fit at the lift short.
+    if (!ended) pieces = rawPieces(start, end, widths)
+    else
+      pieces = [...frozen, ...segments].map((segment, index) => {
+        const nodes = splitForTaper(
+          points,
+          along,
+          widths,
+          segment,
+          index === 0 ? start : segment.from,
+          start,
+          end,
+          taper
+        )
+        return {
+          nodes,
+          frozen: true,
+          key: nodes.map((n) => n.width).join(","),
+        }
+      })
     const nodes: PathNode[] = []
     for (const piece of pieces) {
       if (nodes.length) {
@@ -436,13 +491,13 @@ function trimHooks(
  * Where the stroke turns sharply: the ends, and the corners of its outline
  * simplified to the fit tolerance that turn by more than 60°.
  */
-function cornersOf(points: readonly Sample[]): number[] {
+function cornersOf(points: readonly Sample[], tolerance: number): number[] {
   const keep = new Set([0, points.length - 1])
   // An explicit stack avoids recursion limits on long tablet gestures.
   const pending = [[0, points.length - 1]]
   while (pending.length) {
     const [first, last] = pending.pop()!
-    let largest = FIT_TOLERANCE,
+    let largest = tolerance,
       split = -1
     for (let i = first + 1; i < last; i++) {
       const error = chordDistance(points[i], points[first], points[last])
@@ -528,6 +583,7 @@ function fitStroke(
   first: number,
   last: number,
   width: number,
+  tolerance: number,
   leaving?: Point
 ): Segment[] {
   const segments: Segment[] = []
@@ -575,7 +631,7 @@ function fitStroke(
         const p = samples[i],
           on = cubicAt(a, b, c, d, u[i])
         const error = Math.max(
-          Math.hypot(p.x - on.x, p.y - on.y) / FIT_TOLERANCE,
+          Math.hypot(p.x - on.x, p.y - on.y) / tolerance,
           Math.abs(p.width - (a.width + (d.width - a.width) * u[i])) /
             widthAllowed
         )

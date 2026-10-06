@@ -557,6 +557,16 @@ const MAX_VECTOR_DETAIL = 256
 
 /** How near a guide, in CSS pixels, a stroke opens to be held to it (17). */
 const GUIDE_STROKE_REACH = 8
+/** How far, in CSS pixels on screen, a freehand stroke's fit may stray from the hand. */
+const FIT_SCREEN_TOLERANCE = 2
+/**
+ * The vector brush's stroke while the pen is down: a thin line along the
+ * samples, as Inkscape's pencil sketches, the stroke itself put down as the
+ * pen lifts — so it appears once, as fitted, rather than shifting into place.
+ */
+const SKETCH_COLOR = "#2f7cf6"
+/** How wide, in CSS pixels on screen, the sketch line is. */
+const SKETCH_WIDTH = 1.5
 
 export type EngineCommand =
   | { type: "initialize" }
@@ -2051,6 +2061,19 @@ export function createEngine(
   }
 
   /**
+   * How far, in document pixels, a freehand fit may stray from the hand: a
+   * fixed distance on screen, as Inkscape's pencil sizes it, so jitter is
+   * smoothed the same at every zoom.
+   */
+  function fitTolerance(): number {
+    return (
+      FIT_SCREEN_TOLERANCE *
+      viewport.devicePixelRatio *
+      Math.hypot(toDoc[0], toDoc[1])
+    )
+  }
+
+  /**
    * How near a guide, in document pixels, a stroke has to open to be caught
    * by it: a fixed reach on screen, whatever the zoom.
    */
@@ -3334,7 +3357,8 @@ export function createEngine(
     drag.pressureFit ??= {
       fit: createPressureFit(
         snapshot.shapeStyle.strokeWidth,
-        snapshot.vectorBrushPressure ? undefined : snapshot.vectorBrushTaper
+        snapshot.vectorBrushPressure ? undefined : snapshot.vectorBrushTaper,
+        fitTolerance()
       ),
       fed: 0,
       mesh: createLiveStrokeMesh(),
@@ -3343,6 +3367,11 @@ export function createEngine(
     live.fit.add(drag.pressurePoints!.slice(live.fed))
     live.fed = drag.pressurePoints!.length
     return live.fit.path(drag.ended)
+  }
+
+  /** Whether the drag is a vector brush stroke still being drawn. */
+  function sketching(drag: NonNullable<typeof shapeDrag>): boolean {
+    return drag.tool === "pressure" && !drag.ended
   }
 
   /**
@@ -3405,28 +3434,42 @@ export function createEngine(
                     }
                   : { kind: "rect", ...box },
       transform: [1, 0, 0, 1, 0, 0],
-      style: {
-        fill:
-          style.fill && !drawsOutlineOnly(drag.tool)
-            ? {
-                ...paint,
-                color: style.fillColor ?? paint.color,
-                rule: "nonzero",
-              }
-            : null,
-        stroke:
-          style.stroke ||
-          drawsOutlineOnly(drag.tool) ||
-          (drag.tool === "pen" && !drag.closed)
-            ? {
-                ...paint,
-                color: style.strokeColor ?? paint.color,
-                width: style.strokeWidth,
-                cap: style.strokeCap,
-                join: style.strokeJoin,
-              }
-            : null,
-      },
+      style: sketching(drag)
+        ? {
+            fill: null,
+            stroke: {
+              color: SKETCH_COLOR,
+              opacity: 1,
+              width:
+                SKETCH_WIDTH *
+                viewport.devicePixelRatio *
+                Math.hypot(toDoc[0], toDoc[1]),
+              cap: "round",
+              join: "round",
+            },
+          }
+        : {
+            fill:
+              style.fill && !drawsOutlineOnly(drag.tool)
+                ? {
+                    ...paint,
+                    color: style.fillColor ?? paint.color,
+                    rule: "nonzero",
+                  }
+                : null,
+            stroke:
+              style.stroke ||
+              drawsOutlineOnly(drag.tool) ||
+              (drag.tool === "pen" && !drag.closed)
+                ? {
+                    ...paint,
+                    color: style.strokeColor ?? paint.color,
+                    width: style.strokeWidth,
+                    cap: style.strokeCap,
+                    join: style.strokeJoin,
+                  }
+                : null,
+          },
     }
   }
 
@@ -3700,7 +3743,7 @@ export function createEngine(
         for (const detail of new Set([1, screenDetail]))
           levels.set(detail, {
             fill: null,
-            stroke: live.mesh.mesh(pieces, stroke, detail),
+            stroke: live.mesh.mesh(pieces, stroke, detail, sketching(drag)),
           })
         meshes.set(shape, levels)
       }
@@ -5140,7 +5183,7 @@ export function createEngine(
               scene: layer.scene,
               id: nextObjectId(layer.scene),
               points: [],
-              fit: createPressureFit(radius * 2),
+              fit: createPressureFit(radius * 2, undefined, fitTolerance()),
               fed: 0,
               style: {
                 fill: null,
