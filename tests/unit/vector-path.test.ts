@@ -405,27 +405,31 @@ describe("a pressure stroke fitted as it is drawn", () => {
     return { frames, lifted: fit.path(true) }
   }
 
-  test("lifting the pen keeps the stroke as it was last drawn", () => {
+  test("lifting the pen fits the stroke within the tolerance of what was drawn", () => {
     for (const taper of [undefined, { start: 0.2, end: 0.3 }]) {
       const { frames, lifted } = draw(400, 4, taper)
-      expect(lifted).toEqual(frames.at(-1)!)
+      expect(lifted.nodes.length).toBeLessThan(frames.at(-1)!.nodes.length / 4)
+      const drawn = frames.at(-1)!.nodes
+      for (const node of lifted.nodes) {
+        const near = Math.min(
+          ...drawn.map((n) => Math.hypot(n.x - node.x, n.y - node.y))
+        )
+        expect(near).toBeLessThan(2)
+      }
     }
   })
 
-  test("curves well behind the pen keep their shape as it moves on", () => {
-    const { frames } = draw(400, 4)
-    const early = frames[60].nodes,
-      late = frames.at(-1)!.nodes
-    // The early frame's curves, all but those near its pen, are unchanged.
-    const settled = early.filter((n) => n.x < early.at(-1)!.x - 60)
-    expect(settled.length).toBeGreaterThan(1)
-    settled.forEach((node, i) => {
-      const same = late.find((m) => m.x === node.x && m.y === node.y)
-      expect(same).toBeDefined()
-      expect(same!.in).toEqual(node.in)
-      // The last one's way out is the next curve's, which is still live.
-      if (i < settled.length - 1) expect(same!.out).toEqual(node.out)
-    })
+  test("the stroke drawn so far never moves while the pen is down", () => {
+    const { frames } = draw(400, 1)
+    // From the second sample on: the first is a dot, its node doubled.
+    for (let f = 2; f < frames.length; f++) {
+      const before = frames[f - 1].nodes,
+        after = frames[f].nodes
+      before.forEach((n, i) => {
+        expect(after[i].x).toBe(n.x)
+        expect(after[i].y).toBe(n.y)
+      })
+    }
   })
 })
 

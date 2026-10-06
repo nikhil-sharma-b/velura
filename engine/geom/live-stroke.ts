@@ -19,7 +19,8 @@ export function createLiveStrokeMesh() {
     stroke: Pick<VectorStroke, "width" | "cap" | "join">,
     detail: number,
     ends: { start: boolean; end: boolean },
-    around: { before?: number; after?: number }
+    around: { before?: number; after?: number },
+    uniform: boolean
   ) => {
     const flat = flattenPath(
       { kind: "path", nodes: piece.nodes, closed: false },
@@ -30,7 +31,7 @@ export function createLiveStrokeMesh() {
       flat.points,
       false,
       stroke,
-      flat.widths,
+      uniform ? null : flat.widths,
       flat.corners,
       detail,
       ends
@@ -38,11 +39,15 @@ export function createLiveStrokeMesh() {
   }
 
   return {
-    /** The stroke's outline at `detail`, from the pieces its fit last made. */
+    /**
+     * The stroke's outline at `detail`, from the pieces its fit last made;
+     * `uniform` draws it at the stroke's own width, its nodes' ignored.
+     */
     mesh(
       pieces: readonly PressurePiece[],
       stroke: Pick<VectorStroke, "width" | "cap" | "join">,
-      detail: number
+      detail: number,
+      uniform = false
     ): Mesh {
       let level = kept.get(detail)
       if (!level) kept.set(detail, (level = new Map()))
@@ -53,11 +58,12 @@ export function createLiveStrokeMesh() {
           before: pieces[i - 1]?.nodes.at(-2)?.width,
           after: pieces[i + 1]?.nodes[1]?.width,
         }
-        if (!piece.frozen) return build(piece, stroke, detail, ends, around)
-        const key = `${piece.key}|${around.before}|${around.after}|${ends.start}|${stroke.width}|${stroke.cap}|${stroke.join}`
+        if (!piece.frozen)
+          return build(piece, stroke, detail, ends, around, uniform)
+        const key = `${piece.key}|${around.before}|${around.after}|${ends.start}|${stroke.width}|${stroke.cap}|${stroke.join}|${uniform}`
         const found = level.get(i)
         if (found?.key === key) return found.mesh
-        const mesh = build(piece, stroke, detail, ends, around)
+        const mesh = build(piece, stroke, detail, ends, around, uniform)
         level.set(i, { key, mesh })
         return mesh
       })
