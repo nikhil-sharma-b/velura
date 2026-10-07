@@ -231,6 +231,12 @@ export default defineSchema({
   // than to a document, so they follow them between machines (v2 04). The
   // keybinds are the sparse overrides of `features/commands/lib/overrides.ts`,
   // by command id; a command not listed keeps whatever its default is now.
+  vectorBrushes: defineTable({
+    ownerId: v.id("users"),
+    definition: v.any(),
+    updatedAt: v.number(),
+  }).index("by_owner", ["ownerId"]),
+
   preferences: defineTable({
     ownerId: v.id("users"),
     keybinds: v.record(v.string(), v.array(v.string())),

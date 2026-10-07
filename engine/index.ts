@@ -1,4 +1,10 @@
 import {
+  BUILTIN_VECTOR_BRUSHES,
+  parseVectorBrush,
+  type VectorBrush,
+} from "./brush/vector-brush"
+import { applyVectorBrush } from "./doc/vector-brush"
+import {
   selectTipFrame,
   validateTipSelection,
   type TipSelectionMode,
@@ -385,6 +391,12 @@ export type {
   BrushShape,
   BrushRendering,
 } from "./brush/brush"
+export {
+  BUILTIN_VECTOR_BRUSHES,
+  parseVectorBrush,
+  type VectorBrush,
+  type VectorBrushKind,
+} from "./brush/vector-brush"
 export type { BrushScatter, ScatterAxes } from "./brush/scatter"
 export {
   BUILTIN_BRUSHES,
@@ -737,6 +749,8 @@ export type EngineCommand =
    */
   | { type: "rasteriseLayer"; id: string }
   /** Whether the vector brush follows the pen's pressure or keeps full width. */
+  | { type: "setVectorBrush"; brush: VectorBrush }
+  | { type: "applyVectorBrush"; brush: VectorBrush }
   | { type: "setVectorBrushPressure"; pressure: boolean }
   /** Whether the eraser on a vector layer takes pixels or whole objects. */
   | { type: "setVectorEraser"; mode: VectorEraserMode }
@@ -1044,6 +1058,8 @@ export type EngineSnapshot = Readonly<{
   tool: Tool
   /** What the shape tools give a new shape (19). */
   shapeStyle: ShapeStyle
+  /** The vector brush currently in the hand. */
+  vectorBrush: VectorBrush
   /** Whether the vector brush's width follows pressure; off, it is solid. */
   vectorBrushPressure: boolean
   /** The solid vector brush's tapers, as shares of a stroke's length. */
@@ -1201,6 +1217,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   straightEdge: null,
   tool: "brush",
   shapeStyle: DEFAULT_SHAPE_STYLE,
+  vectorBrush: BUILTIN_VECTOR_BRUSHES[1],
   vectorBrushPressure: true,
   vectorBrushTaper: { start: 0, end: 0 },
   vectorEraser: "pixel",
@@ -2820,6 +2837,8 @@ export function createEngine(
         closed?: boolean
         /** When the polygon's last corner was clicked, to tell a double-click. */
         clickedAt?: number
+        vectorBrush?: VectorBrush
+        brushSeed?: number
         pressurePoints?: PressurePoint[]
         pressureTail?: {
           x: number
@@ -3411,7 +3430,7 @@ export function createEngine(
     drag.pressureFit ??= {
       fit: createPressureFit(
         snapshot.shapeStyle.strokeWidth,
-        snapshot.vectorBrushPressure ? undefined : snapshot.vectorBrushTaper,
+        undefined,
         fitTolerance()
       ),
       fed: 0,
@@ -3487,6 +3506,14 @@ export function createEngine(
                       closed: true,
                     }
                   : { kind: "rect", ...box },
+      ...(drag.tool === "pressure"
+        ? {
+            brush: {
+              definition: drag.vectorBrush ?? snapshot.vectorBrush,
+              seed: drag.brushSeed ?? 0,
+            },
+          }
+        : {}),
       transform: [1, 0, 0, 1, 0, 0],
       style: sketching(drag)
         ? {
@@ -3671,7 +3698,7 @@ export function createEngine(
         drag.pressurePoints!.push({
           x,
           y,
-          pressure: snapshot.vectorBrushPressure ? pressure : 1,
+          pressure,
         })
     }
     samples.drain((x, y, pressure, tiltX, tiltY, time) => {
@@ -3758,7 +3785,7 @@ export function createEngine(
         drag.pressurePoints!.push({
           x: tail.x,
           y: tail.y,
-          pressure: snapshot.vectorBrushPressure ? tail.pressure : 1,
+          pressure: tail.pressure,
         })
     }
     const document = requireDocument()
@@ -3786,7 +3813,7 @@ export function createEngine(
     // A stroke being drawn is meshed piece by piece, its finished curves
     // kept from frame to frame, rather than whole as any other object is.
     const live = drag.pressureFit
-    if (live && shape?.style.stroke) {
+    if (live && shape?.style.stroke && !drag.ended) {
       const pieces = live.fit.pieces()
       if (pieces.length) {
         const stroke = shape.style.stroke
@@ -5195,6 +5222,8 @@ export function createEngine(
           anchor,
           point: anchor,
           ended: false,
+          vectorBrush: parseVectorBrush(snapshot.vectorBrush),
+          brushSeed: crypto.getRandomValues(new Uint32Array(1))[0],
           pressurePoints: points,
           pressureResampler: path,
           pressureTail: { ...anchor, pressure, tiltX, tiltY, time },
@@ -6513,6 +6542,28 @@ export function createEngine(
           })
           break
         }
+        case "setVectorBrush": {
+          const brush = parseVectorBrush(command.brush)
+          publish({
+            vectorBrush: brush,
+            vectorBrushPressure: brush.params.pressure,
+            vectorBrushTaper: brush.params.taper,
+          })
+          break
+        }
+        case "applyVectorBrush": {
+          const layer = selectedVectorLayer()
+          editScene(
+            layer.id,
+            applyVectorBrush(
+              layer.scene,
+              snapshot.vectorSelection,
+              command.brush
+            ),
+            "apply brush"
+          )
+          break
+        }
         case "setVectorBrushTaper": {
           const share = (t: number | undefined, was: number) => {
             if (t === undefined) return was
@@ -6521,7 +6572,15 @@ export function createEngine(
             return t
           }
           const was = snapshot.vectorBrushTaper
+          const taper = {
+            start: share(command.start, was.start),
+            end: share(command.end, was.end),
+          }
           publish({
+            vectorBrush: {
+              ...snapshot.vectorBrush,
+              params: { ...snapshot.vectorBrush.params, taper },
+            },
             vectorBrushTaper: Object.freeze({
               start: share(command.start, was.start),
               end: share(command.end, was.end),
@@ -6530,7 +6589,11 @@ export function createEngine(
           break
         }
         case "setVectorBrushPressure":
-          publish({ vectorBrushPressure: command.pressure === true })
+          publish({
+            vectorBrush: BUILTIN_VECTOR_BRUSHES[command.pressure ? 1 : 0],
+            vectorBrushPressure: command.pressure === true,
+            vectorBrushTaper: { start: 0, end: 0 },
+          })
           break
         case "setVectorEraser":
           if (command.mode !== "pixel" && command.mode !== "object")

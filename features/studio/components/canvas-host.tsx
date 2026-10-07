@@ -1,5 +1,9 @@
 "use client"
 
+import { VectorBrushLibrary } from "./vector-brush-library"
+import { createLocalVectorBrushStore } from "../lib/local-vector-brush-store"
+import type { VectorBrushStore } from "../lib/vector-brush-store"
+
 import {
   CaretDownIcon,
   ArrowClockwiseIcon,
@@ -590,6 +594,7 @@ export function CanvasHost({
   onSyncStatus,
   palettes,
   brushes,
+  vectorBrushes,
   openElsewhere = false,
 }: {
   documentId?: string
@@ -612,6 +617,7 @@ export function CanvasHost({
    * anonymous one gets this browser.
    */
   brushes?: BrushStore
+  vectorBrushes?: VectorBrushStore
   /** The cloud-sync backend, when this document has an owned Convex row to sync to. */
   remote?: RemoteIndex
   /** Each preview the engine encodes for the library, before it is uploaded. */
@@ -741,6 +747,9 @@ export function CanvasHost({
   syncStatusRef.current = onSyncStatus
   const localBrushes = useMemo(() => createLocalBrushStore(), [])
   const brushStore = brushes ?? localBrushes
+  const localVectorBrushes = useMemo(() => createLocalVectorBrushStore(), [])
+  const vectorBrushStore = vectorBrushes ?? localVectorBrushes
+  const vectorBrushLibrary = vectorBrushStore.useVectorBrushLibrary()
   const penStore = useMemo(() => createLocalPenSettingsStore(), [])
   const pen = penStore.usePenSettings()
   const library = brushStore.useBrushLibrary(documentId)
@@ -1558,7 +1567,10 @@ export function CanvasHost({
                   aria-label="Brush adjustments"
                   className="flex flex-col items-center gap-1 rounded-xl border border-studio-edge bg-studio-surface/88 p-1.5 shadow-lg backdrop-blur-xl"
                 >
-                  {snapshot.tool === "pressure" ? (
+                  {snapshot.tool === "pressure" ||
+                  ((snapshot.tool === "node" ||
+                    snapshot.tool === "objectSelect") &&
+                    snapshot.vectorSelection.length > 0) ? (
                     <PopoverPrimitive.Root
                       open={vectorBrushOpen}
                       onOpenChange={setVectorBrushOpen}
@@ -1567,7 +1579,7 @@ export function CanvasHost({
                         <IconButton
                           variant="ghost"
                           size="sm"
-                          label={`Choose vector brush: ${snapshot.vectorBrushPressure ? "Pressure" : "Solid"}`}
+                          label={`Choose vector brush: ${snapshot.vectorBrush.name}`}
                           side="right"
                           className="size-8 rounded-lg p-0"
                         >
@@ -1592,44 +1604,25 @@ export function CanvasHost({
                           onCloseAutoFocus={(event) => event.preventDefault()}
                           className="z-50 w-72 rounded-xl border bg-background p-3 shadow-xl"
                         >
-                          <h2 className="mb-2 text-sm font-medium">
-                            Vector brushes
-                          </h2>
-                          {(["solid", "pressure"] as const).map((kind) => (
-                            <button
-                              key={kind}
-                              type="button"
-                              aria-pressed={
-                                snapshot.vectorBrushPressure ===
-                                (kind === "pressure")
-                              }
-                              className="mb-1 flex w-full items-center gap-3 rounded-lg border border-transparent p-3 text-left hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
-                              onClick={() => {
-                                void engine?.dispatch({
-                                  type: "setVectorBrushPressure",
-                                  pressure: kind === "pressure",
-                                })
-                                setVectorBrushOpen(false)
-                              }}
-                            >
-                              <VectorBrushToolIcon
-                                kind={kind}
-                                className="size-5"
-                              />
-                              <span>
-                                <span className="block text-xs font-medium">
-                                  {kind === "solid"
-                                    ? "Solid vector brush"
-                                    : "Pressure vector brush"}
-                                </span>
-                                <span className="block text-[10px] text-muted-foreground">
-                                  {kind === "solid"
-                                    ? "Constant width at any pressure"
-                                    : "Press harder for a wider line"}
-                                </span>
-                              </span>
-                            </button>
-                          ))}
+                          <VectorBrushLibrary
+                            library={vectorBrushLibrary}
+                            store={vectorBrushStore}
+                            current={snapshot.vectorBrush}
+                            select={(brush) => {
+                              void engine?.dispatch({
+                                type: "setVectorBrush",
+                                brush,
+                              })
+                            }}
+                            apply={(brush) => {
+                              void engine?.dispatch({
+                                type: "applyVectorBrush",
+                                brush,
+                              })
+                            }}
+                            canApply={snapshot.vectorSelection.length > 0}
+                            close={() => setVectorBrushOpen(false)}
+                          />
                         </PopoverPrimitive.Content>
                       </PopoverPrimitive.Portal>
                     </PopoverPrimitive.Root>

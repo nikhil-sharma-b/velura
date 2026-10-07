@@ -33,6 +33,7 @@ import type * as sessions from "../sessions.js";
 import type * as shareLinks from "../shareLinks.js";
 import type * as tiles from "../tiles.js";
 import type * as tilesActions from "../tilesActions.js";
+import type * as vectorBrushes from "../vectorBrushes.js";
 import type * as versions from "../versions.js";
 
 import type {
@@ -67,6 +68,7 @@ declare const fullApi: ApiFromModules<{
   shareLinks: typeof shareLinks;
   tiles: typeof tiles;
   tilesActions: typeof tilesActions;
+  vectorBrushes: typeof vectorBrushes;
   versions: typeof versions;
 }>;
 

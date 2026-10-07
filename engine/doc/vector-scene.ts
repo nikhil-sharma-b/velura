@@ -8,6 +8,7 @@
  * diff — the commands that put the scene back — instead of a copy of it.
  */
 
+import { parseVectorBrush, type VectorBrush } from "../brush/vector-brush"
 import { NODE_TYPES, type BezierPath, type PathNode } from "./vector-path"
 import { parseHex } from "../color/hex"
 import type { Affine } from "./transform-session"
@@ -67,6 +68,8 @@ export type VectorObject = Readonly<{
   geometry: VectorGeometry
   transform: Affine
   style: VectorStyle
+  /** The recipe used for this stroke, independent of the library entry. */
+  brush?: Readonly<{ definition: VectorBrush; seed: number }>
   /**
    * An eraser's mark rather than a shape: its paint takes coverage away from
    * the objects under it in the stack, and those above are untouched. Its
@@ -206,6 +209,18 @@ function checkTransform(transform: Affine): void {
 export function checkObject(object: VectorObject): void {
   if (!object || typeof object.id !== "string" || object.id === "")
     throw new Error("An object needs an id.")
+  if (object.brush !== undefined) {
+    parseVectorBrush(object.brush.definition)
+    if (
+      object.geometry.kind !== "path" ||
+      !Number.isInteger(object.brush.seed) ||
+      object.brush.seed < 0 ||
+      object.brush.seed > 0xffffffff
+    )
+      throw new Error(
+        "A vector brush stroke needs a path and an unsigned jitter seed."
+      )
+  }
   checkGeometry(object.geometry)
   checkTransform(object.transform)
   checkStyle(object.style)
@@ -246,10 +261,18 @@ export function parseScene(value: unknown): VectorScene {
       if (seen.has(object.id))
         throw new Error(`The object ${object.id} appears twice.`)
       seen.add(object.id)
-      const { id, geometry, transform, style, erase } = object
+      const { id, geometry, transform, style, erase, brush } = object
+      const metadata = brush
+        ? {
+            brush: {
+              definition: parseVectorBrush(brush.definition),
+              seed: brush.seed,
+            },
+          }
+        : {}
       return erase
-        ? { id, geometry, transform, style, erase }
-        : { id, geometry, transform, style }
+        ? { id, geometry, transform, style, erase, ...metadata }
+        : { id, geometry, transform, style, ...metadata }
     }),
   }
 }
@@ -288,6 +311,7 @@ function apply(
       const index = indexOf(scene, command.id)
       const previous = objects[index]
       const patch: ObjectPatch = {
+        ...("brush" in command.patch ? { brush: command.patch.brush } : {}),
         ...(command.patch.geometry ? { geometry: command.patch.geometry } : {}),
         ...(command.patch.transform
           ? { transform: command.patch.transform }
