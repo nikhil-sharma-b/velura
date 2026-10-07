@@ -98,7 +98,7 @@ test("search finds a ported brush by name and selects it", async ({ page }) => {
 test("credits are reachable from the top of the library", async ({ page }) => {
   await openLibrary(page)
   await library(page)
-    .getByRole("button", { name: "Credits", exact: true })
+    .getByRole("button", { name: "Show credits", exact: true })
     .click()
   await expect(
     library(page).getByRole("link", { name: "Full credits" })

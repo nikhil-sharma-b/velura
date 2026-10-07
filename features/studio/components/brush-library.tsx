@@ -154,7 +154,7 @@ export function BrushLibrary({
             credits.current.scrollIntoView({ block: "nearest" })
           }}
         >
-          Credits
+          Show credits
         </button>
         <IconButton
           variant="ghost"
