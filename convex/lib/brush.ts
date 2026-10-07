@@ -20,6 +20,7 @@ import type {
   BrushShape,
 } from "../../engine/brush/brush"
 import { type Modulator, validateDynamics } from "../../engine/brush/dynamics"
+import { type BrushScatter, validateScatter } from "../../engine/brush/scatter"
 
 export const MAX_BRUSH_NAME_LENGTH = 120
 export const MAX_SET_NAME_LENGTH = 60
@@ -118,6 +119,18 @@ function normaliseGrain(value: unknown): BrushGrain {
   }
 }
 
+function normaliseScatter(value: unknown): BrushScatter {
+  const scatter = value as Record<string, unknown>
+  const next = {
+    amount: scatter.amount,
+    count: scatter.count,
+    axes: scatter.axes,
+  } as BrushScatter
+  // The engine's own rule, as for dynamics below.
+  validateScatter(next)
+  return next
+}
+
 function normaliseRendering(value: unknown): BrushRendering {
   const rendering = (value ?? {}) as Record<string, unknown>
   if (
@@ -181,6 +194,10 @@ export function normaliseBrushDefinition(value: unknown): Brush {
       lightness: brush.color.lightness,
     }
   }
+  // Absent on every brush saved before scatter existed, and absent is what
+  // draws the way those brushes always drew.
+  if (brush.scatter !== undefined && brush.scatter !== null)
+    next.scatter = normaliseScatter(brush.scatter)
   return next
 }
 

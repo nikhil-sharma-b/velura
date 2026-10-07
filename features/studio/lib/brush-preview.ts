@@ -7,6 +7,7 @@ import {
   type StampParams,
 } from "@/engine/brush/dynamics"
 import type { Accumulation } from "@/engine/brush/round-brush"
+import { createScatterPlacer, MAX_SCATTER_COUNT } from "@/engine/brush/scatter"
 
 /**
  * The preview stroke of the brush editor (D32), as data.
@@ -23,11 +24,9 @@ import type { Accumulation } from "@/engine/brush/round-brush"
  * and the editor's job is to make the shape of a brush legible enough that it
  * is dialled in by eye rather than by trial and error on the work.
  *
- * It shows only what the stamp path can actually draw, which today is size,
- * flow, opacity, angle, roundness and the paper's bite. `scatter` and `hue`
- * are evaluated by the graph and carried, but no renderer consumes them yet
- * (see `DynamicsTarget`), and a preview that displaced its dabs for a scatter
- * the canvas ignores would be a picture of a stroke the artist cannot draw.
+ * It shows size, flow, opacity, angle, roundness, scatter and the paper's
+ * bite. Per-dab colour is drawn by the canvas but not tinted here yet: that
+ * arrives with the editor's Colour section (brush-library 07).
  */
 
 export type PreviewDab = {
@@ -60,6 +59,11 @@ const BOW = 0.3
 const MARGIN = 0.08
 /** Steps the path is walked in to measure it. Well under a pixel of error. */
 const WALK_STEPS = 512
+/**
+ * Scatter is seeded like a canvas stroke, but always with this, for the same
+ * reason `randomAt` is fixed: a redraw must not reshuffle the dabs.
+ */
+const SCATTER_SEED = 1
 
 /**
  * A pressure profile with a press, a body and a release: what a mark actually
@@ -158,6 +162,9 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
   const params: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   const context: StampContext = { ...NEUTRAL_STAMP_CONTEXT }
   const dabs: PreviewDab[] = []
+  const scatter = createScatterPlacer()
+  scatter.begin(SCATTER_SEED)
+  const offsets = new Float32Array(MAX_SCATTER_COUNT * 2)
   for (let index = 0; index < count; index++) {
     const progress = index / (count - 1)
     const point = pathAt(atDistance(lengths, index * step), box)
@@ -168,14 +175,25 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
     context.random = randomAt(index)
     context.strokeProgress = progress
     evaluateDynamics(brush.dynamics, context, params)
-    dabs.push({
-      x: point.x,
-      y: point.y,
+    const dab = {
       radius: Math.min(radius * params.size, cap),
       opacity: brush.rendering.flow * params.flow,
       angle: brush.shape.angle + params.angle,
       roundness: brush.shape.roundness * params.roundness,
-    })
+    }
+    const thrown = scatter.place(
+      brush.scatter,
+      params.scatter,
+      dab.radius,
+      context.direction,
+      offsets
+    )
+    for (let i = 0; i < thrown; i++)
+      dabs.push({
+        ...dab,
+        x: point.x + offsets[i * 2],
+        y: point.y + offsets[i * 2 + 1],
+      })
   }
   return {
     dabs,

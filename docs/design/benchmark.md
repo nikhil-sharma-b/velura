@@ -16,6 +16,7 @@ what that means for the design.
 bun run bench                  # records a run
 bun run bench/run.ts --sweep   # the document-size ladder, for diagnosis
 bun run bench/run.ts --layers  # the layer-count ladder, for the compositor
+bun run bench/run.ts --scatter # a dense scattering brush against none
 bun run bench/run.ts --vector  # redrawing a vector layer of many paths (19)
 bun run bench/run.ts --navigate # panning and zooming a stack (sharp-zoom 01)
 ```
@@ -204,6 +205,26 @@ land (D-6.1), which is why this ladder runs at 1024² rather than at 8192². And
 a structural change is a clear and a draw per layer on one side of the stack,
 which is why the ladder is measured with the pen in the middle of the stack
 rather than at the top of it.
+
+### Scatter, not a bottleneck either
+
+`bun run bench/run.ts --scatter` paints the workload at 8192² unpaced, once
+with a plain brush and once with the densest scatter a brush may ask for:
+sixteen dabs per spacing step, thrown four radii along and across the path.
+
+| scatter | ms/frame | mean fps | dabs | readbacks |
+|---|---|---|---|---|
+| none | 9.033 | 110.7 | 6,470 | 0 |
+| ×16 | 9.204 | 108.7 | 103,520 | 0 |
+
+Sixteen times the dabs for under two tenths of a millisecond. The frame is still
+the present pass (§1 above), not the stamp pass: dabs are instances in one
+draw, placed into a buffer allocated with the engine, so a step that lays
+sixteen of them allocates nothing and reads nothing back. Neither run reaches
+120 fps, and for the reason above, not this one: what this sweep shows is that
+scatter adds nothing measurable to the frame, so it will reach D30 when the
+viewport-sized present pass (ticket 13) lets the plain brush reach it;
+that gap is tracked in brush-library ticket 14.
 
 ## What this means
 

@@ -12,8 +12,8 @@ import { type Curve, LINEAR_CURVE, sampleCurve } from "./curve"
  * brush editor (D32) show a live preview without a canvas.
  *
  * What the graph produces is a *modulation*, not a finished dab: `size`,
- * `flow`, `opacity` and `roundness` scale the brush's own values and `angle`,
- * `hue` and `scatter` offset them. That is what lets one dynamics list be
+ * `flow`, `opacity`, `roundness` and `scatter` scale the brush's own values
+ * and `angle` and `hue` offset them. That is what lets one dynamics list be
  * shared between brushes of different sizes and read the same on each.
  */
 
@@ -44,9 +44,7 @@ export type DynamicsSource =
  * A parameter of one dab.
  *
  * The list is the whole brush model, not only what the renderer reads today:
- * `size` and `flow` reach the stamp buffer now, and the rest are evaluated and
- * carried so that tips and grain (D24), scatter, and colour dynamics land as
- * consumers of a graph that already produces them.
+ * every target reaches the stamp pass.
  */
 export type DynamicsTarget =
   /** Dab radius, as a multiple of the brush's own radius. */
@@ -61,7 +59,12 @@ export type DynamicsTarget =
   | "roundness"
   /** How strongly canvas grain bites, in [0, 1]. */
   | "grainDepth"
-  /** Positional jitter, in dab radii. */
+  /**
+   * How far dabs are thrown off the path, as a multiple of the brush's own
+   * scatter amount. A brush with no amount does not scatter however this is
+   * driven, which is what keeps every brush made before scatter drawing as it
+   * did.
+   */
   | "scatter"
   /** Hue rotation, as a turn. */
   | "hue"
@@ -123,7 +126,7 @@ export const NEUTRAL_STAMP_PARAMS: StampParams = Object.freeze({
   angle: 0,
   roundness: 1,
   grainDepth: 1,
-  scatter: 0,
+  scatter: 1,
   hue: 0,
   saturation: 0,
   lightness: 0,

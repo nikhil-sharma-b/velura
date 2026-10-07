@@ -340,6 +340,8 @@ export async function runBenchmark(
     })
     await engine.dispatch({ type: "featherSelection", radius: feather })
   }
+  const scatter = workload.options.scatter
+  if (scatter) await engine.dispatch({ type: "setBrush", scatter })
   const detachThumbnails = attachThumbnails(engine)
 
   const frames: FrameTiming[] = []
