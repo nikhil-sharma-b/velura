@@ -1,4 +1,4 @@
-import { vectorBrushObject } from "../doc/vector-brush"
+import { patternOutlines, vectorBrushObject } from "../doc/vector-brush"
 import type { PaintDocument, LayerNode } from "../doc/document"
 import type { BezierPath } from "../doc/vector-path"
 import { tessellateObject, type Mesh } from "../geom/tessellate"
@@ -78,6 +78,20 @@ function shape(object: VectorObject): string {
       return `<ellipse cx="${g.cx}" cy="${g.cy}" rx="${g.rx}" ry="${g.ry}" ${attrs}/>`
     case "path": {
       const d = pathData(g)
+      if (painted.brush?.definition.kind === "pattern" && stroke) {
+        // The art is expanded to plain filled paths; the spine and brush ride
+        // along for anything that wants to re-flow it.
+        const filled = fill
+          ? `<path d="${d}" transform="matrix(${transform.join(" ")})" fill="${escape(fill.color)}" fill-opacity="${fill.opacity}" fill-rule="${fill.rule}"/>`
+          : ""
+        const art = patternOutlines(painted)
+          .map(
+            (o) =>
+              `<path d="M${o.map((p) => `${p.x} ${p.y}`).join(" L")} Z" fill="${escape(stroke.color)}" fill-opacity="${stroke.opacity}" fill-rule="nonzero" stroke="none"/>`
+          )
+          .join("")
+        return `<g data-vector-brush="${escape(JSON.stringify(painted.brush))}" data-spine="${escape(d)}"><g transform="matrix(${transform.join(" ")})">${art}</g>${filled}</g>`
+      }
       if (g.nodes[0].width === undefined) return `<path d="${d}" ${attrs}/>`
       // Pressure widths are already placed by the same mesh the canvas draws,
       // so the outline must not receive the object's transform a second time.

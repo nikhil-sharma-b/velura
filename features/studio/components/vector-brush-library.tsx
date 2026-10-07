@@ -14,6 +14,7 @@ import {
   BUILTIN_VECTOR_BRUSHES,
   MAX_PRESSURE_CURVE,
   MIN_PRESSURE_CURVE,
+  type PatternParams,
   type ProfileParams,
   type VectorBrush,
   type VectorBrushKind,
@@ -38,6 +39,7 @@ export function VectorBrushLibrary({
   select,
   apply,
   canApply,
+  makePattern,
   close,
 }: {
   library: Library
@@ -46,6 +48,8 @@ export function VectorBrushLibrary({
   select(brush: VectorBrush): void
   apply(brush: VectorBrush): void
   canApply: boolean
+  /** A pattern brush made of the selected objects; throws when it cannot be. */
+  makePattern(): VectorBrush
   close(): void
 }) {
   const [editing, setEditing] = useState<VectorBrush | null>(null)
@@ -148,6 +152,24 @@ export function VectorBrushLibrary({
         >
           Duplicate brush
         </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!canApply}
+          onClick={() => {
+            try {
+              edit(makePattern(), null)
+            } catch (error) {
+              toast.error(
+                error instanceof Error
+                  ? error.message
+                  : "Could not make a pattern brush."
+              )
+            }
+          }}
+        >
+          Make pattern brush
+        </Button>
       </div>
       <Dialog
         open={editing !== null}
@@ -199,7 +221,9 @@ export function VectorBrushLibrary({
                   className="rounded-lg border p-3"
                 >
                   <h3 className="mb-2 text-sm font-medium">{label}</h3>
-                  {kind === "calligraphy" ? (
+                  {kind === "pattern" ? (
+                    <PatternSection brush={editing} change={setEditing} />
+                  ) : kind === "calligraphy" ? (
                     <CalligraphySection brush={editing} change={setEditing} />
                   ) : kind === "profile" ? (
                     <ProfileSection
@@ -230,7 +254,11 @@ export function VectorBrushLibrary({
 }
 
 /** A one-line summary of what a brush does with the hand. */
-function describe({ kind, params }: VectorBrush): string {
+function describe({ kind, params, pattern }: VectorBrush): string {
+  if (kind === "pattern")
+    return pattern?.mode === "repeat"
+      ? "Art repeated along the stroke"
+      : "Art stretched along the stroke"
   if (kind === "calligraphy")
     return params.fixation < 1
       ? "A nib that turns as the pen leans"
@@ -408,6 +436,61 @@ function CalligraphySection({
       <p className="col-span-2 text-xs text-muted-foreground">
         Below 100% the nib follows the pen&apos;s tilt; a mouse keeps it at the
         nib angle. Pressure, taper and caps come from the width profile.
+      </p>
+    </div>
+  )
+}
+
+function PatternSection({
+  brush,
+  change,
+}: {
+  brush: VectorBrush
+  change(brush: VectorBrush): void
+}) {
+  const { pattern } = brush
+  if (brush.kind !== "pattern" || !pattern)
+    return (
+      <p className="text-xs text-muted-foreground">
+        Select shapes on a vector layer and choose Make pattern brush to lay
+        them along your strokes.
+      </p>
+    )
+  const set = (patch: Partial<PatternParams>) =>
+    change({ ...brush, pattern: { ...pattern, ...patch } })
+  return (
+    <div className="grid grid-cols-2 gap-2 text-sm">
+      <label className="flex items-center gap-2">
+        Fit
+        <select
+          aria-label="Pattern fit"
+          className="h-8 rounded-md border bg-transparent px-2"
+          value={pattern.mode}
+          onChange={(event) =>
+            set({ mode: event.target.value as PatternParams["mode"] })
+          }
+        >
+          <option value="stretch">Stretch</option>
+          <option value="repeat">Repeat</option>
+        </select>
+      </label>
+      <label className="flex items-center gap-2">
+        Corners
+        <select
+          aria-label="Pattern corners"
+          className="h-8 rounded-md border bg-transparent px-2"
+          value={pattern.corners}
+          onChange={(event) =>
+            set({ corners: event.target.value as PatternParams["corners"] })
+          }
+        >
+          <option value="bend">Bend</option>
+          <option value="split">Split</option>
+        </select>
+      </label>
+      <p className="col-span-2 text-xs text-muted-foreground">
+        The art is a stroke width tall. &ldquo;Pressure controls width&rdquo; in
+        the width profile scales its thickness.
       </p>
     </div>
   )
