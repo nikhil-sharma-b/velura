@@ -58,6 +58,8 @@ export type WorkloadOptions = {
    * coverage. Absent, nothing is selected.
    */
   feather?: number
+  /** Exercise all three per-dab colour targets. */
+  colourDynamics?: boolean
 }
 
 /**

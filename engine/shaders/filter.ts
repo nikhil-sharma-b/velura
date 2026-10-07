@@ -1,3 +1,4 @@
+import { hslShader } from "./hsl"
 /**
  * The filters (18), as full-screen passes over a layer's linear-light,
  * premultiplied pixels. Every pass reads the layer as it was before the filter
@@ -40,50 +41,7 @@ fn coverage(texel: vec2<i32>) -> f32 {
   return textureLoad(selection, texel, 0).r;
 }
 
-fn hueToRgb(p: f32, q: f32, t0: f32) -> f32 {
-  let t = fract(t0);
-  if (t < 1.0 / 6.0) { return p + (q - p) * 6.0 * t; }
-  if (t < 0.5) { return q; }
-  if (t < 2.0 / 3.0) { return p + (q - p) * (2.0 / 3.0 - t) * 6.0; }
-  return p;
-}
-
-fn adjustHsl(rgb: vec3<f32>) -> vec3<f32> {
-  let high = max(rgb.r, max(rgb.g, rgb.b));
-  let low = min(rgb.r, min(rgb.g, rgb.b));
-  var l = (high + low) * 0.5;
-  var h = 0.0;
-  var s = 0.0;
-  let d = high - low;
-  if (d > 1e-6) {
-    s = select(d / (2.0 - high - low), d / (high + low), l <= 0.5);
-    if (high == rgb.r) {
-      h = (rgb.g - rgb.b) / d + select(0.0, 6.0, rgb.g < rgb.b);
-    } else if (high == rgb.g) {
-      h = (rgb.b - rgb.r) / d + 2.0;
-    } else {
-      h = (rgb.r - rgb.g) / d + 4.0;
-    }
-    h = h / 6.0;
-  }
-  h = h + params.values.x;
-  s = clamp(s * (1.0 + params.values.y), 0.0, 1.0);
-  var out = vec3<f32>(l);
-  if (s > 0.0) {
-    let q = select(l + s - l * s, l * (1.0 + s), l < 0.5);
-    let p = 2.0 * l - q;
-    out = vec3<f32>(
-      hueToRgb(p, q, h + 1.0 / 3.0),
-      hueToRgb(p, q, h),
-      hueToRgb(p, q, h - 1.0 / 3.0)
-    );
-  }
-  // Lightness leans the result toward white or black, as far as it is set.
-  let lightness = params.values.z;
-  if (lightness > 0.0) { out = mix(out, vec3<f32>(1.0), lightness); }
-  if (lightness < 0.0) { out = out * (1.0 + lightness); }
-  return out;
-}
+${hslShader}
 
 // Middle grey in linear light, which contrast spreads from.
 const PIVOT = 0.18;
@@ -101,7 +59,7 @@ fn colourMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> 
   let straight = before.rgb / before.a;
   var rgb: vec3<f32>;
   if (params.kind == 0u) {
-    rgb = adjustHsl(clamp(straight, vec3<f32>(0.0), vec3<f32>(1.0)));
+    rgb = adjustHsl(clamp(straight, vec3<f32>(0.0), vec3<f32>(1.0)), params.values.xyz);
   } else {
     rgb = adjustBrightnessContrast(straight);
   }

@@ -1,3 +1,4 @@
+import { DEFAULT_BRUSH } from "../../engine/brush/brush"
 import { describe, expect, test } from "bun:test"
 
 import { validateDynamics } from "@/engine/brush/dynamics"
@@ -164,4 +165,18 @@ describe("a stored texture", () => {
       })
     ).toThrow()
   })
+})
+
+test("colour jitter bases survive storage and reject invalid amplitudes", () => {
+  const brush = {
+    ...DEFAULT_BRUSH,
+    color: { hue: 0.5, saturation: 0.3, lightness: 0.2 },
+  }
+  expect(normaliseBrushDefinition(brush).color).toEqual(brush.color)
+  expect(() =>
+    normaliseBrushDefinition({
+      ...brush,
+      color: { ...brush.color, lightness: -1 },
+    })
+  ).toThrow()
 })

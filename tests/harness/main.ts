@@ -40,6 +40,9 @@ type Dab = {
   angle?: number
   roundness?: number
   grainDepth?: number
+  hue?: number
+  saturation?: number
+  lightness?: number
 }
 
 /**
@@ -442,6 +445,9 @@ window.openStrokeBufferProbe = async (width, height) => {
             dab.angle ?? 0,
             dab.roundness ?? 1,
             dab.grainDepth ?? 1,
+            dab.hue ?? 0,
+            dab.saturation ?? 0,
+            dab.lightness ?? 0,
           ],
           i * STAMP_STRIDE
         )

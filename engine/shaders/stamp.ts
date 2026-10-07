@@ -1,3 +1,4 @@
+import { hslShader } from "./hsl"
 /**
  * The stamp pass. One instanced quad per dab, drawn into the linear-light
  * target with premultiplied `over` blending — no colour encoding happens here,
@@ -27,6 +28,8 @@
 export const GRAIN_CUT = 0.55
 
 export const stampShader = /* wgsl */ `
+${hslShader}
+
 const TAU = 6.283185307179586;
 
 const GRAIN_CUT = ${GRAIN_CUT};
@@ -79,6 +82,7 @@ struct Instance {
   // Width of the tip against its length, in (0, 1].
   @location(4) roundness: f32,
   @location(5) grainDepth: f32,
+  @location(6) colorOffsets: vec3<f32>,
 }
 
 struct Varyings {
@@ -91,6 +95,7 @@ struct Varyings {
   // The dab's centre in canvas pixels, so the fragment can measure its own
   // offset from it. Flat, because a centre is one value for the whole dab.
   @location(4) @interpolate(flat) center: vec2<f32>,
+  @location(5) @interpolate(flat) color: vec4<f32>,
 }
 
 @vertex
@@ -125,11 +130,21 @@ fn vertexMain(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings
   out.opacity = instance.opacity;
   out.grainDepth = instance.grainDepth;
   out.center = instance.center;
+  out.color = stamp.color;
+  // Keep the neutral path bit-for-bit unchanged, including wide-gamut ink.
+  if (any(instance.colorOffsets != vec3<f32>(0.0)) && stamp.color.a > 0.0) {
+    out.color = vec4<f32>(adjustHsl(stamp.color.rgb / stamp.color.a, instance.colorOffsets) * stamp.color.a, stamp.color.a);
+  }
   return out;
 }
 
+struct Fragment {
+  @location(0) color: vec4<f32>,
+  @builtin(frag_depth) depth: f32,
+}
+
 @fragment
-fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
+fn fragmentMain(varyings: Varyings) -> Fragment {
   let distance = length(varyings.local);
   // The feather is authored in pixels, so it stays one pixel wide whatever
   // the dab's size: small dabs would otherwise be all falloff and no core.
@@ -179,6 +194,13 @@ fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
     selected = textureLoad(selectionTexture, vec2<i32>(varyings.position.xy), 0).r;
   }
 
-  return stamp.color * (shape * bite * varyings.opacity * selected);
+  let color = varyings.color * (shape * bite * varyings.opacity * selected);
+  // Depth is inverse coverage. Coverage's depth test keeps the strongest
+  // dab's entire colour, with later dabs winning ties. Never write empty ink.
+  if (color.a <= 0.0) { discard; }
+  var out: Fragment;
+  out.color = color;
+  out.depth = 1.0 - color.a;
+  return out;
 }
 `

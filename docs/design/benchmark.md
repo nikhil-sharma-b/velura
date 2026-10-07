@@ -332,3 +332,17 @@ holding pixels, so the number to re-measure is a large window on a weak GPU.
   has nothing to say about this target. `tests/browser/benchmark.spec.ts` runs
   there to check that the benchmark still drives the engine and still observes
   frames — never to check a speed.
+
+## Per-dab colour dynamics
+
+`bun run bench --colour` exercises seeded hue, saturation and lightness
+mappings through the regular 8192² painting workload. The recorded workload
+includes `colourDynamics: true`, so colour runs can be distinguished from
+neutral-ink runs.
+
+Coverage selects the complete colour of the dab with greatest alpha at each
+pixel; later dabs win equal-alpha ties. A `depth32float` attachment stores
+inverse coverage, adding 256 MiB at 8192². Buildup still uses premultiplied over,
+and both modes stamp a batch in one pass and composite once on pen-up. Colour
+adjustment runs per vertex, with a neutral fast path that preserves existing
+ink and goldens. No per-dab CPU allocation or readback is introduced.

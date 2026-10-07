@@ -79,6 +79,20 @@ export type BrushRendering = {
   flow: number
 }
 
+/** Amplitudes scaling the graph's colour offsets. Absent means unit scales.
+ * Hue is in turns; saturation and lightness are fractions of their HSL range.
+ * Random-source mappings provide seeded per-dab jitter, just like size jitter.
+ */
+export type BrushColor = { hue: number; saturation: number; lightness: number }
+
+export function validateBrushColor(color: BrushColor): void {
+  for (const target of ["hue", "saturation", "lightness"] as const) {
+    const value = color?.[target]
+    if (!Number.isFinite(value) || value < 0 || value > 1)
+      throw new Error(`Brush ${target} jitter must be in [0, 1].`)
+  }
+}
+
 export type Brush = {
   /** Stable across edits, so a stroke can name the brush that drew it. */
   id: string
@@ -87,6 +101,7 @@ export type Brush = {
   /** Absent means the brush lays ink on a perfectly smooth surface. */
   grain?: BrushGrain
   rendering: BrushRendering
+  color?: BrushColor
   /** Applied in order; see `evaluateDynamics`. */
   dynamics: Modulator[]
 }

@@ -1,3 +1,4 @@
+import { validateBrushColor } from "../../engine/brush/brush"
 /**
  * What a stored brush is, in the shape of `convex/lib/palette.ts`: rules that
  * hold with or without a database, so the library panel and the mutation it
@@ -172,6 +173,14 @@ export function normaliseBrushDefinition(value: unknown): Brush {
   }
   if (brush.grain !== undefined && brush.grain !== null)
     next.grain = normaliseGrain(brush.grain)
+  if (brush.color !== undefined && brush.color !== null) {
+    validateBrushColor(brush.color)
+    next.color = {
+      hue: brush.color.hue,
+      saturation: brush.color.saturation,
+      lightness: brush.color.lightness,
+    }
+  }
   return next
 }
 

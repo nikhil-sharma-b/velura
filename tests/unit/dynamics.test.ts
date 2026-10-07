@@ -32,6 +32,8 @@ describe("dynamics graph evaluation", () => {
       grainDepth: 1,
       scatter: 0,
       hue: 0,
+      saturation: 0,
+      lightness: 0,
     })
   })
 
@@ -334,4 +336,40 @@ describe("dynamics for a device without a pressure sensor", () => {
       dynamicsForDevice(brush, false)
     )
   })
+})
+
+test("colour offsets clamp saturation and lightness and reject multiplication", () => {
+  const graph: Modulator[] = [
+    { source: "random", target: "saturation", range: [-2, 2], mix: "replace" },
+    { source: "pressure", target: "lightness", range: [-2, 2], mix: "add" },
+  ]
+  expect(() => validateDynamics(graph)).not.toThrow()
+  const params = evaluateDynamics(graph, context({ random: 0, pressure: 1 }))
+  expect(params.saturation).toBe(-1)
+  expect(params.lightness).toBe(1)
+  expect(() => validateDynamics([{ ...graph[0], mix: "multiply" }])).toThrow()
+})
+
+test("a fixed seed reproduces all colour jitter offsets", async () => {
+  const { createStampContextTracker } =
+    await import("../../engine/brush/stamp-context")
+  const graph: Modulator[] = [
+    { source: "random", target: "hue", range: [-0.2, 0.2], mix: "add" },
+    { source: "random", target: "saturation", range: [-0.4, 0.4], mix: "add" },
+    { source: "random", target: "lightness", range: [-0.1, 0.1], mix: "add" },
+  ]
+  const sample = (seed: number) => {
+    const tracker = createStampContextTracker()
+    tracker.begin(0, 0, 1, 0, 0, 0, seed)
+    return Array.from({ length: 12 }, (_, i) => {
+      const { hue, saturation, lightness } = evaluateDynamics(
+        graph,
+        tracker.next(i, 0, 1, 0, 0, i)
+      )
+      return [hue, saturation, lightness]
+    })
+  }
+  expect(sample(42)).toEqual(sample(42))
+  expect(sample(43)).not.toEqual(sample(42))
+  expect(new Set(sample(42).map((dab) => dab[0])).size).toBe(12)
 })

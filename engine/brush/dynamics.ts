@@ -65,6 +65,8 @@ export type DynamicsTarget =
   | "scatter"
   /** Hue rotation, as a turn. */
   | "hue"
+  | "saturation"
+  | "lightness"
 
 /**
  * How a mapping's output meets what is already on the target.
@@ -106,6 +108,8 @@ export type StampParams = {
   grainDepth: number
   scatter: number
   hue: number
+  saturation: number
+  lightness: number
 }
 
 /**
@@ -121,6 +125,8 @@ export const NEUTRAL_STAMP_PARAMS: StampParams = Object.freeze({
   grainDepth: 1,
   scatter: 0,
   hue: 0,
+  saturation: 0,
+  lightness: 0,
 })
 
 /**
@@ -169,6 +175,8 @@ const LIMITS: Readonly<
   roundness: [0.01, 1],
   grainDepth: [0, 1],
   scatter: [0, 16],
+  saturation: [-1, 1],
+  lightness: [-1, 1],
 })
 
 /**
