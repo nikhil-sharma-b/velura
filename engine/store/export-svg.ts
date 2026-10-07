@@ -1,4 +1,4 @@
-import { vectorBrushGeometry } from "../doc/vector-brush"
+import { vectorBrushObject } from "../doc/vector-brush"
 import type { PaintDocument, LayerNode } from "../doc/document"
 import type { BezierPath } from "../doc/vector-path"
 import { tessellateObject, type Mesh } from "../geom/tessellate"
@@ -65,8 +65,9 @@ function strokeOutline(mesh: Mesh): string {
 }
 
 function shape(object: VectorObject): string {
-  const { style, transform } = object
-  const g = vectorBrushGeometry(object)
+  const painted = vectorBrushObject(object)
+  const { style, transform } = painted
+  const g = painted.geometry
   const fill = g.kind === "path" && !g.closed ? null : style.fill
   const stroke = style.stroke
   const attrs = `transform="matrix(${transform.join(" ")})" fill="${escape(fill?.color ?? "none")}"${fill ? ` fill-opacity="${fill.opacity}" fill-rule="${fill.rule}"` : ""} stroke="${escape(stroke?.color ?? "none")}"${stroke ? ` stroke-opacity="${stroke.opacity}" stroke-width="${stroke.width}" stroke-linecap="${stroke.cap}" stroke-linejoin="${stroke.join}"` : ""}`

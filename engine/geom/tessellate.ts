@@ -18,7 +18,7 @@
  * a point can be hit-tested against an object without drawing it.
  */
 
-import { vectorBrushGeometry } from "../doc/vector-brush"
+import { vectorBrushObject } from "../doc/vector-brush"
 import { flattenPath } from "../doc/vector-path"
 import type {
   FillRule,
@@ -83,7 +83,7 @@ function outline(
   widths?: number[] | null
   corners?: number[]
 } {
-  const geometry = vectorBrushGeometry(object)
+  const geometry = object.geometry
   switch (geometry.kind) {
     case "rect": {
       const { x, y, width, height } = geometry
@@ -440,6 +440,7 @@ export function tessellateObject(
   fill: Mesh | null
   stroke: Mesh | null
 } {
+  object = vectorBrushObject(object)
   const shape = outline(object, detail)
   const points = transformed(object.transform, shape.points)
   const { fill, stroke } = object.style
