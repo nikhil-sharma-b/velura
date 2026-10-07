@@ -97,6 +97,7 @@ describe("the working brush an editor holds", () => {
       flow: 0.3,
       accumulation: "buildup",
       tipTextureId: null,
+      tipSelection: null,
       grain: null,
       color: null,
       scatter: null,

@@ -1,5 +1,5 @@
 import { decodeGrayPng } from "@/engine/brush/gray-png"
-import type { GrayscaleTexture } from "@/engine/brush/texture"
+import { validateTexture, type GrayscaleTexture } from "@/engine/brush/texture"
 
 import kritaManifest from "./krita-textures.json"
 
@@ -65,13 +65,36 @@ export function createShippedTextures(
       if (!entry) return undefined
       let pending = loading.get(id)
       if (!pending) {
-        // A tip set is drawn by its first frame until the renderer can pick
-        // between them (brush library 04); the rest are not fetched for it.
-        const url = `${base}/${entry.files[0]}`
-        pending = fetch(url).then(async (response) => {
-          if (!response.ok)
-            throw new Error(`${entry.name} could not be loaded.`)
-          return decodeGrayPng(new Uint8Array(await response.arrayBuffer()))
+        pending = Promise.all(
+          entry.files.map(async (file) => {
+            const response = await fetch(`${base}/${file}`)
+            if (!response.ok)
+              throw new Error(`${entry.name} could not be loaded.`)
+            return decodeGrayPng(new Uint8Array(await response.arrayBuffer()))
+          })
+        ).then((frames) => {
+          if (!frames.length) throw new Error("A tip set must contain frames.")
+          const first = frames[0]
+          if (frames.length === 1) return first
+          if (
+            frames.some(
+              (frame) =>
+                frame.width !== first.width || frame.height !== first.height
+            )
+          )
+            throw new Error("Tip set frames must have equal dimensions.")
+          const data = new Uint8Array(first.data.length * frames.length)
+          frames.forEach((frame, i) =>
+            data.set(frame.data, i * first.data.length)
+          )
+          const texture = {
+            width: first.width,
+            height: first.height,
+            frameCount: frames.length,
+            data,
+          }
+          validateTexture(texture)
+          return texture
         })
         loading.set(id, pending)
         // A failure is not remembered: a flaky connection should not leave a

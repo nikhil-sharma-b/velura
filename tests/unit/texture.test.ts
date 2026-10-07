@@ -130,3 +130,15 @@ describe("the texture library", () => {
     ).toThrow()
   })
 })
+
+test("tip sets register all equally sized frames and reject invalid counts", () => {
+  const library = createTextureLibrary({})
+  const set = { width: 2, height: 1, frameCount: 4, data: new Uint8Array(8) }
+  library.register("set", set)
+  expect(library.get("set")).toBe(set)
+  for (const frameCount of [0, -1, 1.5, 257])
+    expect(() => library.register("bad", { ...set, frameCount })).toThrow()
+  expect(() =>
+    library.register("bad", { ...set, data: new Uint8Array(7) })
+  ).toThrow()
+})

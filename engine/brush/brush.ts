@@ -1,3 +1,4 @@
+import type { TipSelectionMode } from "./tip-sets"
 import type { Modulator } from "./dynamics"
 import type { BrushScatter } from "./scatter"
 import {
@@ -41,6 +42,8 @@ export type BrushShape = {
   spacing: number
   /** Grayscale tip texture, sampled in stamp space (D24). None is procedural. */
   tipTextureId?: string
+  /** How a tip set chooses a frame per dab. Defaults to random. */
+  tipSelection?: TipSelectionMode
 }
 
 /**

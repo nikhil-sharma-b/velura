@@ -136,6 +136,7 @@ export function createLocalBrushes(storage: KeyValueStorage) {
       const stored = normaliseStoredTexture({
         width: texture.width,
         height: texture.height,
+        frameCount: texture.frameCount,
         data: texture.data,
       })
       commit({
@@ -191,6 +192,7 @@ function writeTexture(texture: StoredTexture) {
     name: texture.name,
     width: texture.texture.width,
     height: texture.texture.height,
+    frameCount: texture.texture.frameCount,
     data: encodeBytes(texture.texture.data),
   }
 }
@@ -265,6 +267,10 @@ function readTextures(value: unknown): StoredTexture[] {
           texture: normaliseStoredTexture({
             width: Number(stored.width),
             height: Number(stored.height),
+            frameCount:
+              stored.frameCount === undefined
+                ? undefined
+                : Number(stored.frameCount),
             data: decodeBytes(stored.data),
           }),
         },

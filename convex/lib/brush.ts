@@ -1,3 +1,5 @@
+import { validateTexture } from "../../engine/brush/texture"
+import { validateTipSelection } from "../../engine/brush/tip-sets"
 import { validateBrushColor } from "../../engine/brush/brush"
 /**
  * What a stored brush is, in the shape of `convex/lib/palette.ts`: rules that
@@ -106,6 +108,10 @@ function normaliseShape(value: unknown): BrushShape {
   // JSON it round-trips as, and `{ tipTextureId: undefined }` does not.
   if (shape.tipTextureId !== undefined && shape.tipTextureId !== null)
     next.tipTextureId = textureId(shape.tipTextureId, "tip texture")
+  if (shape.tipSelection !== undefined) {
+    validateTipSelection(shape.tipSelection)
+    next.tipSelection = shape.tipSelection
+  }
   return next
 }
 
@@ -275,6 +281,7 @@ export function reorderBrushes(
 
 /** A greyscale texture as it is stored: one byte per texel, top row first. */
 export type StoredTextureData = {
+  frameCount?: number
   width: number
   height: number
   data: Uint8Array
@@ -300,7 +307,16 @@ export function normaliseStoredTexture(value: unknown): StoredTextureData {
   const data = texture.data
   if (!(data instanceof Uint8Array))
     throw new Error("A texture must be single-channel bytes.")
-  if (data.length !== (width as number) * (height as number))
-    throw new Error("A texture must hold exactly one byte per texel.")
-  return { width: width as number, height: height as number, data }
+  const stored: StoredTextureData = {
+    width: width as number,
+    height: height as number,
+    data,
+  }
+  if (texture.frameCount !== undefined) stored.frameCount = texture.frameCount
+  validateTexture(stored)
+  if (data.length > MAX_TEXTURE_DIMENSION * MAX_TEXTURE_DIMENSION)
+    throw new Error(
+      "A texture's frames may hold at most 262144 bytes in total."
+    )
+  return stored
 }
