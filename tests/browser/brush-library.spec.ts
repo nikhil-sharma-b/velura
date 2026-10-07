@@ -53,6 +53,10 @@ test("shelves the brushes ported from Krita in Krita's sets", async ({
     await expect(
       library(page).getByRole("heading", { name: set, exact: true })
     ).toBeVisible()
+  // The ported sets open folded: sixty strokes at once is a wall.
+  await library(page)
+    .getByRole("button", { name: "Sketch", exact: true })
+    .click()
   await library(page)
     .getByRole("button", { name: "Paint with Chalk Grainy", exact: true })
     .click()
@@ -68,6 +72,37 @@ test("shelves the brushes ported from Krita in Krita's sets", async ({
       exact: true,
     })
   ).toHaveCount(0)
+})
+
+test("search finds a ported brush by name and selects it", async ({ page }) => {
+  await openLibrary(page)
+  const chalk = library(page).getByRole("button", {
+    name: "Paint with Chalk Grainy",
+    exact: true,
+  })
+  await expect(chalk).toHaveCount(0)
+  await library(page).getByLabel("Search brushes").fill("chalk gr")
+  await expect(
+    library(page).getByRole("button", {
+      name: "Paint with Pencil",
+      exact: true,
+    })
+  ).toHaveCount(0)
+  await chalk.click()
+  // Choosing a brush puts it in the hand and closes the library.
+  await expect(library(page)).toHaveCount(0)
+  await page.getByRole("button", { name: "Brush editor" }).click()
+  await expect(editor(page)).toContainText("Chalk Grainy")
+})
+
+test("credits are reachable from the top of the library", async ({ page }) => {
+  await openLibrary(page)
+  await library(page)
+    .getByRole("button", { name: "Show credits", exact: true })
+    .click()
+  await expect(
+    library(page).getByRole("link", { name: "Full credits" })
+  ).toBeVisible()
 })
 
 test("the studio opens with a ready-made brush already in the hand", async ({

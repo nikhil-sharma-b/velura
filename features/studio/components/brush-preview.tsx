@@ -8,6 +8,15 @@ import { GRAIN_CUT } from "@/engine/shaders/stamp"
 import { previewStroke } from "../lib/brush-preview"
 
 /**
+ * Thumbnails drawn once per brush, box, density and ink colour. Keyed weakly on
+ * the brush object: built-ins are frozen constants and a saved brush keeps its
+ * object until its row changes, so a changed brush is a new key and a dropped
+ * one is collected. This is what lets a library of 60+ rows scroll, and
+ * re-open, without laying out every stroke again.
+ */
+const thumbnails = new WeakMap<Brush, Map<string, HTMLCanvasElement>>()
+
+/**
  * The live preview stroke of the brush editor (D32).
  *
  * A 2D canvas, deliberately. The stroke it draws is computed by
@@ -21,9 +30,15 @@ import { previewStroke } from "../lib/brush-preview"
 export function BrushPreview({
   brush,
   className,
+  cached = false,
 }: {
   brush: Brush
   className?: string
+  /**
+   * Reuse a stroke already drawn for this brush. For library rows, whose
+   * brushes do not change under them; the editor's live preview leaves it off.
+   */
+  cached?: boolean
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
@@ -43,8 +58,15 @@ export function BrushPreview({
       if (!ink) return
       ink.setTransform(density, 0, 0, density, 0, 0)
       ink.clearRect(0, 0, box.width, box.height)
-      const preview = previewStroke(brush, box)
       const foreground = getComputedStyle(canvas).color
+      const key = `${canvas.width}x${canvas.height}:${density}:${foreground}`
+      const hit = cached ? thumbnails.get(brush)?.get(key) : undefined
+      if (hit) {
+        ink.setTransform(1, 0, 0, 1, 0, 0)
+        ink.drawImage(hit, 0, 0)
+        return
+      }
+      const preview = previewStroke(brush, box)
       ink.globalAlpha = preview.opacity
       // The stroke goes down as one layer and is composited once, which is
       // what stroke opacity means (D27): dabs drawn straight onto the canvas
@@ -78,6 +100,16 @@ export function BrushPreview({
         layer.restore()
       }
       ink.drawImage(buffer, 0, 0, box.width, box.height)
+      if (cached) {
+        // The finished picture, stroke opacity included, so a hit is one copy.
+        const snapshot = document.createElement("canvas")
+        snapshot.width = canvas.width
+        snapshot.height = canvas.height
+        snapshot.getContext("2d")?.drawImage(canvas, 0, 0)
+        const sizes = thumbnails.get(brush) ?? new Map()
+        sizes.set(key, snapshot)
+        thumbnails.set(brush, sizes)
+      }
     }
     draw()
     // The box is what the stroke is laid out in, so a panel that resizes
@@ -85,7 +117,7 @@ export function BrushPreview({
     const observer = new ResizeObserver(draw)
     observer.observe(canvas)
     return () => observer.disconnect()
-  }, [brush])
+  }, [brush, cached])
 
   return (
     <canvas

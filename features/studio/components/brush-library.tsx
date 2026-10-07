@@ -1,24 +1,28 @@
 "use client"
 
 import {
+  CaretRightIcon,
   CopyIcon,
+  MagnifyingGlassIcon,
   PencilSimpleIcon,
   FolderPlusIcon,
   TrashIcon,
   XIcon,
 } from "@phosphor-icons/react"
-import { useMemo, useState } from "react"
+import { type Ref, useMemo, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import type { Brush } from "@/engine/brush/brush"
 
 import {
+  BUILTIN_SET,
   BUILTIN_SET_NAMES,
   type BrushSet,
   brushShelf,
   duplicateOf,
   type LibraryBrush,
+  searchShelf,
   setForNewBrush,
 } from "../lib/brush-shelf"
 import type { BrushLibraryState, BrushStore } from "../lib/brush-store"
@@ -68,6 +72,28 @@ export function BrushLibrary({
    */
   const [pendingSets, setPendingSets] = useState<string[]>([])
   const [newSet, setNewSet] = useState("")
+  const [query, setQuery] = useState("")
+  /**
+   * Sets folded shut, by key. The ported sets start folded: sixty rows of
+   * strokes is a wall, and the six built-ins and the artist's own are what is
+   * reached for most. A search opens whatever it finds.
+   */
+  const [folded, setFolded] = useState<ReadonlySet<string>>(
+    () =>
+      new Set(
+        BUILTIN_SET_NAMES.filter((name) => name !== BUILTIN_SET).map((name) =>
+          setKey({ name, builtin: true })
+        )
+      )
+  )
+  const searching = query.trim() !== ""
+  const credits = useRef<HTMLDetailsElement>(null)
+  const toggle = (key: string) =>
+    setFolded((current) => {
+      const next = new Set(current)
+      if (!next.delete(key)) next.add(key)
+      return next
+    })
 
   const shelf = useMemo(() => brushShelf(library.brushes), [library.brushes])
   const sets = useMemo(() => {
@@ -83,6 +109,7 @@ export function BrushLibrary({
         })),
     ]
   }, [shelf, pendingSets])
+  const shown = useMemo(() => searchShelf(sets, query), [sets, query])
 
   /**
    * Runs a store change and says so when it fails. Saving a brush is work an
@@ -105,7 +132,7 @@ export function BrushLibrary({
     const moving = dragging
     setDragging(null)
     // A shipped set has no rows, so there is nothing to move a brush into.
-    if (!moving || moving.builtin || set.builtin) return
+    if (!moving || moving.builtin || set.builtin || searching) return
     run(store.move(moving.id, set.name, index))
   }
 
@@ -116,6 +143,19 @@ export function BrushLibrary({
     >
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium">Brushes</h2>
+        {/* With sixty-odd rows above them, the credits would otherwise sit
+            where nobody scrolls; this is the way in from the top. */}
+        <button
+          type="button"
+          className="mr-1 ml-auto text-xs text-muted-foreground underline-offset-2 hover:underline"
+          onClick={() => {
+            if (!credits.current) return
+            credits.current.open = true
+            credits.current.scrollIntoView({ block: "nearest" })
+          }}
+        >
+          Show credits
+        </button>
         <IconButton
           variant="ghost"
           size="icon"
@@ -137,120 +177,168 @@ export function BrushLibrary({
         <p className="text-xs text-muted-foreground">Fetching your brushes…</p>
       )}
 
-      {sets.map((set) => (
-        <section key={`${set.builtin}:${set.name}`} className="space-y-1.5">
-          <h3
-            className="text-xs font-medium text-muted-foreground"
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={() => drop(set, set.brushes.length)}
-          >
-            {set.name}
-          </h3>
-          {set.brushes.length === 0 && (
-            <p className="text-xs text-muted-foreground/70">
-              Empty. Drag a brush here.
-            </p>
-          )}
-          {set.brushes.map((entry, index) => (
-            <div
-              key={entry.id}
-              data-testid={`brush-${entry.id}`}
-              data-selected={entry.id === brush.id}
-              draggable={!entry.builtin}
-              onDragStart={() => setDragging(entry)}
+      <div className="relative">
+        <MagnifyingGlassIcon className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          type="search"
+          value={query}
+          aria-label="Search brushes"
+          placeholder="Search brushes"
+          className="h-7 pl-7 text-xs"
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </div>
+
+      {searching && shown.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          No brush is called that.
+        </p>
+      )}
+
+      {shown.map((set) => {
+        const key = setKey(set)
+        const open = searching || !folded.has(key)
+        return (
+          <section key={key} className="space-y-1.5">
+            <h3
+              className="text-xs font-medium text-muted-foreground"
               onDragOver={(event) => event.preventDefault()}
-              onDrop={() => drop(set, index)}
-              className={`flex items-center gap-2 rounded-lg border p-1.5 ${
-                entry.id === brush.id ? "border-primary" : "border-border/60"
-              }`}
+              onDrop={() => drop(set, set.brushes.length)}
             >
-              {/* The same stroke the editor previews, from the same dynamics
-                  evaluation: what a brush looks like is how it is chosen. */}
-              {renaming === entry.id ? (
-                <Input
-                  autoFocus
-                  defaultValue={entry.name}
-                  aria-label={`Name of ${entry.name}`}
-                  className="h-7 flex-1 text-xs"
-                  onBlur={(event) => {
-                    setRenaming(null)
-                    run(store.rename(entry.id, event.target.value))
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") event.currentTarget.blur()
-                    if (event.key === "Escape") setRenaming(null)
-                  }}
-                />
-              ) : (
-                <button
-                  type="button"
-                  className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-xs focus-visible:outline-2 focus-visible:outline-primary"
-                  aria-pressed={entry.id === brush.id}
-                  aria-label={`Paint with ${entry.name}`}
-                  onClick={() => onSelect(entry.brush)}
-                >
-                  <BrushPreview
-                    brush={entry.brush}
-                    className="h-10 w-14 shrink-0 rounded-md bg-muted"
-                  />
-                  <span className="min-w-0">
-                    <span className="block truncate font-medium">
-                      <BrushIcon
-                        id={entry.id}
-                        className="mr-1 inline size-3.5"
-                      />
-                      {entry.name}
-                    </span>
-                    <span className="mt-1 block text-[10px] leading-snug text-muted-foreground">
-                      {brushDescription(entry.id)}
-                    </span>
-                  </span>
-                </button>
-              )}
-              <IconButton
-                variant="ghost"
-                size="icon"
-                label={`Duplicate ${entry.name}`}
-                className="size-7 rounded-md"
-                onClick={() => {
-                  const copy = duplicateOf(entry, library.brushes)
-                  run(
-                    store
-                      .save(copy.name, copy.set, copy.brush)
-                      .then((id) =>
-                        onSelect({ ...copy.brush, id, name: copy.name }, true)
-                      )
-                  )
-                }}
+              <button
+                type="button"
+                aria-expanded={open}
+                disabled={searching}
+                className="flex w-full items-center gap-1 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-primary"
+                onClick={() => toggle(key)}
               >
-                <CopyIcon className="size-3.5" />
-              </IconButton>
-              {!entry.builtin && (
-                <IconButton
-                  variant="ghost"
-                  size="icon"
-                  label={`Rename ${entry.name}`}
-                  className="size-7 rounded-md"
-                  onClick={() => setRenaming(entry.id)}
+                <CaretRightIcon
+                  className={`size-3 transition-transform ${open ? "rotate-90" : ""}`}
+                />
+                {set.name}
+                <span
+                  aria-hidden
+                  className="ml-auto font-normal text-muted-foreground/70"
                 >
-                  <PencilSimpleIcon className="size-3.5" />
-                </IconButton>
-              )}
-              {entry.deletable && (
-                <IconButton
-                  variant="ghost"
-                  size="icon"
-                  label={`Delete ${entry.name}`}
-                  className="size-7 rounded-md"
-                  onClick={() => run(store.remove(entry.id))}
+                  {set.brushes.length}
+                </span>
+              </button>
+            </h3>
+            {open && set.brushes.length === 0 && (
+              <p className="text-xs text-muted-foreground/70">
+                Empty. Drag a brush here.
+              </p>
+            )}
+            {open &&
+              set.brushes.map((entry, index) => (
+                <div
+                  key={entry.id}
+                  data-testid={`brush-${entry.id}`}
+                  data-selected={entry.id === brush.id}
+                  // A filtered set's positions are not the set's, so
+                  // nothing is moved while a search is narrowing it.
+                  draggable={!entry.builtin && !searching}
+                  onDragStart={() => setDragging(entry)}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={() => drop(set, index)}
+                  className={`flex items-center gap-2 rounded-lg border p-1.5 ${
+                    entry.id === brush.id
+                      ? "border-primary"
+                      : "border-border/60"
+                  }`}
                 >
-                  <TrashIcon className="size-3.5" />
-                </IconButton>
-              )}
-            </div>
-          ))}
-        </section>
-      ))}
+                  {/* The same stroke the editor previews, from the same dynamics
+                  evaluation: what a brush looks like is how it is chosen. */}
+                  {renaming === entry.id ? (
+                    <Input
+                      autoFocus
+                      defaultValue={entry.name}
+                      aria-label={`Name of ${entry.name}`}
+                      className="h-7 flex-1 text-xs"
+                      onBlur={(event) => {
+                        setRenaming(null)
+                        run(store.rename(entry.id, event.target.value))
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur()
+                        if (event.key === "Escape") setRenaming(null)
+                      }}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-xs focus-visible:outline-2 focus-visible:outline-primary"
+                      aria-pressed={entry.id === brush.id}
+                      aria-label={`Paint with ${entry.name}`}
+                      onClick={() => onSelect(entry.brush)}
+                    >
+                      <BrushPreview
+                        cached
+                        brush={entry.brush}
+                        className="h-10 w-14 shrink-0 rounded-md bg-muted"
+                      />
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium">
+                          <BrushIcon
+                            id={entry.id}
+                            className="mr-1 inline size-3.5"
+                          />
+                          {entry.name}
+                        </span>
+                        <span className="mt-1 block text-[10px] leading-snug text-muted-foreground">
+                          {brushDescription(entry.id)}
+                        </span>
+                      </span>
+                    </button>
+                  )}
+                  <IconButton
+                    variant="ghost"
+                    size="icon"
+                    label={`Duplicate ${entry.name}`}
+                    className="size-7 rounded-md"
+                    onClick={() => {
+                      const copy = duplicateOf(entry, library.brushes)
+                      run(
+                        store
+                          .save(copy.name, copy.set, copy.brush)
+                          .then((id) =>
+                            onSelect(
+                              { ...copy.brush, id, name: copy.name },
+                              true
+                            )
+                          )
+                      )
+                    }}
+                  >
+                    <CopyIcon className="size-3.5" />
+                  </IconButton>
+                  {!entry.builtin && (
+                    <IconButton
+                      variant="ghost"
+                      size="icon"
+                      label={`Rename ${entry.name}`}
+                      className="size-7 rounded-md"
+                      onClick={() => setRenaming(entry.id)}
+                    >
+                      <PencilSimpleIcon className="size-3.5" />
+                    </IconButton>
+                  )}
+                  {entry.deletable && (
+                    <IconButton
+                      variant="ghost"
+                      size="icon"
+                      label={`Delete ${entry.name}`}
+                      className="size-7 rounded-md"
+                      onClick={() => run(store.remove(entry.id))}
+                    >
+                      <TrashIcon className="size-3.5" />
+                    </IconButton>
+                  )}
+                </div>
+              ))}
+          </section>
+        )
+      })}
 
       <div className="flex gap-1.5">
         {/* Saving over a brush is offered only where there is a brush to save
@@ -304,9 +392,14 @@ export function BrushLibrary({
         </IconButton>
       </div>
 
-      <TextureCredits />
+      <TextureCredits ref={credits} />
     </div>
   )
+}
+
+/** A set's identity: a stored set may share no name with a shipped one, but the key says which it is anyway. */
+function setKey(set: Pick<BrushSet, "name" | "builtin">) {
+  return `${set.builtin}:${set.name}`
 }
 
 /**
@@ -314,10 +407,10 @@ export function BrushLibrary({
  * brushes they grew from were released asking for credit, and the people
  * who made them are owed it either way.
  */
-function TextureCredits() {
+function TextureCredits({ ref }: { ref: Ref<HTMLDetailsElement> }) {
   const { source, textures } = KRITA_TEXTURES.manifest
   return (
-    <details className="text-xs text-muted-foreground">
+    <details ref={ref} className="text-xs text-muted-foreground">
       <summary className="cursor-pointer select-none">Credits</summary>
       <p className="mt-1.5 leading-relaxed">
         {textures.length} tips and papers from the{" "}
