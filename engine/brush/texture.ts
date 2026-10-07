@@ -219,6 +219,35 @@ export function builtinTextures(): Record<string, GrayscaleTexture> {
 }
 
 /**
+ * Ink, as the engine means it: a texel is how much the brush marks there, so
+ * 255 is full coverage and 0 is nothing — the convention `createTip` builds
+ * the shipped tips to, where the texture falls to zero at the rim.
+ *
+ * An image says the opposite in the medium artists actually have one in: a
+ * stamp is a dark mark on white paper, or a dark mark on nothing at all. So
+ * the darkness is the ink, and transparency is where there is none — take
+ * luminance directly and a scanned tip would import as a covering square with
+ * a hole where the mark is. Luminance is weighted perceptually rather than
+ * averaged flat, so a blue mark and a yellow one of the same lightness import
+ * as the same strength of ink.
+ */
+export function toGrayscale(
+  rgba: Uint8ClampedArray | Uint8Array,
+  width: number,
+  height: number
+): GrayscaleTexture {
+  const data = new Uint8Array(width * height)
+  for (let index = 0; index < data.length; index++) {
+    const at = index * 4
+    const luminance =
+      0.2126 * rgba[at] + 0.7152 * rgba[at + 1] + 0.0722 * rgba[at + 2]
+    const alpha = rgba[at + 3] / 255
+    data[index] = Math.round((255 - luminance) * alpha)
+  }
+  return { width, height, data }
+}
+
+/**
  * Rejects a texture that is not the shape the uploader assumes. Imported
  * assets are input, so they are checked once here rather than trusted at the
  * point a stroke is being drawn.

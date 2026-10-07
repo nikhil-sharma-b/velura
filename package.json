@@ -17,6 +17,7 @@
     "format:check": "oxfmt --check \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
     "bench": "bun run bench/run.ts",
+    "assets:krita": "bun run tooling/krita-assets.ts",
     "test": "bun run test:unit && bun run test:browser",
     "test:unit": "bun test tests/unit",
     "test:browser": "playwright test"

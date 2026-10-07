@@ -1,0 +1,1613 @@
+{
+  "source": {
+    "name": "Krita 4 default resources",
+    "repository": "https://invent.kde.org/graphics/krita",
+    "commit": "97f42ad6326a3cfc15d7f158678433608acf13ce",
+    "licence": "CC0 1.0",
+    "authors": [
+      "David Revoy (Deevad)",
+      "Ramon Miranda",
+      "Razvanc",
+      "Radian",
+      "Wolthera",
+      "Storm",
+      "Scottyp",
+      "Blender Foundation"
+    ]
+  },
+  "textures": [
+    {
+      "id": "krita:abominable-snowman",
+      "name": "Abominable snowman",
+      "kind": "tip",
+      "files": [
+        "tips/abominable-snowman.png"
+      ],
+      "source": "brushes/abominable_snowman.png"
+    },
+    {
+      "id": "krita:bamboo-leaves-random",
+      "name": "Bamboo leaves random",
+      "kind": "tip",
+      "files": [
+        "tips/bamboo-leaves-random-0.png",
+        "tips/bamboo-leaves-random-1.png",
+        "tips/bamboo-leaves-random-2.png"
+      ],
+      "source": "brushes/bamboo_leaves_random.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:bokey-circle",
+      "name": "Bokey circle",
+      "kind": "tip",
+      "files": [
+        "tips/bokey-circle.png"
+      ],
+      "source": "brushes/bokey_circle.gbr"
+    },
+    {
+      "id": "krita:brick",
+      "name": "Brick",
+      "kind": "tip",
+      "files": [
+        "tips/brick-0.png",
+        "tips/brick-1.png",
+        "tips/brick-2.png"
+      ],
+      "source": "brushes/brick.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:bristle",
+      "name": "Bristle",
+      "kind": "tip",
+      "files": [
+        "tips/bristle.png"
+      ],
+      "source": "brushes/bristle.png"
+    },
+    {
+      "id": "krita:bristles-chisel-dense",
+      "name": "Bristles chisel dense",
+      "kind": "tip",
+      "files": [
+        "tips/bristles-chisel-dense.png"
+      ],
+      "source": "brushes/bristles_chisel_dense.png"
+    },
+    {
+      "id": "krita:bristles-circle-dense",
+      "name": "Bristles circle dense",
+      "kind": "tip",
+      "files": [
+        "tips/bristles-circle-dense.png"
+      ],
+      "source": "brushes/bristles_circle_dense.png"
+    },
+    {
+      "id": "krita:bristles-circle-medium",
+      "name": "Bristles circle medium",
+      "kind": "tip",
+      "files": [
+        "tips/bristles-circle-medium.png"
+      ],
+      "source": "brushes/bristles_circle_medium.png"
+    },
+    {
+      "id": "krita:bristles-circle-random",
+      "name": "Bristles circle random",
+      "kind": "tip",
+      "files": [
+        "tips/bristles-circle-random-0.png",
+        "tips/bristles-circle-random-1.png",
+        "tips/bristles-circle-random-2.png",
+        "tips/bristles-circle-random-3.png"
+      ],
+      "source": "brushes/bristles_circle_random.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:bristles-circle-sparse",
+      "name": "Bristles circle sparse",
+      "kind": "tip",
+      "files": [
+        "tips/bristles-circle-sparse.png"
+      ],
+      "source": "brushes/bristles_circle_sparse.png"
+    },
+    {
+      "id": "krita:bristles-grouped",
+      "name": "Bristles grouped",
+      "kind": "tip",
+      "files": [
+        "tips/bristles-grouped.png"
+      ],
+      "source": "brushes/bristles_grouped.gbr"
+    },
+    {
+      "id": "krita:chalk",
+      "name": "Chalk",
+      "kind": "tip",
+      "files": [
+        "tips/chalk.png"
+      ],
+      "source": "brushes/chalk.png"
+    },
+    {
+      "id": "krita:chalk-chisel",
+      "name": "Chalk chisel",
+      "kind": "tip",
+      "files": [
+        "tips/chalk-chisel-0.png",
+        "tips/chalk-chisel-1.png",
+        "tips/chalk-chisel-2.png",
+        "tips/chalk-chisel-3.png"
+      ],
+      "source": "brushes/chalk_chisel.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:chalk-chisel-random",
+      "name": "Chalk chisel random",
+      "kind": "tip",
+      "files": [
+        "tips/chalk-chisel-random-0.png",
+        "tips/chalk-chisel-random-1.png",
+        "tips/chalk-chisel-random-2.png",
+        "tips/chalk-chisel-random-3.png"
+      ],
+      "source": "brushes/chalk_chisel_random.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:chalk-chisel-random-small",
+      "name": "Chalk chisel random small",
+      "kind": "tip",
+      "files": [
+        "tips/chalk-chisel-random-small-0.png",
+        "tips/chalk-chisel-random-small-1.png",
+        "tips/chalk-chisel-random-small-2.png",
+        "tips/chalk-chisel-random-small-3.png"
+      ],
+      "source": "brushes/chalk_chisel_random_small.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:chalk-round-hard",
+      "name": "Chalk round hard",
+      "kind": "tip",
+      "files": [
+        "tips/chalk-round-hard.png"
+      ],
+      "source": "brushes/chalk_round_hard.png"
+    },
+    {
+      "id": "krita:chalk-sparse",
+      "name": "Chalk sparse",
+      "kind": "tip",
+      "files": [
+        "tips/chalk-sparse.png"
+      ],
+      "source": "brushes/chalk_sparse.png"
+    },
+    {
+      "id": "krita:chisel-bent-rough",
+      "name": "Chisel bent rough",
+      "kind": "tip",
+      "files": [
+        "tips/chisel-bent-rough-0.png",
+        "tips/chisel-bent-rough-1.png",
+        "tips/chisel-bent-rough-2.png",
+        "tips/chisel-bent-rough-3.png"
+      ],
+      "source": "brushes/chisel_bent_rough.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:chisel-dense-smear",
+      "name": "Chisel dense smear",
+      "kind": "tip",
+      "files": [
+        "tips/chisel-dense-smear.png"
+      ],
+      "source": "brushes/chisel_dense_smear.png"
+    },
+    {
+      "id": "krita:chisel-eroded",
+      "name": "Chisel eroded",
+      "kind": "tip",
+      "files": [
+        "tips/chisel-eroded.png"
+      ],
+      "source": "brushes/chisel_eroded.png"
+    },
+    {
+      "id": "krita:chisel-knife",
+      "name": "Chisel knife",
+      "kind": "tip",
+      "files": [
+        "tips/chisel-knife.png"
+      ],
+      "source": "brushes/chisel_knife.gbr"
+    },
+    {
+      "id": "krita:chisel-soft",
+      "name": "Chisel soft",
+      "kind": "tip",
+      "files": [
+        "tips/chisel-soft.png"
+      ],
+      "source": "brushes/chisel_soft.png"
+    },
+    {
+      "id": "krita:chisel-streaks",
+      "name": "Chisel streaks",
+      "kind": "tip",
+      "files": [
+        "tips/chisel-streaks.png"
+      ],
+      "source": "brushes/chisel_streaks.png"
+    },
+    {
+      "id": "krita:circle-hard-eroded",
+      "name": "Circle hard eroded",
+      "kind": "tip",
+      "files": [
+        "tips/circle-hard-eroded-0.png",
+        "tips/circle-hard-eroded-1.png",
+        "tips/circle-hard-eroded-2.png"
+      ],
+      "source": "brushes/circle_hard_eroded.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:crackles",
+      "name": "Crackles",
+      "kind": "tip",
+      "files": [
+        "tips/crackles.png"
+      ],
+      "source": "brushes/crackles.gbr"
+    },
+    {
+      "id": "krita:floor",
+      "name": "Floor",
+      "kind": "tip",
+      "files": [
+        "tips/floor-0.png",
+        "tips/floor-1.png",
+        "tips/floor-2.png",
+        "tips/floor-3.png"
+      ],
+      "source": "brushes/floor.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:freckles",
+      "name": "Freckles",
+      "kind": "tip",
+      "files": [
+        "tips/freckles.png"
+      ],
+      "source": "brushes/freckles.png"
+    },
+    {
+      "id": "krita:gradient",
+      "name": "Gradient",
+      "kind": "tip",
+      "files": [
+        "tips/gradient.png"
+      ],
+      "source": "brushes/gradient.png"
+    },
+    {
+      "id": "krita:graphite-grain",
+      "name": "Graphite grain",
+      "kind": "tip",
+      "files": [
+        "tips/graphite-grain-0.png",
+        "tips/graphite-grain-1.png",
+        "tips/graphite-grain-2.png",
+        "tips/graphite-grain-3.png",
+        "tips/graphite-grain-4.png",
+        "tips/graphite-grain-5.png",
+        "tips/graphite-grain-6.png"
+      ],
+      "source": "brushes/graphite_grain.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:grass",
+      "name": "Grass",
+      "kind": "tip",
+      "files": [
+        "tips/grass-0.png",
+        "tips/grass-1.png",
+        "tips/grass-2.png",
+        "tips/grass-3.png",
+        "tips/grass-4.png",
+        "tips/grass-5.png"
+      ],
+      "source": "brushes/grass.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:grass-patch",
+      "name": "Grass patch",
+      "kind": "tip",
+      "files": [
+        "tips/grass-patch-0.png",
+        "tips/grass-patch-1.png",
+        "tips/grass-patch-2.png",
+        "tips/grass-patch-3.png"
+      ],
+      "source": "brushes/grass_patch.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:hair",
+      "name": "Hair",
+      "kind": "tip",
+      "files": [
+        "tips/hair.png"
+      ],
+      "source": "brushes/hair.png"
+    },
+    {
+      "id": "krita:hearts",
+      "name": "Hearts",
+      "kind": "tip",
+      "files": [
+        "tips/hearts-0.png",
+        "tips/hearts-1.png",
+        "tips/hearts-2.png",
+        "tips/hearts-3.png",
+        "tips/hearts-4.png",
+        "tips/hearts-5.png",
+        "tips/hearts-6.png"
+      ],
+      "source": "brushes/hearts.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:impressionism-brush",
+      "name": "Impressionism brush",
+      "kind": "tip",
+      "files": [
+        "tips/impressionism-brush-0.png",
+        "tips/impressionism-brush-1.png",
+        "tips/impressionism-brush-2.png",
+        "tips/impressionism-brush-3.png"
+      ],
+      "source": "brushes/impressionism_brush.gih",
+      "selection": "incremental"
+    },
+    {
+      "id": "krita:leaves",
+      "name": "Leaves",
+      "kind": "tip",
+      "files": [
+        "tips/leaves.png"
+      ],
+      "source": "brushes/leaves.png"
+    },
+    {
+      "id": "krita:mountains-distant",
+      "name": "Mountains distant",
+      "kind": "tip",
+      "files": [
+        "tips/mountains-distant-0.png",
+        "tips/mountains-distant-1.png",
+        "tips/mountains-distant-2.png",
+        "tips/mountains-distant-3.png"
+      ],
+      "source": "brushes/mountains_distant.gih",
+      "selection": "incremental"
+    },
+    {
+      "id": "krita:noise",
+      "name": "Noise",
+      "kind": "tip",
+      "files": [
+        "tips/noise-0.png",
+        "tips/noise-1.png",
+        "tips/noise-2.png",
+        "tips/noise-3.png",
+        "tips/noise-4.png",
+        "tips/noise-5.png",
+        "tips/noise-6.png",
+        "tips/noise-7.png",
+        "tips/noise-8.png",
+        "tips/noise-9.png"
+      ],
+      "source": "brushes/noise.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:oil-bristle",
+      "name": "Oil bristle",
+      "kind": "tip",
+      "files": [
+        "tips/oil-bristle.png"
+      ],
+      "source": "brushes/oil_bristle.png"
+    },
+    {
+      "id": "krita:oil-knife",
+      "name": "Oil knife",
+      "kind": "tip",
+      "files": [
+        "tips/oil-knife.png"
+      ],
+      "source": "brushes/oil_knife.png"
+    },
+    {
+      "id": "krita:paint-splats",
+      "name": "Paint splats",
+      "kind": "tip",
+      "files": [
+        "tips/paint-splats-0.png",
+        "tips/paint-splats-1.png",
+        "tips/paint-splats-2.png",
+        "tips/paint-splats-3.png",
+        "tips/paint-splats-4.png"
+      ],
+      "source": "brushes/paint_splats.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:plain-rake",
+      "name": "Plain rake",
+      "kind": "tip",
+      "files": [
+        "tips/plain-rake.png"
+      ],
+      "source": "brushes/plain_rake.png"
+    },
+    {
+      "id": "krita:rake-dense",
+      "name": "Rake dense",
+      "kind": "tip",
+      "files": [
+        "tips/rake-dense.png"
+      ],
+      "source": "brushes/rake_dense.png"
+    },
+    {
+      "id": "krita:rake-dotted",
+      "name": "Rake dotted",
+      "kind": "tip",
+      "files": [
+        "tips/rake-dotted.png"
+      ],
+      "source": "brushes/rake_dotted.png"
+    },
+    {
+      "id": "krita:rake-flat",
+      "name": "Rake flat",
+      "kind": "tip",
+      "files": [
+        "tips/rake-flat.png"
+      ],
+      "source": "brushes/rake_flat.png"
+    },
+    {
+      "id": "krita:rake-sparse",
+      "name": "Rake sparse",
+      "kind": "tip",
+      "files": [
+        "tips/rake-sparse.png"
+      ],
+      "source": "brushes/rake_sparse.png"
+    },
+    {
+      "id": "krita:random-debris",
+      "name": "Random debris",
+      "kind": "tip",
+      "files": [
+        "tips/random-debris.png"
+      ],
+      "source": "brushes/random-debris.gbr"
+    },
+    {
+      "id": "krita:random-vegetal",
+      "name": "Random vegetal",
+      "kind": "tip",
+      "files": [
+        "tips/random-vegetal-0.png",
+        "tips/random-vegetal-1.png",
+        "tips/random-vegetal-2.png"
+      ],
+      "source": "brushes/random-vegetal.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:random-particles",
+      "name": "Random particles",
+      "kind": "tip",
+      "files": [
+        "tips/random-particles.png"
+      ],
+      "source": "brushes/random_particles.png"
+    },
+    {
+      "id": "krita:rock",
+      "name": "Rock",
+      "kind": "tip",
+      "files": [
+        "tips/rock.png"
+      ],
+      "source": "brushes/rock.png"
+    },
+    {
+      "id": "krita:rock-light",
+      "name": "Rock light",
+      "kind": "tip",
+      "files": [
+        "tips/rock-light-0.png",
+        "tips/rock-light-1.png",
+        "tips/rock-light-2.png",
+        "tips/rock-light-3.png",
+        "tips/rock-light-4.png",
+        "tips/rock-light-5.png",
+        "tips/rock-light-6.png",
+        "tips/rock-light-7.png"
+      ],
+      "source": "brushes/rock_light.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:rock-pitted",
+      "name": "Rock pitted",
+      "kind": "tip",
+      "files": [
+        "tips/rock-pitted-0.png",
+        "tips/rock-pitted-1.png",
+        "tips/rock-pitted-2.png",
+        "tips/rock-pitted-3.png",
+        "tips/rock-pitted-4.png",
+        "tips/rock-pitted-5.png",
+        "tips/rock-pitted-6.png"
+      ],
+      "source": "brushes/rock_pitted.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:rock-scraped",
+      "name": "Rock scraped",
+      "kind": "tip",
+      "files": [
+        "tips/rock-scraped-0.png",
+        "tips/rock-scraped-1.png",
+        "tips/rock-scraped-2.png",
+        "tips/rock-scraped-3.png",
+        "tips/rock-scraped-4.png",
+        "tips/rock-scraped-5.png"
+      ],
+      "source": "brushes/rock_scraped.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:scales",
+      "name": "Scales",
+      "kind": "tip",
+      "files": [
+        "tips/scales.png"
+      ],
+      "source": "brushes/scales.png"
+    },
+    {
+      "id": "krita:scratches-rough",
+      "name": "Scratches rough",
+      "kind": "tip",
+      "files": [
+        "tips/scratches-rough-0.png",
+        "tips/scratches-rough-1.png",
+        "tips/scratches-rough-2.png",
+        "tips/scratches-rough-3.png",
+        "tips/scratches-rough-4.png",
+        "tips/scratches-rough-5.png",
+        "tips/scratches-rough-6.png",
+        "tips/scratches-rough-7.png",
+        "tips/scratches-rough-8.png"
+      ],
+      "source": "brushes/scratches_rough.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:scribbles",
+      "name": "Scribbles",
+      "kind": "tip",
+      "files": [
+        "tips/scribbles.png"
+      ],
+      "source": "brushes/scribbles.png"
+    },
+    {
+      "id": "krita:shapes-mech-random",
+      "name": "Shapes mech random",
+      "kind": "tip",
+      "files": [
+        "tips/shapes-mech-random-0.png",
+        "tips/shapes-mech-random-1.png",
+        "tips/shapes-mech-random-2.png",
+        "tips/shapes-mech-random-3.png",
+        "tips/shapes-mech-random-4.png",
+        "tips/shapes-mech-random-5.png",
+        "tips/shapes-mech-random-6.png",
+        "tips/shapes-mech-random-7.png",
+        "tips/shapes-mech-random-8.png",
+        "tips/shapes-mech-random-9.png",
+        "tips/shapes-mech-random-10.png",
+        "tips/shapes-mech-random-11.png",
+        "tips/shapes-mech-random-12.png",
+        "tips/shapes-mech-random-13.png",
+        "tips/shapes-mech-random-14.png",
+        "tips/shapes-mech-random-15.png",
+        "tips/shapes-mech-random-16.png",
+        "tips/shapes-mech-random-17.png",
+        "tips/shapes-mech-random-18.png",
+        "tips/shapes-mech-random-19.png",
+        "tips/shapes-mech-random-20.png",
+        "tips/shapes-mech-random-21.png",
+        "tips/shapes-mech-random-22.png"
+      ],
+      "source": "brushes/shapes_mech_random.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:shapes-round-random",
+      "name": "Shapes round random",
+      "kind": "tip",
+      "files": [
+        "tips/shapes-round-random-0.png",
+        "tips/shapes-round-random-1.png",
+        "tips/shapes-round-random-2.png",
+        "tips/shapes-round-random-3.png",
+        "tips/shapes-round-random-4.png",
+        "tips/shapes-round-random-5.png",
+        "tips/shapes-round-random-6.png",
+        "tips/shapes-round-random-7.png",
+        "tips/shapes-round-random-8.png",
+        "tips/shapes-round-random-9.png",
+        "tips/shapes-round-random-10.png",
+        "tips/shapes-round-random-11.png",
+        "tips/shapes-round-random-12.png",
+        "tips/shapes-round-random-13.png",
+        "tips/shapes-round-random-14.png"
+      ],
+      "source": "brushes/shapes_round_random.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:shapes-spiked-random",
+      "name": "Shapes spiked random",
+      "kind": "tip",
+      "files": [
+        "tips/shapes-spiked-random-0.png",
+        "tips/shapes-spiked-random-1.png",
+        "tips/shapes-spiked-random-2.png",
+        "tips/shapes-spiked-random-3.png",
+        "tips/shapes-spiked-random-4.png",
+        "tips/shapes-spiked-random-5.png",
+        "tips/shapes-spiked-random-6.png",
+        "tips/shapes-spiked-random-7.png",
+        "tips/shapes-spiked-random-8.png",
+        "tips/shapes-spiked-random-9.png",
+        "tips/shapes-spiked-random-10.png"
+      ],
+      "source": "brushes/shapes_spiked_random.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:smear-paint",
+      "name": "Smear paint",
+      "kind": "tip",
+      "files": [
+        "tips/smear-paint.png"
+      ],
+      "source": "brushes/smear_paint.png"
+    },
+    {
+      "id": "krita:smoke",
+      "name": "Smoke",
+      "kind": "tip",
+      "files": [
+        "tips/smoke.png"
+      ],
+      "source": "brushes/smoke.png"
+    },
+    {
+      "id": "krita:snow",
+      "name": "Snow",
+      "kind": "tip",
+      "files": [
+        "tips/snow-0.png",
+        "tips/snow-1.png",
+        "tips/snow-2.png"
+      ],
+      "source": "brushes/snow.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:sparkle",
+      "name": "Sparkle",
+      "kind": "tip",
+      "files": [
+        "tips/sparkle.png"
+      ],
+      "source": "brushes/sparkle.png"
+    },
+    {
+      "id": "krita:spike-blob",
+      "name": "Spike blob",
+      "kind": "tip",
+      "files": [
+        "tips/spike-blob.png"
+      ],
+      "source": "brushes/spike_blob.png"
+    },
+    {
+      "id": "krita:spike-eroded",
+      "name": "Spike eroded",
+      "kind": "tip",
+      "files": [
+        "tips/spike-eroded.png"
+      ],
+      "source": "brushes/spike_eroded.png"
+    },
+    {
+      "id": "krita:spines",
+      "name": "Spines",
+      "kind": "tip",
+      "files": [
+        "tips/spines.png"
+      ],
+      "source": "brushes/spines.png"
+    },
+    {
+      "id": "krita:splat-dots",
+      "name": "Splat dots",
+      "kind": "tip",
+      "files": [
+        "tips/splat-dots.png"
+      ],
+      "source": "brushes/splat_dots.png"
+    },
+    {
+      "id": "krita:splats-large",
+      "name": "Splats large",
+      "kind": "tip",
+      "files": [
+        "tips/splats-large-0.png",
+        "tips/splats-large-1.png",
+        "tips/splats-large-2.png",
+        "tips/splats-large-3.png",
+        "tips/splats-large-4.png"
+      ],
+      "source": "brushes/splats_large.gih",
+      "selection": "incremental"
+    },
+    {
+      "id": "krita:square-eroded",
+      "name": "Square eroded",
+      "kind": "tip",
+      "files": [
+        "tips/square-eroded.png"
+      ],
+      "source": "brushes/square_eroded.png"
+    },
+    {
+      "id": "krita:square-rough",
+      "name": "Square rough",
+      "kind": "tip",
+      "files": [
+        "tips/square-rough.png"
+      ],
+      "source": "brushes/square_rough.png"
+    },
+    {
+      "id": "krita:square-rough-lightgrey",
+      "name": "Square rough lightgrey",
+      "kind": "tip",
+      "files": [
+        "tips/square-rough-lightgrey.png"
+      ],
+      "source": "brushes/square_rough_lightgrey.png"
+    },
+    {
+      "id": "krita:starfield",
+      "name": "Starfield",
+      "kind": "tip",
+      "files": [
+        "tips/starfield.png"
+      ],
+      "source": "brushes/starfield.png"
+    },
+    {
+      "id": "krita:vegetal",
+      "name": "Vegetal",
+      "kind": "tip",
+      "files": [
+        "tips/vegetal.png"
+      ],
+      "source": "brushes/vegetal.gbr"
+    },
+    {
+      "id": "krita:vegetal-stylised",
+      "name": "Vegetal stylised",
+      "kind": "tip",
+      "files": [
+        "tips/vegetal-stylised-0.png",
+        "tips/vegetal-stylised-1.png",
+        "tips/vegetal-stylised-2.png",
+        "tips/vegetal-stylised-3.png",
+        "tips/vegetal-stylised-4.png"
+      ],
+      "source": "brushes/vegetal_stylised.gih",
+      "selection": "incremental"
+    },
+    {
+      "id": "krita:water-still",
+      "name": "Water still",
+      "kind": "tip",
+      "files": [
+        "tips/water-still-0.png",
+        "tips/water-still-1.png",
+        "tips/water-still-2.png",
+        "tips/water-still-3.png",
+        "tips/water-still-4.png",
+        "tips/water-still-5.png",
+        "tips/water-still-6.png",
+        "tips/water-still-7.png",
+        "tips/water-still-8.png"
+      ],
+      "source": "brushes/water_still.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:watercolor",
+      "name": "Watercolor",
+      "kind": "tip",
+      "files": [
+        "tips/watercolor-0.png",
+        "tips/watercolor-1.png",
+        "tips/watercolor-2.png",
+        "tips/watercolor-3.png",
+        "tips/watercolor-4.png"
+      ],
+      "source": "brushes/watercolor.gih",
+      "selection": "random"
+    },
+    {
+      "id": "krita:01-canvas",
+      "name": "Canvas",
+      "kind": "grain",
+      "files": [
+        "grain/01-canvas.png"
+      ],
+      "source": "patterns/01_canvas.png"
+    },
+    {
+      "id": "krita:02-rough-canvas",
+      "name": "Rough canvas",
+      "kind": "grain",
+      "files": [
+        "grain/02-rough-canvas.png"
+      ],
+      "source": "patterns/02_rough-canvas.png"
+    },
+    {
+      "id": "krita:02b-wooftissue",
+      "name": "Woof tissue",
+      "kind": "grain",
+      "files": [
+        "grain/02b-wooftissue.png"
+      ],
+      "source": "patterns/02b_WoofTissue.png"
+    },
+    {
+      "id": "krita:03-default-paper",
+      "name": "Default paper",
+      "kind": "grain",
+      "files": [
+        "grain/03-default-paper.png"
+      ],
+      "source": "patterns/03_default-paper.png"
+    },
+    {
+      "id": "krita:04-paper-c-grain",
+      "name": "Paper c grain",
+      "kind": "grain",
+      "files": [
+        "grain/04-paper-c-grain.png"
+      ],
+      "source": "patterns/04_paper-C-grain.png"
+    },
+    {
+      "id": "krita:05-paper-torchon",
+      "name": "Paper torchon",
+      "kind": "grain",
+      "files": [
+        "grain/05-paper-torchon.png"
+      ],
+      "source": "patterns/05_paper-torchon.png"
+    },
+    {
+      "id": "krita:06-hard-grain",
+      "name": "Hard grain",
+      "kind": "grain",
+      "files": [
+        "grain/06-hard-grain.png"
+      ],
+      "source": "patterns/06_hard-grain.png"
+    },
+    {
+      "id": "krita:08-bump-relief",
+      "name": "Bump relief",
+      "kind": "grain",
+      "files": [
+        "grain/08-bump-relief.png"
+      ],
+      "source": "patterns/08_bump-relief.png"
+    },
+    {
+      "id": "krita:09-drawed-crosshatched",
+      "name": "Drawed crosshatched",
+      "kind": "grain",
+      "files": [
+        "grain/09-drawed-crosshatched.png"
+      ],
+      "source": "patterns/09_drawed_crosshatched.png"
+    },
+    {
+      "id": "krita:09b-drawed-crossedlines",
+      "name": "Drawed crossed lines",
+      "kind": "grain",
+      "files": [
+        "grain/09b-drawed-crossedlines.png"
+      ],
+      "source": "patterns/09b_drawed-CrossedLines.png"
+    },
+    {
+      "id": "krita:10-drawed-dotted",
+      "name": "Drawed dotted",
+      "kind": "grain",
+      "files": [
+        "grain/10-drawed-dotted.png"
+      ],
+      "source": "patterns/10_drawed_dotted.png"
+    },
+    {
+      "id": "krita:11-drawed-furry",
+      "name": "Drawed furry",
+      "kind": "grain",
+      "files": [
+        "grain/11-drawed-furry.png"
+      ],
+      "source": "patterns/11_drawed_furry.png"
+    },
+    {
+      "id": "krita:12-drawed-vertical",
+      "name": "Drawed vertical",
+      "kind": "grain",
+      "files": [
+        "grain/12-drawed-vertical.png"
+      ],
+      "source": "patterns/12_drawed_vertical.png"
+    },
+    {
+      "id": "krita:13-drawed-swirl",
+      "name": "Drawed swirl",
+      "kind": "grain",
+      "files": [
+        "grain/13-drawed-swirl.png"
+      ],
+      "source": "patterns/13_drawed_swirl.png"
+    },
+    {
+      "id": "krita:14-texture-rock",
+      "name": "Texture rock",
+      "kind": "grain",
+      "files": [
+        "grain/14-texture-rock.png"
+      ],
+      "source": "patterns/14_texture-rock.png"
+    },
+    {
+      "id": "krita:15-texture-rockb",
+      "name": "Texture rock b",
+      "kind": "grain",
+      "files": [
+        "grain/15-texture-rockb.png"
+      ],
+      "source": "patterns/15_texture-rockB.png"
+    },
+    {
+      "id": "krita:16-texture-woody",
+      "name": "Texture woody",
+      "kind": "grain",
+      "files": [
+        "grain/16-texture-woody.png"
+      ],
+      "source": "patterns/16_texture-woody.png"
+    },
+    {
+      "id": "krita:17-texture-melt",
+      "name": "Texture melt",
+      "kind": "grain",
+      "files": [
+        "grain/17-texture-melt.png"
+      ],
+      "source": "patterns/17_texture-melt.png"
+    },
+    {
+      "id": "krita:18-texture-bark",
+      "name": "Texture bark",
+      "kind": "grain",
+      "files": [
+        "grain/18-texture-bark.png"
+      ],
+      "source": "patterns/18_texture-bark.png"
+    },
+    {
+      "id": "krita:18b-waveflex",
+      "name": "Wave flex",
+      "kind": "grain",
+      "files": [
+        "grain/18b-waveflex.png"
+      ],
+      "source": "patterns/18b_WaveFlex.png"
+    },
+    {
+      "id": "krita:19-texture-crackle",
+      "name": "Texture crackle",
+      "kind": "grain",
+      "files": [
+        "grain/19-texture-crackle.png"
+      ],
+      "source": "patterns/19_texture-crackle.png"
+    },
+    {
+      "id": "krita:20-texture-vegetal",
+      "name": "Texture vegetal",
+      "kind": "grain",
+      "files": [
+        "grain/20-texture-vegetal.png"
+      ],
+      "source": "patterns/20_texture-vegetal.png"
+    },
+    {
+      "id": "krita:21-texture-chainmail",
+      "name": "Texture chainmail",
+      "kind": "grain",
+      "files": [
+        "grain/21-texture-chainmail.png"
+      ],
+      "source": "patterns/21_texture-chainmail.png"
+    },
+    {
+      "id": "krita:22-texture-reptile",
+      "name": "Texture reptile",
+      "kind": "grain",
+      "files": [
+        "grain/22-texture-reptile.png"
+      ],
+      "source": "patterns/22_texture-reptile.png"
+    },
+    {
+      "id": "krita:23-dynamic-screentone-a",
+      "name": "Dynamic screentone a",
+      "kind": "grain",
+      "files": [
+        "grain/23-dynamic-screentone-a.png"
+      ],
+      "source": "patterns/23-dynamic-screentone-A.png"
+    },
+    {
+      "id": "krita:24-dynamic-screentone-b",
+      "name": "Dynamic screentone b",
+      "kind": "grain",
+      "files": [
+        "grain/24-dynamic-screentone-b.png"
+      ],
+      "source": "patterns/24-dynamic-screentone-B.png"
+    },
+    {
+      "id": "krita:25-dynamic-screentone-c",
+      "name": "Dynamic screentone c",
+      "kind": "grain",
+      "files": [
+        "grain/25-dynamic-screentone-c.png"
+      ],
+      "source": "patterns/25-dynamic-screentone-C.png"
+    },
+    {
+      "id": "krita:26-brush-marks",
+      "name": "Brush marks",
+      "kind": "grain",
+      "files": [
+        "grain/26-brush-marks.png"
+      ],
+      "source": "patterns/26_brush-marks.png"
+    },
+    {
+      "id": "krita:abstract-lines",
+      "name": "Abstract lines",
+      "kind": "grain",
+      "files": [
+        "grain/abstract-lines.png"
+      ],
+      "source": "patterns/Abstract_lines.png"
+    },
+    {
+      "id": "krita:cross01",
+      "name": "Cross01",
+      "kind": "grain",
+      "files": [
+        "grain/cross01.png"
+      ],
+      "source": "patterns/Cross01.pat"
+    },
+    {
+      "id": "krita:cross02",
+      "name": "Cross02",
+      "kind": "grain",
+      "files": [
+        "grain/cross02.png"
+      ],
+      "source": "patterns/Cross02.pat"
+    },
+    {
+      "id": "krita:cross03",
+      "name": "Cross03",
+      "kind": "grain",
+      "files": [
+        "grain/cross03.png"
+      ],
+      "source": "patterns/Cross03.pat"
+    },
+    {
+      "id": "krita:cross04",
+      "name": "Cross04",
+      "kind": "grain",
+      "files": [
+        "grain/cross04.png"
+      ],
+      "source": "patterns/Cross04.pat"
+    },
+    {
+      "id": "krita:cross05",
+      "name": "Cross05",
+      "kind": "grain",
+      "files": [
+        "grain/cross05.png"
+      ],
+      "source": "patterns/Cross05.pat"
+    },
+    {
+      "id": "krita:cross06",
+      "name": "Cross06",
+      "kind": "grain",
+      "files": [
+        "grain/cross06.png"
+      ],
+      "source": "patterns/Cross06.pat"
+    },
+    {
+      "id": "krita:cross07",
+      "name": "Cross07",
+      "kind": "grain",
+      "files": [
+        "grain/cross07.png"
+      ],
+      "source": "patterns/Cross07.pat"
+    },
+    {
+      "id": "krita:crumpled-paper",
+      "name": "Crumpled paper",
+      "kind": "grain",
+      "files": [
+        "grain/crumpled-paper.png"
+      ],
+      "source": "patterns/Crumpled_Paper.pat"
+    },
+    {
+      "id": "krita:grid01",
+      "name": "Grid01",
+      "kind": "grain",
+      "files": [
+        "grain/grid01.png"
+      ],
+      "source": "patterns/Grid01.pat"
+    },
+    {
+      "id": "krita:grid02",
+      "name": "Grid02",
+      "kind": "grain",
+      "files": [
+        "grain/grid02.png"
+      ],
+      "source": "patterns/Grid02.pat"
+    },
+    {
+      "id": "krita:grid03",
+      "name": "Grid03",
+      "kind": "grain",
+      "files": [
+        "grain/grid03.png"
+      ],
+      "source": "patterns/Grid03.pat"
+    },
+    {
+      "id": "krita:grid04",
+      "name": "Grid04",
+      "kind": "grain",
+      "files": [
+        "grain/grid04.png"
+      ],
+      "source": "patterns/Grid04.pat"
+    },
+    {
+      "id": "krita:grid05",
+      "name": "Grid05",
+      "kind": "grain",
+      "files": [
+        "grain/grid05.png"
+      ],
+      "source": "patterns/Grid05.pat"
+    },
+    {
+      "id": "krita:hr-pastelpaper-02",
+      "name": "Hr pastel paper 02",
+      "kind": "grain",
+      "files": [
+        "grain/hr-pastelpaper-02.png"
+      ],
+      "source": "patterns/HR_PastelPaper_02.pat"
+    },
+    {
+      "id": "krita:hr-wall-paper",
+      "name": "Hr wall paper",
+      "kind": "grain",
+      "files": [
+        "grain/hr-wall-paper.png"
+      ],
+      "source": "patterns/HR_Wall_Paper.pat"
+    },
+    {
+      "id": "krita:maze-lines",
+      "name": "Maze lines",
+      "kind": "grain",
+      "files": [
+        "grain/maze-lines.png"
+      ],
+      "source": "patterns/Maze_lines.png"
+    },
+    {
+      "id": "krita:pattern01",
+      "name": "Pattern01",
+      "kind": "grain",
+      "files": [
+        "grain/pattern01.png"
+      ],
+      "source": "patterns/Pattern01.pat"
+    },
+    {
+      "id": "krita:pattern02",
+      "name": "Pattern02",
+      "kind": "grain",
+      "files": [
+        "grain/pattern02.png"
+      ],
+      "source": "patterns/Pattern02.pat"
+    },
+    {
+      "id": "krita:pattern03",
+      "name": "Pattern03",
+      "kind": "grain",
+      "files": [
+        "grain/pattern03.png"
+      ],
+      "source": "patterns/Pattern03.pat"
+    },
+    {
+      "id": "krita:pattern04",
+      "name": "Pattern04",
+      "kind": "grain",
+      "files": [
+        "grain/pattern04.png"
+      ],
+      "source": "patterns/Pattern04.pat"
+    },
+    {
+      "id": "krita:pattern05",
+      "name": "Pattern05",
+      "kind": "grain",
+      "files": [
+        "grain/pattern05.png"
+      ],
+      "source": "patterns/Pattern05.pat"
+    },
+    {
+      "id": "krita:pattern06",
+      "name": "Pattern06",
+      "kind": "grain",
+      "files": [
+        "grain/pattern06.png"
+      ],
+      "source": "patterns/Pattern06.pat"
+    },
+    {
+      "id": "krita:rough-paper",
+      "name": "Rough paper",
+      "kind": "grain",
+      "files": [
+        "grain/rough-paper.png"
+      ],
+      "source": "patterns/Rough_Paper.png"
+    },
+    {
+      "id": "krita:rough-wall-with-impasto",
+      "name": "Rough wall with impasto",
+      "kind": "grain",
+      "files": [
+        "grain/rough-wall-with-impasto.png"
+      ],
+      "source": "patterns/Rough_Wall_With_Impasto.png"
+    },
+    {
+      "id": "krita:sand-fine",
+      "name": "Sand fine",
+      "kind": "grain",
+      "files": [
+        "grain/sand-fine.png"
+      ],
+      "source": "patterns/Sand_fine.png"
+    },
+    {
+      "id": "krita:squares01",
+      "name": "Squares01",
+      "kind": "grain",
+      "files": [
+        "grain/squares01.png"
+      ],
+      "source": "patterns/Squares01.pat"
+    },
+    {
+      "id": "krita:squares02",
+      "name": "Squares02",
+      "kind": "grain",
+      "files": [
+        "grain/squares02.png"
+      ],
+      "source": "patterns/Squares02.pat"
+    },
+    {
+      "id": "krita:squares03",
+      "name": "Squares03",
+      "kind": "grain",
+      "files": [
+        "grain/squares03.png"
+      ],
+      "source": "patterns/Squares03.pat"
+    },
+    {
+      "id": "krita:squares04",
+      "name": "Squares04",
+      "kind": "grain",
+      "files": [
+        "grain/squares04.png"
+      ],
+      "source": "patterns/Squares04.pat"
+    },
+    {
+      "id": "krita:squares05",
+      "name": "Squares05",
+      "kind": "grain",
+      "files": [
+        "grain/squares05.png"
+      ],
+      "source": "patterns/Squares05.pat"
+    },
+    {
+      "id": "krita:squares06",
+      "name": "Squares06",
+      "kind": "grain",
+      "files": [
+        "grain/squares06.png"
+      ],
+      "source": "patterns/Squares06.pat"
+    },
+    {
+      "id": "krita:squares07",
+      "name": "Squares07",
+      "kind": "grain",
+      "files": [
+        "grain/squares07.png"
+      ],
+      "source": "patterns/Squares07.pat"
+    },
+    {
+      "id": "krita:squares08",
+      "name": "Squares08",
+      "kind": "grain",
+      "files": [
+        "grain/squares08.png"
+      ],
+      "source": "patterns/Squares08.pat"
+    },
+    {
+      "id": "krita:squares09",
+      "name": "Squares09",
+      "kind": "grain",
+      "files": [
+        "grain/squares09.png"
+      ],
+      "source": "patterns/Squares09.pat"
+    },
+    {
+      "id": "krita:squares10",
+      "name": "Squares10",
+      "kind": "grain",
+      "files": [
+        "grain/squares10.png"
+      ],
+      "source": "patterns/Squares10.pat"
+    },
+    {
+      "id": "krita:stars-sized",
+      "name": "Stars sized",
+      "kind": "grain",
+      "files": [
+        "grain/stars-sized.png"
+      ],
+      "source": "patterns/Stars_Sized.png"
+    },
+    {
+      "id": "krita:stripes02",
+      "name": "Stripes02",
+      "kind": "grain",
+      "files": [
+        "grain/stripes02.png"
+      ],
+      "source": "patterns/Stripes02.pat"
+    },
+    {
+      "id": "krita:stripes03",
+      "name": "Stripes03",
+      "kind": "grain",
+      "files": [
+        "grain/stripes03.png"
+      ],
+      "source": "patterns/Stripes03.pat"
+    },
+    {
+      "id": "krita:stripes04",
+      "name": "Stripes04",
+      "kind": "grain",
+      "files": [
+        "grain/stripes04.png"
+      ],
+      "source": "patterns/Stripes04.pat"
+    },
+    {
+      "id": "krita:stripes05",
+      "name": "Stripes05",
+      "kind": "grain",
+      "files": [
+        "grain/stripes05.png"
+      ],
+      "source": "patterns/Stripes05.pat"
+    },
+    {
+      "id": "krita:stripes06",
+      "name": "Stripes06",
+      "kind": "grain",
+      "files": [
+        "grain/stripes06.png"
+      ],
+      "source": "patterns/Stripes06.pat"
+    },
+    {
+      "id": "krita:stripes07",
+      "name": "Stripes07",
+      "kind": "grain",
+      "files": [
+        "grain/stripes07.png"
+      ],
+      "source": "patterns/Stripes07.pat"
+    },
+    {
+      "id": "krita:stripes08",
+      "name": "Stripes08",
+      "kind": "grain",
+      "files": [
+        "grain/stripes08.png"
+      ],
+      "source": "patterns/Stripes08.pat"
+    },
+    {
+      "id": "krita:stripes09",
+      "name": "Stripes09",
+      "kind": "grain",
+      "files": [
+        "grain/stripes09.png"
+      ],
+      "source": "patterns/Stripes09.pat"
+    },
+    {
+      "id": "krita:zigzag01",
+      "name": "Zigzag01",
+      "kind": "grain",
+      "files": [
+        "grain/zigzag01.png"
+      ],
+      "source": "patterns/Zigzag01.pat"
+    },
+    {
+      "id": "krita:zigzag02",
+      "name": "Zigzag02",
+      "kind": "grain",
+      "files": [
+        "grain/zigzag02.png"
+      ],
+      "source": "patterns/Zigzag02.pat"
+    },
+    {
+      "id": "krita:zigzag03",
+      "name": "Zigzag03",
+      "kind": "grain",
+      "files": [
+        "grain/zigzag03.png"
+      ],
+      "source": "patterns/Zigzag03.pat"
+    },
+    {
+      "id": "krita:zigzag04",
+      "name": "Zigzag04",
+      "kind": "grain",
+      "files": [
+        "grain/zigzag04.png"
+      ],
+      "source": "patterns/Zigzag04.pat"
+    },
+    {
+      "id": "krita:fractal-pattern",
+      "name": "Fractal pattern",
+      "kind": "grain",
+      "files": [
+        "grain/fractal-pattern.png"
+      ],
+      "source": "patterns/fractal_pattern.pat"
+    },
+    {
+      "id": "krita:generic-paper1",
+      "name": "Generic paper1",
+      "kind": "grain",
+      "files": [
+        "grain/generic-paper1.png"
+      ],
+      "source": "patterns/generic_paper1.pat"
+    },
+    {
+      "id": "krita:generic-paper2",
+      "name": "Generic paper2",
+      "kind": "grain",
+      "files": [
+        "grain/generic-paper2.png"
+      ],
+      "source": "patterns/generic_paper2.pat"
+    },
+    {
+      "id": "krita:hexacolbw-2",
+      "name": "Hexacol bw 2",
+      "kind": "grain",
+      "files": [
+        "grain/hexacolbw-2.png"
+      ],
+      "source": "patterns/hexacolBW__2.pat"
+    }
+  ]
+}

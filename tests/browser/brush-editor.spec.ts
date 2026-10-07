@@ -122,7 +122,7 @@ test("the editor covers shape, grain, rendering and dynamics", async ({
   await page.getByRole("option", { name: "Smooth (no grain)" }).click()
   await expect(panel.getByText("perfectly smooth surface")).toBeVisible()
   await panel.getByRole("combobox", { name: "Paper" }).click()
-  await page.getByRole("option", { name: "Paper" }).click()
+  await page.getByRole("option", { name: "Paper", exact: true }).click()
   for (const control of ["Grain scale", "Grain depth", "Grain movement"])
     await expect(panel.getByRole("slider", { name: control })).toBeVisible()
 

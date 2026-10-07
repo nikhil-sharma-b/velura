@@ -21,6 +21,7 @@ import {
   setForNewBrush,
 } from "../lib/brush-shelf"
 import type { BrushLibraryState, BrushStore } from "../lib/brush-store"
+import { KRITA_TEXTURES } from "../lib/shipped-textures"
 import { brushDescription } from "../lib/brush-description"
 import { BrushIcon } from "./brush-icon"
 import { BrushPreview } from "./brush-preview"
@@ -296,6 +297,42 @@ export function BrushLibrary({
           <FolderPlusIcon className="size-3.5" />
         </IconButton>
       </div>
+
+      <TextureCredits />
     </div>
+  )
+}
+
+/**
+ * Who made the shipped textures. Their licence asks for nothing, but the
+ * brushes they grew from were released asking for credit, and the people
+ * who made them are owed it either way.
+ */
+function TextureCredits() {
+  const { source, textures } = KRITA_TEXTURES.manifest
+  return (
+    <details className="text-xs text-muted-foreground">
+      <summary className="cursor-pointer select-none">Credits</summary>
+      <p className="mt-1.5 leading-relaxed">
+        {textures.length} tips and papers from the{" "}
+        <a
+          href={`${source.repository}/-/tree/${source.commit}/krita/data/bundles`}
+          target="_blank"
+          rel="noreferrer"
+          className="underline underline-offset-2"
+        >
+          {source.name}
+        </a>
+        , released under {source.licence}, by {source.authors.join(", ")}.{" "}
+        <a
+          href="/brushes/krita/CREDITS.md"
+          target="_blank"
+          rel="noreferrer"
+          className="underline underline-offset-2"
+        >
+          Full credits
+        </a>
+      </p>
+    </details>
   )
 }
