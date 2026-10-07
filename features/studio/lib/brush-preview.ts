@@ -24,9 +24,8 @@ import { createScatterPlacer, MAX_SCATTER_COUNT } from "@/engine/brush/scatter"
  * and the editor's job is to make the shape of a brush legible enough that it
  * is dialled in by eye rather than by trial and error on the work.
  *
- * It shows size, flow, opacity, angle, roundness, scatter and the paper's
- * bite. Per-dab colour is drawn by the canvas but not tinted here yet: that
- * arrives with the editor's Colour section (brush-library 07).
+ * It shows size, flow, opacity, angle, roundness, scatter, per-dab colour and
+ * the paper's bite.
  */
 
 export type PreviewDab = {
@@ -40,6 +39,10 @@ export type PreviewDab = {
   angle: number
   /** Width against length, in (0, 1]. */
   roundness: number
+  /** Colour offsets, already scaled by the brush's colour section. */
+  hue: number
+  saturation: number
+  lightness: number
 }
 
 export type BrushPreview = {
@@ -49,6 +52,8 @@ export type BrushPreview = {
   accumulation: Accumulation
   /** How hard the paper bites, or zero for a brush drawing on a smooth one. */
   grainDepth: number
+  /** Whether any dab's colour moves, so the preview has a colour to show it on. */
+  tinted: boolean
 }
 
 export type PreviewBox = { width: number; height: number }
@@ -180,6 +185,9 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
       opacity: brush.rendering.flow * params.flow,
       angle: brush.shape.angle + params.angle,
       roundness: brush.shape.roundness * params.roundness,
+      hue: params.hue * (brush.color?.hue ?? 1),
+      saturation: params.saturation * (brush.color?.saturation ?? 1),
+      lightness: params.lightness * (brush.color?.lightness ?? 1),
     }
     const thrown = scatter.place(
       brush.scatter,
@@ -200,5 +208,58 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
     opacity: brush.rendering.opacity,
     accumulation: brush.rendering.accumulation,
     grainDepth: brush.grain?.depth ?? 0,
+    tinted: dabs.some(
+      (dab) => dab.hue !== 0 || dab.saturation !== 0 || dab.lightness !== 0
+    ),
   }
+}
+
+function hueToRgb(p: number, q: number, t0: number): number {
+  const t = t0 - Math.floor(t0)
+  if (t < 1 / 6) return p + (q - p) * 6 * t
+  if (t < 0.5) return q
+  if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+  return p
+}
+
+/**
+ * A colour moved by a dab's offsets, as `engine/shaders/hsl.ts` moves it:
+ * hue in turns, saturation scaled, lightness leaning to white or black. The
+ * shader works in linear light and this in the preview's own, which is close
+ * enough to judge jitter by.
+ */
+export function adjustHsl(
+  [r, g, b]: readonly [number, number, number],
+  hue: number,
+  saturation: number,
+  lightness: number
+): [number, number, number] {
+  const high = Math.max(r, g, b)
+  const low = Math.min(r, g, b)
+  const l = (high + low) / 2
+  let h = 0
+  let s = 0
+  const d = high - low
+  if (d > 1e-6) {
+    s = l <= 0.5 ? d / (high + low) : d / (2 - high - low)
+    if (high === r) h = (g - b) / d + (g < b ? 6 : 0)
+    else if (high === g) h = (b - r) / d + 2
+    else h = (r - g) / d + 4
+    h /= 6
+  }
+  h += hue
+  s = Math.min(1, Math.max(0, s * (1 + saturation)))
+  let out: [number, number, number] = [l, l, l]
+  if (s > 0) {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s
+    const p = 2 * l - q
+    out = [
+      hueToRgb(p, q, h + 1 / 3),
+      hueToRgb(p, q, h),
+      hueToRgb(p, q, h - 1 / 3),
+    ]
+  }
+  if (lightness > 0) out = out.map((v) => v + (1 - v) * lightness) as typeof out
+  if (lightness < 0) out = out.map((v) => v * (1 + lightness)) as typeof out
+  return out
 }

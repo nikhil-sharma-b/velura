@@ -7,7 +7,7 @@ import type {
   Modulator,
 } from "./dynamics"
 import { MAX_SCATTER_AMOUNT, type BrushScatter } from "./scatter"
-import type { TipSelectionMode } from "./tip-sets"
+import { gimpTipSelection } from "./tip-sets"
 
 /**
  * Krita brush presets (`.kpp`), translated into Velura brushes (brush library
@@ -311,14 +311,6 @@ const UNSUPPORTED_OPTIONS: ReadonlyArray<[string, string]> = [
 
 const COMBINE_MODES = ["multiply"]
 
-const TIP_SELECTION: Readonly<Record<string, TipSelectionMode>> = {
-  random: "random",
-  incremental: "sequential",
-  angular: "direction",
-  pressure: "pressure",
-  velocity: "random",
-}
-
 function number(value: string | undefined, fallback: number): number {
   const parsed = value === undefined ? NaN : Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
@@ -411,8 +403,7 @@ function translateShape(
       (number(attrs.get("scale"), 1) * Math.max(tip.width, tip.height)) / 2
     )
     shape.tipTextureId = id
-    if (tip.selection)
-      shape.tipSelection = TIP_SELECTION[tip.selection] ?? "random"
+    if (tip.selection) shape.tipSelection = gimpTipSelection(tip.selection)
     return shape
   }
 

@@ -17,6 +17,23 @@ export function validateTipSelection(
     )
 }
 
+/**
+ * The mode a `.gih` hose names for its first dimension (`sel0:`). GIMP's
+ * velocity has no counterpart, and anything unknown falls back to random.
+ */
+const GIMP_SELECTION: Readonly<Record<string, TipSelectionMode>> = {
+  random: "random",
+  incremental: "sequential",
+  angular: "direction",
+  pressure: "pressure",
+}
+
+export function gimpTipSelection(selection: string): TipSelectionMode {
+  return Object.hasOwn(GIMP_SELECTION, selection)
+    ? GIMP_SELECTION[selection]
+    : "random"
+}
+
 /** Select a layer using the stroke's seeded context; sequential uses the dab ordinal. */
 export function selectTipFrame(
   mode: TipSelectionMode,

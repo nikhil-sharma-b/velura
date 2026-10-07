@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test"
 
 import { type Brush, DEFAULT_BRUSH } from "../../engine/brush/brush"
 import type { Modulator } from "../../engine/brush/dynamics"
-import { previewStroke } from "../../features/studio/lib/brush-preview"
+import {
+  adjustHsl,
+  previewStroke,
+} from "../../features/studio/lib/brush-preview"
 
 const BOX = { width: 200, height: 80 }
 
@@ -146,5 +149,37 @@ describe("the brush editor's preview stroke", () => {
       BOX
     )
     expect(grained.grainDepth).toBeCloseTo(0.8, 6)
+  })
+})
+
+describe("colour in the preview", () => {
+  test("each dab carries the colour offsets the canvas would", () => {
+    const jitter: Modulator = {
+      source: "random",
+      target: "hue",
+      range: [0, 0.5],
+      mix: "add",
+    }
+    const preview = previewStroke(
+      brush({
+        dynamics: [jitter],
+        color: { hue: 0.5, saturation: 1, lightness: 1 },
+      }),
+      BOX
+    )
+    const hues = preview.dabs.map((dab) => dab.hue)
+    expect(Math.max(...hues)).toBeLessThanOrEqual(0.25)
+    expect(new Set(hues).size).toBeGreaterThan(1)
+    expect(preview.tinted).toBe(true)
+    expect(previewStroke(brush(), BOX).tinted).toBe(false)
+  })
+
+  test("the shift is the stamp shader's", () => {
+    expect(adjustHsl([1, 0, 0], 0, 0, 0)).toEqual([1, 0, 0])
+    const cyan = adjustHsl([1, 0, 0], 0.5, 0, 0)
+    expect(cyan.map((v) => Math.round(v * 100) / 100)).toEqual([0, 1, 1])
+    expect(adjustHsl([1, 0, 0], 0, -1, 0)).toEqual([0.5, 0.5, 0.5])
+    expect(adjustHsl([0.5, 0.5, 0.5], 0, 0, 1)).toEqual([1, 1, 1])
+    expect(adjustHsl([0.5, 0.5, 0.5], 0, 0, -1)).toEqual([0, 0, 0])
   })
 })

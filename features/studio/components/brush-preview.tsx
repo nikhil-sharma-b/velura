@@ -5,7 +5,13 @@ import { useEffect, useRef } from "react"
 import type { Brush } from "@/engine/brush/brush"
 import { GRAIN_CUT } from "@/engine/shaders/stamp"
 
-import { previewStroke } from "../lib/brush-preview"
+import { adjustHsl, previewStroke } from "../lib/brush-preview"
+
+/**
+ * What a brush whose colour moves is previewed in. The panel's ink is a grey,
+ * and a hue shifted on grey is still grey: jitter needs a colour to show on.
+ */
+const TINT_BASE = [0.2, 0.45, 0.85] as const
 
 /**
  * Thumbnails drawn once per brush, box, density and ink colour. Keyed weakly on
@@ -90,6 +96,15 @@ export function BrushPreview({
       const bite = 1 - preview.grainDepth * GRAIN_CUT
       for (const dab of preview.dabs) {
         layer.globalAlpha = Math.max(0, Math.min(1, dab.opacity * bite))
+        if (preview.tinted) {
+          const [r, g, b] = adjustHsl(
+            TINT_BASE,
+            dab.hue,
+            dab.saturation,
+            dab.lightness
+          ).map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255))
+          layer.fillStyle = `rgb(${r} ${g} ${b})`
+        }
         layer.save()
         layer.translate(dab.x, dab.y)
         layer.rotate(dab.angle * Math.PI * 2)

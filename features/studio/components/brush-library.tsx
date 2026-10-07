@@ -25,6 +25,7 @@ import {
   searchShelf,
   setForNewBrush,
 } from "../lib/brush-shelf"
+import type { ImportOutcome } from "../lib/brush-import"
 import type { BrushLibraryState, BrushStore } from "../lib/brush-store"
 import { KRITA_TEXTURES } from "../lib/shipped-textures"
 import { brushDescription } from "../lib/brush-description"
@@ -52,6 +53,7 @@ export function BrushLibrary({
   edited,
   onSelect,
   onClose,
+  onImport,
 }: {
   library: BrushLibraryState
   store: BrushStore
@@ -61,6 +63,11 @@ export function BrushLibrary({
   edited: boolean
   onSelect(brush: Brush, keepOpen?: boolean): void
   onClose(): void
+  /**
+   * Imports Krita presets and GIMP or PNG tips as the artist's own brushes
+   * (07). Absent in a host with nowhere to keep them.
+   */
+  onImport?(files: File[]): Promise<ImportOutcome>
 }) {
   const [problem, setProblem] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -73,6 +80,9 @@ export function BrushLibrary({
   const [pendingSets, setPendingSets] = useState<string[]>([])
   const [newSet, setNewSet] = useState("")
   const [query, setQuery] = useState("")
+  const [importing, setImporting] = useState(false)
+  /** What the last import brought in, and what each brush left behind. */
+  const [report, setReport] = useState<ImportOutcome | null>(null)
   /**
    * Sets folded shut, by key. The ported sets start folded: sixty rows of
    * strokes is a wall, and the six built-ins and the artist's own are what is
@@ -128,6 +138,27 @@ export function BrushLibrary({
 
   const selected = library.brushes.find((stored) => stored.id === brush.id)
 
+  const importFiles = (files: File[]) => {
+    if (!onImport) return
+    setProblem(null)
+    setReport(null)
+    setImporting(true)
+    void onImport(files)
+      .then((outcome) => {
+        setReport(outcome)
+        // The first one in the hand, so it is painted with straight away.
+        if (outcome.imported[0]) onSelect(outcome.imported[0].brush, true)
+      })
+      .catch((error: unknown) =>
+        setProblem(
+          error instanceof Error
+            ? error.message
+            : "Those files could not be imported."
+        )
+      )
+      .finally(() => setImporting(false))
+  }
+
   const drop = (set: BrushSet, index: number) => {
     const moving = dragging
     setDragging(null)
@@ -171,6 +202,10 @@ export function BrushLibrary({
         <p role="alert" className="text-xs text-destructive">
           {problem}
         </p>
+      )}
+
+      {report && (
+        <ImportReport report={report} onDismiss={() => setReport(null)} />
       )}
 
       {!library.loaded && (
@@ -369,6 +404,27 @@ export function BrushLibrary({
         </Button>
       </div>
 
+      {onImport && (
+        // A file input, as the editor's texture import is: the browser's own
+        // picker is the only way to a file, and the keyboard reaches it.
+        <label className="flex h-8 cursor-pointer items-center justify-center rounded-md border border-border/70 text-xs font-medium focus-within:outline-2 focus-within:outline-primary hover:bg-muted">
+          {importing ? "Importing…" : "Import brush…"}
+          <input
+            type="file"
+            multiple
+            accept=".kpp,.gbr,.gih,.png"
+            aria-label="Import brush"
+            className="sr-only"
+            disabled={importing}
+            onChange={(event) => {
+              const files = [...(event.target.files ?? [])]
+              event.target.value = ""
+              if (files.length) importFiles(files)
+            }}
+          />
+        </label>
+      )}
+
       <div className="flex gap-1.5">
         <Input
           value={newSet}
@@ -394,6 +450,69 @@ export function BrushLibrary({
 
       <TextureCredits ref={credits} />
     </div>
+  )
+}
+
+/**
+ * What an import did. A translated preset is a draft, so what it lost is
+ * listed under it rather than left for the artist to discover stroke by
+ * stroke; a file that was refused says why.
+ */
+function ImportReport({
+  report,
+  onDismiss,
+}: {
+  report: ImportOutcome
+  onDismiss(): void
+}) {
+  return (
+    <section
+      aria-label="Import report"
+      className="space-y-1.5 rounded-lg border border-border/70 p-2 text-xs"
+    >
+      <div className="flex items-center justify-between">
+        <h3 className="font-medium">
+          {report.imported.length === 1
+            ? "Imported 1 brush"
+            : `Imported ${report.imported.length} brushes`}
+        </h3>
+        <IconButton
+          variant="ghost"
+          size="icon"
+          label="Dismiss import report"
+          className="size-6 rounded-md"
+          onClick={onDismiss}
+        >
+          <XIcon className="size-3" />
+        </IconButton>
+      </div>
+      {report.imported.map(({ brush, dropped }) => (
+        <div key={brush.id}>
+          <p className="font-medium">{brush.name}</p>
+          {dropped.length > 0 ? (
+            <>
+              <p className="text-muted-foreground">Not carried over:</p>
+              <ul className="list-disc pl-4 text-muted-foreground">
+                {dropped.map((line, index) => (
+                  <li key={index}>{line}</li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="text-muted-foreground">Everything carried over.</p>
+          )}
+        </div>
+      ))}
+      {report.failed.length > 0 && (
+        <ul role="alert" className="space-y-1 text-destructive">
+          {report.failed.map(({ file, reason }, index) => (
+            <li key={index}>
+              {file}: {reason}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   )
 }
 

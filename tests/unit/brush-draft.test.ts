@@ -4,10 +4,12 @@ import { type Brush, DEFAULT_BRUSH } from "../../engine/brush/brush"
 import { type Modulator, validateDynamics } from "../../engine/brush/dynamics"
 import {
   brushCommand,
+  convertLegacyScatter,
   editBrush,
   featherOf,
   hardnessOf,
   isBrushEdited,
+  legacyScatterMappings,
   MAX_FEATHER,
   newModulator,
 } from "../../features/studio/lib/brush-draft"
@@ -207,5 +209,97 @@ describe("the working brush an editor holds", () => {
       expect(hardnessOf(featherOf(hardness))).toBeCloseTo(hardness, 6)
     // A brush from elsewhere may carry a softer edge than the slider spans.
     expect(hardnessOf(MAX_FEATHER * 4)).toBe(0)
+  })
+})
+
+describe("scatter and colour sections", () => {
+  test("a scatter that throws nothing is no scatter section at all", () => {
+    const scattered = editBrush(saved(), {
+      scatter: { amount: 2, count: 3, axes: "both" },
+    })
+    expect(scattered.scatter).toEqual({ amount: 2, count: 3, axes: "both" })
+    const undone = editBrush(scattered, {
+      scatter: { amount: 0, count: 1, axes: "across" },
+    })
+    expect("scatter" in undone).toBe(false)
+    expect(isBrushEdited(saved(), undone)).toBe(false)
+  })
+
+  test("unit colour scales are no colour section at all", () => {
+    const tinted = editBrush(saved(), {
+      color: { hue: 0.2, saturation: 1, lightness: 1 },
+    })
+    expect(tinted.color).toEqual({ hue: 0.2, saturation: 1, lightness: 1 })
+    const undone = editBrush(tinted, {
+      color: { hue: 1, saturation: 1, lightness: 1 },
+    })
+    expect("color" in undone).toBe(false)
+  })
+
+  test("both reach the engine", () => {
+    const brush = editBrush(saved(), {
+      scatter: { amount: 1, count: 2, axes: "across" },
+      color: { hue: 0.5, saturation: 0, lightness: 1 },
+    })
+    expect(brushCommand(brush)).toMatchObject({
+      scatter: { amount: 1, count: 2, axes: "across" },
+      color: { hue: 0.5, saturation: 0, lightness: 1 },
+    })
+  })
+})
+
+describe("scatter mappings from before scatter had an amount", () => {
+  const legacy = (mix: Modulator["mix"], range: [number, number]) =>
+    ({ source: "random", target: "scatter", mix, range }) as Modulator
+
+  test("are the offsets on a brush with nothing to scale", () => {
+    const brush = { ...saved(), dynamics: [legacy("add", [0, 2])] }
+    expect(legacyScatterMappings(brush)).toEqual([0])
+    // A multiply is the model as it is now, and an amount makes any mix live.
+    const scaled = { ...saved(), dynamics: [legacy("multiply", [0, 1])] }
+    expect(legacyScatterMappings(scaled)).toEqual([])
+    const live = {
+      ...brush,
+      scatter: { amount: 1, count: 1, axes: "across" as const },
+    }
+    expect(legacyScatterMappings(live)).toEqual([])
+  })
+
+  test("convert to an amount and scales that throw the dabs as far", () => {
+    const brush = {
+      ...saved(),
+      dynamics: [
+        {
+          ...legacy("add", [0, 2]),
+          curve: [
+            { x: 0, y: 0.5 },
+            { x: 1, y: 1 },
+          ],
+        },
+        legacy("replace", [1, 0.5]),
+        newModulator("size"),
+      ],
+    } as Brush
+    const converted = convertLegacyScatter(brush)
+    expect(converted.scatter).toEqual({ amount: 2, count: 1, axes: "across" })
+    expect(converted.dynamics[0]).toMatchObject({
+      mix: "multiply",
+      range: [0, 1],
+      curve: [
+        { x: 0, y: 0.5 },
+        { x: 1, y: 1 },
+      ],
+    })
+    expect(converted.dynamics[1]).toMatchObject({
+      mix: "replace",
+      range: [0.5, 0.25],
+    })
+    expect(converted.dynamics[2]).toEqual(newModulator("size"))
+    validateDynamics(converted.dynamics)
+    expect(legacyScatterMappings(converted)).toEqual([])
+  })
+
+  test("a brush with nothing to convert is returned as it was", () => {
+    expect(convertLegacyScatter(saved())).toEqual(saved())
   })
 })
