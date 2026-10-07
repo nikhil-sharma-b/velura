@@ -1613,7 +1613,7 @@ export function CanvasHost({
                           // Focus handed back to the trigger would open its
                           // tooltip over the taper setting beside it.
                           onCloseAutoFocus={(event) => event.preventDefault()}
-                          className="z-50 w-72 rounded-xl border bg-background p-3 shadow-xl"
+                          className="z-50 max-h-[var(--radix-popover-content-available-height)] w-72 overflow-y-auto rounded-xl border bg-background p-3 shadow-xl"
                         >
                           <VectorBrushLibrary
                             library={vectorBrushLibrary}
@@ -1668,7 +1668,7 @@ export function CanvasHost({
                           sideOffset={10}
                           collisionPadding={12}
                           aria-label="Choose an eraser"
-                          className="z-50 w-72 rounded-xl border bg-background p-3 shadow-xl"
+                          className="z-50 max-h-[var(--radix-popover-content-available-height)] w-72 overflow-y-auto rounded-xl border bg-background p-3 shadow-xl"
                         >
                           <h2 className="mb-2 text-sm font-medium">Erasers</h2>
                           {(["solid", "pressure"] as const).map((kind) => (

@@ -12,6 +12,9 @@ import {
 } from "@/components/ui/dialog"
 import {
   BUILTIN_VECTOR_BRUSHES,
+  MAX_PRESSURE_CURVE,
+  MIN_PRESSURE_CURVE,
+  type ProfileParams,
   type VectorBrush,
   type VectorBrushKind,
 } from "@/engine/brush/vector-brush"
@@ -90,9 +93,7 @@ export function VectorBrushLibrary({
                 {brush.name} vector brush
               </span>
               <span className="block text-[10px] text-muted-foreground">
-                {brush.params.pressure
-                  ? "Press harder for a wider line"
-                  : "Constant width at any pressure"}
+                {describe(brush.params)}
               </span>
             </span>
           </button>
@@ -154,7 +155,7 @@ export function VectorBrushLibrary({
           if (!open && !busy) setEditing(null)
         }}
       >
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
           <DialogTitle>
             {sourceId ? "Edit vector brush" : "Create vector brush"}
           </DialogTitle>
@@ -199,48 +200,15 @@ export function VectorBrushLibrary({
                 >
                   <h3 className="mb-2 text-sm font-medium">{label}</h3>
                   {kind === "profile" ? (
-                    <div className="space-y-2 text-sm">
-                      <label className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={editing.params.pressure}
-                          onChange={(event) =>
-                            setEditing({
-                              ...editing,
-                              params: {
-                                ...editing.params,
-                                pressure: event.target.checked,
-                              },
-                            })
-                          }
-                        />
-                        Pressure controls width
-                      </label>
-                      {(["start", "end"] as const).map((end) => (
-                        <label key={end} className="flex items-center gap-2">
-                          {end === "start" ? "Start" : "End"} taper (%)
-                          <Input
-                            type="number"
-                            aria-label={`${end === "start" ? "Start" : "End"} profile taper`}
-                            min={0}
-                            max={50}
-                            value={editing.params.taper[end] * 100}
-                            onChange={(event) =>
-                              setEditing({
-                                ...editing,
-                                params: {
-                                  ...editing.params,
-                                  taper: {
-                                    ...editing.params.taper,
-                                    [end]: Number(event.target.value) / 100,
-                                  },
-                                },
-                              })
-                            }
-                          />
-                        </label>
-                      ))}
-                    </div>
+                    <ProfileSection
+                      params={editing.params}
+                      change={(params) =>
+                        setEditing({
+                          ...editing,
+                          params: { ...editing.params, ...params },
+                        })
+                      }
+                    />
                   ) : (
                     <p className="text-xs text-muted-foreground">
                       This brush kind will be available in a future update.
@@ -256,5 +224,111 @@ export function VectorBrushLibrary({
         </DialogContent>
       </Dialog>
     </>
+  )
+}
+
+/** A one-line summary of what a profile brush does with the hand. */
+function describe(params: ProfileParams): string {
+  if (params.wiggle) return "A line that wanders either side of the spine"
+  if (params.tremor > 0.2) return "Blotchy width that swells and pinches"
+  if (params.pressure)
+    return params.thinning
+      ? "Wider when pressed, thinner when fast"
+      : "Press harder for a wider line"
+  return params.caps === "flat"
+    ? "Constant width with square ends"
+    : "Constant width at any pressure"
+}
+
+const SHARES = [
+  ["thinning", "Velocity thinning"],
+  ["minWidth", "Minimum width"],
+  ["smoothing", "Smoothing"],
+  ["tremor", "Tremor"],
+  ["wiggle", "Wiggle"],
+] as const
+
+function ProfileSection({
+  params,
+  change,
+}: {
+  params: ProfileParams
+  change(params: Partial<ProfileParams>): void
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2 text-sm">
+      <label className="col-span-2 flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={params.pressure}
+          onChange={(event) => change({ pressure: event.target.checked })}
+        />
+        Pressure controls width
+      </label>
+      <label className="flex items-center gap-2">
+        Pressure curve
+        <Input
+          type="number"
+          aria-label="Pressure curve"
+          min={MIN_PRESSURE_CURVE}
+          max={MAX_PRESSURE_CURVE}
+          step={0.05}
+          value={params.pressureCurve}
+          onChange={(event) =>
+            change({ pressureCurve: Number(event.target.value) })
+          }
+        />
+      </label>
+      {(["start", "end"] as const).map((end) => (
+        <label key={end} className="flex items-center gap-2">
+          {end === "start" ? "Start" : "End"} taper (%)
+          <Input
+            type="number"
+            aria-label={`${end === "start" ? "Start" : "End"} profile taper`}
+            min={0}
+            max={50}
+            value={params.taper[end] * 100}
+            onChange={(event) =>
+              change({
+                taper: {
+                  ...params.taper,
+                  [end]: Number(event.target.value) / 100,
+                },
+              })
+            }
+          />
+        </label>
+      ))}
+      <label className="flex items-center gap-2">
+        Caps
+        <select
+          aria-label="Profile caps"
+          className="h-8 rounded-md border bg-transparent px-2"
+          value={params.caps}
+          onChange={(event) =>
+            change({ caps: event.target.value as ProfileParams["caps"] })
+          }
+        >
+          <option value="style">Shape style</option>
+          <option value="round">Round</option>
+          <option value="flat">Flat</option>
+        </select>
+      </label>
+      {SHARES.map(([key, label]) => (
+        <label key={key} className="flex items-center gap-2">
+          {label} (%)
+          <Input
+            type="number"
+            aria-label={label}
+            min={0}
+            max={100}
+            value={Math.round(params[key] * 100)}
+            onChange={(event) =>
+              change({ [key]: Number(event.target.value) / 100 })
+            }
+          />
+        </label>
+      ))}
+    </div>
   )
 }

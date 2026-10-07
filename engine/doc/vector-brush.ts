@@ -1,21 +1,55 @@
 import { parseVectorBrush, type VectorBrush } from "../brush/vector-brush"
-import { splitPathSegment, taperScale } from "./vector-path"
+import {
+  splitPathSegment,
+  taperScale,
+  type BezierPath,
+  type PathNode,
+} from "./vector-path"
 import type { SceneCommand, VectorObject, VectorScene } from "./vector-scene"
 
-/** Geometry remains the editable spine; painted widths are derived on each edit. */
-export function vectorBrushGeometry(
-  object: VectorObject
-): VectorObject["geometry"] {
-  if (!object.brush || object.geometry.kind !== "path" || !object.style.stroke)
-    return object.geometry
-  const { pressure, taper } = object.brush.definition.params
-  let path = object.geometry
-  // Split curves before tapering, so a two-node straight line has a full-width body.
-  if (taper.start || taper.end) {
-    for (let i = path.nodes.length - 2; i >= 0; i--) {
-      path = splitPathSegment(path, i, 0.5)
-    }
+/** The most nodes noise may subdivide a stroke into. */
+const MAX_NOISE_NODES = 4000
+/** A fast hand, in document pixels per millisecond, thins fully. */
+const FAST = 3
+
+/** A hash of `seed`, `stream` and lattice index `i`, in [-1, 1]. */
+function lattice(seed: number, stream: number, i: number): number {
+  let h =
+    (seed ^ Math.imul(i, 0x9e3779b1) ^ Math.imul(stream + 1, 0x85ebca6b)) >>> 0
+  h = Math.imul(h ^ (h >>> 16), 0x7feb352d)
+  h = Math.imul(h ^ (h >>> 15), 0x846ca68b)
+  h ^= h >>> 16
+  return ((h >>> 0) / 0xffffffff) * 2 - 1
+}
+
+/** Smooth value noise at `s` lattice cells along, in [-1, 1]. */
+function noise(seed: number, stream: number, s: number): number {
+  const i = Math.floor(s),
+    f = s - i
+  const e = f * f * (3 - 2 * f)
+  return lattice(seed, stream, i) * (1 - e) + lattice(seed, stream, i + 1) * e
+}
+
+/**
+ * Thins pressure as the hand speeds up, fed each sample as it is drawn.
+ * Speed is eased so a single jumpy sample does not notch the line.
+ */
+export function createVelocityThinning(thinning: number) {
+  let last: { x: number; y: number; time: number } | null = null
+  let speed = 0
+  return (x: number, y: number, pressure: number, time: number): number => {
+    if (last && time > last.time)
+      speed +=
+        (Math.hypot(x - last.x, y - last.y) / (time - last.time) - speed) * 0.3
+    last = { x, y, time }
+    return thinning
+      ? pressure * (1 - thinning * Math.min(1, speed / FAST))
+      : pressure
   }
+}
+
+/** Each node's distance along the path, measured node to node. */
+function distances(path: BezierPath): number[] {
   const lengths = [0]
   for (let i = 1; i < path.nodes.length; i++)
     lengths.push(
@@ -25,19 +59,108 @@ export function vectorBrushGeometry(
           path.nodes[i].y - path.nodes[i - 1].y
         )
     )
-  const total = lengths.at(-1) ?? 0
+  return lengths
+}
+
+/** Splits each segment so no node is more than `spacing` from the next. */
+function subdivide(path: BezierPath, spacing: number): BezierPath {
+  const { nodes } = path
+  const budget = Math.max(1, Math.floor(MAX_NOISE_NODES / nodes.length))
+  // A closed path's last segment runs back round to its first node.
+  for (let i = nodes.length - (path.closed ? 1 : 2); i >= 0; i--) {
+    const to = nodes[(i + 1) % nodes.length]
+    const pieces = Math.min(
+      budget,
+      Math.ceil(Math.hypot(to.x - nodes[i].x, to.y - nodes[i].y) / spacing)
+    )
+    for (let k = pieces; k > 1; k--)
+      path = splitPathSegment(path, i + pieces - k, 1 / k)
+  }
+  return path
+}
+
+/** Moves a node and its handles together by `(dx, dy)`. */
+function shift(node: PathNode, dx: number, dy: number): PathNode {
+  const by = (p: PathNode["in"]) => p && { x: p.x + dx, y: p.y + dy }
   return {
-    ...path,
-    nodes: path.nodes.map((node, i) => {
-      const scale = total ? taperScale(lengths[i], total, taper) : 1
-      return {
-        ...node,
-        width:
-          (pressure
-            ? (node.width ?? object.style.stroke!.width)
-            : object.style.stroke!.width) * scale,
-      }
-    }),
+    ...node,
+    x: node.x + dx,
+    y: node.y + dy,
+    in: by(node.in),
+    out: by(node.out),
+  }
+}
+
+/**
+ * The object as painted: geometry remains the editable spine, and the
+ * brush's widths, noise and caps are derived from it and its seed on each
+ * edit.
+ */
+export function vectorBrushObject(object: VectorObject): VectorObject {
+  if (!object.brush || object.geometry.kind !== "path" || !object.style.stroke)
+    return object
+  const { seed } = object.brush
+  const params = object.brush.definition.params
+  const { pressure, pressureCurve, minWidth, taper, tremor, wiggle } = params
+  const full = object.style.stroke.width
+  let path = object.geometry
+  // Split curves before tapering, so a two-node straight line has a full-width body.
+  if (taper.start || taper.end)
+    for (let i = path.nodes.length - 2; i >= 0; i--)
+      path = splitPathSegment(path, i, 0.5)
+  const tremorCell = Math.max(4, full * 1.5),
+    wiggleCell = Math.max(8, full * 4)
+  if (tremor || wiggle)
+    path = subdivide(path, Math.min(tremorCell, wiggleCell) / 2)
+  const lengths = distances(path)
+  const total = lengths.at(-1) ?? 0
+  const nodes = path.nodes
+  const shaped = (node: PathNode) => {
+    if (!pressure) return full
+    const width = node.width ?? full
+    // The plain pressure fit, exactly as before profiles.
+    if (pressureCurve === 1 && minWidth === 0) return width
+    const p = Math.max(0, Math.min(1, width / full)) ** pressureCurve
+    return full * (minWidth + (1 - minWidth) * p)
+  }
+  return {
+    ...object,
+    geometry: {
+      ...path,
+      nodes: nodes.map((node, i) => {
+        const along = lengths[i]
+        let width = shaped(node) * (total ? taperScale(along, total, taper) : 1)
+        if (tremor)
+          width *= Math.max(0, 1 + tremor * noise(seed, 0, along / tremorCell))
+        if (!wiggle || nodes.length < 2) return { ...node, width }
+        const n = nodes.length
+        const a = nodes[path.closed ? (i + n - 1) % n : Math.max(0, i - 1)],
+          b = nodes[path.closed ? (i + 1) % n : Math.min(n - 1, i + 1)]
+        const length = Math.hypot(b.x - a.x, b.y - a.y)
+        if (!length) return { ...node, width }
+        const offset = wiggle * full * noise(seed, 1, along / wiggleCell)
+        return {
+          ...shift(
+            node,
+            (-(b.y - a.y) / length) * offset,
+            ((b.x - a.x) / length) * offset
+          ),
+          width,
+        }
+      }),
+    },
+    style: {
+      ...object.style,
+      stroke: {
+        ...object.style.stroke,
+        cap:
+          params.caps === "style"
+            ? object.style.stroke.cap
+            : params.caps === "flat"
+              ? "butt"
+              : "round",
+      },
+    },
   }
 }
 

@@ -3,7 +3,7 @@ import {
   parseVectorBrush,
   type VectorBrush,
 } from "./brush/vector-brush"
-import { applyVectorBrush } from "./doc/vector-brush"
+import { applyVectorBrush, createVelocityThinning } from "./doc/vector-brush"
 import {
   selectTipFrame,
   validateTipSelection,
@@ -2839,6 +2839,8 @@ export function createEngine(
         clickedAt?: number
         vectorBrush?: VectorBrush
         brushSeed?: number
+        /** Thins the pressure of a fast hand, as the brush asks. */
+        thin?: ReturnType<typeof createVelocityThinning>
         pressurePoints?: PressurePoint[]
         pressureTail?: {
           x: number
@@ -3428,10 +3430,12 @@ export function createEngine(
    */
   function pressureStroke(drag: NonNullable<typeof shapeDrag>): BezierPath {
     drag.pressureFit ??= {
+      // A smoother brush fits its spine more loosely to the hand.
       fit: createPressureFit(
         snapshot.shapeStyle.strokeWidth,
         undefined,
-        fitTolerance()
+        fitTolerance() *
+          (1 + 3 * (drag.vectorBrush ?? snapshot.vectorBrush).params.smoothing)
       ),
       fed: 0,
       mesh: createLiveStrokeMesh(),
@@ -3693,12 +3697,19 @@ export function createEngine(
 
   function drawShapeDrag() {
     const drag = shapeDrag!
-    const pressureSink = (x: number, y: number, pressure: number) => {
+    const pressureSink = (
+      x: number,
+      y: number,
+      pressure: number,
+      _tiltX: number,
+      _tiltY: number,
+      time: number
+    ) => {
       if (drag.pressurePoints!.length < 100_000)
         drag.pressurePoints!.push({
           x,
           y,
-          pressure,
+          pressure: drag.thin ? drag.thin(x, y, pressure, time) : pressure,
         })
     }
     samples.drain((x, y, pressure, tiltX, tiltY, time) => {
@@ -3785,7 +3796,9 @@ export function createEngine(
         drag.pressurePoints!.push({
           x: tail.x,
           y: tail.y,
-          pressure: tail.pressure,
+          pressure: drag.thin
+            ? drag.thin(tail.x, tail.y, tail.pressure, tail.time)
+            : tail.pressure,
         })
     }
     const document = requireDocument()
@@ -5205,6 +5218,7 @@ export function createEngine(
       }
       if (tool === "pressure") {
         stabilizer.begin(anchor.x, anchor.y)
+        const brush = parseVectorBrush(snapshot.vectorBrush)
         const points: PressurePoint[] = []
         const path = createStrokeResampler(2)
         path.begin(
@@ -5222,8 +5236,9 @@ export function createEngine(
           anchor,
           point: anchor,
           ended: false,
-          vectorBrush: parseVectorBrush(snapshot.vectorBrush),
+          vectorBrush: brush,
           brushSeed: crypto.getRandomValues(new Uint32Array(1))[0],
+          thin: createVelocityThinning(brush.params.thinning),
           pressurePoints: points,
           pressureResampler: path,
           pressureTail: { ...anchor, pressure, tiltX, tiltY, time },

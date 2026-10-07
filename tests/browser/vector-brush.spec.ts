@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test"
+import { PNG } from "pngjs"
+import { BUILTIN_VECTOR_BRUSHES } from "../../engine/brush/vector-brush"
 
 test("the solid vector brush sets its tapers from the tool options", async ({
   page,
@@ -208,7 +210,17 @@ test("applying to several legacy strokes preserves their spines and undoes as on
       id: "test:pressure",
       name: "Pressure",
       kind: "profile" as const,
-      params: { pressure: true, taper: { start: 0, end: 0 } },
+      params: {
+        pressure: true,
+        pressureCurve: 1,
+        thinning: 0,
+        minWidth: 0,
+        taper: { start: 0, end: 0 },
+        caps: "round" as const,
+        smoothing: 0,
+        tremor: 0,
+        wiggle: 0,
+      },
     }
     await current.dispatch({ type: "applyVectorBrush", brush })
     const after = current.getSnapshot().vectorPaths
@@ -247,3 +259,104 @@ test("applying to several legacy strokes preserves their spines and undoes as on
   expect(outlines(result.pressureSvg)).toEqual(outlines(result.legacySvg))
   expect(outlines(result.solidSvg)).not.toEqual(outlines(result.legacySvg))
 })
+
+for (const name of [
+  "Fineliner",
+  "Technical pen",
+  "Dip pen",
+  "Brush pen",
+  "Marker",
+  "Wiggly",
+  "Splotchy",
+]) {
+  test(`golden: a ${name} profile stroke`, async ({ page }) => {
+    await page.goto(
+      `${process.env.VELURA_TEST_HARNESS ?? "http://127.0.0.1:3101"}/tests/harness/`
+    )
+    await page.waitForFunction(() => !!window.engine)
+    const definition = BUILTIN_VECTOR_BRUSHES.find((b) => b.name === name)!
+    const image = await page.evaluate(async (definition) => {
+      window.remountEngine()
+      const current = window.engine
+      await current.dispatch({
+        type: "resize",
+        width: 240,
+        height: 120,
+        devicePixelRatio: 1,
+      })
+      await current.dispatch({ type: "initialize" })
+      await current.dispatch({ type: "addVectorLayer" })
+      const id = current.getSnapshot().activeLayerId!
+      // A pressure ramp over an S-curve, so curve, taper and noise all show.
+      await current.dispatch({
+        type: "editVectorLayer",
+        id,
+        commands: [
+          {
+            type: "add",
+            object: {
+              id: "golden",
+              transform: [1, 0, 0, 1, 0, 0],
+              geometry: {
+                kind: "path",
+                closed: false,
+                nodes: [
+                  {
+                    x: 20,
+                    y: 80,
+                    in: null,
+                    out: { x: 70, y: 20 },
+                    type: "smooth",
+                    width: 3,
+                  },
+                  {
+                    x: 120,
+                    y: 60,
+                    in: { x: 90, y: 75 },
+                    out: { x: 150, y: 45 },
+                    type: "smooth",
+                    width: 14,
+                  },
+                  {
+                    x: 220,
+                    y: 40,
+                    in: { x: 170, y: 100 },
+                    out: null,
+                    type: "smooth",
+                    width: 8,
+                  },
+                ],
+              },
+              style: {
+                fill: null,
+                stroke: {
+                  color: "#000000",
+                  opacity: 1,
+                  width: 14,
+                  cap: "round",
+                  join: "round",
+                },
+              },
+              brush: { definition, seed: 42 },
+            },
+          },
+        ],
+      })
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      )
+      const pixels = await current.readPixels()
+      return {
+        width: pixels.width,
+        height: pixels.height,
+        data: Array.from(pixels.data),
+      }
+    }, definition)
+    const png = new PNG({ width: image.width, height: image.height })
+    png.data = Buffer.from(image.data)
+    expect(PNG.sync.write(png)).toMatchSnapshot(
+      `profile-${name.toLowerCase().replace(/\s+/g, "-")}.png`,
+      { maxDiffPixelRatio: 0.01 }
+    )
+  })
+}
