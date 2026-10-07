@@ -214,16 +214,17 @@ sixteen dabs per spacing step, thrown four radii along and across the path.
 
 | scatter | ms/frame | mean fps | dabs | readbacks |
 |---|---|---|---|---|
-| none | 9.134 | 109.5 | 6,477 | 0 |
-| ×16 | 9.210 | 108.6 | 103,520 | 0 |
+| none | 9.033 | 110.7 | 6,470 | 0 |
+| ×16 | 9.204 | 108.7 | 103,520 | 0 |
 
-Sixteen times the dabs for under a tenth of a millisecond. The frame is still
+Sixteen times the dabs for under two tenths of a millisecond. The frame is still
 the present pass (§1 above), not the stamp pass: dabs are instances in one
 draw, placed into a buffer allocated with the engine, so a step that lays
 sixteen of them allocates nothing and reads nothing back. Neither run reaches
 120 fps, and for the reason above, not this one: what this sweep shows is that
 scatter adds nothing measurable to the frame, so it will reach D30 when the
-viewport-sized present pass (ticket 13) lets the plain brush reach it.
+viewport-sized present pass (ticket 13) lets the plain brush reach it;
+that gap is tracked in brush-library ticket 14.
 
 ## What this means
 
