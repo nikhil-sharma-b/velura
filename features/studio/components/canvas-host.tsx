@@ -97,7 +97,13 @@ import {
   placeImageFile,
 } from "../lib/image-import"
 import { KRITA_TEXTURES } from "../lib/shipped-textures"
-import { readTextureFile } from "../lib/texture-import"
+import { readTipFiles } from "../lib/brush-import"
+import {
+  decodeImage,
+  readFiles,
+  readTextureFile,
+  studioImport,
+} from "../lib/texture-import"
 import { BrushEditor } from "./brush-editor"
 import {
   ImageTransform,
@@ -744,6 +750,11 @@ export function CanvasHost({
   const penStore = useMemo(() => createLocalPenSettingsStore(), [])
   const pen = penStore.usePenSettings()
   const library = brushStore.useBrushLibrary(documentId)
+  const textureNames = useMemo(
+    () =>
+      new Map(library.textures.map((texture) => [texture.id, texture.name])),
+    [library.textures]
+  )
   const snapshot = useSyncExternalStore(
     engine?.subscribe ?? subscribeToNothing,
     engine?.getSnapshot ?? getInitialSnapshot,
@@ -1744,6 +1755,18 @@ export function CanvasHost({
                                 if (!keepOpen) setLibraryOpen(false)
                               }}
                               onClose={() => setLibraryOpen(false)}
+                              onImport={(files) =>
+                                studioImport(files, {
+                                  store: brushStore,
+                                  shipped: KRITA_TEXTURES,
+                                  register: (id, texture) =>
+                                    engine.dispatch({
+                                      type: "registerTexture",
+                                      id,
+                                      texture,
+                                    }),
+                                })
+                              }
                             />
                           )}
                         </PopoverPrimitive.Content>
@@ -2333,15 +2356,27 @@ export function CanvasHost({
                 <BrushEditor
                   brush={snapshot.brush}
                   textures={snapshot.textures}
+                  textureNames={textureNames}
                   edited={brushEdited}
                   onClose={() => {
                     setBrushOpen(false)
                     brushButton.current?.focus()
                   }}
                   onEdit={(next) => void engine.dispatch(brushCommand(next))}
-                  onImportTexture={async (file, name) => {
-                    const texture = await readTextureFile(file)
-                    const id = await brushStore.saveTexture(name, texture)
+                  onImportTexture={async (files, kind) => {
+                    const tip =
+                      kind === "tip"
+                        ? await readTipFiles(
+                            await readFiles(files),
+                            decodeImage
+                          )
+                        : undefined
+                    const texture =
+                      tip?.texture ?? (await readTextureFile(files[0]))
+                    const id = await brushStore.saveTexture(
+                      tip?.name ?? files[0].name.replace(/\.[^.]+$/, ""),
+                      texture
+                    )
                     // Registered here as well as by the sync effect, so
                     // the texture is selectable in the editor that
                     // imported it rather than only once the store has
@@ -2351,7 +2386,7 @@ export function CanvasHost({
                       id,
                       texture,
                     })
-                    return id
+                    return { id, selection: tip?.selection }
                   }}
                   problem={brushProblem}
                   onSave={() => {

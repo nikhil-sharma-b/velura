@@ -1,9 +1,15 @@
 import type {
   Brush,
+  BrushColor,
   BrushGrain,
   BrushRendering,
   BrushShape,
 } from "@/engine/brush/brush"
+import {
+  type BrushScatter,
+  MAX_SCATTER_AMOUNT,
+  NO_SCATTER,
+} from "@/engine/brush/scatter"
 import {
   type DynamicsTarget,
   isOffsetTarget,
@@ -42,7 +48,18 @@ export type BrushEdit = {
   /** Null takes the grain away: the brush draws on a smooth surface again. */
   grain?: BrushGrain | null
   rendering?: Partial<BrushRendering>
+  /** Null, or one that throws nothing, takes the section away. */
+  scatter?: BrushScatter | null
+  /** Null, or unit scales, takes the section away. */
+  color?: BrushColor | null
   dynamics?: Modulator[]
+}
+
+export const UNIT_COLOR: BrushColor = { hue: 1, saturation: 1, lightness: 1 }
+
+/** Whether two flat sections hold the same numbers and words. */
+function sameSection<T extends object>(a: T, b: T): boolean {
+  return Object.keys(b).every((key) => a[key as keyof T] === b[key as keyof T])
 }
 
 /**
@@ -74,7 +91,65 @@ export function editBrush(brush: Brush, edit: BrushEdit): Brush {
   const grain = edit.grain === undefined ? brush.grain : edit.grain
   if (grain) next.grain = { ...grain }
   else delete next.grain
+  // A section saying what its absence says is left out, so dialling scatter
+  // or colour back to nothing gives back the brush that never had it.
+  const scatter = edit.scatter === undefined ? brush.scatter : edit.scatter
+  if (scatter && !sameSection(scatter, NO_SCATTER))
+    next.scatter = { ...scatter }
+  else delete next.scatter
+  const color = edit.color === undefined ? brush.color : edit.color
+  if (color && !sameSection(color, UNIT_COLOR)) next.color = { ...color }
+  else delete next.color
   return next
+}
+
+/**
+ * Scatter mappings saved before scatter had an amount (brush library 02).
+ *
+ * The `scatter` target was then an offset, in dab radii, and took `add` or
+ * `replace`; it is now a scale on the brush's own amount. A brush without an
+ * amount scatters nothing however its mappings drive it, so these draw
+ * nothing until it has one. They are flagged rather than migrated silently:
+ * an `add` on a brush with no amount is also what a new brush looks like
+ * half-way through being set up, and rewriting that would be a surprise.
+ */
+export function legacyScatterMappings(brush: Brush): number[] {
+  if ((brush.scatter?.amount ?? 0) > 0) return []
+  return brush.dynamics.flatMap((modulator, index) =>
+    modulator.target === "scatter" && modulator.mix !== "multiply"
+      ? [index]
+      : []
+  )
+}
+
+/**
+ * The legacy mappings made live again: the furthest they threw becomes the
+ * amount, and each becomes a scale of it that throws a dab as far as it did.
+ * An offset added to nothing is that offset, so an `add` becomes a multiply.
+ */
+export function convertLegacyScatter(brush: Brush): Brush {
+  const legacy = new Set(legacyScatterMappings(brush))
+  const reach = Math.max(
+    0,
+    ...[...legacy].flatMap((index) => brush.dynamics[index].range.map(Math.abs))
+  )
+  const amount = Math.min(MAX_SCATTER_AMOUNT, reach)
+  if (amount === 0) return brush
+  return editBrush(brush, {
+    scatter: { ...(brush.scatter ?? NO_SCATTER), amount },
+    dynamics: brush.dynamics.map((modulator, index) =>
+      legacy.has(index)
+        ? {
+            ...modulator,
+            mix: modulator.mix === "add" ? "multiply" : modulator.mix,
+            range: [
+              modulator.range[0] / amount,
+              modulator.range[1] / amount,
+            ] as const,
+          }
+        : modulator
+    ),
+  })
 }
 
 /**

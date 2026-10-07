@@ -18,7 +18,16 @@ import {
 import { Slider } from "@/components/ui/slider"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { Brush } from "@/engine/brush/brush"
-import { TIP_SELECTION_MODES } from "@/engine/brush/tip-sets"
+import {
+  TIP_SELECTION_MODES,
+  type TipSelectionMode,
+} from "@/engine/brush/tip-sets"
+import {
+  MAX_SCATTER_AMOUNT,
+  MAX_SCATTER_COUNT,
+  NO_SCATTER,
+  type ScatterAxes,
+} from "@/engine/brush/scatter"
 import { LINEAR_CURVE } from "@/engine/brush/curve"
 import {
   type DynamicsMix,
@@ -31,10 +40,13 @@ import {
 
 import {
   type BrushEdit,
+  convertLegacyScatter,
   editBrush,
   featherOf,
   hardnessOf,
+  legacyScatterMappings,
   newModulator,
+  UNIT_COLOR,
 } from "../lib/brush-draft"
 import {
   KRITA_TEXTURES,
@@ -49,10 +61,11 @@ import { IconButton } from "./icon-button"
  * The brush editor (D32): the dynamics graph of ticket 05 as a tool rather
  * than an internal model.
  *
- * Four tabs, because a brush has four separable parts and putting them on one
+ * Six tabs, because a brush has six separable parts and putting them on one
  * page would make each of them harder to read: the tip and how it is spaced,
- * the paper under it, how the marks combine, and — the substance of it — which
- * input drives which parameter, through a curve the artist draws.
+ * how far its dabs are thrown, how their colour wanders, the paper under it,
+ * how the marks combine, and — the substance of it — which input drives which
+ * parameter, through a curve the artist draws.
  *
  * The editor never touches the engine directly. It is given the working brush
  * and hands back the next one; the host decides that the working brush is what
@@ -126,8 +139,11 @@ function TextureSelect({
   textures,
   shipped,
   noneLabel,
+  names,
   onChange,
   onImport,
+  accept = "image/*",
+  multiple = false,
 }: {
   label: string
   value: string | null
@@ -135,9 +151,15 @@ function TextureSelect({
   /** The shipped textures of this kind, offered whether loaded yet or not. */
   shipped: readonly ShippedTexture[]
   noneLabel: string
+  /** What the artist called the textures they imported, by id. */
+  names?: ReadonlyMap<string, string>
   onChange(id: string | null): void
-  /** Brings a texture in from a file and selects it (24/25). */
-  onImport?(file: File): void
+  /** Brings a texture in from files and selects it (24/25). */
+  onImport?(files: File[]): void
+  /** What the picker offers; a tip also takes GIMP's files. */
+  accept?: string
+  /** Whether several files may be chosen at once, as a tip set's frames. */
+  multiple?: boolean
 }) {
   const NONE = "__none__"
   return (
@@ -152,15 +174,16 @@ function TextureSelect({
             Import…
             <input
               type="file"
-              accept="image/*"
+              accept={accept}
+              multiple={multiple}
               aria-label={`Import a ${label.toLowerCase()} texture`}
               className="sr-only"
               onChange={(event) => {
-                const file = event.target.files?.[0]
+                const files = [...(event.target.files ?? [])]
                 // Cleared, so importing the same file twice in a row is a
                 // change the input reports rather than silently swallows.
                 event.target.value = ""
-                if (file) onImport(file)
+                if (files.length) onImport(files)
               }}
             />
           </label>
@@ -177,7 +200,7 @@ function TextureSelect({
           <SelectItem value={NONE}>{noneLabel}</SelectItem>
           {textures.map((id) => (
             <SelectItem key={id} value={id}>
-              {id[0].toUpperCase() + id.slice(1)}
+              {names?.get(id) ?? id[0].toUpperCase() + id.slice(1)}
             </SelectItem>
           ))}
           {shipped.length > 0 && (
@@ -336,6 +359,7 @@ function Mapping({
 export function BrushEditor({
   brush,
   textures,
+  textureNames,
   edited,
   problem,
   onClose,
@@ -349,6 +373,8 @@ export function BrushEditor({
   brush: Brush
   /** Texture ids the engine can resolve, so a brush cannot name a missing one. */
   textures: readonly string[]
+  /** Names for the artist's own textures; an id is shown where none is. */
+  textureNames?: ReadonlyMap<string, string>
   /**
    * Textures the engine fetches the first time a brush names one, and so
    * offered here before it holds them. Listed once each, under their own
@@ -363,17 +389,24 @@ export function BrushEditor({
   onClose(): void
   onEdit(next: Brush): void
   /**
-   * Brings a texture in from a file and resolves with the id it is stored
-   * under, so the brush can name it. Absent in a host with nowhere to keep
-   * one, and then no import is offered rather than one that loses the file.
+   * Brings a texture in from files and resolves with the id it is stored
+   * under, so the brush can name it. A tip may be a `.gbr`, a `.gih`, or PNGs
+   * taken together as a tip set's frames. Absent in a host with nowhere to
+   * keep one, and then no import is offered rather than one that loses it.
    */
-  onImportTexture?(file: File, name: string): Promise<string>
+  onImportTexture?(
+    files: File[],
+    kind: "tip" | "grain"
+  ): Promise<{ id: string; selection?: TipSelectionMode }>
   onSave(): void
   onRevert(): void
 }) {
   const apply = (edit: BrushEdit) => onEdit(editBrush(brush, edit))
   const dynamics = brush.dynamics
   const grain = brush.grain
+  const scatter = brush.scatter ?? NO_SCATTER
+  const color = brush.color ?? UNIT_COLOR
+  const legacyScatter = legacyScatterMappings(brush)
   const [importProblem, setImportProblem] = useState<string | null>(null)
   const own = textures.filter((id) => !shipped.has(id))
 
@@ -382,17 +415,19 @@ export function BrushEditor({
    * selected only once it is stored: a tip the brush named before the store
    * had it would be a brush pointing at nothing on the next machine.
    */
-  const importTexture = (file: File, select: (id: string) => void) => {
+  const importTexture = (
+    files: File[],
+    kind: "tip" | "grain",
+    select: (imported: { id: string; selection?: TipSelectionMode }) => void
+  ) => {
     if (!onImportTexture) return
     setImportProblem(null)
-    void onImportTexture(file, file.name.replace(/\.[^.]+$/, "")).then(
-      select,
-      (error: unknown) =>
-        setImportProblem(
-          error instanceof Error
-            ? error.message
-            : "That image could not be imported."
-        )
+    void onImportTexture(files, kind).then(select, (error: unknown) =>
+      setImportProblem(
+        error instanceof Error
+          ? error.message
+          : "That image could not be imported."
+      )
     )
   }
 
@@ -438,6 +473,8 @@ export function BrushEditor({
       <Tabs defaultValue="shape">
         <TabsList className="w-full">
           <TabsTrigger value="shape">Shape</TabsTrigger>
+          <TabsTrigger value="scatter">Scatter</TabsTrigger>
+          <TabsTrigger value="colour">Colour</TabsTrigger>
           <TabsTrigger value="grain">Grain</TabsTrigger>
           <TabsTrigger value="rendering">Rendering</TabsTrigger>
           <TabsTrigger value="dynamics">Dynamics</TabsTrigger>
@@ -450,12 +487,21 @@ export function BrushEditor({
             textures={own}
             shipped={shipped.ofKind("tip")}
             noneLabel="Round (procedural)"
+            names={textureNames}
             onChange={(tipTextureId) => apply({ shape: { tipTextureId } })}
+            accept="image/*,.gbr,.gih"
+            multiple
             onImport={
               onImportTexture &&
-              ((file) =>
-                importTexture(file, (tipTextureId) =>
-                  apply({ shape: { tipTextureId } })
+              ((files) =>
+                importTexture(files, "tip", ({ id, selection }) =>
+                  apply({
+                    shape: {
+                      tipTextureId: id,
+                      // A hose says how it picks a cell; a set of PNGs does not.
+                      tipSelection: selection ?? brush.shape.tipSelection,
+                    },
+                  })
                 ))
             }
           />
@@ -539,6 +585,133 @@ export function BrushEditor({
           />
         </TabsContent>
 
+        <TabsContent value="scatter" className="space-y-3">
+          {legacyScatter.length > 0 && (
+            <div
+              role="status"
+              className="space-y-2 border border-amber-500/50 p-2 text-xs"
+            >
+              <p>
+                {legacyScatter.length === 1
+                  ? "A scatter mapping was"
+                  : `${legacyScatter.length} scatter mappings were`}{" "}
+                made when scatter was a distance. It now scales the amount
+                below, and this brush has none, so{" "}
+                {legacyScatter.length === 1 ? "it throws" : "they throw"}{" "}
+                nothing.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onEdit(convertLegacyScatter(brush))}
+              >
+                Convert to an amount
+              </Button>
+            </div>
+          )}
+          <SliderSetting
+            label="Scatter amount"
+            value={scatter.amount}
+            min={0}
+            max={MAX_SCATTER_AMOUNT}
+            step={0.05}
+            decimals={2}
+            unit="× radius"
+            onChange={(amount) => apply({ scatter: { ...scatter, amount } })}
+          />
+          <SliderSetting
+            label="Dabs per step"
+            value={scatter.count}
+            min={1}
+            max={MAX_SCATTER_COUNT}
+            step={1}
+            decimals={0}
+            onChange={(count) =>
+              apply({ scatter: { ...scatter, count: Math.round(count) } })
+            }
+          />
+          <div className="space-y-1.5">
+            <Label className="text-xs">Thrown</Label>
+            <Select
+              value={scatter.axes}
+              onValueChange={(axes) =>
+                apply({ scatter: { ...scatter, axes: axes as ScatterAxes } })
+              }
+            >
+              <SelectTrigger className="w-full" aria-label="Scatter axes">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="across">Across the stroke</SelectItem>
+                <SelectItem value="both">Across and along it</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            How far each dab may be thrown off the path, in dab radii. A Scatter
+            mapping under Dynamics scales it per dab.
+          </p>
+        </TabsContent>
+
+        <TabsContent value="colour" className="space-y-3">
+          {(["hue", "saturation", "lightness"] as const).map((target) => {
+            const label = TARGETS[target].label
+            const mapped = dynamics.some(
+              (modulator) => modulator.target === target
+            )
+            return (
+              <div key={target} className="space-y-1.5">
+                <SliderSetting
+                  label={`${label} jitter`}
+                  value={color[target]}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  scale={100}
+                  unit="%"
+                  onChange={(value) =>
+                    apply({ color: { ...color, [target]: value } })
+                  }
+                />
+                {!mapped && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-1.5 text-xs"
+                    onClick={() =>
+                      apply({
+                        // Full scale on a random hue is any colour at all;
+                        // a tenth is a jitter, and the slider is there.
+                        color: {
+                          ...color,
+                          [target]: Math.min(color[target], 0.1),
+                        },
+                        dynamics: [
+                          ...dynamics,
+                          {
+                            source: "random",
+                            target,
+                            mix: "add",
+                            range: target === "hue" ? [0, 1] : [-1, 1],
+                          },
+                        ],
+                      })
+                    }
+                  >
+                    <PlusIcon />
+                    Vary {label.toLowerCase()} per dab
+                  </Button>
+                )}
+              </div>
+            )
+          })}
+          <p className="text-xs text-muted-foreground">
+            Each dab&apos;s colour moves by what Dynamics maps onto hue,
+            saturation and lightness, scaled here. Randomness gives jitter;
+            pressure or stroke progress give a shift the hand controls.
+          </p>
+        </TabsContent>
+
         <TabsContent value="grain" className="space-y-3">
           <TextureSelect
             label="Paper"
@@ -546,10 +719,11 @@ export function BrushEditor({
             textures={own}
             shipped={shipped.ofKind("grain")}
             noneLabel="Smooth (no grain)"
+            names={textureNames}
             onImport={
               onImportTexture &&
-              ((file) =>
-                importTexture(file, (textureId) =>
+              ((files) =>
+                importTexture(files, "grain", ({ id: textureId }) =>
                   apply({
                     grain: {
                       scale: grain?.scale ?? 1,
