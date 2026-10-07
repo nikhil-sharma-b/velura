@@ -10,6 +10,7 @@ import {
   copyName,
   duplicateOf,
   resolveLibraryBrush,
+  searchShelf,
 } from "@/features/studio/lib/brush-shelf"
 import type { StoredBrush } from "@/features/studio/lib/brush-store"
 
@@ -108,5 +109,28 @@ describe("resolving a brush by id", () => {
       id: "s1",
       name: "Renamed",
     })
+  })
+})
+
+describe("searching the shelf", () => {
+  test("an empty query leaves the shelf as it is", () => {
+    const shelf = brushShelf([stored()])
+    expect(searchShelf(shelf, "  ")).toEqual(shelf)
+  })
+
+  test("finds built-ins, ported brushes and the artist's own by name, ignoring case", () => {
+    const shelf = brushShelf([stored({ name: "My Chalk" })])
+    const found = searchShelf(shelf, "CHALK")
+    const names = found.flatMap((set) => set.brushes.map((entry) => entry.name))
+    expect(names).toContain("Chalk Grainy")
+    expect(names).toContain("My Chalk")
+    expect(names.every((name) => name.toLowerCase().includes("chalk"))).toBe(
+      true
+    )
+  })
+
+  test("drops sets with nothing matching", () => {
+    const found = searchShelf(brushShelf([stored()]), "Mine")
+    expect(found.map((set) => set.name)).toEqual(["Inks"])
   })
 })

@@ -101,6 +101,27 @@ export function brushShelf(stored: readonly StoredBrush[]): BrushSet[] {
   ]
 }
 
+/**
+ * The shelf narrowed to brushes whose name holds the query, ignoring case.
+ * Built-ins, ported brushes and the artist's own are searched alike, and a set
+ * with nothing left in it is dropped rather than shown as an empty heading.
+ */
+export function searchShelf(
+  shelf: readonly BrushSet[],
+  query: string
+): BrushSet[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return [...shelf]
+  return shelf
+    .map((set) => ({
+      ...set,
+      brushes: set.brushes.filter((entry) =>
+        entry.name.toLowerCase().includes(needle)
+      ),
+    }))
+    .filter((set) => set.brushes.length > 0)
+}
+
 /** Every brush on the shelf, flat — what a selection is resolved against. */
 export function libraryBrushes(stored: readonly StoredBrush[]): LibraryBrush[] {
   return brushShelf(stored).flatMap((set) => [...set.brushes])
