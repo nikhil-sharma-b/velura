@@ -38,8 +38,36 @@ test("opens on a set of ready-made brushes covering common media", async ({
   await openLibrary(page)
   for (const name of ["Pencil", "Charcoal", "Inking pen", "Airbrush", "Marker"])
     await expect(
-      library(page).getByRole("button", { name: `Paint with ${name}` })
+      library(page).getByRole("button", {
+        name: `Paint with ${name}`,
+        exact: true,
+      })
     ).toBeVisible()
+})
+
+test("shelves the brushes ported from Krita in Krita's sets", async ({
+  page,
+}) => {
+  await openLibrary(page)
+  for (const set of ["Sketch", "Ink", "Paint", "Digital", "Textures", "FX"])
+    await expect(
+      library(page).getByRole("heading", { name: set, exact: true })
+    ).toBeVisible()
+  await library(page)
+    .getByRole("button", { name: "Paint with Chalk Grainy", exact: true })
+    .click()
+  await page.keyboard.press("Escape")
+  await page.getByRole("button", { name: "Brush editor" }).click()
+  await expect(editor(page)).toContainText("Chalk Grainy")
+  await page.keyboard.press("Escape")
+  await page.getByRole("button", { name: /^Choose brush:/ }).click()
+  // Shipped, so there is nothing to delete.
+  await expect(
+    library(page).getByRole("button", {
+      name: "Delete Chalk Grainy",
+      exact: true,
+    })
+  ).toHaveCount(0)
 })
 
 test("the studio opens with a ready-made brush already in the hand", async ({
@@ -61,7 +89,7 @@ test("the studio opens with a ready-made brush already in the hand", async ({
 test("a built-in is picked up, and cannot be deleted", async ({ page }) => {
   await openLibrary(page)
   await library(page)
-    .getByRole("button", { name: "Paint with Charcoal" })
+    .getByRole("button", { name: "Paint with Charcoal", exact: true })
     .click()
 
   // The brush in the hand is the one chosen: the editor titles what it holds.
@@ -72,19 +100,25 @@ test("a built-in is picked up, and cannot be deleted", async ({ page }) => {
   await page.getByRole("button", { name: /^Choose brush:/ }).click()
 
   await expect(
-    library(page).getByRole("button", { name: "Delete Charcoal" })
+    library(page).getByRole("button", { name: "Delete Charcoal", exact: true })
   ).toHaveCount(0)
   await expect(
-    library(page).getByRole("button", { name: "Duplicate Charcoal" })
+    library(page).getByRole("button", {
+      name: "Duplicate Charcoal",
+      exact: true,
+    })
   ).toBeVisible()
 })
 
 test("a brush is duplicated, renamed, and deleted", async ({ page }) => {
   await openLibrary(page)
-  await library(page).getByRole("button", { name: "Duplicate Pencil" }).click()
+  await library(page)
+    .getByRole("button", { name: "Duplicate Pencil", exact: true })
+    .click()
 
   const copy = library(page).getByRole("button", {
     name: "Paint with Pencil copy",
+    exact: true,
   })
   await expect(copy).toBeVisible()
   await library(page)
@@ -96,17 +130,28 @@ test("a brush is duplicated, renamed, and deleted", async ({ page }) => {
   await name.fill("Sketching")
   await name.press("Enter")
   await expect(
-    library(page).getByRole("button", { name: "Paint with Sketching" })
+    library(page).getByRole("button", {
+      name: "Paint with Sketching",
+      exact: true,
+    })
   ).toBeVisible()
 
   // A brush of the artist's own is theirs to remove, unlike the one it came
   // from — which is still on the shelf afterwards.
-  await library(page).getByRole("button", { name: "Delete Sketching" }).click()
+  await library(page)
+    .getByRole("button", { name: "Delete Sketching", exact: true })
+    .click()
   await expect(
-    library(page).getByRole("button", { name: "Paint with Sketching" })
+    library(page).getByRole("button", {
+      name: "Paint with Sketching",
+      exact: true,
+    })
   ).toHaveCount(0)
   await expect(
-    library(page).getByRole("button", { name: "Paint with Pencil" })
+    library(page).getByRole("button", {
+      name: "Paint with Pencil",
+      exact: true,
+    })
   ).toBeVisible()
 })
 
@@ -114,11 +159,16 @@ test("an edited brush is saved and comes back on the next visit", async ({
   page,
 }) => {
   await openLibrary(page)
-  await library(page).getByRole("button", { name: "Paint with Marker" }).click()
+  await library(page)
+    .getByRole("button", { name: "Paint with Marker", exact: true })
+    .click()
   await page.getByRole("button", { name: /^Choose brush:/ }).click()
   await library(page).getByRole("button", { name: "Save as new" }).click()
   await expect(
-    library(page).getByRole("button", { name: "Paint with Marker" })
+    library(page).getByRole("button", {
+      name: "Paint with Marker",
+      exact: true,
+    })
   ).toHaveCount(2)
 
   await page.reload()
@@ -130,14 +180,17 @@ test("an edited brush is saved and comes back on the next visit", async ({
   // Two: the built-in it was copied from, and the saved one, which survived
   // the reload because it is kept rather than held.
   await expect(
-    library(page).getByRole("button", { name: "Paint with Marker" })
+    library(page).getByRole("button", {
+      name: "Paint with Marker",
+      exact: true,
+    })
   ).toHaveCount(2)
 })
 
 test("a set is made and a brush shelved in it", async ({ page }) => {
   await openLibrary(page)
   await library(page)
-    .getByRole("button", { name: "Duplicate Airbrush" })
+    .getByRole("button", { name: "Duplicate Airbrush", exact: true })
     .click()
   await library(page)
     .getByRole("textbox", { name: "New set name" })
@@ -152,7 +205,7 @@ test("the brush and size a document was left with are restored", async ({
 }) => {
   await openLibrary(page)
   await library(page)
-    .getByRole("button", { name: "Paint with Inking pen" })
+    .getByRole("button", { name: "Paint with Inking pen", exact: true })
     .click()
   await page.getByRole("button", { name: /^Size:/ }).click()
   const size = page.getByRole("slider", { name: "Size", exact: true })

@@ -14,7 +14,8 @@ import { Input } from "@/components/ui/input"
 import type { Brush } from "@/engine/brush/brush"
 
 import {
-  BUILTIN_SET,
+  BUILTIN_SET_NAMES,
+  type BrushSet,
   brushShelf,
   duplicateOf,
   type LibraryBrush,
@@ -75,7 +76,11 @@ export function BrushLibrary({
       ...shelf,
       ...pendingSets
         .filter((name) => !named.has(name))
-        .map((name) => ({ name, brushes: [] as LibraryBrush[] })),
+        .map((name) => ({
+          name,
+          brushes: [] as LibraryBrush[],
+          builtin: false,
+        })),
     ]
   }, [shelf, pendingSets])
 
@@ -96,11 +101,12 @@ export function BrushLibrary({
 
   const selected = library.brushes.find((stored) => stored.id === brush.id)
 
-  const drop = (set: string, index: number) => {
+  const drop = (set: BrushSet, index: number) => {
     const moving = dragging
     setDragging(null)
-    if (!moving || moving.builtin) return
-    run(store.move(moving.id, set, index))
+    // A shipped set has no rows, so there is nothing to move a brush into.
+    if (!moving || moving.builtin || set.builtin) return
+    run(store.move(moving.id, set.name, index))
   }
 
   return (
@@ -132,11 +138,11 @@ export function BrushLibrary({
       )}
 
       {sets.map((set) => (
-        <section key={set.name} className="space-y-1.5">
+        <section key={`${set.builtin}:${set.name}`} className="space-y-1.5">
           <h3
             className="text-xs font-medium text-muted-foreground"
             onDragOver={(event) => event.preventDefault()}
-            onDrop={() => drop(set.name, set.brushes.length)}
+            onDrop={() => drop(set, set.brushes.length)}
           >
             {set.name}
           </h3>
@@ -153,7 +159,7 @@ export function BrushLibrary({
               draggable={!entry.builtin}
               onDragStart={() => setDragging(entry)}
               onDragOver={(event) => event.preventDefault()}
-              onDrop={() => drop(set.name, index)}
+              onDrop={() => drop(set, index)}
               className={`flex items-center gap-2 rounded-lg border p-1.5 ${
                 entry.id === brush.id ? "border-primary" : "border-border/60"
               }`}
@@ -288,7 +294,7 @@ export function BrushLibrary({
           size="icon"
           label="Add set"
           className="size-7 rounded-md"
-          disabled={!newSet.trim() || newSet.trim() === BUILTIN_SET}
+          disabled={!newSet.trim() || BUILTIN_SET_NAMES.includes(newSet.trim())}
           onClick={() => {
             setPendingSets((existing) => [...existing, newSet.trim()])
             setNewSet("")

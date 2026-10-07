@@ -18,6 +18,7 @@
     "typecheck": "tsc --noEmit",
     "bench": "bun run bench/run.ts",
     "assets:krita": "bun run tooling/krita-assets.ts",
+    "assets:krita-presets": "bun run tooling/krita-presets.ts",
     "test": "bun run test:unit && bun run test:browser",
     "test:unit": "bun test tests/unit",
     "test:browser": "playwright test"
