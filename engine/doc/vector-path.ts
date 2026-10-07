@@ -335,7 +335,7 @@ export function createPressureFit(
 }
 
 /** How much a taper narrows a point `at` this far along a stroke `total` long. */
-function taperScale(at: number, total: number, taper: Taper): number {
+export function taperScale(at: number, total: number, taper: Taper): number {
   const clamp = (t: number) =>
     Math.max(0, Math.min(MAX_TAPER, Number.isFinite(t) ? t : 0))
   const start = clamp(taper.start) * total,

@@ -23,6 +23,7 @@ import {
 import { tabSessionId } from "@/features/library/lib/tab-session"
 import { PreferencesSync } from "@/features/commands/components/preferences-sync"
 import { useConvexPaletteStore } from "@/features/color/lib/convex-palette-store"
+import { useConvexVectorBrushStore } from "@/features/studio/lib/convex-vector-brush-store"
 import { useConvexBrushStore } from "@/features/studio/lib/convex-brush-store"
 import { CanvasHost } from "@/features/studio/components/canvas-host"
 
@@ -84,6 +85,7 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
   // Brushes likewise belong to the artist rather than to this document, which
   // is what makes a tool shaped on one machine available on the next (25).
   const brushes = useConvexBrushStore()
+  const vectorBrushes = useConvexVectorBrushStore()
   const sessionId = useSessionId()
   useHeartbeat(documentId, sessionId)
   const openElsewhere = useQuery(api.sessions.openElsewhere, {
@@ -104,6 +106,7 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
       onSyncStatus={(status) => recordSyncStatus(documentId, status)}
       palettes={palettes}
       brushes={brushes}
+      vectorBrushes={vectorBrushes}
       openElsewhere={openElsewhere ?? false}
     />
   )

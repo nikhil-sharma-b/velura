@@ -18,6 +18,7 @@
  * a point can be hit-tested against an object without drawing it.
  */
 
+import { vectorBrushGeometry } from "../doc/vector-brush"
 import { flattenPath } from "../doc/vector-path"
 import type {
   FillRule,
@@ -82,7 +83,7 @@ function outline(
   widths?: number[] | null
   corners?: number[]
 } {
-  const geometry = object.geometry
+  const geometry = vectorBrushGeometry(object)
   switch (geometry.kind) {
     case "rect": {
       const { x, y, width, height } = geometry
