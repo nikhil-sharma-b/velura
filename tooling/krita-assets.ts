@@ -12,16 +12,13 @@
  * Only assets cross over. No Krita code is used: the files are read by
  * `engine/brush/gimp-resources.ts`, written from the formats themselves.
  */
-import { spawnSync } from "node:child_process"
 import {
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs"
-import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { PNG } from "pngjs"
 
@@ -37,13 +34,16 @@ import {
   assetSlug,
   grainFromImage,
   shrinkToFit,
-  type SourceImage,
   tipFromImage,
 } from "./krita-assets/convert"
-
-const REPOSITORY = "https://invent.kde.org/graphics/krita"
-const COMMIT = "97f42ad6326a3cfc15d7f158678433608acf13ce"
-const BUNDLE_PATH = "krita/data/bundles/Krita_4_Default_Resources.bundle"
+import {
+  BUNDLE_PATH,
+  bundleBytes,
+  COMMIT,
+  readPng,
+  REPOSITORY,
+  unzip,
+} from "./krita-assets/bundle"
 
 const ROOT = resolve(import.meta.dir, "..")
 const OUTPUT = join(ROOT, "public/brushes/krita")
@@ -65,41 +65,6 @@ const AUTHORS = [
   "Scottyp",
   "Blender Foundation",
 ]
-
-async function bundleBytes(): Promise<Uint8Array> {
-  const flag = process.argv.indexOf("--bundle")
-  if (flag !== -1) {
-    const path = process.argv[flag + 1]
-    if (!path) throw new Error("--bundle needs the path to a .bundle file.")
-    return new Uint8Array(readFileSync(path))
-  }
-  const url = `${REPOSITORY}/-/raw/${COMMIT}/${BUNDLE_PATH}`
-  const response = await fetch(url)
-  if (!response.ok)
-    throw new Error(`Fetching ${url} failed: ${response.status}`)
-  return new Uint8Array(await response.arrayBuffer())
-}
-
-function unzip(bytes: Uint8Array): string {
-  const scratch = mkdtempSync(join(tmpdir(), "krita-bundle-"))
-  const archive = join(scratch, "bundle.zip")
-  writeFileSync(archive, bytes)
-  const out = join(scratch, "files")
-  const result = spawnSync("unzip", ["-q", "-o", archive, "-d", out])
-  if (result.status !== 0)
-    throw new Error(`unzip failed: ${result.stderr.toString()}`)
-  return out
-}
-
-function readPng(bytes: Uint8Array): SourceImage {
-  const png = PNG.sync.read(Buffer.from(bytes))
-  return {
-    width: png.width,
-    height: png.height,
-    channels: 4,
-    pixels: new Uint8Array(png.data),
-  }
-}
 
 function writeGrayPng(path: string, texture: GrayscaleTexture): number {
   const png = new PNG({ width: texture.width, height: texture.height })

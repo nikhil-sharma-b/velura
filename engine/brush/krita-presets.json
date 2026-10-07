@@ -1,0 +1,3598 @@
+{
+  "source": {
+    "name": "Krita 4 default resources",
+    "commit": "97f42ad6326a3cfc15d7f158678433608acf13ce",
+    "licence": "CC0 1.0"
+  },
+  "sets": [
+    {
+      "name": "Sketch",
+      "brushes": [
+        {
+          "id": "builtin:krita-pencil-1-hard",
+          "name": "Pencil-1 Hard",
+          "shape": {
+            "radius": 5,
+            "feather": 4.25,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.2
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.485944
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                0.6
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.128414,
+                  "y": 0.100402
+                },
+                {
+                  "x": 0.473896,
+                  "y": 0.710843
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "direction",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            },
+            {
+              "source": "pressure",
+              "target": "scatter",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 1
+                },
+                {
+                  "x": 1,
+                  "y": 0.113537
+                }
+              ]
+            }
+          ],
+          "scatter": {
+            "amount": 0.18,
+            "count": 1,
+            "axes": "both"
+          }
+        },
+        {
+          "id": "builtin:krita-pencil-2",
+          "name": "Pencil-2",
+          "shape": {
+            "radius": 5,
+            "feather": 4.25,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.2
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.485944
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.128414,
+                  "y": 0.100402
+                },
+                {
+                  "x": 0.473896,
+                  "y": 0.710843
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "direction",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            },
+            {
+              "source": "pressure",
+              "target": "scatter",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 1
+                },
+                {
+                  "x": 1,
+                  "y": 0.113537
+                }
+              ]
+            }
+          ],
+          "scatter": {
+            "amount": 0.18,
+            "count": 1,
+            "axes": "both"
+          }
+        },
+        {
+          "id": "builtin:krita-pencil-3-large-4b",
+          "name": "Pencil-3 Large 4B",
+          "shape": {
+            "radius": 5,
+            "feather": 0,
+            "roundness": 0.9,
+            "angle": 0.749999,
+            "spacing": 0.05
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 0.2
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.487437
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "tiltDirection",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            },
+            {
+              "source": "pressure",
+              "target": "grainDepth",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.129397,
+                  "y": 0.0648241
+                },
+                {
+                  "x": 0.513819,
+                  "y": 0.714071
+                },
+                {
+                  "x": 0.758794,
+                  "y": 0.768844
+                }
+              ]
+            }
+          ],
+          "grain": {
+            "textureId": "krita:10-drawed-dotted",
+            "scale": 0.45,
+            "depth": 0.7,
+            "movement": 0
+          }
+        },
+        {
+          "id": "builtin:krita-pencil-4-soft",
+          "name": "Pencil-4 Soft",
+          "shape": {
+            "radius": 8,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0.749999,
+            "spacing": 0.2,
+            "tipTextureId": "krita:graphite-grain",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.145729,
+                  "y": 0.0351759
+                },
+                {
+                  "x": 0.683417,
+                  "y": 0.859296
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.477387,
+                  "y": 0.477387
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "direction",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-pencil-5-tilted",
+          "name": "Pencil-5 Tilted",
+          "shape": {
+            "radius": 19.99998,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0.5,
+            "spacing": 0.03,
+            "tipTextureId": "krita:gradient"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "tilt",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.246231
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.144578,
+                  "y": 0.0481932
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "tiltDirection",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            },
+            {
+              "source": "pressure",
+              "target": "grainDepth",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            }
+          ],
+          "grain": {
+            "textureId": "krita:04-paper-c-grain",
+            "scale": 0.6,
+            "depth": 1,
+            "movement": 0
+          }
+        },
+        {
+          "id": "builtin:krita-pencil-6-quick-shade",
+          "name": "Pencil-6 Quick Shade",
+          "shape": {
+            "radius": 30,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0.749999,
+            "spacing": 0.2,
+            "tipTextureId": "krita:graphite-grain",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.16714,
+                  "y": 0.0538837
+                },
+                {
+                  "x": 0.567839,
+                  "y": 0.763819
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "direction",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-charcoal-pencil-thin",
+          "name": "Charcoal Pencil Thin",
+          "shape": {
+            "radius": 3,
+            "feather": 1.5,
+            "roundness": 0.8,
+            "angle": 0.141666,
+            "spacing": 0.2
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.497817
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.128414,
+                  "y": 0.100402
+                },
+                {
+                  "x": 0.473896,
+                  "y": 0.710843
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ],
+          "grain": {
+            "textureId": "krita:10-drawed-dotted",
+            "scale": 0.35,
+            "depth": 0.45,
+            "movement": 0
+          }
+        },
+        {
+          "id": "builtin:krita-charcoal-pencil-medium",
+          "name": "Charcoal Pencil Medium",
+          "shape": {
+            "radius": 6,
+            "feather": 3,
+            "roundness": 0.8,
+            "angle": 0.141666,
+            "spacing": 0.2
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.497817
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.128414,
+                  "y": 0.100402
+                },
+                {
+                  "x": 0.473896,
+                  "y": 0.710843
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ],
+          "grain": {
+            "textureId": "krita:10-drawed-dotted",
+            "scale": 0.35,
+            "depth": 0.45,
+            "movement": 0
+          }
+        },
+        {
+          "id": "builtin:krita-charcoal-pencil-large",
+          "name": "Charcoal pencil large",
+          "shape": {
+            "radius": 16,
+            "feather": 8,
+            "roundness": 0.8,
+            "angle": 0.141666,
+            "spacing": 0.2
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.497817
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.128414,
+                  "y": 0.100402
+                },
+                {
+                  "x": 0.473896,
+                  "y": 0.710843
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ],
+          "grain": {
+            "textureId": "krita:10-drawed-dotted",
+            "scale": 0.35,
+            "depth": 0.45,
+            "movement": 0
+          }
+        },
+        {
+          "id": "builtin:krita-charcoal-rock-soft",
+          "name": "Charcoal Rock Soft",
+          "shape": {
+            "radius": 42.50016,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.1,
+            "tipTextureId": "krita:chalk-chisel-random-small",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.783133
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.0932203,
+                  "y": 0.0436681
+                },
+                {
+                  "x": 0.758475,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-chalk-details",
+          "name": "Chalk Details",
+          "shape": {
+            "radius": 30,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.04,
+            "tipTextureId": "krita:square-eroded"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.240175
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.698795
+                },
+                {
+                  "x": 0.396396,
+                  "y": 0.871486
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "grainDepth",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            }
+          ],
+          "grain": {
+            "textureId": "krita:04-paper-c-grain",
+            "scale": 0.8,
+            "depth": 0.8,
+            "movement": 0
+          }
+        },
+        {
+          "id": "builtin:krita-chalk-grainy",
+          "name": "Chalk Grainy",
+          "shape": {
+            "radius": 45,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.12,
+            "tipTextureId": "krita:rock-pitted",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.25,
+                  "y": 0.1
+                },
+                {
+                  "x": 0.75,
+                  "y": 0.9
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "direction",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-chalk-soft",
+          "name": "Chalk Soft",
+          "shape": {
+            "radius": 67.5,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.06,
+            "tipTextureId": "krita:oil-bristle"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.425121,
+                  "y": 0.266332
+                },
+                {
+                  "x": 0.797101,
+                  "y": 0.98995
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "grainDepth",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.427136
+                },
+                {
+                  "x": 0.306931,
+                  "y": 0.467337
+                },
+                {
+                  "x": 0.579208,
+                  "y": 0.688442
+                },
+                {
+                  "x": 0.886139,
+                  "y": 1
+                }
+              ]
+            }
+          ],
+          "grain": {
+            "textureId": "krita:10-drawed-dotted",
+            "scale": 1,
+            "depth": 1,
+            "movement": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ink",
+      "brushes": [
+        {
+          "id": "builtin:krita-ink-1-precision",
+          "name": "Ink-1 Precision",
+          "shape": {
+            "radius": 1.5,
+            "feather": 1.44,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.15
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "velocity",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 1
+                },
+                {
+                  "x": 1,
+                  "y": 0.526104
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-ink-2-fineliner",
+          "name": "Ink-2 Fineliner",
+          "shape": {
+            "radius": 2.5,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.08
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "velocity",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 1
+                },
+                {
+                  "x": 1,
+                  "y": 0
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.753769
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-ink-3-gpen",
+          "name": "Ink-3 Gpen",
+          "shape": {
+            "radius": 2.5,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0.944444,
+            "spacing": 0.02
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 0.6
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.0703518
+                },
+                {
+                  "x": 0.317328,
+                  "y": 0.234952
+                },
+                {
+                  "x": 0.650602,
+                  "y": 0.838428
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-ink-4-pen-rough",
+          "name": "Ink-4 Pen Rough",
+          "shape": {
+            "radius": 3.5,
+            "feather": 0,
+            "roundness": 0.5,
+            "angle": 0,
+            "spacing": 0.01
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "random",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            },
+            {
+              "source": "pressure",
+              "target": "angle",
+              "range": [
+                0,
+                -1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-ink-7-brush-rough",
+          "name": "Ink-7 Brush Rough",
+          "shape": {
+            "radius": 12.5,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.08
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.25,
+                  "y": 0.1
+                },
+                {
+                  "x": 0.75,
+                  "y": 0.9
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "strokeProgress",
+              "target": "grainDepth",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 1
+                },
+                {
+                  "x": 1,
+                  "y": 0
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "grainDepth",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            }
+          ],
+          "grain": {
+            "textureId": "krita:03-default-paper",
+            "scale": 1,
+            "depth": 1,
+            "movement": 0
+          }
+        },
+        {
+          "id": "builtin:krita-screentone-pressure",
+          "name": "Screentone Pressure",
+          "shape": {
+            "radius": 27.5,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.18
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "pressure",
+              "target": "grainDepth",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            }
+          ],
+          "grain": {
+            "textureId": "krita:23-dynamic-screentone-a",
+            "scale": 0.35,
+            "depth": 1,
+            "movement": 0
+          }
+        },
+        {
+          "id": "builtin:krita-screentones-regular",
+          "name": "Screentones Regular",
+          "shape": {
+            "radius": 20,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.08
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.35,
+                  "y": 0.1
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ],
+          "grain": {
+            "textureId": "krita:24-dynamic-screentone-b",
+            "scale": 0.4,
+            "depth": 1,
+            "movement": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "Paint",
+      "brushes": [
+        {
+          "id": "builtin:krita-bristles-1-details",
+          "name": "Bristles-1 Details",
+          "shape": {
+            "radius": 7.999992,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.04,
+            "tipTextureId": "krita:bristle"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 0.4
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.122271
+                },
+                {
+                  "x": 0.414508,
+                  "y": 0.318777
+                },
+                {
+                  "x": 0.746114,
+                  "y": 0.864629
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-bristles-2-flat-rough",
+          "name": "Bristles-2 Flat Rough",
+          "shape": {
+            "radius": 20.000025,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.04,
+            "tipTextureId": "krita:chisel-streaks"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.25,
+                  "y": 0.126637
+                },
+                {
+                  "x": 0.754237,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "direction",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-bristles-3-large-smooth",
+          "name": "Bristles-3 Large Smooth",
+          "shape": {
+            "radius": 55.000064,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.03,
+            "tipTextureId": "krita:bristles-circle-dense"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.771084
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.25,
+                  "y": 0.1
+                },
+                {
+                  "x": 0.75,
+                  "y": 0.9
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-bristles-4-glaze",
+          "name": "Bristles-4 Glaze",
+          "shape": {
+            "radius": 35.000064,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.013,
+            "tipTextureId": "krita:random-particles"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.321844,
+                  "y": 0.111737
+                },
+                {
+                  "x": 0.839196,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-bristles-5-flat",
+          "name": "Bristles-5 Flat",
+          "shape": {
+            "radius": 33.75,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0.749999,
+            "spacing": 0.06,
+            "tipTextureId": "krita:rake-flat"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.445596,
+                  "y": 0.113537
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-dry-bristles",
+          "name": "Dry Bristles",
+          "shape": {
+            "radius": 64.99995,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.08,
+            "tipTextureId": "krita:scratches-rough",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.712667
+                },
+                {
+                  "x": 0.772152,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.707507,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "direction",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-dry-bristles-eroded",
+          "name": "Dry Bristles Eroded",
+          "shape": {
+            "radius": 60,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.16,
+            "tipTextureId": "krita:chalk-chisel-random",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.25,
+                  "y": 0.1
+                },
+                {
+                  "x": 0.75,
+                  "y": 0.9
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "direction",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-dry-brushing",
+          "name": "Dry Brushing",
+          "shape": {
+            "radius": 35.000064,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.016,
+            "tipTextureId": "krita:random-particles"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.316063,
+                  "y": 0.200873
+                },
+                {
+                  "x": 0.761658,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "grainDepth",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            }
+          ],
+          "grain": {
+            "textureId": "krita:rough-paper",
+            "scale": 0.8,
+            "depth": 0.85,
+            "movement": 0
+          }
+        },
+        {
+          "id": "builtin:krita-watercolor-texture",
+          "name": "Watercolor Texture",
+          "shape": {
+            "radius": 110,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.75,
+            "tipTextureId": "krita:watercolor",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 0.6,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.517588
+                },
+                {
+                  "x": 0.254831,
+                  "y": 0.557286
+                },
+                {
+                  "x": 0.75,
+                  "y": 0.9
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "random",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-waterpaint-hard-edges",
+          "name": "Waterpaint Hard Edges",
+          "shape": {
+            "radius": 50,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.2,
+            "tipTextureId": "krita:circle-hard-eroded",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 0.6,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.422111
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "scatter",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.482412
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ],
+          "scatter": {
+            "amount": 0.08,
+            "count": 1,
+            "axes": "both"
+          }
+        },
+        {
+          "id": "builtin:krita-waterpaint-soft-edges",
+          "name": "Waterpaint Soft Edges",
+          "shape": {
+            "radius": 48,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.02,
+            "tipTextureId": "krita:oil-knife"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 0.6,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.0342751
+                },
+                {
+                  "x": 0.872266,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 0.98995
+                }
+              ]
+            },
+            {
+              "source": "random",
+              "target": "angle",
+              "range": [
+                0,
+                0.19
+              ],
+              "mix": "add",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.20603
+                },
+                {
+                  "x": 1,
+                  "y": 0.889447
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-texture-impressionism",
+          "name": "Texture Impressionism",
+          "shape": {
+            "radius": 40,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.011,
+            "tipTextureId": "krita:impressionism-brush",
+            "tipSelection": "sequential"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "random",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.436308
+                },
+                {
+                  "x": 0.323671,
+                  "y": 0.497487
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.436308
+                },
+                {
+                  "x": 0.323671,
+                  "y": 0.497487
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.528384
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "direction",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            },
+            {
+              "source": "pressure",
+              "target": "scatter",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "random",
+              "target": "hue",
+              "range": [
+                -0.5,
+                0.5
+              ],
+              "mix": "add",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.497816
+                },
+                {
+                  "x": 1,
+                  "y": 0.591495
+                }
+              ]
+            },
+            {
+              "source": "random",
+              "target": "lightness",
+              "range": [
+                -1,
+                1
+              ],
+              "mix": "add",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.480349
+                },
+                {
+                  "x": 1,
+                  "y": 0.616445
+                }
+              ]
+            }
+          ],
+          "scatter": {
+            "amount": 4.36,
+            "count": 1,
+            "axes": "both"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Digital",
+      "brushes": [
+        {
+          "id": "builtin:krita-basic-2-opacity",
+          "name": "Basic-2 Opacity",
+          "shape": {
+            "radius": 20,
+            "feather": 2,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.08
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-basic-4-flow-opacity",
+          "name": "Basic-4 Flow Opacity",
+          "shape": {
+            "radius": 20,
+            "feather": 2,
+            "roundness": 1,
+            "angle": 0.047222,
+            "spacing": 0.04
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.507538,
+                  "y": 0.336683
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-basic-5-size-opacity",
+          "name": "Basic-5 Size Opacity",
+          "shape": {
+            "radius": 20,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0.999999,
+            "spacing": 0.2
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.0698697
+                },
+                {
+                  "x": 0.196891,
+                  "y": 0.144105
+                },
+                {
+                  "x": 0.689119,
+                  "y": 0.812227
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.325305,
+                  "y": 0.288175
+                },
+                {
+                  "x": 0.727782,
+                  "y": 0.924817
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-basic-6-details",
+          "name": "Basic-6 Details",
+          "shape": {
+            "radius": 3.75,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.02,
+            "tipTextureId": "krita:plain-rake"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.25,
+                  "y": 0.126637
+                },
+                {
+                  "x": 0.754237,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "direction",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-airbrush-soft",
+          "name": "Airbrush Soft",
+          "shape": {
+            "radius": 60,
+            "feather": 60,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.1
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.675298,
+                  "y": 0.578529
+                },
+                {
+                  "x": 0.859438,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-marker-chisel-smooth",
+          "name": "Marker Chisel Smooth",
+          "shape": {
+            "radius": 30,
+            "feather": 2.1,
+            "roundness": 1,
+            "angle": 0.749999,
+            "spacing": 0.04
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "tilt",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.115578
+                },
+                {
+                  "x": 0.8733029999999999,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.0653266,
+                  "y": 0.040201
+                },
+                {
+                  "x": 0.914573,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "tilt",
+              "target": "roundness",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 1
+                },
+                {
+                  "x": 0.737557,
+                  "y": 0.0954774
+                },
+                {
+                  "x": 1,
+                  "y": 0.0351759
+                }
+              ]
+            },
+            {
+              "source": "tiltDirection",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-marker-details",
+          "name": "Marker Details",
+          "shape": {
+            "radius": 10,
+            "feather": 3.4,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.2
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.346206
+                },
+                {
+                  "x": 0.35743,
+                  "y": 0.524017
+                },
+                {
+                  "x": 0.759036,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.347458,
+                  "y": 0.401747
+                },
+                {
+                  "x": 0.496346,
+                  "y": 0.74141
+                },
+                {
+                  "x": 0.745614,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-marker-dry",
+          "name": "Marker Dry",
+          "shape": {
+            "radius": 17.5,
+            "feather": 1.75,
+            "roundness": 0.5,
+            "angle": 0.749999,
+            "spacing": 0.04
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.0100503
+                },
+                {
+                  "x": 0.38191,
+                  "y": 0.140704
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "tiltDirection",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-shapes-rounded",
+          "name": "Shapes Rounded",
+          "shape": {
+            "radius": 180,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.25,
+            "tipTextureId": "krita:shapes-round-random",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.256281
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.25,
+                  "y": 0.1
+                },
+                {
+                  "x": 0.75,
+                  "y": 0.9
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "random",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-shapes-spikes",
+          "name": "Shapes Spikes",
+          "shape": {
+            "radius": 180,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.41,
+            "tipTextureId": "krita:shapes-spiked-random",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.29598
+                },
+                {
+                  "x": 0.579146,
+                  "y": 0.538191
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.25,
+                  "y": 0.1
+                },
+                {
+                  "x": 0.75,
+                  "y": 0.9
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "random",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Textures",
+      "brushes": [
+        {
+          "id": "builtin:krita-texture-crackles",
+          "name": "Texture Crackles",
+          "shape": {
+            "radius": 192.49984,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.75,
+            "tipTextureId": "krita:crackles"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.389558
+                },
+                {
+                  "x": 0.305221,
+                  "y": 0.658635
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "random",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-texture-hair",
+          "name": "Texture Hair",
+          "shape": {
+            "radius": 34.999995,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.04,
+            "tipTextureId": "krita:hair"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.489083
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.308564,
+                  "y": 0.345834
+                },
+                {
+                  "x": 0.469468,
+                  "y": 0.98995
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-texture-noise",
+          "name": "Texture Noise",
+          "shape": {
+            "radius": 60.00005,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.1,
+            "tipTextureId": "krita:noise",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "random",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-texture-random-particles",
+          "name": "Texture Random Particles",
+          "shape": {
+            "radius": 87.499935,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.37,
+            "tipTextureId": "krita:random-debris"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "random",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.376884
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.58952
+                },
+                {
+                  "x": 0.271948,
+                  "y": 0.624454
+                },
+                {
+                  "x": 0.614333,
+                  "y": 0.90393
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.641922
+                },
+                {
+                  "x": 0.466321,
+                  "y": 0.720524
+                },
+                {
+                  "x": 0.682981,
+                  "y": 0.851528
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-texture-reptile",
+          "name": "Texture Reptile",
+          "shape": {
+            "radius": 50,
+            "feather": 25,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.1
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.698795
+                },
+                {
+                  "x": 0.396396,
+                  "y": 0.871486
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "grainDepth",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.0481928,
+                  "y": 0.212851
+                },
+                {
+                  "x": 0.128514,
+                  "y": 0.353414
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ],
+          "grain": {
+            "textureId": "krita:22-texture-reptile",
+            "scale": 0.5,
+            "depth": 1,
+            "movement": 0
+          }
+        },
+        {
+          "id": "builtin:krita-texture-spines",
+          "name": "Texture Spines",
+          "shape": {
+            "radius": 65.000075,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.25,
+            "tipTextureId": "krita:spines"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "random",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.25,
+                  "y": 0.1
+                },
+                {
+                  "x": 0.75,
+                  "y": 0.9
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.25,
+                  "y": 0.1
+                },
+                {
+                  "x": 0.75,
+                  "y": 0.9
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "random",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ],
+          "scatter": {
+            "amount": 0.34,
+            "count": 1,
+            "axes": "both"
+          }
+        },
+        {
+          "id": "builtin:krita-texture-splat",
+          "name": "Texture Splat",
+          "shape": {
+            "radius": 67.50016,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.33,
+            "tipTextureId": "krita:splat-dots"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "random",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.165939
+                },
+                {
+                  "x": 0.353414,
+                  "y": 0.424914
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.258155,
+                  "y": 0.0638358
+                },
+                {
+                  "x": 0.759036,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "random",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-texture-spray",
+          "name": "Texture Spray",
+          "shape": {
+            "radius": 41.14287,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.06,
+            "tipTextureId": "krita:freckles"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "random",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.610442
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "random",
+              "target": "angle",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "add"
+            }
+          ],
+          "scatter": {
+            "amount": 2,
+            "count": 1,
+            "axes": "both"
+          }
+        },
+        {
+          "id": "builtin:krita-stamp-grass",
+          "name": "Stamp Grass",
+          "shape": {
+            "radius": 62.499968,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.64,
+            "tipTextureId": "krita:grass",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.492462
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-stamp-herbals",
+          "name": "Stamp Herbals",
+          "shape": {
+            "radius": 100.59155,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.4,
+            "tipTextureId": "krita:random-vegetal",
+            "tipSelection": "random"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.389558
+                },
+                {
+                  "x": 0.305221,
+                  "y": 0.658635
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.206422,
+                  "y": 0.248996
+                },
+                {
+                  "x": 0.715596,
+                  "y": 0.7751
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-stamp-stylised-tree",
+          "name": "Stamp Stylised Tree",
+          "shape": {
+            "radius": 65.00032,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.1,
+            "tipTextureId": "krita:vegetal-stylised",
+            "tipSelection": "sequential"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0.389558
+                },
+                {
+                  "x": 0.305221,
+                  "y": 0.658635
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.206422,
+                  "y": 0.248996
+                },
+                {
+                  "x": 0.715596,
+                  "y": 0.7751
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "builtin:krita-stamp-vegetal",
+          "name": "Stamp Vegetal",
+          "shape": {
+            "radius": 35.00007,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.6,
+            "tipTextureId": "krita:vegetal"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "FX",
+      "brushes": [
+        {
+          "id": "builtin:krita-stamp-bokeh",
+          "name": "Stamp Bokeh",
+          "shape": {
+            "radius": 192.07314,
+            "feather": 0,
+            "roundness": 1,
+            "angle": 0,
+            "spacing": 0.61,
+            "tipTextureId": "krita:bokey-circle"
+          },
+          "rendering": {
+            "accumulation": "buildup",
+            "opacity": 1,
+            "flow": 1
+          },
+          "dynamics": [
+            {
+              "source": "random",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "pressure",
+              "target": "size",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "pressure",
+              "target": "flow",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply"
+            },
+            {
+              "source": "pressure",
+              "target": "scatter",
+              "range": [
+                0,
+                1
+              ],
+              "mix": "multiply",
+              "curve": [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.445783,
+                  "y": 0.204819
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            }
+          ],
+          "scatter": {
+            "amount": 1.48,
+            "count": 1,
+            "axes": "both"
+          }
+        }
+      ]
+    }
+  ]
+}

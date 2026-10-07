@@ -1,5 +1,6 @@
 import type { Brush } from "./brush"
 import type { Modulator } from "./dynamics"
+import { KRITA_BRUSHES } from "./krita-presets"
 import { CHARCOAL_TIP, GRAPHITE_TIP, PAPER_GRAIN } from "./texture"
 
 /**
@@ -161,6 +162,8 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
  */
 export const DEFAULT_LIBRARY_BRUSH_ID = `${BUILTIN_BRUSH_PREFIX}pencil`
 
+const ALL_BUILTIN_BRUSHES = [...BUILTIN_BRUSHES, ...KRITA_BRUSHES]
+
 export function builtinBrush(id: string): Brush | undefined {
-  return BUILTIN_BRUSHES.find((brush) => brush.id === id)
+  return ALL_BUILTIN_BRUSHES.find((brush) => brush.id === id)
 }

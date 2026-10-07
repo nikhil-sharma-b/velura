@@ -42,11 +42,11 @@ describe("the shelf", () => {
     ])
     const inks = shelf.find((set) => set.name === "Inks")!
     expect(inks.brushes.map((entry) => entry.name)).toEqual(["First", "Second"])
-    expect(shelf.map((set) => set.name)).toEqual([
-      BUILTIN_SET,
+    expect(shelf.filter((set) => !set.builtin).map((set) => set.name)).toEqual([
       "Inks",
       "Washes",
     ])
+    expect(shelf[0].name).toBe(BUILTIN_SET)
     expect(inks.brushes.every((entry) => entry.builtin)).toBe(false)
   })
 })
@@ -55,7 +55,8 @@ describe("a built-in", () => {
   test("cannot be destroyed", () => {
     const shelf = brushShelf([])
     expect(shelf[0].brushes.every((entry) => entry.deletable)).toBe(false)
-    expect(brushShelf([stored()])[1].brushes[0].deletable).toBe(true)
+    const own = brushShelf([stored()]).find((set) => !set.builtin)!
+    expect(own.brushes[0].deletable).toBe(true)
   })
 
   test("duplicates into a set of the artist's own", () => {
