@@ -1,4 +1,9 @@
-import { MAX_TAPER, type Taper } from "../doc/vector-path"
+import {
+  MAX_TAPER,
+  type BezierPath,
+  type PathNode,
+  type Taper,
+} from "../doc/vector-path"
 
 /** Kind-specific sections are extended by brush-library issues 10–12. */
 export type VectorBrushKind = "profile" | "calligraphy" | "pattern" | "scatter"
@@ -36,16 +41,48 @@ export type ProfileParams = Readonly<{
 }>
 
 /** The kinds this build can draw; the rest are listed in the editor only. */
-export type DrawnVectorBrushKind = "profile" | "calligraphy"
+export type DrawnVectorBrushKind = "profile" | "calligraphy" | "pattern"
+
+/** Whether a pattern's tile is drawn once along the stroke, or end to end. */
+export type PatternMode = "stretch" | "repeat"
+/**
+ * How a pattern meets a sharp corner: bent round it, or begun afresh on
+ * each side of it.
+ */
+export type PatternCorners = "bend" | "split"
+
+/**
+ * Art laid along a spine axis: the x axis, from 0 to `length`, with y across
+ * it. Both are in stroke widths, so y from -0.5 to 0.5 spans the stroke.
+ */
+export type PatternPiece = Readonly<{
+  paths: readonly BezierPath[]
+  length: number
+}>
+
+export type PatternParams = Readonly<{
+  mode: PatternMode
+  corners: PatternCorners
+  tile: PatternPiece
+  /** Drawn once at the stroke's start and end; the tile fills between. */
+  start: PatternPiece | null
+  end: PatternPiece | null
+}>
 
 export type VectorBrush = Readonly<{
   id: string
   name: string
   kind: DrawnVectorBrushKind
   params: ProfileParams
+  /** A pattern brush's art; other kinds have none. */
+  pattern?: PatternParams
 }>
 
 export const MIN_PRESSURE_CURVE = 0.25
+/** More nodes than any brush's art needs; past it, a selection is too busy to deform live. */
+export const MAX_PATTERN_NODES = 2000
+/** The longest a piece of art may be, in stroke widths. */
+export const MAX_PATTERN_LENGTH = 1000
 export const MAX_PRESSURE_CURVE = 4
 
 /** What a brush saved before profiles had reads as: the plain pressure fit. */
@@ -68,6 +105,50 @@ const profile = (
   taper: { start: 0, end: 0 },
   ...params,
 })
+
+/** A closed outline through `points`, straight from each to the next. */
+function outline(points: readonly (readonly [number, number])[]): BezierPath {
+  return {
+    kind: "path",
+    closed: true,
+    nodes: points.map(([x, y]) => ({
+      x,
+      y,
+      in: null,
+      out: null,
+      type: "cusp",
+    })),
+  }
+}
+
+/** A band along the axis, `half(x)` either side of it. */
+function band(length: number, half: (x: number) => number): BezierPath {
+  const xs = Array.from({ length: 25 }, (_, i) => (length * i) / 24)
+  return outline([
+    ...xs.map((x) => [x, -half(x)] as const),
+    ...xs.toReversed().map((x) => [x, half(x)] as const),
+  ])
+}
+
+/** A pointed leaf from `from` to `to` along the axis, on `side` of it. */
+function leaf(from: number, to: number, side: 1 | -1): BezierPath {
+  const ts = Array.from({ length: 9 }, (_, i) => i / 8)
+  const at = (t: number) => from + (to - from) * t
+  return outline([
+    ...ts.map((t) => [at(t), side * (0.05 + 0.45 * t)] as const),
+    ...ts
+      .toReversed()
+      .map((t) => [at(t), side * (0.05 + 0.45 * t * t)] as const),
+  ])
+}
+
+const pattern = (
+  mode: PatternMode,
+  corners: PatternCorners,
+  tile: PatternPiece,
+  start: PatternPiece | null = null,
+  end: PatternPiece | null = null
+): PatternParams => ({ mode, corners, tile, start, end })
 
 export const BUILTIN_VECTOR_BRUSHES: readonly VectorBrush[] = [
   {
@@ -183,6 +264,107 @@ export const BUILTIN_VECTOR_BRUSHES: readonly VectorBrush[] = [
       taper: { start: 0.2, end: 0.3 },
     }),
   },
+  {
+    id: "vector:ribbon",
+    name: "Ribbon",
+    kind: "pattern",
+    params: profile({ pressure: false }),
+    pattern: pattern("repeat", "bend", {
+      length: 3,
+      paths: [
+        band(3, (x) => 0.12 + 0.38 * Math.abs(Math.cos((Math.PI * x) / 3))),
+      ],
+    }),
+  },
+  {
+    id: "vector:rope",
+    name: "Rope",
+    kind: "pattern",
+    params: profile({ pressure: false }),
+    pattern: pattern("repeat", "bend", {
+      length: 1,
+      paths: [
+        outline([
+          [0, -0.5],
+          [0.45, -0.5],
+          [0.95, 0.5],
+          [0.5, 0.5],
+        ]),
+      ],
+    }),
+  },
+  {
+    id: "vector:vine",
+    name: "Vine",
+    kind: "pattern",
+    params: profile({ pressure: false }),
+    pattern: pattern("repeat", "bend", {
+      length: 4,
+      paths: [
+        outline([
+          [0, -0.06],
+          [4, -0.06],
+          [4, 0.06],
+          [0, 0.06],
+        ]),
+        leaf(0.6, 1.8, -1),
+        leaf(2.6, 3.8, 1),
+      ],
+    }),
+  },
+  {
+    id: "vector:tapered-stroke",
+    name: "Tapered stroke",
+    kind: "pattern",
+    params: profile({ pressure: true }),
+    pattern: pattern("stretch", "bend", {
+      length: 10,
+      paths: [band(10, (x) => 0.5 * Math.sin((Math.PI * x) / 10) ** 0.6)],
+    }),
+  },
+  {
+    id: "vector:arrow",
+    name: "Arrow",
+    kind: "pattern",
+    params: profile({ pressure: false }),
+    pattern: pattern(
+      "stretch",
+      "bend",
+      {
+        length: 1,
+        paths: [
+          outline([
+            [0, -0.12],
+            [1, -0.12],
+            [1, 0.12],
+            [0, 0.12],
+          ]),
+        ],
+      },
+      {
+        length: 0.8,
+        paths: [
+          outline([
+            [0, -0.35],
+            [0.8, -0.12],
+            [0.8, 0.12],
+            [0, 0.35],
+            [0.3, 0],
+          ]),
+        ],
+      },
+      {
+        length: 1.5,
+        paths: [
+          outline([
+            [0, -0.5],
+            [1.5, 0],
+            [0, 0.5],
+          ]),
+        ],
+      }
+    ),
+  },
 ]
 
 const share = (value: unknown, max = 1): value is number =>
@@ -202,7 +384,7 @@ export function parseVectorBrush(value: unknown): VectorBrush {
     typeof brush.name !== "string" ||
     !brush.name.trim() ||
     brush.name.length > 100 ||
-    (brush.kind !== "profile" && brush.kind !== "calligraphy") ||
+    !["profile", "calligraphy", "pattern"].includes(brush.kind) ||
     typeof params.pressure !== "boolean" ||
     !share(params.taper?.start, MAX_TAPER) ||
     !share(params.taper?.end, MAX_TAPER) ||
@@ -221,6 +403,7 @@ export function parseVectorBrush(value: unknown): VectorBrush {
     !["style", "round", "flat"].includes(params.caps)
   )
     throw new Error("A vector brush needs an id, name and valid parameters.")
+  const art = brush.kind === "pattern" ? parsePattern(brush.pattern) : null
   return {
     id: brush.id,
     name: brush.name.trim().replace(/\s+/g, " "),
@@ -238,5 +421,74 @@ export function parseVectorBrush(value: unknown): VectorBrush {
       nibAngle: params.nibAngle,
       fixation: params.fixation,
     },
+    ...(art ? { pattern: art } : {}),
+  }
+}
+
+const finite = (...values: unknown[]) =>
+  values.every((v) => typeof v === "number" && Number.isFinite(v))
+
+/** A pattern's art, copied down to the fields it uses; throws on anything else. */
+function parsePattern(value: unknown): PatternParams {
+  const art = value as PatternParams
+  let budget = MAX_PATTERN_NODES
+  const point = (p: unknown) => {
+    const q = p as { x: number; y: number } | null
+    if (q === null) return null
+    if (!q || !finite(q.x, q.y)) throw new Error("bad point")
+    return { x: q.x, y: q.y }
+  }
+  const piece = (value: unknown): PatternPiece => {
+    const p = value as PatternPiece
+    if (
+      !p ||
+      !finite(p.length) ||
+      !(p.length > 0) ||
+      p.length > MAX_PATTERN_LENGTH ||
+      !Array.isArray(p.paths) ||
+      !p.paths.length
+    )
+      throw new Error("bad piece")
+    return {
+      length: p.length,
+      paths: p.paths.map((path): BezierPath => {
+        if (!Array.isArray(path?.nodes) || path.nodes.length < 2)
+          throw new Error("bad path")
+        if ((budget -= path.nodes.length) < 0) throw new Error("too many")
+        return {
+          kind: "path",
+          closed: true,
+          nodes: path.nodes.map((n: PathNode): PathNode => {
+            if (!n || !finite(n.x, n.y)) throw new Error("bad node")
+            return {
+              x: n.x,
+              y: n.y,
+              in: point(n.in ?? null),
+              out: point(n.out ?? null),
+              type: n.type === "smooth" ? "smooth" : "cusp",
+            }
+          }),
+        }
+      }),
+    }
+  }
+  try {
+    if (
+      !art ||
+      !["stretch", "repeat"].includes(art.mode) ||
+      !["bend", "split"].includes(art.corners)
+    )
+      throw new Error("bad pattern")
+    return {
+      mode: art.mode,
+      corners: art.corners,
+      tile: piece(art.tile),
+      start: art.start ? piece(art.start) : null,
+      end: art.end ? piece(art.end) : null,
+    }
+  } catch {
+    throw new Error(
+      `A pattern brush needs a tile of at most ${MAX_PATTERN_NODES} nodes, and a stretch or repeat mode.`
+    )
   }
 }

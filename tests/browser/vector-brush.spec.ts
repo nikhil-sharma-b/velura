@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises"
 import { expect, test, type Page } from "@playwright/test"
 import { PNG } from "pngjs"
 import { BUILTIN_VECTOR_BRUSHES } from "../../engine/brush/vector-brush"
@@ -542,4 +543,69 @@ test("golden: calligraphy lettering", async ({ page }) => {
   expect(PNG.sync.write(png)).toMatchSnapshot("calligraphy-lettering.png", {
     maxDiffPixelRatio: 0.01,
   })
+})
+
+test("make a pattern brush from a selection and draw with it", async ({
+  page,
+}) => {
+  await page.goto("/")
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  await page
+    .getByRole("region", { name: "Layers" })
+    .getByRole("button", { name: "Add vector layer" })
+    .click()
+  const box = (await page
+    .getByRole("img", { name: "Drawing canvas" })
+    .boundingBox())!
+  const x = box.x + box.width / 2,
+    y = box.y + box.height / 2
+  // The art: a long, low rectangle.
+  await page.getByRole("button", { name: "Rectangle tool" }).click()
+  await page.mouse.move(x - 60, y - 10)
+  await page.mouse.down()
+  await page.mouse.move(x + 60, y + 10, { steps: 5 })
+  await page.mouse.up()
+  await page
+    .getByRole("button", { name: "Select objects", exact: true })
+    .click()
+  // On its edge: an unfilled shape is picked by its outline.
+  await page.mouse.click(x - 60, y)
+  // Choosing the vector brush tool would drop the selection.
+  const picker = page.getByRole("button", { name: /^Choose vector brush/ })
+  await picker.click()
+  await page
+    .getByRole("button", { name: "Make pattern brush", exact: true })
+    .click()
+  const pattern = page.getByRole("region", { name: "Pattern" })
+  await pattern
+    .getByRole("combobox", { name: "Pattern fit" })
+    .selectOption("repeat")
+  await page.getByRole("textbox", { name: "Vector brush name" }).fill("Bricks")
+  await page.getByRole("button", { name: "Save vector brush" }).click()
+  await expect(picker).toHaveAccessibleName("Choose vector brush: Bricks")
+  await page.getByRole("button", { name: "Vector brush tool" }).click()
+  await page.mouse.move(x - 150, y + 80)
+  await page.mouse.down()
+  await page.mouse.move(x + 150, y + 80, { steps: 30 })
+  await page.mouse.up()
+  await page.getByRole("button", { name: "Export or import" }).click()
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: "Export SVG" }).click(),
+  ])
+  const svg = await readFile(await download.path(), "utf8")
+  const group = svg.match(
+    /<g data-vector-brush="([^"]+)" data-spine="([^"]+)">(.*?)<\/g>/
+  )
+  const exported = group && {
+    brush: JSON.parse(group[1].replaceAll("&quot;", '"')),
+    paths: group[3].match(/<path /g)?.length ?? 0,
+  }
+  expect(exported?.brush.definition.name).toBe("Bricks")
+  expect(exported?.brush.definition.pattern.mode).toBe("repeat")
+  // A 300 pixel stroke repeats the six-to-one brick several times.
+  expect(exported!.paths).toBeGreaterThan(2)
 })

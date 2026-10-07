@@ -1632,6 +1632,11 @@ export function CanvasHost({
                               })
                             }}
                             canApply={snapshot.vectorSelection.length > 0}
+                            makePattern={() => {
+                              if (!engine)
+                                throw new Error("The canvas is not ready.")
+                              return engine.patternBrushFromSelection()
+                            }}
                             close={() => setVectorBrushOpen(false)}
                           />
                         </PopoverPrimitive.Content>

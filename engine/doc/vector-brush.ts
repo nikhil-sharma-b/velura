@@ -1,11 +1,25 @@
-import { parseVectorBrush, type VectorBrush } from "../brush/vector-brush"
 import {
+  BUILTIN_VECTOR_BRUSHES,
+  MAX_PATTERN_LENGTH,
+  MAX_PATTERN_NODES,
+  parseVectorBrush,
+  type PatternPiece,
+  type VectorBrush,
+} from "../brush/vector-brush"
+import type { Affine } from "./transform-session"
+import {
+  flattenPath,
   splitPathSegment,
   taperScale,
   type BezierPath,
   type PathNode,
 } from "./vector-path"
-import type { SceneCommand, VectorObject, VectorScene } from "./vector-scene"
+import type {
+  Point,
+  SceneCommand,
+  VectorObject,
+  VectorScene,
+} from "./vector-scene"
 
 /** The most nodes noise may subdivide a stroke into. */
 const MAX_NOISE_NODES = 4000
@@ -155,7 +169,12 @@ function shift(node: PathNode, dx: number, dy: number): PathNode {
  * edit.
  */
 export function vectorBrushObject(object: VectorObject): VectorObject {
-  if (!object.brush || object.geometry.kind !== "path" || !object.style.stroke)
+  if (
+    !object.brush ||
+    object.brush.definition.kind === "pattern" ||
+    object.geometry.kind !== "path" ||
+    !object.style.stroke
+  )
     return object
   const { seed, tilt } = object.brush
   const params = object.brush.definition.params
@@ -228,6 +247,329 @@ export function vectorBrushObject(object: VectorObject): VectorObject {
       },
     },
   }
+}
+
+/** The most tiles one stroke repeats; past it they stretch to fit. */
+const MAX_TILES = 2000
+/** Turns sharper than this begin a split-corner pattern's tiles afresh. */
+const SPLIT_TURN = Math.PI / 6
+
+/** A run of the spine as a polyline, with its widths and distances along. */
+type Run = { points: Point[]; widths: number[]; lengths: number[] }
+
+/** The spine flattened, and cut at its sharp turns when `split`. */
+function spineRuns(
+  path: BezierPath,
+  full: number,
+  pressure: boolean,
+  split: boolean
+): Run[] {
+  const flat = flattenPath(path, 1)
+  const points: Point[] = [],
+    widths: number[] = []
+  const count = flat.points.length + (path.closed ? 1 : 0)
+  for (let i = 0; i < count; i++) {
+    const p = flat.points[i % flat.points.length]
+    const last = points.at(-1)
+    if (last && Math.hypot(p.x - last.x, p.y - last.y) < 1e-6) continue
+    points.push(p)
+    widths.push(
+      pressure && flat.widths ? flat.widths[i % flat.points.length] : full
+    )
+  }
+  const runs: Run[] = []
+  let run: Run = { points: [], widths: [], lengths: [] }
+  points.forEach((p, i) => {
+    const prev = run.points.at(-1)
+    run.points.push(p)
+    run.widths.push(widths[i])
+    run.lengths.push(
+      prev ? run.lengths.at(-1)! + Math.hypot(p.x - prev.x, p.y - prev.y) : 0
+    )
+    const next = points[i + 1]
+    if (!split || !prev || !next) return
+    const turn =
+      Math.atan2(next.y - p.y, next.x - p.x) -
+      Math.atan2(p.y - prev.y, p.x - prev.x)
+    // The turn the short way round, in [0, π].
+    if (
+      Math.abs(turn - 2 * Math.PI * Math.round(turn / (2 * Math.PI))) <=
+      SPLIT_TURN
+    )
+      return
+    runs.push(run)
+    run = { points: [p], widths: [widths[i]], lengths: [0] }
+  })
+  if (run.points.length > 1) runs.push(run)
+  return runs
+}
+
+/**
+ * Where art `across` stroke widths off the spine, `s` along a run, lies.
+ * The normal turns through each vertex over a stroke width or so, so the
+ * art bends round a corner rather than tearing at it.
+ */
+function runSampler({ points, widths, lengths }: Run, full: number) {
+  const n = points.length
+  const dirs = points.slice(1).map((p, i) => {
+    const length = lengths[i + 1] - lengths[i]
+    return { x: (p.x - points[i].x) / length, y: (p.y - points[i].y) / length }
+  })
+  const reach = points.map((_, i) =>
+    i === 0 || i === n - 1
+      ? 0
+      : Math.min(
+          full,
+          (lengths[i] - lengths[i - 1]) / 2,
+          (lengths[i + 1] - lengths[i]) / 2
+        )
+  )
+  return (s: number, across: number): Point => {
+    let lo = 0,
+      hi = n - 2
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (lengths[mid] <= s) lo = mid
+      else hi = mid - 1
+    }
+    const j = lo
+    const from = s - lengths[j],
+      to = lengths[j + 1] - s
+    const t = from / (lengths[j + 1] - lengths[j])
+    let { x: dx, y: dy } = dirs[j]
+    if (from < reach[j]) {
+      const k = 0.5 * (1 - from / reach[j])
+      dx += k * (dirs[j - 1].x - dirs[j].x)
+      dy += k * (dirs[j - 1].y - dirs[j].y)
+    }
+    if (to < reach[j + 1]) {
+      const k = 0.5 * (1 - to / reach[j + 1])
+      dx += k * (dirs[j + 1].x - dirs[j].x)
+      dy += k * (dirs[j + 1].y - dirs[j].y)
+    }
+    const d = Math.hypot(dx, dy) || 1
+    const off = across * (widths[j] + (widths[j + 1] - widths[j]) * t)
+    return {
+      x: points[j].x + (points[j + 1].x - points[j].x) * t - (dy / d) * off,
+      y: points[j].y + (points[j + 1].y - points[j].y) * t + (dx / d) * off,
+    }
+  }
+}
+
+/** A piece's outlines as polylines in its own units, flattened once a stroke. */
+function pieceOutlines(piece: PatternPiece, full: number): Point[][] {
+  return piece.paths.map((path) => flattenPath(path, full).points)
+}
+
+/**
+ * A pattern brush's art bent along the stroke's spine: closed outlines in
+ * the object's coordinates, start cap, tiles, then end cap. The art is
+ * filled in the stroke's colour, nonzero, so tiles that overlap at a bend
+ * stay solid.
+ */
+export function patternOutlines(object: VectorObject): Point[][] {
+  const art = object.brush?.definition.pattern
+  const { geometry, style } = object
+  if (!art || geometry.kind !== "path" || !style.stroke) return []
+  const full = style.stroke.width
+  const runs = spineRuns(
+    geometry,
+    full,
+    object.brush!.definition.params.pressure,
+    art.corners === "split"
+  )
+  const shapes = new Map<PatternPiece, Point[][]>()
+  const shape = (piece: PatternPiece) => {
+    let found = shapes.get(piece)
+    if (!found) shapes.set(piece, (found = pieceOutlines(piece, full)))
+    return found
+  }
+  // Edges are cut finely enough along the spine to bend with it.
+  const step = Math.max(1, full / 2)
+  const out: Point[][] = []
+  runs.forEach((run, r) => {
+    const sample = runSampler(run, full)
+    const place = (piece: PatternPiece, from: number, scale: number) => {
+      for (const outline of shape(piece)) {
+        const placed: Point[] = []
+        outline.forEach((a, i) => {
+          const b = outline[(i + 1) % outline.length]
+          const pieces = Math.min(
+            64,
+            Math.max(1, Math.ceil((Math.abs(b.x - a.x) * scale) / step))
+          )
+          for (let k = 0; k < pieces; k++) {
+            const t = k / pieces
+            placed.push(
+              sample(
+                from + (a.x + (b.x - a.x) * t) * scale,
+                a.y + (b.y - a.y) * t
+              )
+            )
+          }
+        })
+        out.push(placed)
+      }
+    }
+    const total = run.lengths.at(-1)!
+    const start = r === 0 ? art.start : null,
+      end = r === runs.length - 1 ? art.end : null
+    let head = start ? start.length * full : 0,
+      tail = end ? end.length * full : 0
+    if (head + tail > total) {
+      const k = total / (head + tail)
+      head *= k
+      tail *= k
+    }
+    const body = total - head - tail
+    if (start && head > 0) place(start, 0, head / start.length)
+    if (body > 1e-9) {
+      const tile = art.tile
+      const n =
+        art.mode === "stretch"
+          ? 1
+          : Math.min(
+              MAX_TILES,
+              Math.max(1, Math.round(body / (tile.length * full)))
+            )
+      for (let i = 0; i < n; i++)
+        place(tile, head + (i * body) / n, body / n / tile.length)
+    }
+    if (end && tail > 0) place(end, total - tail, tail / end.length)
+  })
+  return out
+}
+
+/** Bézier circle handles: a quarter turn's handles are this share of the radius. */
+const KAPPA = 0.5522847498
+
+/** An object's outline as a closed path, placed by its transform. */
+function placedOutline(object: VectorObject): BezierPath {
+  const [a, b, c, d, e, f] = object.transform as Affine
+  const at = (p: Point): Point => ({
+    x: a * p.x + c * p.y + e,
+    y: b * p.x + d * p.y + f,
+  })
+  const corner = (p: Point): PathNode => ({
+    ...at(p),
+    in: null,
+    out: null,
+    type: "cusp",
+  })
+  const g = object.geometry
+  switch (g.kind) {
+    case "path":
+      return {
+        kind: "path",
+        closed: true,
+        nodes: g.nodes.map((n) => ({
+          ...at(n),
+          in: n.in && at(n.in),
+          out: n.out && at(n.out),
+          type: n.type,
+        })),
+      }
+    case "polygon":
+      return { kind: "path", closed: true, nodes: g.points.map(corner) }
+    case "rect":
+      return {
+        kind: "path",
+        closed: true,
+        nodes: [
+          { x: g.x, y: g.y },
+          { x: g.x + g.width, y: g.y },
+          { x: g.x + g.width, y: g.y + g.height },
+          { x: g.x, y: g.y + g.height },
+        ].map(corner),
+      }
+    case "ellipse": {
+      const { cx, cy, rx, ry } = g
+      const kx = rx * KAPPA,
+        ky = ry * KAPPA
+      return {
+        kind: "path",
+        closed: true,
+        nodes: [
+          [cx + rx, cy, 0, ky],
+          [cx, cy + ry, -kx, 0],
+          [cx - rx, cy, 0, -ky],
+          [cx, cy - ry, kx, 0],
+        ].map(([x, y, hx, hy]) => ({
+          ...at({ x, y }),
+          in: at({ x: x - hx, y: y - hy }),
+          out: at({ x: x + hx, y: y + hy }),
+          type: "smooth",
+        })),
+      }
+    }
+  }
+}
+
+/**
+ * A pattern brush made of `objects`: their outlines laid on a horizontal
+ * spine axis through the middle of their bounds, from its left edge, and
+ * scaled so their height is one stroke width.
+ */
+export function makePatternBrush(
+  objects: readonly VectorObject[]
+): VectorBrush {
+  const paths = objects
+    .filter((o) => !o.erase)
+    .map(placedOutline)
+    .filter((p) => p.nodes.length >= 2)
+  if (!paths.length)
+    throw new Error("Select the shapes to make a pattern brush from.")
+  if (paths.reduce((sum, p) => sum + p.nodes.length, 0) > MAX_PATTERN_NODES)
+    throw new Error(
+      `A pattern brush's art may have at most ${MAX_PATTERN_NODES} nodes.`
+    )
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity
+  for (const path of paths)
+    for (const p of flattenPath(path).points) {
+      minX = Math.min(minX, p.x)
+      minY = Math.min(minY, p.y)
+      maxX = Math.max(maxX, p.x)
+      maxY = Math.max(maxY, p.y)
+    }
+  const height = maxY - minY
+  if (!(height > 1e-6))
+    throw new Error("A pattern brush's art needs some height.")
+  if ((maxX - minX) / height > MAX_PATTERN_LENGTH)
+    throw new Error(
+      `A pattern brush's art may be at most ${MAX_PATTERN_LENGTH} times as long as it is tall.`
+    )
+  const middle = minY + height / 2
+  const unit = (p: Point): Point => ({
+    x: (p.x - minX) / height,
+    y: (p.y - middle) / height,
+  })
+  return parseVectorBrush({
+    id: "pattern",
+    name: "Pattern brush",
+    kind: "pattern",
+    params: BUILTIN_VECTOR_BRUSHES.find((b) => b.id === "vector:solid")!.params,
+    pattern: {
+      mode: "stretch",
+      corners: "bend",
+      tile: {
+        length: Math.max(0.01, (maxX - minX) / height),
+        paths: paths.map((p) => ({
+          ...p,
+          nodes: p.nodes.map((n) => ({
+            ...unit(n),
+            in: n.in && unit(n.in),
+            out: n.out && unit(n.out),
+            type: n.type,
+          })),
+        })),
+      },
+      start: null,
+      end: null,
+    },
+  })
 }
 
 export function applyVectorBrush(
