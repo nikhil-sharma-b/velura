@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 import { PNG } from "pngjs"
 import { BUILTIN_VECTOR_BRUSHES } from "../../engine/brush/vector-brush"
 
@@ -220,6 +220,8 @@ test("applying to several legacy strokes preserves their spines and undoes as on
         smoothing: 0,
         tremor: 0,
         wiggle: 0,
+        nibAngle: 45,
+        fixation: 1,
       },
     }
     await current.dispatch({ type: "applyVectorBrush", brush })
@@ -360,3 +362,184 @@ for (const name of [
     )
   })
 }
+
+/** Opens the harness with a vector layer and the vector brush set to `name`. */
+async function nibCanvas(page: Page, name: string) {
+  await page.goto(
+    `${process.env.VELURA_TEST_HARNESS ?? "http://127.0.0.1:3101"}/tests/harness/`
+  )
+  await page.waitForFunction(() => !!window.engine)
+  const definition = BUILTIN_VECTOR_BRUSHES.find((b) => b.name === name)!
+  await page.evaluate(async (brush) => {
+    window.remountEngine()
+    const current = window.engine
+    await current.dispatch({
+      type: "resize",
+      width: 240,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await current.dispatch({ type: "initialize" })
+    await current.dispatch({ type: "setStabilization", strength: 0 })
+    await current.dispatch({ type: "addVectorLayer" })
+    await current.dispatch({ type: "setTool", tool: "pressure" })
+    await current.dispatch({ type: "setVectorBrush", brush })
+  }, definition)
+}
+
+/**
+ * A horizontal stroke from constructed pointer events, since Playwright's
+ * own pointer cannot tilt; the mouse's reports no tilt, as a real one does.
+ */
+async function nibStroke(
+  page: Page,
+  pointerType: "pen" | "mouse",
+  tiltX: number,
+  tiltY: number,
+  id: string
+) {
+  await page.evaluate(
+    async ([type, tx, ty]) => {
+      const canvas = document.querySelector("canvas")!
+      const bounds = canvas.getBoundingClientRect()
+      const send = (event: string, x: number) =>
+        canvas.dispatchEvent(
+          new PointerEvent(event, {
+            pointerId: 1,
+            pointerType: type,
+            isPrimary: true,
+            bubbles: true,
+            cancelable: true,
+            buttons: event === "pointerup" ? 0 : 1,
+            clientX: bounds.left + x,
+            clientY: bounds.top + 60,
+            pressure: 0.5,
+            tiltX: tx,
+            tiltY: ty,
+          })
+        )
+      send("pointerdown", 20)
+      for (let x = 25; x <= 220; x += 5) send("pointerrawupdate", x)
+      send("pointerup", 220)
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      )
+    },
+    [pointerType, tiltX, tiltY] as const
+  )
+  // Only selected paths are published, so select the stroke just drawn.
+  return page.evaluate(async (id) => {
+    await window.engine.dispatch({ type: "selectVectorObjects", ids: [id] })
+    return window.engine.getSnapshot().vectorPaths[0]
+  }, id)
+}
+
+test("a tilt nib follows a pen's lean and holds its angle under a mouse", async ({
+  page,
+}) => {
+  await nibCanvas(page, "Pointed tilt nib")
+  const pen = await nibStroke(page, "pen", 0, 50, "shape-1")
+  expect(pen.brush?.tilt).toBeCloseTo(Math.PI / 2, 2)
+  const mouse = await nibStroke(page, "mouse", 0, 0, "shape-2")
+  expect(mouse.brush?.definition.kind).toBe("calligraphy")
+  expect(mouse.brush?.tilt).toBeUndefined()
+  const svg = await page.evaluate(
+    async () => (await window.engine.exportSvg({ raster: "omit" })).svg
+  )
+  const outlines = Array.from(
+    svg.matchAll(/<path d="(M[^"]+)" fill="#[0-9a-f]+"[^>]*stroke="none"/g),
+    (match) => match[1]
+  )
+  // Both are drawn as outlines; the leaning nib sits across the stroke, so
+  // its outline differs from the fixed one's.
+  expect(outlines).toHaveLength(2)
+  expect(outlines[0]).not.toEqual(outlines[1])
+})
+
+test("golden: calligraphy lettering", async ({ page }) => {
+  await page.goto(
+    `${process.env.VELURA_TEST_HARNESS ?? "http://127.0.0.1:3101"}/tests/harness/`
+  )
+  await page.waitForFunction(() => !!window.engine)
+  const brushes = ["Broad nib", "Italic", "Pointed tilt nib"].map((name) =>
+    BUILTIN_VECTOR_BRUSHES.find((b) => b.name === name)!
+  )
+  const image = await page.evaluate(async (brushes) => {
+    window.remountEngine()
+    const current = window.engine
+    await current.dispatch({
+      type: "resize",
+      width: 240,
+      height: 120,
+      devicePixelRatio: 1,
+    })
+    await current.dispatch({ type: "initialize" })
+    await current.dispatch({ type: "addVectorLayer" })
+    const id = current.getSnapshot().activeLayerId!
+    type P = { x: number; y: number }
+    const node = (at: P, inH: P | null, out: P | null, width = 12) => ({
+      ...at,
+      in: inH,
+      out,
+      type: "smooth" as const,
+      width,
+    })
+    // An "l", an "o" and an "n" in turn, one per preset, so thick downstrokes
+    // and thin hairlines show for each nib.
+    const letters = [
+      [
+        node({ x: 30, y: 100 }, null, { x: 45, y: 70 }, 8),
+        node({ x: 50, y: 20 }, { x: 60, y: 30 }, { x: 40, y: 10 }),
+        node({ x: 40, y: 100 }, { x: 30, y: 60 }, null, 10),
+      ],
+      [
+        node({ x: 120, y: 50 }, null, { x: 90, y: 45 }, 10),
+        node({ x: 100, y: 100 }, { x: 85, y: 90 }, { x: 115, y: 110 }),
+        node({ x: 125, y: 55 }, { x: 135, y: 80 }, null, 8),
+      ],
+      [
+        node({ x: 160, y: 100 }, null, { x: 160, y: 80 }, 12),
+        node({ x: 175, y: 55 }, { x: 160, y: 55 }, { x: 195, y: 50 }),
+        node({ x: 215, y: 100 }, { x: 210, y: 60 }, null, 10),
+      ],
+    ]
+    await current.dispatch({
+      type: "editVectorLayer",
+      id,
+      commands: letters.map((nodes, i) => ({
+        type: "add" as const,
+        object: {
+          id: `letter-${i}`,
+          transform: [1, 0, 0, 1, 0, 0] as const,
+          geometry: { kind: "path" as const, closed: false, nodes },
+          style: {
+            fill: null,
+            stroke: {
+              color: "#000000",
+              opacity: 1,
+              width: 12,
+              cap: "round" as const,
+              join: "round" as const,
+            },
+          },
+          // The tilt nib leans the way a right hand's pen does.
+          brush: { definition: brushes[i], seed: 7, tilt: Math.PI / 3 },
+        },
+      })),
+    })
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    )
+    const pixels = await current.readPixels()
+    return {
+      width: pixels.width,
+      height: pixels.height,
+      data: Array.from(pixels.data),
+    }
+  }, brushes)
+  const png = new PNG({ width: image.width, height: image.height })
+  png.data = Buffer.from(image.data)
+  expect(PNG.sync.write(png)).toMatchSnapshot("calligraphy-lettering.png", {
+    maxDiffPixelRatio: 0.01,
+  })
+})

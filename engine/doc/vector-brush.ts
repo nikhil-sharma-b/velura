@@ -48,6 +48,64 @@ export function createVelocityThinning(thinning: number) {
   }
 }
 
+/**
+ * A nib's width at `heading`, as a share of its broad edge: `min` along the
+ * nib, all of it across. Both in radians.
+ */
+export function nibWidth(heading: number, nib: number, min: number): number {
+  return min + (1 - min) * Math.abs(Math.sin(heading - nib))
+}
+
+/**
+ * The nib's angle: `fixed`, turned towards the pen's `tilt` by as much as
+ * `fixation` lets go. A nib turned half way round is the same nib, so it
+ * turns the short way, within a quarter turn.
+ */
+export function nibAngle(
+  fixed: number,
+  tilt: number | undefined,
+  fixation: number
+): number {
+  if (tilt === undefined) return fixed
+  const turn = tilt - fixed
+  return fixed + (1 - fixation) * (turn - Math.PI * Math.round(turn / Math.PI))
+}
+
+/**
+ * The mean direction a pen leaned while drawing, fed each sample's tilt in
+ * degrees. Directions half a turn apart count alike, and a sample leans in
+ * as far as it tilts; a mouse, never tilting, leaves it unknown.
+ */
+export function createTiltDirection() {
+  let x = 0,
+    y = 0
+  return {
+    add(tiltX: number, tiltY: number) {
+      const lean = Math.hypot(tiltX, tiltY)
+      if (!lean) return
+      const doubled = 2 * Math.atan2(tiltY, tiltX)
+      x += lean * Math.cos(doubled)
+      y += lean * Math.sin(doubled)
+    },
+    angle(): number | undefined {
+      return Math.hypot(x, y) > 1e-6 ? Math.atan2(y, x) / 2 : undefined
+    },
+  }
+}
+
+/** The direction a path heads through `nodes[i]`, in radians. */
+function heading(nodes: readonly PathNode[], i: number, closed: boolean) {
+  const node = nodes[i],
+    n = nodes.length
+  if (node.out && (node.out.x !== node.x || node.out.y !== node.y))
+    return Math.atan2(node.out.y - node.y, node.out.x - node.x)
+  if (node.in && (node.in.x !== node.x || node.in.y !== node.y))
+    return Math.atan2(node.y - node.in.y, node.x - node.in.x)
+  const a = nodes[closed ? (i + n - 1) % n : Math.max(0, i - 1)],
+    b = nodes[closed ? (i + 1) % n : Math.min(n - 1, i + 1)]
+  return Math.atan2(b.y - a.y, b.x - a.x)
+}
+
 /** Each node's distance along the path, measured node to node. */
 function distances(path: BezierPath): number[] {
   const lengths = [0]
@@ -99,8 +157,9 @@ function shift(node: PathNode, dx: number, dy: number): PathNode {
 export function vectorBrushObject(object: VectorObject): VectorObject {
   if (!object.brush || object.geometry.kind !== "path" || !object.style.stroke)
     return object
-  const { seed } = object.brush
+  const { seed, tilt } = object.brush
   const params = object.brush.definition.params
+  const calligraphy = object.brush.definition.kind === "calligraphy"
   const { pressure, pressureCurve, minWidth, taper, tremor, wiggle } = params
   const full = object.style.stroke.width
   let path = object.geometry
@@ -112,6 +171,11 @@ export function vectorBrushObject(object: VectorObject): VectorObject {
     wiggleCell = Math.max(8, full * 4)
   if (tremor || wiggle)
     path = subdivide(path, Math.min(tremorCell, wiggleCell) / 2)
+  // The nib's width turns with the path, so curves are split finely enough to show it.
+  if (calligraphy) path = subdivide(path, Math.max(2, full / 2))
+  const nib = nibAngle((params.nibAngle * Math.PI) / 180, tilt, params.fixation)
+  // A nib's edge is its minimum; pressure only scales it.
+  const floor = calligraphy ? 0 : minWidth
   const lengths = distances(path)
   const total = lengths.at(-1) ?? 0
   const nodes = path.nodes
@@ -119,9 +183,9 @@ export function vectorBrushObject(object: VectorObject): VectorObject {
     if (!pressure) return full
     const width = node.width ?? full
     // The plain pressure fit, exactly as before profiles.
-    if (pressureCurve === 1 && minWidth === 0) return width
+    if (pressureCurve === 1 && floor === 0) return width
     const p = Math.max(0, Math.min(1, width / full)) ** pressureCurve
-    return full * (minWidth + (1 - minWidth) * p)
+    return full * (floor + (1 - floor) * p)
   }
   return {
     ...object,
@@ -130,6 +194,8 @@ export function vectorBrushObject(object: VectorObject): VectorObject {
       nodes: nodes.map((node, i) => {
         const along = lengths[i]
         let width = shaped(node) * (total ? taperScale(along, total, taper) : 1)
+        if (calligraphy)
+          width *= nibWidth(heading(nodes, i, path.closed), nib, minWidth)
         if (tremor)
           width *= Math.max(0, 1 + tremor * noise(seed, 0, along / tremorCell))
         if (!wiggle || nodes.length < 2) return { ...node, width }
@@ -181,6 +247,12 @@ export function applyVectorBrush(
     .map((o) => ({
       type: "update",
       id: o.id,
-      patch: { brush: { definition, seed: o.brush?.seed ?? 0 } },
+      patch: {
+        brush: {
+          definition,
+          seed: o.brush?.seed ?? 0,
+          ...(o.brush?.tilt === undefined ? {} : { tilt: o.brush.tilt }),
+        },
+      },
     }))
 }

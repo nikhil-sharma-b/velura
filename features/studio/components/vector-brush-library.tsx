@@ -93,7 +93,7 @@ export function VectorBrushLibrary({
                 {brush.name} vector brush
               </span>
               <span className="block text-[10px] text-muted-foreground">
-                {describe(brush.params)}
+                {describe(brush)}
               </span>
             </span>
           </button>
@@ -199,7 +199,9 @@ export function VectorBrushLibrary({
                   className="rounded-lg border p-3"
                 >
                   <h3 className="mb-2 text-sm font-medium">{label}</h3>
-                  {kind === "profile" ? (
+                  {kind === "calligraphy" ? (
+                    <CalligraphySection brush={editing} change={setEditing} />
+                  ) : kind === "profile" ? (
                     <ProfileSection
                       params={editing.params}
                       change={(params) =>
@@ -227,8 +229,12 @@ export function VectorBrushLibrary({
   )
 }
 
-/** A one-line summary of what a profile brush does with the hand. */
-function describe(params: ProfileParams): string {
+/** A one-line summary of what a brush does with the hand. */
+function describe({ kind, params }: VectorBrush): string {
+  if (kind === "calligraphy")
+    return params.fixation < 1
+      ? "A nib that turns as the pen leans"
+      : "A broad nib held at a fixed angle"
   if (params.wiggle) return "A line that wanders either side of the spine"
   if (params.tremor > 0.2) return "Blotchy width that swells and pinches"
   if (params.pressure)
@@ -329,6 +335,80 @@ function ProfileSection({
           />
         </label>
       ))}
+    </div>
+  )
+}
+
+function CalligraphySection({
+  brush,
+  change,
+}: {
+  brush: VectorBrush
+  change(brush: VectorBrush): void
+}) {
+  const { params } = brush
+  const set = (patch: Partial<ProfileParams>) =>
+    change({ ...brush, params: { ...params, ...patch } })
+  const on = brush.kind === "calligraphy"
+  return (
+    <div className="grid grid-cols-2 gap-2 text-sm">
+      <label className="col-span-2 flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={(event) =>
+            change({
+              ...brush,
+              kind: event.target.checked ? "calligraphy" : "profile",
+            })
+          }
+        />
+        Draw with a calligraphy nib
+      </label>
+      <label className="flex items-center gap-2">
+        Nib angle (°)
+        <Input
+          type="number"
+          aria-label="Nib angle"
+          disabled={!on}
+          min={0}
+          max={180}
+          value={params.nibAngle}
+          onChange={(event) => set({ nibAngle: Number(event.target.value) })}
+        />
+      </label>
+      <label className="flex items-center gap-2">
+        Nib edge (%)
+        <Input
+          type="number"
+          aria-label="Nib edge"
+          disabled={!on}
+          min={0}
+          max={100}
+          value={Math.round(params.minWidth * 100)}
+          onChange={(event) =>
+            set({ minWidth: Number(event.target.value) / 100 })
+          }
+        />
+      </label>
+      <label className="col-span-2 flex items-center gap-2">
+        Fixation (%)
+        <Input
+          type="number"
+          aria-label="Nib fixation"
+          disabled={!on}
+          min={0}
+          max={100}
+          value={Math.round(params.fixation * 100)}
+          onChange={(event) =>
+            set({ fixation: Number(event.target.value) / 100 })
+          }
+        />
+      </label>
+      <p className="col-span-2 text-xs text-muted-foreground">
+        Below 100% the nib follows the pen&apos;s tilt; a mouse keeps it at the
+        nib angle. Pressure, taper and caps come from the width profile.
+      </p>
     </div>
   )
 }
