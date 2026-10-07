@@ -418,73 +418,83 @@ test("golden: four generated tip frames draw as distinct texture-array layers", 
   })
 })
 
-test("sequential tip frames reach pointer dabs and restart on the next stroke", async ({
-  page,
-}) => {
-  await page.goto("http://127.0.0.1:3101/tests/harness/")
-  await page.waitForFunction(() => !!window.engine)
-  await page.evaluate(async () => {
-    await window.engine.dispatch({
-      type: "resize",
-      width: 160,
-      height: 96,
-      devicePixelRatio: 1,
-    })
-    await window.engine.dispatch({ type: "initialize" })
-    await window.engine.dispatch({ type: "setStabilization", strength: 0 })
-    await window.engine.dispatch({
-      type: "registerTexture",
-      id: "levels",
-      texture: {
-        width: 1,
-        height: 1,
-        frameCount: 4,
-        data: new Uint8Array([64, 128, 192, 255]),
-      },
-    })
-    await window.engine.dispatch({
-      type: "setBrush",
-      radius: 10,
-      spacing: 1.6,
-      tipTextureId: "levels",
-      tipSelection: "sequential",
-      dynamics: [],
-      opacity: 1,
-      flow: 1,
-    })
-    const canvas = document.querySelector("canvas")!
-    const bounds = canvas.getBoundingClientRect()
-    for (const y of [24, 72]) {
-      const send = (type: string, x: number) =>
-        canvas.dispatchEvent(
-          new PointerEvent(type, {
-            pointerId: 1,
-            pointerType: "pen",
-            isPrimary: true,
-            bubbles: true,
-            cancelable: true,
-            buttons: type === "pointerup" ? 0 : 1,
-            clientX: bounds.left + x,
-            clientY: bounds.top + y,
-            pressure: 1,
-          })
+for (const count of [1, 2]) {
+  test(`sequential tip frames reach pointer dabs with scatter count ${count} and restart on the next stroke`, async ({
+    page,
+  }) => {
+    await page.goto("http://127.0.0.1:3101/tests/harness/")
+    await page.waitForFunction(() => !!window.engine)
+    await page.evaluate(async (count) => {
+      await window.engine.dispatch({
+        type: "resize",
+        width: 160,
+        height: 96,
+        devicePixelRatio: 1,
+      })
+      await window.engine.dispatch({ type: "initialize" })
+      await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+      await window.engine.dispatch({
+        type: "registerTexture",
+        id: "levels",
+        texture: {
+          width: 1,
+          height: 1,
+          frameCount: 4,
+          data: new Uint8Array([64, 128, 192, 255]),
+        },
+      })
+      await window.engine.dispatch({
+        type: "setBrush",
+        radius: 10,
+        spacing: 1.6,
+        tipTextureId: "levels",
+        tipSelection: "sequential",
+        scatter: { amount: 0, count, axes: "across" },
+        dynamics: [],
+        opacity: 1,
+        flow: 1,
+      })
+      const canvas = document.querySelector("canvas")!
+      const bounds = canvas.getBoundingClientRect()
+      for (const y of [24, 72]) {
+        const send = (type: string, x: number) =>
+          canvas.dispatchEvent(
+            new PointerEvent(type, {
+              pointerId: 1,
+              pointerType: "pen",
+              isPrimary: true,
+              bubbles: true,
+              cancelable: true,
+              buttons: type === "pointerup" ? 0 : 1,
+              clientX: bounds.left + x,
+              clientY: bounds.top + y,
+              pressure: 1,
+            })
+          )
+        send("pointerdown", 16)
+        for (const x of [48, 80, 112]) send("pointerrawupdate", x)
+        send("pointerup", 112)
+        await new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve))
         )
-      send("pointerdown", 16)
-      for (const x of [48, 80, 112]) send("pointerrawupdate", x)
-      send("pointerup", 112)
-      await new Promise((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(resolve))
+      }
+    }, count)
+    const rows = await page.evaluate(async () => {
+      const pixels = await window.engine.readPixels()
+      return [24, 72].map((y) =>
+        [16, 48, 80, 112].map((x) => pixels.data[(y * pixels.width + x) * 4])
       )
+    })
+    if (count === 1) {
+      expect(rows[0][0]).toBeGreaterThan(rows[0][1] + 20)
+      expect(rows[0][1]).toBeGreaterThan(rows[0][2] + 20)
+      expect(rows[0][2]).toBeGreaterThan(rows[0][3] + 20)
+    } else {
+      expect(rows[0][0]).toBeGreaterThan(150)
+      expect(rows[0][1]).toBeLessThan(60)
+      expect(rows[0][2]).toBe(rows[0][0])
+      expect(rows[0][3]).toBe(rows[0][1])
     }
+    expect(rows[1]).toEqual(rows[0])
   })
-  const rows = await page.evaluate(async () => {
-    const pixels = await window.engine.readPixels()
-    return [24, 72].map((y) =>
-      [16, 48, 80, 112].map((x) => pixels.data[(y * pixels.width + x) * 4])
-    )
-  })
-  expect(rows[0][0]).toBeGreaterThan(rows[0][1] + 20)
-  expect(rows[0][1]).toBeGreaterThan(rows[0][2] + 20)
-  expect(rows[0][2]).toBeGreaterThan(rows[0][3] + 20)
-  expect(rows[1]).toEqual(rows[0])
-})
+}

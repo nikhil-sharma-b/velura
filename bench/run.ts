@@ -15,7 +15,8 @@
  *
  * `--sweep` runs the document-size ladder instead of the two passes, and
  * `--layers` the layer-count one; `--feather` paints inside a large feathered
- * selection against the same painting with none (11); `--vector` times
+ * selection against the same painting with none (11); `--scatter` paints with
+ * a dense scattering brush against the same painting without; `--vector` times
  * redrawing a vector layer of many paths (19); `--navigate` times panning and
  * zooming a stack whose caches each step rebuilds (sharp-zoom 01). They are
  * how the tables in
@@ -32,6 +33,7 @@ import type { Environment } from "./driver"
 import type { FrameTiming } from "../engine"
 import { judge, PERFORMANCE_TARGET, summarize, type Report } from "./report"
 import { VECTOR_WORKLOAD } from "./vector-workload"
+import { type BrushScatter, MAX_SCATTER_COUNT } from "../engine/brush/scatter"
 import {
   BENCHMARK_WORKLOAD,
   createWorkload,
@@ -325,6 +327,41 @@ async function featherSweep(): Promise<void> {
 }
 
 /**
+ * Painting with a dense scattering brush, against the same painting with
+ * none: every spacing step lays the most dabs a brush may ask for, thrown
+ * across and along the path, and this is what says whether the stamp pass
+ * still fits in a frame (D30).
+ */
+const DENSE_SCATTER: BrushScatter = Object.freeze({
+  amount: 4,
+  count: MAX_SCATTER_COUNT,
+  axes: "both",
+})
+
+async function scatterSweep(): Promise<void> {
+  const pass = PASSES.find((entry) => entry.name === "unpaced")!
+  console.log(
+    "\n  scatter     ms/frame   mean fps   sustained fps   dabs      readbacks"
+  )
+  for (const scatter of [undefined, DENSE_SCATTER]) {
+    const { report, readbacks } = await measure(pass, {
+      ...BENCHMARK_WORKLOAD,
+      strokes: SWEEP_STROKES,
+      scatter,
+    })
+    const perFrame = report.frameIntervalMs.mean
+    console.log(
+      `  ${(scatter ? `×${scatter.count}` : "none").padStart(7)}   ${fixed(perFrame, 3).padStart(10)}   ` +
+        `${fixed(1000 / perFrame).padStart(8)}   ` +
+        `${fixed(report.frameRate.sustained).padStart(13)}   ` +
+        `${String(report.stamps.total).padStart(8)}   ${String(readbacks).padStart(9)}`
+    )
+    if (readbacks > 0) process.exitCode = 1
+  }
+  console.log()
+}
+
+/**
  * Redrawing a vector layer (19), on the real GPU, at a ladder of path counts:
  * the first draw of the whole scene, an edit spanning the layer (every path
  * redrawn), and an edit to one path (only its region redrawn). Re-rasterising
@@ -423,11 +460,13 @@ async function main(): Promise<void> {
       ? layerSweep
       : process.argv.includes("--feather")
         ? featherSweep
-        : process.argv.includes("--vector")
-          ? vectorSweep
-          : process.argv.includes("--navigate")
-            ? navigationSweep
-            : null
+        : process.argv.includes("--scatter")
+          ? scatterSweep
+          : process.argv.includes("--vector")
+            ? vectorSweep
+            : process.argv.includes("--navigate")
+              ? navigationSweep
+              : null
   if (ladder) {
     try {
       await ladder()

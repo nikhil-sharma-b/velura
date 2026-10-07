@@ -77,6 +77,12 @@ describe("createWorkload", () => {
     expect(() => createWorkload({ ...options, penSpeed: -1 })).toThrow()
     expect(() => createWorkload({ ...options, feather: -1 })).toThrow()
     expect(() => createWorkload({ ...options, feather: NaN })).toThrow()
+    expect(() =>
+      createWorkload({
+        ...options,
+        scatter: { amount: 2, count: 0, axes: "both" },
+      })
+    ).toThrow()
   })
 })
 

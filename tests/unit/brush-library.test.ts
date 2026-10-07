@@ -105,6 +105,32 @@ describe("a stored brush definition", () => {
     ).toThrow()
     expect(() => normaliseBrushDefinition(null)).toThrow()
   })
+
+  test("a brush saved before scatter existed stays without it", () => {
+    const stored = normaliseBrushDefinition(JSON.parse(JSON.stringify(round)))
+    expect(stored).not.toHaveProperty("scatter")
+  })
+
+  test("keeps a scatter section and refuses one the placer cannot draw", () => {
+    const scatter = { amount: 2.5, count: 4, axes: "both" }
+    expect(
+      normaliseBrushDefinition({
+        ...round,
+        scatter: { ...scatter, extra: 1 },
+      }).scatter
+    ).toEqual({ amount: 2.5, count: 4, axes: "both" })
+    for (const bad of [
+      { ...scatter, amount: -1 },
+      { ...scatter, amount: 99 },
+      { ...scatter, count: 0 },
+      { ...scatter, count: 1.5 },
+      { ...scatter, count: 100 },
+      { ...scatter, axes: "along" },
+    ])
+      expect(() =>
+        normaliseBrushDefinition({ ...round, scatter: bad })
+      ).toThrow(/scatter/)
+  })
 })
 
 describe("reordering", () => {

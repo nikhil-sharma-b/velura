@@ -1,5 +1,6 @@
 import type { TipSelectionMode } from "./tip-sets"
 import type { Modulator } from "./dynamics"
+import type { BrushScatter } from "./scatter"
 import {
   BRUSH_ACCUMULATION,
   BRUSH_FEATHER,
@@ -22,12 +23,10 @@ import {
  * Grain and tip textures (D24) are referenced by id, never embedded: the
  * texture is an asset, the brush is the recipe.
  *
- * The sections architecture 7.1 names but that nothing renders yet — scatter,
- * the blend mode, and grain movement, which belongs with the view matrix that
- * navigation brings (D28) — are deliberately absent rather than present and
- * ignored: they arrive with the renderers that read them (D20), and a field
- * no code consumes is a field nothing keeps honest. The dynamics graph
- * already carries their targets, so adding them is additive.
+ * The section architecture 7.1 names but that nothing renders yet — the
+ * blend mode — is deliberately absent rather than present and ignored: it
+ * arrives with the renderer that reads it (D20), and a field no code consumes
+ * is a field nothing keeps honest.
  */
 
 export type BrushShape = {
@@ -103,6 +102,8 @@ export type Brush = {
   shape: BrushShape
   /** Absent means the brush lays ink on a perfectly smooth surface. */
   grain?: BrushGrain
+  /** Absent means one dab per spacing step, on the path (`NO_SCATTER`). */
+  scatter?: BrushScatter
   rendering: BrushRendering
   color?: BrushColor
   /** Applied in order; see `evaluateDynamics`. */
