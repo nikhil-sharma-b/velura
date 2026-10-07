@@ -65,6 +65,8 @@ export type DynamicsTarget =
   | "scatter"
   /** Hue rotation, as a turn. */
   | "hue"
+  | "saturation"
+  | "lightness"
 
 /**
  * How a mapping's output meets what is already on the target.
@@ -106,6 +108,8 @@ export type StampParams = {
   grainDepth: number
   scatter: number
   hue: number
+  saturation: number
+  lightness: number
 }
 
 /**
@@ -121,6 +125,8 @@ export const NEUTRAL_STAMP_PARAMS: StampParams = Object.freeze({
   grainDepth: 1,
   scatter: 0,
   hue: 0,
+  saturation: 0,
+  lightness: 0,
 })
 
 /**
@@ -169,6 +175,8 @@ const LIMITS: Readonly<
   roundness: [0.01, 1],
   grainDepth: [0, 1],
   scatter: [0, 16],
+  saturation: [-1, 1],
+  lightness: [-1, 1],
 })
 
 /**
@@ -185,6 +193,9 @@ export function targetLimit(target: DynamicsTarget): readonly [number, number] {
 
 function applyLimit(target: DynamicsTarget, value: number): number {
   if (!Number.isFinite(value)) return NEUTRAL_STAMP_PARAMS[target]
+  // Hue's authored signed magnitude must survive until its brush amplitude
+  // is applied. The HSL shader wraps the scaled turn when it renders it.
+  if (target === "hue") return value
   if (isCyclic(target)) return value - Math.floor(value)
   const [min, max] = LIMITS[target]
   return value < min ? min : value > max ? max : value

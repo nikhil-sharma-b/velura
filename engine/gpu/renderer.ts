@@ -474,22 +474,15 @@ export function createRenderer(
   const stampModule = device.createShaderModule({ code: stampShader })
   /**
    * One pipeline per accumulation mode: the difference between a marker and a
-   * pencil is entirely the blend state, so the shader is shared.
+   * pencil is pipeline state, so the shader is shared.
    *
-   * `coverage` takes the per-channel maximum. The ink colour is constant
-   * across a stroke, so a premultiplied dab is `colour x alpha` and the
-   * channel-wise maximum is exactly the maximum coverage — a crossing does not
-   * darken. `buildup` is ordinary premultiplied "over", so each dab adds.
+   * Coverage uses inverse alpha as depth: the greatest coverage wins with
+   * its complete colour, and later dabs win ties. Buildup uses ordinary
+   * premultiplied over. Both draw every instance in one pass.
    */
-  const stampBlends: Record<Accumulation, GPUBlendState> = {
-    coverage: {
-      color: { operation: "max", srcFactor: "one", dstFactor: "one" },
-      alpha: { operation: "max", srcFactor: "one", dstFactor: "one" },
-    },
-    buildup: {
-      color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-      alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-    },
+  const buildupBlend: GPUBlendState = {
+    color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+    alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
   }
   // Explicit, because two pipelines share one bind group: an automatic layout
   // belongs to the pipeline that produced it and the other would reject it.
@@ -567,6 +560,11 @@ export function createRenderer(
                 format: "float32",
               },
               {
+                shaderLocation: 6,
+                offset: STAMP.HUE * 4,
+                format: "float32x3",
+              },
+              {
                 shaderLocation: 5,
                 offset: STAMP.GRAIN_DEPTH * 4,
                 format: "float32",
@@ -578,7 +576,17 @@ export function createRenderer(
       fragment: {
         module: stampModule,
         entryPoint: "fragmentMain",
-        targets: [{ format: LAYER_FORMAT, blend: stampBlends[accumulation] }],
+        targets: [
+          {
+            format: LAYER_FORMAT,
+            ...(accumulation === "buildup" ? { blend: buildupBlend } : {}),
+          },
+        ],
+      },
+      depthStencil: {
+        format: "depth16unorm",
+        depthWriteEnabled: accumulation === "coverage",
+        depthCompare: accumulation === "coverage" ? "less-equal" : "always",
       },
       primitive: { topology: "triangle-list" },
     })
@@ -885,6 +893,9 @@ export function createRenderer(
 
   /** One texture per layer that holds something; absent layers hold none. */
   const surfaces = new Map<string, Surface>()
+  let coverageDepth: GPUTexture | undefined
+  let coverageDepthView: GPUTextureView | undefined
+  let clearCoverageDepth = true
   let stroke: Surface | undefined
   let paintTarget: Surface | undefined
   let active: Surface | undefined
@@ -2496,6 +2507,7 @@ export function createRenderer(
   function clearStroke() {
     if (!stroke) throw new Error("The render target has not been sized.")
     clearSurface(stroke)
+    clearCoverageDepth = true
   }
 
   /** Draws `count` dabs of the current stroke into the buffer. */
@@ -2515,11 +2527,38 @@ export function createRenderer(
         // The buffer holds the stroke so far: dabs blend onto it.
         { view: stroke.view, loadOp: "load", storeOp: "store" },
       ],
+      depthStencilAttachment: {
+        view: coverageDepthView!,
+        depthClearValue: 1,
+        depthLoadOp: clearCoverageDepth ? "clear" : "load",
+        depthStoreOp: "store",
+      },
     })
+    clearCoverageDepth = false
     pass.setPipeline(stampPipelines[accumulation])
     pass.setBindGroup(0, stampBindGroup)
     pass.setVertexBuffer(0, stampInstances)
-    pass.draw(6, count)
+    // Bound the pass to this batch, rather than letting a document-sized
+    // depth attachment touch tiles the pen never visited. Rotated textured
+    // quads fit inside sqrt(2) radii, even when their corners carry ink.
+    let left = width
+    let top = height
+    let right = 0
+    let bottom = 0
+    for (let i = offset; i < offset + count; i++) {
+      const index = i * STAMP_STRIDE
+      const radius = instances[index + STAMP.RADIUS] * Math.SQRT2
+      const x = instances[index + STAMP.CENTER_X]
+      const y = instances[index + STAMP.CENTER_Y]
+      left = Math.min(left, Math.max(0, Math.floor(x - radius)))
+      top = Math.min(top, Math.max(0, Math.floor(y - radius)))
+      right = Math.max(right, Math.min(width, Math.ceil(x + radius)))
+      bottom = Math.max(bottom, Math.min(height, Math.ceil(y + radius)))
+    }
+    if (right > left && bottom > top) {
+      pass.setScissorRect(left, top, right - left, bottom - top)
+      pass.draw(6, count)
+    }
     pass.end()
     device.queue.submit([encoder.finish()])
     stroke.empty = false
@@ -2559,6 +2598,9 @@ export function createRenderer(
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
       for (const id of [...vectorScenes.keys()]) forgetVectorScene(id)
+      coverageDepth?.destroy()
+      coverageDepth = undefined
+      coverageDepthView = undefined
       stroke?.texture.destroy()
       active = undefined
       paintTarget = undefined
@@ -2578,6 +2620,13 @@ export function createRenderer(
       // it bounded to the stroke's region; it narrows to a tiled surface with
       // the per-layer atlases (D-6.1), which is what bounds a layer too.
       stroke = createSurface()
+      coverageDepth = device.createTexture({
+        size: { width, height },
+        format: "depth16unorm",
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      })
+      coverageDepthView = coverageDepth.createView()
+      clearCoverageDepth = true
       // Only the viewport changes with a resize; the tip flag, the ink and the
       // grain settings are the brush's and outlive it.
       device.queue.writeBuffer(
@@ -3288,6 +3337,9 @@ export function createRenderer(
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
       for (const id of [...vectorScenes.keys()]) forgetVectorScene(id)
+      coverageDepth?.destroy()
+      coverageDepth = undefined
+      coverageDepthView = undefined
       stroke?.texture.destroy()
       stroke = undefined
       active = undefined

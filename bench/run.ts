@@ -413,6 +413,9 @@ async function navigationSweep(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const workload = process.argv.includes("--colour")
+    ? { ...BENCHMARK_WORKLOAD, colourDynamics: true }
+    : BENCHMARK_WORKLOAD
   const stop = await serve()
   const ladder = process.argv.includes("--sweep")
     ? sweep
@@ -437,7 +440,7 @@ async function main(): Promise<void> {
     const measured = {} as Record<PassName, Pass & { frames: FrameTiming[] }>
     for (const pass of PASSES) {
       console.log(`  running the ${pass.name} pass...`)
-      measured[pass.name] = await measure(pass, BENCHMARK_WORKLOAD)
+      measured[pass.name] = await measure(pass, workload)
     }
     const strip = ({
       frames: _frames,
@@ -447,7 +450,7 @@ async function main(): Promise<void> {
       paced: strip(measured.paced),
       unpaced: strip(measured.unpaced),
     }
-    const stats = workloadStats(createWorkload(BENCHMARK_WORKLOAD))
+    const stats = workloadStats(createWorkload(workload))
     const run: BenchRun = {
       version: 1,
       recordedAt: new Date().toISOString(),
@@ -460,7 +463,7 @@ async function main(): Promise<void> {
           git(["status", "--porcelain", "--", ".", ":!bench/results"]).length >
           0,
       },
-      workload: { ...BENCHMARK_WORKLOAD, ...stats },
+      workload: { ...workload, ...stats },
       passes,
       meetsTarget: judge(passes.unpaced.report, passes.paced.report),
     }

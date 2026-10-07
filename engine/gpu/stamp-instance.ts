@@ -17,7 +17,10 @@ export const STAMP = {
   ROUNDNESS: 5,
   /** How strongly the canvas grain bites this dab, in [0, 1]. */
   GRAIN_DEPTH: 6,
+  HUE: 7,
+  SATURATION: 8,
+  LIGHTNESS: 9,
 } as const
 
 /** Floats per dab instance. */
-export const STAMP_STRIDE = 7
+export const STAMP_STRIDE = 10

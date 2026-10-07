@@ -289,6 +289,28 @@ export async function runBenchmark(
     devicePixelRatio: 1,
   })
   await engine.dispatch({ type: "initialize" })
+  if (options.colourDynamics) {
+    await engine.dispatch({ type: "setColor", hex: "#e04030" })
+    await engine.dispatch({
+      type: "setBrush",
+      color: { hue: 1, saturation: 1, lightness: 1 },
+      dynamics: [
+        { source: "random", target: "hue", range: [-0.25, 0.25], mix: "add" },
+        {
+          source: "random",
+          target: "saturation",
+          range: [-0.5, 0.5],
+          mix: "add",
+        },
+        {
+          source: "random",
+          target: "lightness",
+          range: [-0.25, 0.25],
+          mix: "add",
+        },
+      ],
+    })
+  }
   const snapshot = engine.getSnapshot()
   if (snapshot.status !== "ready")
     throw new Error(`The engine is ${snapshot.status}, not ready.`)

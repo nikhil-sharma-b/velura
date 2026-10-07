@@ -332,3 +332,34 @@ holding pixels, so the number to re-measure is a large window on a weak GPU.
   has nothing to say about this target. `tests/browser/benchmark.spec.ts` runs
   there to check that the benchmark still drives the engine and still observes
   frames — never to check a speed.
+
+## Per-dab colour dynamics
+
+`bun run bench --colour` exercises seeded hue, saturation and lightness
+mappings through the regular 8192² painting workload. The recorded workload
+includes `colourDynamics: true`, so colour runs can be distinguished from
+neutral-ink runs.
+
+Coverage selects the complete colour of the dab with greatest alpha at each
+pixel; later dabs win equal-alpha ties. A `depth16unorm` attachment stores
+inverse coverage, adding 128 MiB at 8192². The stamp pass is clipped to each
+batch's bounds. Alpha differences within 1/65535 can effectively tie, below
+the stored colour precision for ordinary marks. Buildup still uses
+premultiplied over,
+and both modes stamp a batch in one pass and composite once on pen-up. Colour
+adjustment runs per vertex, with a neutral fast path that preserves existing
+ink and goldens. No per-dab CPU allocation or readback is introduced.
+
+On 2026-10-07, isolated runs on the same Apple GPU and 75 Hz display measured:
+
+| 8192² workload | sustained FPS | median pen-to-pixel | p95 pen-to-pixel | painting readbacks |
+|---|---:|---:|---:|---:|
+| Unchanged `dev` (`d5bffc58`) | 76.3 | 18.7 ms | 24.0 ms | 0 |
+| Colour jitter, bounded 16-bit depth | 75.8 | 19.0 ms | 24.2 ms | 0 |
+
+These single runs show performance close to the existing baseline, not proof
+of D30 compliance: both miss 120 FPS and 10 ms. An initial unbounded 32-bit
+depth implementation measured 62.6 ms median latency; bounding the pass and
+halving the depth attachment removed that regression. The history retains
+that isolated intermediate run as well as the baseline and final run; the run
+made concurrently with browser tests is excluded from history.

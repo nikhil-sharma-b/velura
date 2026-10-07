@@ -55,6 +55,8 @@ import {
 import { eraserBrush, type EraserKind } from "./brush/eraser"
 import {
   type Brush,
+  type BrushColor,
+  validateBrushColor,
   type BrushGrain,
   brushSpacing,
   dabSpacing,
@@ -367,6 +369,7 @@ export {
 } from "./store/export-image"
 export type {
   Brush,
+  BrushColor,
   BrushGrain,
   BrushShape,
   BrushRendering,
@@ -625,6 +628,8 @@ export type EngineCommand =
        * which is what makes the round brush reachable again from a textured one.
        */
       tipTextureId?: string | null
+      /** Colour jitter amplitudes. Null restores unit scales. */
+      color?: BrushColor | null
       /** The paper, by texture id, with its scale and depth. Null is smooth. */
       grain?: BrushGrain | null
       /** Replaces the dynamics graph outright; see `evaluateDynamics`. */
@@ -4326,8 +4331,8 @@ export function createEngine(
    * This is where the dynamics graph (D23) meets the renderer: the pen state
    * interpolated to this dab becomes a stamp context, the graph turns that
    * into a modulation, and the modulation scales the brush's own radius and
-   * flow. Targets the stamp cannot yet express — tip angle, grain, scatter —
-   * are evaluated all the same and land when their renderers do (D24).
+   * flow, tip shape, grain and colour. Scatter remains evaluated until its
+   * renderer lands.
    */
   function emitStamp(
     x: number,
@@ -4362,6 +4367,11 @@ export function createEngine(
     // The brush's own grain depth is in the uniform; this is what the graph
     // does to it per dab, so a light touch can skim the paper (D24).
     stamps[offset + STAMP.GRAIN_DEPTH] = params.grainDepth
+    stamps[offset + STAMP.HUE] = params.hue * (brush.color?.hue ?? 1)
+    stamps[offset + STAMP.SATURATION] =
+      params.saturation * (brush.color?.saturation ?? 1)
+    stamps[offset + STAMP.LIGHTNESS] =
+      params.lightness * (brush.color?.lightness ?? 1)
     stampCount++
     frameStamps++
     // What follows this dab, measured against the dab actually drawn rather
@@ -5966,6 +5976,7 @@ export function createEngine(
             throw new Error("Brush roundness must be in (0, 1].")
           if (command.angle !== undefined && !Number.isFinite(command.angle))
             throw new Error("Brush angle must be finite.")
+          if (command.color) validateBrushColor(command.color)
           if (command.dynamics) validateDynamics(command.dynamics)
           // Textures are named, not carried, so a name that resolves to
           // nothing is caught here rather than silently drawing untextured.
@@ -6009,6 +6020,10 @@ export function createEngine(
             dynamics: command.dynamics
               ? structuredClone(command.dynamics)
               : brush.dynamics,
+          }
+          if (command.color !== undefined) {
+            if (command.color) next.color = { ...command.color }
+            else delete next.color
           }
           // Absent rather than present-and-null — and absent rather than
           // present-and-undefined, which is a key that survives a

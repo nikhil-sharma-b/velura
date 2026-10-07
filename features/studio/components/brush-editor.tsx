@@ -81,7 +81,7 @@ const SOURCE_LABELS: Record<DynamicsSource, string> = {
  * One entry per target rather than a table of labels beside a table of
  * ceilings: adding a target to the graph should be one edit here, not three.
  * `drawn` says whether a renderer consumes it yet — the graph carries scatter
- * and hue for the renderers that will read them (see `DynamicsTarget`), and an
+ * for the renderers that will read them (see `DynamicsTarget`), and an
  * artist mapping onto one deserves to be told it does nothing on the canvas
  * today rather than left wondering why the stroke never changes.
  */
@@ -93,7 +93,9 @@ const TARGETS: Record<DynamicsTarget, { label: string; drawn: boolean }> = {
   roundness: { label: "Roundness", drawn: true },
   grainDepth: { label: "Grain depth", drawn: true },
   scatter: { label: "Scatter", drawn: false },
-  hue: { label: "Hue", drawn: false },
+  hue: { label: "Hue", drawn: true },
+  saturation: { label: "Saturation", drawn: true },
+  lightness: { label: "Lightness", drawn: true },
 }
 
 function targetLabel(target: DynamicsTarget): string {
