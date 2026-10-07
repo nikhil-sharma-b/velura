@@ -138,6 +138,7 @@ export function brushCommand(brush: Brush): SetBrushCommand {
     tipTextureId: brush.shape.tipTextureId ?? null,
     grain: brush.grain ? { ...brush.grain } : null,
     color: brush.color ? { ...brush.color } : null,
+    scatter: brush.scatter ? { ...brush.scatter } : null,
     dynamics: structuredClone(brush.dynamics),
   }
 }

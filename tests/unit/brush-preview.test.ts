@@ -99,19 +99,42 @@ describe("the brush editor's preview stroke", () => {
     expect(second.dabs).not.toEqual(plain.dabs)
   })
 
-  test("shows only what the canvas can draw: scatter moves nothing yet", () => {
-    // The graph evaluates scatter, but no renderer consumes it (see
-    // `DynamicsTarget`). A preview that threw its dabs off the path would be
-    // showing a stroke the artist has no way to actually make.
-    const scattered = previewStroke(
+  test("a scatter mapping without a scatter amount moves nothing", () => {
+    // The target scales the brush's own amount, and a brush made before
+    // scatter existed has none: it draws as it always did.
+    const mapped = previewStroke(
       brush({
         dynamics: [
-          { source: "random", target: "scatter", range: [0, 4], mix: "add" },
+          {
+            source: "random",
+            target: "scatter",
+            range: [0, 4],
+            mix: "multiply",
+          },
         ],
       }),
       BOX
     )
-    expect(scattered.dabs).toEqual(previewStroke(brush(), BOX).dabs)
+    expect(mapped.dabs).toEqual(previewStroke(brush(), BOX).dabs)
+  })
+
+  test("scatter throws dabs off the path, count of them per step", () => {
+    const plain = previewStroke(brush(), BOX)
+    const scattered = previewStroke(
+      brush({ scatter: { amount: 2, count: 3, axes: "both" } }),
+      BOX
+    )
+    expect(scattered.dabs.length).toBe(plain.dabs.length * 3)
+    expect(scattered.dabs).not.toEqual(
+      plain.dabs.flatMap((dab) => [dab, dab, dab])
+    )
+    // The same on every redraw, or the preview would shimmer under a slider.
+    expect(
+      previewStroke(
+        brush({ scatter: { amount: 2, count: 3, axes: "both" } }),
+        BOX
+      ).dabs
+    ).toEqual(scattered.dabs)
   })
 
   test("a brush with no grain previews with no bite", () => {

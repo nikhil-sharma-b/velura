@@ -99,8 +99,22 @@ describe("the working brush an editor holds", () => {
       tipTextureId: null,
       grain: null,
       color: null,
+      scatter: null,
       dynamics: [],
     })
+  })
+
+  test("scatter travels with the brush, and a brush without it clears it", () => {
+    const scattered = {
+      ...saved(),
+      scatter: { amount: 3, count: 4, axes: "both" as const },
+    }
+    expect(brushCommand(scattered).scatter).toEqual({
+      amount: 3,
+      count: 4,
+      axes: "both",
+    })
+    expect(brushCommand(saved()).scatter).toBe(null)
   })
 
   test("a texture the brush no longer names is cleared, not left behind", () => {
@@ -131,7 +145,7 @@ describe("the working brush an editor holds", () => {
       range: [0, 1],
       mix: "multiply",
     })
-    expect(newModulator("scatter").mix).toBe("add")
+    expect(newModulator("scatter").mix).toBe("multiply")
     expect(newModulator("angle").mix).toBe("add")
     expect(newModulator("hue").mix).toBe("add")
     for (const target of ["size", "scatter", "angle", "hue", "flow"] as const)

@@ -30,7 +30,7 @@ describe("dynamics graph evaluation", () => {
       angle: 0,
       roundness: 1,
       grainDepth: 1,
-      scatter: 0,
+      scatter: 1,
       hue: 0,
       saturation: 0,
       lightness: 0,
@@ -246,14 +246,18 @@ describe("dynamics graph evaluation", () => {
     })
 
     test("rejects a multiply onto a target that is an offset", () => {
-      // Angle, scatter and hue start at zero, so a multiply onto them is zero
-      // whatever the pen does: an authoring mistake, not a subtle brush.
-      for (const target of ["angle", "scatter", "hue"] as const)
+      // Angle and hue start at zero, so a multiply onto them is zero whatever
+      // the pen does: an authoring mistake, not a subtle brush.
+      for (const target of ["angle", "hue"] as const)
         expect(() =>
           validateDynamics([{ ...valid, target, mix: "multiply" }])
         ).toThrow(/offset/)
       expect(() =>
         validateDynamics([{ ...valid, target: "angle", mix: "add" }])
+      ).not.toThrow()
+      // Scatter scales the brush's own amount, as size scales its radius.
+      expect(() =>
+        validateDynamics([{ ...valid, target: "scatter", mix: "multiply" }])
       ).not.toThrow()
     })
 

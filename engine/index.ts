@@ -76,6 +76,12 @@ import {
   BRUSH_COLOR,
   BRUSH_FEATHER,
 } from "./brush/round-brush"
+import {
+  type BrushScatter,
+  createScatterPlacer,
+  MAX_SCATTER_COUNT,
+  validateScatter,
+} from "./brush/scatter"
 import { createStampContextTracker } from "./brush/stamp-context"
 import {
   BUILTIN_TEXTURE_IDS,
@@ -374,6 +380,7 @@ export type {
   BrushShape,
   BrushRendering,
 } from "./brush/brush"
+export type { BrushScatter, ScatterAxes } from "./brush/scatter"
 export {
   BUILTIN_BRUSHES,
   BUILTIN_BRUSH_PREFIX,
@@ -632,6 +639,8 @@ export type EngineCommand =
       color?: BrushColor | null
       /** The paper, by texture id, with its scale and depth. Null is smooth. */
       grain?: BrushGrain | null
+      /** Dabs thrown off the path, and how many. Null lays one, on it. */
+      scatter?: BrushScatter | null
       /** Replaces the dynamics graph outright; see `evaluateDynamics`. */
       dynamics?: Modulator[]
     }
@@ -1631,6 +1640,10 @@ export function createEngine(
   // inside a stroke: a frame of drawing still allocates nothing (D30).
   let resampler = createStrokeResampler(brushSpacing(DEFAULT_BRUSH))
   const dynamics = createStampContextTracker()
+  // Seeded alongside the tracker, so a stroke's scatter is as repeatable as
+  // its `random` mappings; its offsets land in one array, reused per dab.
+  const scatterPlacer = createScatterPlacer()
+  const scatterOffsets = new Float32Array(MAX_SCATTER_COUNT * 2)
   // Ids in a brush are resolved here, so the brush stays data and the pixels
   // stay an asset (D24). Imported textures register into this same library.
   const textures = createTextureLibrary()
@@ -4331,8 +4344,10 @@ export function createEngine(
    * This is where the dynamics graph (D23) meets the renderer: the pen state
    * interpolated to this dab becomes a stamp context, the graph turns that
    * into a modulation, and the modulation scales the brush's own radius and
-   * flow, tip shape, grain and colour. Scatter remains evaluated until its
-   * renderer lands.
+   * flow, tip shape, grain and colour. Scatter turns the one position the
+   * resampler chose into as many dabs as the brush asks for, thrown off the
+   * path by its amount; they all go into the same stroke buffer, so coverage
+   * and buildup treat them as they treat any dabs that overlap (D27).
    */
   function emitStamp(
     x: number,
@@ -4351,29 +4366,42 @@ export function createEngine(
       context,
       params
     )
-    if (stampCount === MAX_STAMPS_PER_DRAW) flushStamps()
-    const offset = stampCount * STAMP_STRIDE
-    stamps[offset + STAMP.CENTER_X] = x
-    stamps[offset + STAMP.CENTER_Y] = y
     const radius = brush.shape.radius * params.size
-    stamps[offset + STAMP.RADIUS] = radius
     // Flow: the dab's own opacity, not the stroke's, which is applied once
     // when the buffer is composited (D27).
-    stamps[offset + STAMP.OPACITY] = brush.rendering.flow * params.flow
+    const flow = brush.rendering.flow * params.flow
     // Angle offsets the brush's own rotation and roundness scales its own
     // squash, which is what lets one dynamics list read the same on any tip.
-    stamps[offset + STAMP.ANGLE] = brush.shape.angle + params.angle
-    stamps[offset + STAMP.ROUNDNESS] = brush.shape.roundness * params.roundness
-    // The brush's own grain depth is in the uniform; this is what the graph
-    // does to it per dab, so a light touch can skim the paper (D24).
-    stamps[offset + STAMP.GRAIN_DEPTH] = params.grainDepth
-    stamps[offset + STAMP.HUE] = params.hue * (brush.color?.hue ?? 1)
-    stamps[offset + STAMP.SATURATION] =
-      params.saturation * (brush.color?.saturation ?? 1)
-    stamps[offset + STAMP.LIGHTNESS] =
-      params.lightness * (brush.color?.lightness ?? 1)
-    stampCount++
-    frameStamps++
+    const angle = brush.shape.angle + params.angle
+    const roundness = brush.shape.roundness * params.roundness
+    const hue = params.hue * (brush.color?.hue ?? 1)
+    const saturation = params.saturation * (brush.color?.saturation ?? 1)
+    const lightness = params.lightness * (brush.color?.lightness ?? 1)
+    const count = scatterPlacer.place(
+      brush.scatter,
+      params.scatter,
+      radius,
+      context.direction,
+      scatterOffsets
+    )
+    for (let i = 0; i < count; i++) {
+      if (stampCount === MAX_STAMPS_PER_DRAW) flushStamps()
+      const offset = stampCount * STAMP_STRIDE
+      stamps[offset + STAMP.CENTER_X] = x + scatterOffsets[i * 2]
+      stamps[offset + STAMP.CENTER_Y] = y + scatterOffsets[i * 2 + 1]
+      stamps[offset + STAMP.RADIUS] = radius
+      stamps[offset + STAMP.OPACITY] = flow
+      stamps[offset + STAMP.ANGLE] = angle
+      stamps[offset + STAMP.ROUNDNESS] = roundness
+      // The brush's own grain depth is in the uniform; this is what the graph
+      // does to it per dab, so a light touch can skim the paper (D24).
+      stamps[offset + STAMP.GRAIN_DEPTH] = params.grainDepth
+      stamps[offset + STAMP.HUE] = hue
+      stamps[offset + STAMP.SATURATION] = saturation
+      stamps[offset + STAMP.LIGHTNESS] = lightness
+      stampCount++
+      frameStamps++
+    }
     // What follows this dab, measured against the dab actually drawn rather
     // than against the brush at rest. A brush whose size is modulated would
     // otherwise keep laying dabs at its resting pitch: laid over, the pencil
@@ -5267,6 +5295,7 @@ export function createEngine(
       dynamics.begin(x, y, pressure, tiltX, tiltY, time, ++strokeSeed),
       strokeParams
     )
+    scatterPlacer.begin(strokeSeed)
     // Dabs land in the stroke buffer, not the layer, until the pen lifts.
     renderer?.beginStroke({
       accumulation: brush.rendering.accumulation,
@@ -5978,6 +6007,7 @@ export function createEngine(
             throw new Error("Brush angle must be finite.")
           if (command.color) validateBrushColor(command.color)
           if (command.dynamics) validateDynamics(command.dynamics)
+          if (command.scatter) validateScatter(command.scatter)
           // Textures are named, not carried, so a name that resolves to
           // nothing is caught here rather than silently drawing untextured.
           if (command.tipTextureId && !textures.get(command.tipTextureId))
@@ -6038,6 +6068,12 @@ export function createEngine(
           else delete next.shape.tipTextureId
           if (grain) next.grain = { ...grain }
           else delete next.grain
+          const scatter =
+            command.scatter === undefined
+              ? brush.scatter
+              : (command.scatter ?? undefined)
+          if (scatter) next.scatter = { ...scatter }
+          else delete next.scatter
           // Spacing is fixed for the life of a resampler, so a brush that
           // changes it needs a new one. Never mid-stroke: the pen is up.
           if (tool === "brush" && brushSpacing(next) !== brushSpacing(brush))

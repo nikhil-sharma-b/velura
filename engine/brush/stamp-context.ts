@@ -133,7 +133,7 @@ export function tiltFromAltitude(
 }
 
 /** Mulberry32: small, fast, and seeded, so a stroke's jitter is repeatable. */
-function createRandom(seed: number): () => number {
+export function createRandom(seed: number): () => number {
   let state = seed >>> 0
   return () => {
     state = (state + 0x6d2b79f5) >>> 0

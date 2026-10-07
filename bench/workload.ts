@@ -1,3 +1,5 @@
+import { type BrushScatter, validateScatter } from "../engine/brush/scatter"
+
 /**
  * The painting workload the benchmark drives (D30).
  *
@@ -60,6 +62,12 @@ export type WorkloadOptions = {
   feather?: number
   /** Exercise all three per-dab colour targets. */
   colourDynamics?: boolean
+  /**
+   * Paints with a brush that scatters (§7.1). `count` multiplies the dabs
+   * every spacing step lays, so this is the stamp pass at its heaviest.
+   * Absent, the brush lays one dab per step.
+   */
+  scatter?: BrushScatter
 }
 
 /**
@@ -189,6 +197,7 @@ export function createWorkload(options: WorkloadOptions): Workload {
     (!Number.isFinite(options.feather) || options.feather < 0)
   )
     throw new Error("A workload's feather must be finite and not negative.")
+  if (options.scatter !== undefined) validateScatter(options.scatter)
   const random = createRandom(options.seed)
   const strokes: BenchStroke[] = []
   for (let i = 0; i < options.strokes; i++)
