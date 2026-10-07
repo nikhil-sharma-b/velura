@@ -1,4 +1,3 @@
-import { validateBrushColor, type BrushColor } from "./brush/brush"
 import {
   createPressureFit,
   MAX_TAPER,
@@ -56,6 +55,8 @@ import {
 import { eraserBrush, type EraserKind } from "./brush/eraser"
 import {
   type Brush,
+  type BrushColor,
+  validateBrushColor,
   type BrushGrain,
   brushSpacing,
   dabSpacing,
@@ -368,6 +369,7 @@ export {
 } from "./store/export-image"
 export type {
   Brush,
+  BrushColor,
   BrushGrain,
   BrushShape,
   BrushRendering,
@@ -4365,10 +4367,7 @@ export function createEngine(
     // The brush's own grain depth is in the uniform; this is what the graph
     // does to it per dab, so a light touch can skim the paper (D24).
     stamps[offset + STAMP.GRAIN_DEPTH] = params.grainDepth
-    // Hue wraps in the graph; scale its signed turn so negative jitter stays
-    // negative rather than becoming almost a whole turn before scaling.
-    stamps[offset + STAMP.HUE] =
-      (params.hue > 0.5 ? params.hue - 1 : params.hue) * (brush.color?.hue ?? 1)
+    stamps[offset + STAMP.HUE] = params.hue * (brush.color?.hue ?? 1)
     stamps[offset + STAMP.SATURATION] =
       params.saturation * (brush.color?.saturation ?? 1)
     stamps[offset + STAMP.LIGHTNESS] =

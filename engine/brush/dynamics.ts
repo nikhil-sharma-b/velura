@@ -193,6 +193,9 @@ export function targetLimit(target: DynamicsTarget): readonly [number, number] {
 
 function applyLimit(target: DynamicsTarget, value: number): number {
   if (!Number.isFinite(value)) return NEUTRAL_STAMP_PARAMS[target]
+  // Hue's authored signed magnitude must survive until its brush amplitude
+  // is applied. The HSL shader wraps the scaled turn when it renders it.
+  if (target === "hue") return value
   if (isCyclic(target)) return value - Math.floor(value)
   const [min, max] = LIMITS[target]
   return value < min ? min : value > max ? max : value

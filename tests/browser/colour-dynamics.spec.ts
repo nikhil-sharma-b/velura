@@ -1,10 +1,16 @@
+import type { BrushColor } from "../../engine/brush/brush"
 import { expect, test, type Page } from "@playwright/test"
 
-async function stroke(page: Page, hue: number, jitter = false) {
+async function stroke(
+  page: Page,
+  hue: number,
+  jitter = false,
+  color?: BrushColor
+) {
   await page.goto("http://127.0.0.1:3101/tests/harness/")
   await page.waitForFunction(() => !!window.engine)
   await page.evaluate(
-    async ([turn, vary]) => {
+    async ([turn, vary, bases]) => {
       await window.engine.dispatch({
         type: "resize",
         width: 240,
@@ -17,6 +23,7 @@ async function stroke(page: Page, hue: number, jitter = false) {
       await window.engine.dispatch({
         type: "setBrush",
         radius: 12,
+        color: bases ?? null,
         dynamics: [
           {
             source: "random",
@@ -39,7 +46,7 @@ async function stroke(page: Page, hue: number, jitter = false) {
         ],
       })
     },
-    [hue, jitter] as const
+    [hue, jitter, color ?? null] as const
   )
   const canvas = page.locator("canvas").first()
   const box = (await canvas.boundingBox())!
@@ -101,4 +108,17 @@ test("coverage keeps one dab's colour while buildup mixes overlapping colours", 
     window.probe.present()
   })
   expect(await probe.screenshot()).toEqual(single)
+})
+
+test("a non-unit hue base scales signed offsets before they wrap", async ({
+  page,
+}) => {
+  const expected = await stroke(page, 0.375)
+  expect(
+    await stroke(page, 0.75, false, { hue: 0.5, saturation: 1, lightness: 1 })
+  ).toEqual(expected)
+  const negative = await stroke(page, -0.125)
+  expect(
+    await stroke(page, -0.25, false, { hue: 0.5, saturation: 1, lightness: 1 })
+  ).toEqual(negative)
 })

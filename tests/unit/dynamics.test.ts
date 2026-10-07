@@ -373,3 +373,10 @@ test("a fixed seed reproduces all colour jitter offsets", async () => {
   expect(sample(43)).not.toEqual(sample(42))
   expect(new Set(sample(42).map((dab) => dab[0])).size).toBe(12)
 })
+
+test("hue offsets keep their signed magnitude until the brush base scales them", () => {
+  const graph: Modulator[] = [
+    { source: "random", target: "hue", range: [-0.25, -0.25], mix: "replace" },
+  ]
+  expect(evaluateDynamics(graph, context()).hue).toBe(-0.25)
+})

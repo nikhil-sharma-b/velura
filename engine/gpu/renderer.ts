@@ -584,7 +584,7 @@ export function createRenderer(
         ],
       },
       depthStencil: {
-        format: "depth32float",
+        format: "depth16unorm",
         depthWriteEnabled: accumulation === "coverage",
         depthCompare: accumulation === "coverage" ? "less-equal" : "always",
       },
@@ -2538,7 +2538,27 @@ export function createRenderer(
     pass.setPipeline(stampPipelines[accumulation])
     pass.setBindGroup(0, stampBindGroup)
     pass.setVertexBuffer(0, stampInstances)
-    pass.draw(6, count)
+    // Bound the pass to this batch, rather than letting a document-sized
+    // depth attachment touch tiles the pen never visited. Rotated textured
+    // quads fit inside sqrt(2) radii, even when their corners carry ink.
+    let left = width
+    let top = height
+    let right = 0
+    let bottom = 0
+    for (let i = offset; i < offset + count; i++) {
+      const index = i * STAMP_STRIDE
+      const radius = instances[index + STAMP.RADIUS] * Math.SQRT2
+      const x = instances[index + STAMP.CENTER_X]
+      const y = instances[index + STAMP.CENTER_Y]
+      left = Math.min(left, Math.max(0, Math.floor(x - radius)))
+      top = Math.min(top, Math.max(0, Math.floor(y - radius)))
+      right = Math.max(right, Math.min(width, Math.ceil(x + radius)))
+      bottom = Math.max(bottom, Math.min(height, Math.ceil(y + radius)))
+    }
+    if (right > left && bottom > top) {
+      pass.setScissorRect(left, top, right - left, bottom - top)
+      pass.draw(6, count)
+    }
     pass.end()
     device.queue.submit([encoder.finish()])
     stroke.empty = false
@@ -2602,7 +2622,7 @@ export function createRenderer(
       stroke = createSurface()
       coverageDepth = device.createTexture({
         size: { width, height },
-        format: "depth32float",
+        format: "depth16unorm",
         usage: GPUTextureUsage.RENDER_ATTACHMENT,
       })
       coverageDepthView = coverageDepth.createView()
