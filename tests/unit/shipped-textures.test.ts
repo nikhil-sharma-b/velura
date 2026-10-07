@@ -87,15 +87,20 @@ describe("the shipped texture library", () => {
     expect(requested).toEqual(["/brushes/krita/tips/chalk.png"])
   })
 
-  test("stands a tip set in with its first frame until tip sets can draw", async () => {
+  test("loads every frame of a tip set in order", async () => {
     const { fetch, requested } = fakeFetch({
       "/brushes/krita/tips/grass-0.png": grayPng(5),
+      "/brushes/krita/tips/grass-1.png": grayPng(9),
     })
     const shipped = createShippedTextures(manifest, "/brushes/krita", fetch)
     expect((await shipped.load("krita:grass"))?.data).toEqual(
-      new Uint8Array([5])
+      new Uint8Array([5, 9])
     )
-    expect(requested).toEqual(["/brushes/krita/tips/grass-0.png"])
+    expect((await shipped.load("krita:grass"))?.frameCount).toBe(2)
+    expect(requested).toEqual([
+      "/brushes/krita/tips/grass-0.png",
+      "/brushes/krita/tips/grass-1.png",
+    ])
   })
 
   test("resolves an id it does not ship to nothing, without fetching", async () => {

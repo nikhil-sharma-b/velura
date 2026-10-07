@@ -14,7 +14,10 @@ import {
 import type { VectorWorkloadOptions } from "../../bench/vector-workload"
 import type { WorkloadOptions } from "../../bench/workload"
 import { BRUSH_COLOR, BRUSH_FEATHER } from "../../engine/brush/round-brush"
-import { createTextureLibrary } from "../../engine/brush/texture"
+import {
+  createTextureLibrary,
+  type GrayscaleTexture,
+} from "../../engine/brush/texture"
 import { BACKGROUND } from "../../engine/doc/scene"
 import { decodeFloat16 } from "../../engine/doc/float16"
 import { createRenderer, type StrokeMode } from "../../engine/gpu/renderer"
@@ -39,6 +42,7 @@ type Dab = {
   opacity: number
   angle?: number
   roundness?: number
+  tipFrame?: number
   grainDepth?: number
   hue?: number
   saturation?: number
@@ -57,6 +61,7 @@ type StrokeBufferProbe = {
     mode?: StrokeMode
   ): void
   /** The tip texture, by id, or null for the procedural disc. */
+  registerTip(id: string, texture: GrayscaleTexture): void
   setTip(id: string | null): void
   /**
    * The paper, by id, with the tile scale, how hard it bites, and how much of
@@ -431,6 +436,7 @@ window.openStrokeBufferProbe = async (width, height) => {
   window.probe = {
     beginStroke: (accumulation, opacity, mode = "paint") =>
       renderer.beginStroke({ accumulation, opacity, mode }),
+    registerTip: (id, texture) => textures.register(id, texture),
     setTip: (id) => renderer.setTip(id ? texture(id) : null),
     setGrain: (id, scale, depth, movement = 0) =>
       renderer.setGrain(id ? texture(id) : null, { scale, depth, movement }),
@@ -448,6 +454,7 @@ window.openStrokeBufferProbe = async (width, height) => {
             dab.hue ?? 0,
             dab.saturation ?? 0,
             dab.lightness ?? 0,
+            dab.tipFrame ?? 0,
           ],
           i * STAMP_STRIDE
         )

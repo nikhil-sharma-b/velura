@@ -1,6 +1,6 @@
 import type { BrushGrain } from "../brush/brush"
 import type { Accumulation } from "../brush/round-brush"
-import type { GrayscaleTexture } from "../brush/texture"
+import { validateTexture, type GrayscaleTexture } from "../brush/texture"
 import {
   type ColorMatrix,
   type OutputColorSpace,
@@ -506,7 +506,7 @@ export function createRenderer(
       {
         binding: 3,
         visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
+        texture: { sampleType: "float", viewDimension: "2d-array" },
       },
       {
         binding: 4,
@@ -534,6 +534,11 @@ export function createRenderer(
             arrayStride: STAMP_STRIDE * 4,
             stepMode: "instance",
             attributes: [
+              {
+                shaderLocation: 7,
+                offset: STAMP.TIP_FRAME * 4,
+                format: "float32",
+              },
               {
                 shaderLocation: 0,
                 offset: STAMP.CENTER_X * 4,
@@ -823,7 +828,11 @@ export function createRenderer(
 
   function uploadTexture(source: GrayscaleTexture): GPUTexture {
     const texture = device.createTexture({
-      size: { width: source.width, height: source.height },
+      size: {
+        width: source.width,
+        height: source.height,
+        depthOrArrayLayers: source.frameCount ?? 1,
+      },
       format: TEXTURE_FORMAT,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     })
@@ -831,7 +840,11 @@ export function createRenderer(
       { texture },
       source.data,
       { bytesPerRow: source.width, rowsPerImage: source.height },
-      { width: source.width, height: source.height }
+      {
+        width: source.width,
+        height: source.height,
+        depthOrArrayLayers: source.frameCount ?? 1,
+      }
     )
     return texture
   }
@@ -2459,7 +2472,10 @@ export function createRenderer(
         { binding: 0, resource: { buffer: stampUniform } },
         { binding: 1, resource: tipSampler },
         { binding: 2, resource: grainSampler },
-        { binding: 3, resource: tipTexture.createView() },
+        {
+          binding: 3,
+          resource: tipTexture.createView({ dimension: "2d-array" }),
+        },
         { binding: 4, resource: grainTexture.createView() },
         {
           binding: 5,
@@ -2765,6 +2781,13 @@ export function createRenderer(
       drawStamps(instances, 0, count)
     },
     setTip(texture) {
+      if (texture) {
+        validateTexture(texture)
+        if ((texture.frameCount ?? 1) > device.limits.maxTextureArrayLayers)
+          throw new Error(
+            "The tip set exceeds the device's texture layer limit."
+          )
+      }
       tipTexture.destroy()
       tipTexture = texture ? uploadTexture(texture) : createWhiteTexture()
       device.queue.writeBuffer(
@@ -2785,6 +2808,8 @@ export function createRenderer(
       )
     },
     setGrain(texture, { scale, depth, movement }) {
+      if (texture && (texture.frameCount ?? 1) !== 1)
+        throw new Error("Grain must be a single-frame texture.")
       if (!Number.isFinite(scale) || scale <= 0)
         throw new Error("Grain scale must be positive.")
       if (!Number.isFinite(depth) || depth < 0 || depth > 1)

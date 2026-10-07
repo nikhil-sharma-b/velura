@@ -16,6 +16,8 @@
 export type GrayscaleTexture = {
   readonly width: number
   readonly height: number
+  /** Contiguous frames, each width × height bytes. Absent means one frame. */
+  readonly frameCount?: number
   readonly data: Uint8Array
 }
 
@@ -260,7 +262,13 @@ export function validateTexture(texture: GrayscaleTexture): void {
     texture.height < 1
   )
     throw new Error("A texture must have positive integer dimensions.")
-  if (texture.data.length !== texture.width * texture.height)
+  const frames = texture.frameCount ?? 1
+  if (!Number.isInteger(frames) || frames < 1 || frames > 256)
+    throw new Error("A tip set must have between 1 and 256 frames.")
+  if (
+    !(texture.data instanceof Uint8Array) ||
+    texture.data.length !== texture.width * texture.height * frames
+  )
     throw new Error(
       "A texture must hold exactly one byte per texel, single channel."
     )
@@ -269,6 +277,7 @@ export function validateTexture(texture: GrayscaleTexture): void {
 export function createTextureLibrary(
   initial: Record<string, GrayscaleTexture> = builtinTextures()
 ): TextureLibrary {
+  for (const texture of Object.values(initial)) validateTexture(texture)
   const textures = new Map<string, GrayscaleTexture>(Object.entries(initial))
   return {
     get: (id) => textures.get(id),

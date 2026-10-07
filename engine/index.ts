@@ -1,4 +1,9 @@
 import {
+  selectTipFrame,
+  validateTipSelection,
+  type TipSelectionMode,
+} from "./brush/tip-sets"
+import {
   createPressureFit,
   MAX_TAPER,
   type Taper,
@@ -628,6 +633,7 @@ export type EngineCommand =
        * which is what makes the round brush reachable again from a textured one.
        */
       tipTextureId?: string | null
+      tipSelection?: TipSelectionMode | null
       /** Colour jitter amplitudes. Null restores unit scales. */
       color?: BrushColor | null
       /** The paper, by texture id, with its scale and depth. Null is smooth. */
@@ -1664,6 +1670,7 @@ export function createEngine(
   // `params` instead of borrowing it and being overwritten by the first dab.
   const strokeParams: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   const stamps = new Float32Array(MAX_STAMPS_PER_DRAW * STAMP_STRIDE)
+  let tipDab = 0
   let stampCount = 0
   let stroking = false
   // The pen-down sample opens the path, and it arrives through the buffer like
@@ -4372,6 +4379,14 @@ export function createEngine(
       params.saturation * (brush.color?.saturation ?? 1)
     stamps[offset + STAMP.LIGHTNESS] =
       params.lightness * (brush.color?.lightness ?? 1)
+    stamps[offset + STAMP.TIP_FRAME] = selectTipFrame(
+      brush.shape.tipSelection ?? "random",
+      (brush.shape.tipTextureId
+        ? textures.get(brush.shape.tipTextureId)?.frameCount
+        : undefined) ?? 1,
+      context,
+      tipDab++
+    )
     stampCount++
     frameStamps++
     // What follows this dab, measured against the dab actually drawn rather
@@ -5255,6 +5270,7 @@ export function createEngine(
     const brush = activeBrush()
     strokeOrigin = origin
     // Per stroke, not per session: the next mark may come from another device.
+    tipDab = 0
     strokeSensesPressure = sensesPressure
     // Stroke opacity is applied once, at composite, so it is decided once,
     // here — from the pen state the stroke opened with. Nothing derived from
@@ -5977,6 +5993,11 @@ export function createEngine(
           if (command.angle !== undefined && !Number.isFinite(command.angle))
             throw new Error("Brush angle must be finite.")
           if (command.color) validateBrushColor(command.color)
+          if (
+            command.tipSelection !== undefined &&
+            command.tipSelection !== null
+          )
+            validateTipSelection(command.tipSelection)
           if (command.dynamics) validateDynamics(command.dynamics)
           // Textures are named, not carried, so a name that resolves to
           // nothing is caught here rather than silently drawing untextured.
@@ -5986,6 +6007,8 @@ export function createEngine(
             )
           if (command.grain) {
             validateGrain(command.grain)
+            if ((textures.get(command.grain.textureId)?.frameCount ?? 1) !== 1)
+              throw new Error("Grain must be a single-frame texture.")
             if (!textures.get(command.grain.textureId))
               throw new Error(
                 `No texture is registered as ${command.grain.textureId}.`
@@ -6034,6 +6057,10 @@ export function createEngine(
             command.tipTextureId === undefined
               ? brush.shape.tipTextureId
               : (command.tipTextureId ?? undefined)
+          if (command.tipSelection !== undefined) {
+            if (command.tipSelection === null) delete next.shape.tipSelection
+            else next.shape.tipSelection = command.tipSelection
+          }
           if (tip) next.shape.tipTextureId = tip
           else delete next.shape.tipTextureId
           if (grain) next.grain = { ...grain }

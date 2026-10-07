@@ -61,6 +61,9 @@ export function useConvexBrushStore(): BrushStore {
               texture: {
                 width: row.width,
                 height: row.height,
+                ...(row.frameCount === undefined
+                  ? {}
+                  : { frameCount: row.frameCount }),
                 data: new Uint8Array(row.data),
               },
             })),
@@ -98,6 +101,9 @@ export function useConvexBrushStore(): BrushStore {
           name,
           width: texture.width,
           height: texture.height,
+          ...(texture.frameCount === undefined
+            ? {}
+            : { frameCount: texture.frameCount }),
           // A fresh buffer, so a view onto a larger array — which a canvas
           // readback usually is — travels as its own texels and nothing else.
           data: texture.data.slice().buffer as ArrayBuffer,

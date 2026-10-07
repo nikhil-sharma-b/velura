@@ -66,7 +66,7 @@ struct Stamp {
 // is what lets one tile cover the whole canvas.
 @group(0) @binding(1) var tipSampler: sampler;
 @group(0) @binding(2) var grainSampler: sampler;
-@group(0) @binding(3) var tipTexture: texture_2d<f32>;
+@group(0) @binding(3) var tipTexture: texture_2d_array<f32>;
 @group(0) @binding(4) var grainTexture: texture_2d<f32>;
 // The selection's coverage, one texel per document pixel. Read only when
 // \`useSelection\` says there is one; a placeholder is bound otherwise.
@@ -83,6 +83,7 @@ struct Instance {
   @location(4) roundness: f32,
   @location(5) grainDepth: f32,
   @location(6) colorOffsets: vec3<f32>,
+  @location(7) tipFrame: f32,
 }
 
 struct Varyings {
@@ -96,6 +97,7 @@ struct Varyings {
   // offset from it. Flat, because a centre is one value for the whole dab.
   @location(4) @interpolate(flat) center: vec2<f32>,
   @location(5) @interpolate(flat) color: vec4<f32>,
+  @location(6) @interpolate(flat) tipFrame: i32,
 }
 
 @vertex
@@ -125,6 +127,7 @@ fn vertexMain(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings
     0.0,
     1.0
   );
+  out.tipFrame = i32(instance.tipFrame);
   out.local = local;
   out.radius = instance.radius;
   out.opacity = instance.opacity;
@@ -156,7 +159,7 @@ fn fragmentMain(varyings: Varyings) -> Fragment {
   }
   // Stamp space: the quad's own coordinates, so the tip turned and stretched
   // with it in the vertex stage and nothing more is needed here.
-  let tip = textureSample(tipTexture, tipSampler, varyings.local * 0.5 + 0.5).r;
+  let tip = textureSample(tipTexture, tipSampler, varyings.local * 0.5 + 0.5, varyings.tipFrame).r;
   // A tip replaces the disc rather than being cut by it, so a textured brush
   // has exactly the edge its texture draws — which is what a ragged dry tip
   // needs. A tip is expected to fall to nothing at its own rim.

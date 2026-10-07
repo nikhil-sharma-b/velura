@@ -208,6 +208,7 @@ export default defineSchema({
     name: v.string(),
     width: v.number(),
     height: v.number(),
+    frameCount: v.optional(v.number()),
     data: v.bytes(),
     createdAt: v.number(),
   }).index("by_owner", ["ownerId"]),

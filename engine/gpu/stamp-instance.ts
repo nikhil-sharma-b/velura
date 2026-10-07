@@ -20,7 +20,8 @@ export const STAMP = {
   HUE: 7,
   SATURATION: 8,
   LIGHTNESS: 9,
+  TIP_FRAME: 10,
 } as const
 
 /** Floats per dab instance. */
-export const STAMP_STRIDE = 10
+export const STAMP_STRIDE = 11

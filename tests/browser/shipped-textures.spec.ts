@@ -80,3 +80,29 @@ test("the library credits the shipped textures' makers", async ({ page }) => {
   await expect(library.getByText(/David Revoy/)).toBeVisible()
   await expect(library.getByText(/CC0 1\.0/)).toBeVisible()
 })
+
+test("a shipped tip set loads all frames and exposes every selection mode", async ({
+  page,
+}) => {
+  const fetched: string[] = []
+  const panel = await openEditor(page, fetched)
+  await panel.getByRole("combobox", { name: "Tip", exact: true }).click()
+  await page
+    .getByRole("option", {
+      name: "Impressionism brush (4 frames)",
+      exact: true,
+    })
+    .click()
+  await expect
+    .poll(
+      () => fetched.filter((url) => url.includes("impressionism-brush")).length
+    )
+    .toBe(4)
+  const selection = panel.getByRole("combobox", { name: "Frame selection" })
+  for (const mode of ["Sequential", "Direction", "Pressure", "Random"]) {
+    await selection.click()
+    await page.getByRole("option", { name: mode, exact: true }).click()
+    await expect(selection).toHaveText(mode)
+  }
+  await expect(panel.getByRole("alert")).toHaveCount(0)
+})

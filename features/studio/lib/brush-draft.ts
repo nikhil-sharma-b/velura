@@ -136,6 +136,7 @@ export function brushCommand(brush: Brush): SetBrushCommand {
     flow: brush.rendering.flow,
     accumulation: brush.rendering.accumulation,
     tipTextureId: brush.shape.tipTextureId ?? null,
+    tipSelection: brush.shape.tipSelection ?? null,
     grain: brush.grain ? { ...brush.grain } : null,
     color: brush.color ? { ...brush.color } : null,
     dynamics: structuredClone(brush.dynamics),

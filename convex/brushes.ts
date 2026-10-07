@@ -180,18 +180,27 @@ export const saveTexture = mutation({
     name: v.string(),
     width: v.number(),
     height: v.number(),
+    frameCount: v.optional(v.number()),
     data: v.bytes(),
   },
-  handler: async (ctx, { name, width, height, data }) => {
+  handler: async (ctx, { name, width, height, frameCount, data }) => {
     const userId = await requireUserId(ctx)
     const texture = storable(() =>
-      normaliseStoredTexture({ width, height, data: new Uint8Array(data) })
+      normaliseStoredTexture({
+        width,
+        height,
+        frameCount,
+        data: new Uint8Array(data),
+      })
     )
     return await ctx.db.insert("brushTextures", {
       ownerId: userId,
       name: normaliseTextureName(name),
       width: texture.width,
       height: texture.height,
+      ...(texture.frameCount === undefined
+        ? {}
+        : { frameCount: texture.frameCount }),
       // Stored as the bytes it will be uploaded as: the row is the asset, and
       // a re-encoding here would be a second definition of what a texel is.
       data: texture.data.buffer.slice(

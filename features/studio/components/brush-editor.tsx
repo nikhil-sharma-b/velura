@@ -18,6 +18,7 @@ import {
 import { Slider } from "@/components/ui/slider"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { Brush } from "@/engine/brush/brush"
+import { TIP_SELECTION_MODES } from "@/engine/brush/tip-sets"
 import { LINEAR_CURVE } from "@/engine/brush/curve"
 import {
   type DynamicsMix,
@@ -185,6 +186,9 @@ function TextureSelect({
               {shipped.map((texture) => (
                 <SelectItem key={texture.id} value={texture.id}>
                   {texture.name}
+                  {texture.files.length > 1
+                    ? ` (${texture.files.length} frames)`
+                    : ""}
                 </SelectItem>
               ))}
             </SelectGroup>
@@ -455,6 +459,31 @@ export function BrushEditor({
                 ))
             }
           />
+          {brush.shape.tipTextureId && (
+            <div className="space-y-1.5">
+              <Label className="text-xs">Frame selection</Label>
+              <Select
+                value={brush.shape.tipSelection ?? "random"}
+                onValueChange={(value) => {
+                  const mode = TIP_SELECTION_MODES.find(
+                    (mode) => mode === value
+                  )
+                  if (mode) apply({ shape: { tipSelection: mode } })
+                }}
+              >
+                <SelectTrigger aria-label="Frame selection" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TIP_SELECTION_MODES.map((mode) => (
+                    <SelectItem key={mode} value={mode}>
+                      {mode[0].toUpperCase() + mode.slice(1)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <SliderSetting
             label="Size"
             value={brush.shape.radius}
