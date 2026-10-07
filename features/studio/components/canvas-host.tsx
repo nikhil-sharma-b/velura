@@ -96,6 +96,7 @@ import {
   firstImageFile,
   placeImageFile,
 } from "../lib/image-import"
+import { KRITA_TEXTURES } from "../lib/shipped-textures"
 import { readTextureFile } from "../lib/texture-import"
 import { BrushEditor } from "./brush-editor"
 import {
@@ -784,6 +785,7 @@ export function CanvasHost({
       // engine is presenting into.
       setCanvasElement(canvas)
       const attached = createEngine(canvas, {
+        resolveTexture: (id) => KRITA_TEXTURES.load(id),
         ...(documentWidth !== undefined && documentHeight !== undefined
           ? { documentSize: { width: documentWidth, height: documentHeight } }
           : {}),

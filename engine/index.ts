@@ -1439,6 +1439,13 @@ export function createEngine(
      * engine's half can be exercised without a decoder.
      */
     imageCodec?: ImageSourceCodec
+    /**
+     * Pixels for a texture id this engine has never been given — a shipped
+     * texture fetched the first time a brush names it, rather than every one
+     * of them at startup (brush library 01). Undefined for an id the host
+     * does not know either, which a brush naming it is then refused for.
+     */
+    resolveTexture?: (id: string) => Promise<GrayscaleTexture | undefined>
   } = {}
 ): Engine {
   let snapshot: EngineSnapshot = INITIAL_SNAPSHOT
@@ -1625,6 +1632,28 @@ export function createEngine(
   // Published rather than assumed: the snapshot's default is the built-in set,
   // and this is what keeps it true of the library this engine actually holds.
   snapshot = { ...snapshot, textures: Object.freeze(textures.ids()) }
+  /**
+   * The brush change still waiting on a texture to arrive, if any. Brush
+   * changes queue behind it, so a brush picked while another's paper is
+   * loading is not overwritten by that one landing late. With nothing
+   * waiting, a brush applies in the same turn it is dispatched, as it always
+   * has. Other commands do not queue: a stroke begun while a texture is still
+   * on its way paints with the brush already in the hand, which is the brush
+   * the artist can see they are holding.
+   */
+  let brushTurn: Promise<void> | undefined
+
+  async function resolveBrushTextures(ids: (string | null | undefined)[]) {
+    const missing = ids.filter((id): id is string => !!id && !textures.get(id))
+    if (!missing.length || !options.resolveTexture) return
+    const found = await Promise.all(missing.map(options.resolveTexture))
+    if (disposed) return
+    found.forEach((texture, i) => {
+      if (texture && !textures.get(missing[i]))
+        textures.register(missing[i], texture)
+    })
+    publish({ textures: Object.freeze(textures.ids()) })
+  }
   const params: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   // Evaluated once per stroke rather than per dab, so it is kept apart from
   // `params` instead of borrowing it and being overwritten by the first dab.
@@ -5892,6 +5921,24 @@ export function createEngine(
           }
           break
         case "setBrush": {
+          const wanted = [command.tipTextureId, command.grain?.textureId]
+          if (
+            brushTurn ||
+            (options.resolveTexture &&
+              wanted.some((id) => id && !textures.get(id)))
+          ) {
+            const turn = (brushTurn ?? Promise.resolve()).then(() =>
+              resolveBrushTextures(wanted)
+            )
+            const settled = turn.catch(() => {})
+            brushTurn = settled
+            try {
+              await turn
+            } finally {
+              if (brushTurn === settled) brushTurn = undefined
+            }
+            if (disposed) return
+          }
           for (const value of [command.opacity, command.flow])
             if (
               value !== undefined &&

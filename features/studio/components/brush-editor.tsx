@@ -9,7 +9,9 @@ import { PressureCurve } from "@/components/ui/pressure-curve"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -33,6 +35,11 @@ import {
   hardnessOf,
   newModulator,
 } from "../lib/brush-draft"
+import {
+  KRITA_TEXTURES,
+  type ShippedTexture,
+  type ShippedTextures,
+} from "../lib/shipped-textures"
 import { BrushPreview } from "./brush-preview"
 import { SliderSetting } from "./slider-setting"
 import { IconButton } from "./icon-button"
@@ -114,6 +121,7 @@ function TextureSelect({
   label,
   value,
   textures,
+  shipped,
   noneLabel,
   onChange,
   onImport,
@@ -121,6 +129,8 @@ function TextureSelect({
   label: string
   value: string | null
   textures: readonly string[]
+  /** The shipped textures of this kind, offered whether loaded yet or not. */
+  shipped: readonly ShippedTexture[]
   noneLabel: string
   onChange(id: string | null): void
   /** Brings a texture in from a file and selects it (24/25). */
@@ -167,6 +177,16 @@ function TextureSelect({
               {id[0].toUpperCase() + id.slice(1)}
             </SelectItem>
           ))}
+          {shipped.length > 0 && (
+            <SelectGroup>
+              <SelectLabel>From Krita</SelectLabel>
+              {shipped.map((texture) => (
+                <SelectItem key={texture.id} value={texture.id}>
+                  {texture.name}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          )}
         </SelectContent>
       </Select>
     </div>
@@ -317,11 +337,18 @@ export function BrushEditor({
   onImportTexture,
   onSave,
   onRevert,
+  shipped = KRITA_TEXTURES,
 }: {
   /** The working brush: what the pen is painting with right now. */
   brush: Brush
   /** Texture ids the engine can resolve, so a brush cannot name a missing one. */
   textures: readonly string[]
+  /**
+   * Textures the engine fetches the first time a brush names one, and so
+   * offered here before it holds them. Listed once each, under their own
+   * names, whether or not one has been loaded into `textures` yet.
+   */
+  shipped?: ShippedTextures
   /** Whether the working brush has moved away from the saved one. */
   edited: boolean
   /** Why keeping the brush failed, if it did. A brush is an hour's work. */
@@ -342,6 +369,7 @@ export function BrushEditor({
   const dynamics = brush.dynamics
   const grain = brush.grain
   const [importProblem, setImportProblem] = useState<string | null>(null)
+  const own = textures.filter((id) => !shipped.has(id))
 
   /**
    * Imports a file and puts the result where it was asked for. The texture is
@@ -413,7 +441,8 @@ export function BrushEditor({
           <TextureSelect
             label="Tip"
             value={brush.shape.tipTextureId ?? null}
-            textures={textures}
+            textures={own}
+            shipped={shipped.ofKind("tip")}
             noneLabel="Round (procedural)"
             onChange={(tipTextureId) => apply({ shape: { tipTextureId } })}
             onImport={
@@ -483,7 +512,8 @@ export function BrushEditor({
           <TextureSelect
             label="Paper"
             value={grain?.textureId ?? null}
-            textures={textures}
+            textures={own}
+            shipped={shipped.ofKind("grain")}
             noneLabel="Smooth (no grain)"
             onImport={
               onImportTexture &&
