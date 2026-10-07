@@ -69,6 +69,8 @@ describe("profile parameters", () => {
       smoothing: 0,
       tremor: 0,
       wiggle: 0,
+      nibAngle: 45,
+      fixation: 1,
     })
   })
 

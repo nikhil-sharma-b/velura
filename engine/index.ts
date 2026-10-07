@@ -3,7 +3,11 @@ import {
   parseVectorBrush,
   type VectorBrush,
 } from "./brush/vector-brush"
-import { applyVectorBrush, createVelocityThinning } from "./doc/vector-brush"
+import {
+  applyVectorBrush,
+  createTiltDirection,
+  createVelocityThinning,
+} from "./doc/vector-brush"
 import {
   selectTipFrame,
   validateTipSelection,
@@ -2841,6 +2845,8 @@ export function createEngine(
         brushSeed?: number
         /** Thins the pressure of a fast hand, as the brush asks. */
         thin?: ReturnType<typeof createVelocityThinning>
+        /** Where the pen leaned, for a nib that follows tilt. */
+        tilt?: ReturnType<typeof createTiltDirection>
         pressurePoints?: PressurePoint[]
         pressureTail?: {
           x: number
@@ -3425,6 +3431,26 @@ export function createEngine(
   }
 
   /**
+   * The pen's mean lean over a stroke, turned from the screen into the
+   * document, so a rotated or flipped view keeps the nib where the hand held
+   * it. A mouse stroke has none, and its nib keeps the brush's fixed angle.
+   */
+  function strokeTilt(drag: NonNullable<typeof shapeDrag>): {
+    tilt?: number
+  } {
+    const angle = drag.tilt?.angle()
+    if (angle === undefined) return {}
+    const x = Math.cos(angle),
+      y = Math.sin(angle)
+    return {
+      tilt: Math.atan2(
+        toDoc[1] * x + toDoc[3] * y,
+        toDoc[0] * x + toDoc[2] * y
+      ),
+    }
+  }
+
+  /**
    * The vector brush's stroke as fitted so far, fed the samples it has not
    * seen. Its width and taper are the ones it began with.
    */
@@ -3515,6 +3541,7 @@ export function createEngine(
             brush: {
               definition: drag.vectorBrush ?? snapshot.vectorBrush,
               seed: drag.brushSeed ?? 0,
+              ...strokeTilt(drag),
             },
           }
         : {}),
@@ -3701,10 +3728,11 @@ export function createEngine(
       x: number,
       y: number,
       pressure: number,
-      _tiltX: number,
-      _tiltY: number,
+      tiltX: number,
+      tiltY: number,
       time: number
     ) => {
+      drag.tilt?.add(tiltX, tiltY)
       if (drag.pressurePoints!.length < 100_000)
         drag.pressurePoints!.push({
           x,
@@ -5239,6 +5267,7 @@ export function createEngine(
           vectorBrush: brush,
           brushSeed: crypto.getRandomValues(new Uint32Array(1))[0],
           thin: createVelocityThinning(brush.params.thinning),
+          tilt: createTiltDirection(),
           pressurePoints: points,
           pressureResampler: path,
           pressureTail: { ...anchor, pressure, tiltX, tiltY, time },

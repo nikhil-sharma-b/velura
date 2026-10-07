@@ -26,12 +26,22 @@ export type ProfileParams = Readonly<{
   tremor: number
   /** Seeded noise along the normal. */
   wiggle: number
+  /**
+   * A calligraphy nib's angle, in degrees from the x axis; profile brushes
+   * ignore it. A calligraphy brush's `minWidth` is the nib's edge.
+   */
+  nibAngle: number
+  /** How far the nib holds its angle (1) rather than following tilt (0). */
+  fixation: number
 }>
+
+/** The kinds this build can draw; the rest are listed in the editor only. */
+export type DrawnVectorBrushKind = "profile" | "calligraphy"
 
 export type VectorBrush = Readonly<{
   id: string
   name: string
-  kind: "profile"
+  kind: DrawnVectorBrushKind
   params: ProfileParams
 }>
 
@@ -47,6 +57,8 @@ const NEUTRAL: Omit<ProfileParams, "pressure" | "taper"> = {
   smoothing: 0,
   tremor: 0,
   wiggle: 0,
+  nibAngle: 45,
+  fixation: 1,
 }
 
 const profile = (
@@ -132,6 +144,45 @@ export const BUILTIN_VECTOR_BRUSHES: readonly VectorBrush[] = [
       tremor: 0.7,
     }),
   },
+  {
+    id: "vector:broad-nib",
+    name: "Broad nib",
+    kind: "calligraphy",
+    params: profile({
+      pressure: false,
+      caps: "flat",
+      minWidth: 0.12,
+      nibAngle: 30,
+      smoothing: 0.3,
+    }),
+  },
+  {
+    id: "vector:italic",
+    name: "Italic",
+    kind: "calligraphy",
+    params: profile({
+      pressure: true,
+      pressureCurve: 0.6,
+      caps: "flat",
+      minWidth: 0.08,
+      nibAngle: 45,
+      taper: { start: 0.05, end: 0.1 },
+      smoothing: 0.4,
+    }),
+  },
+  {
+    id: "vector:pointed-tilt-nib",
+    name: "Pointed tilt nib",
+    kind: "calligraphy",
+    params: profile({
+      pressure: true,
+      caps: "round",
+      minWidth: 0.05,
+      nibAngle: 60,
+      fixation: 0.2,
+      taper: { start: 0.2, end: 0.3 },
+    }),
+  },
 ]
 
 const share = (value: unknown, max = 1): value is number =>
@@ -151,7 +202,7 @@ export function parseVectorBrush(value: unknown): VectorBrush {
     typeof brush.name !== "string" ||
     !brush.name.trim() ||
     brush.name.length > 100 ||
-    brush.kind !== "profile" ||
+    (brush.kind !== "profile" && brush.kind !== "calligraphy") ||
     typeof params.pressure !== "boolean" ||
     !share(params.taper?.start, MAX_TAPER) ||
     !share(params.taper?.end, MAX_TAPER) ||
@@ -164,16 +215,16 @@ export function parseVectorBrush(value: unknown): VectorBrush {
       params.smoothing,
       params.tremor,
       params.wiggle,
+      params.fixation,
     ].every((v) => share(v)) ||
+    !share(params.nibAngle, 180) ||
     !["style", "round", "flat"].includes(params.caps)
   )
-    throw new Error(
-      "A vector brush needs an id, name and valid profile parameters."
-    )
+    throw new Error("A vector brush needs an id, name and valid parameters.")
   return {
     id: brush.id,
     name: brush.name.trim().replace(/\s+/g, " "),
-    kind: "profile",
+    kind: brush.kind,
     params: {
       pressure: params.pressure,
       pressureCurve: params.pressureCurve,
@@ -184,6 +235,8 @@ export function parseVectorBrush(value: unknown): VectorBrush {
       smoothing: params.smoothing,
       tremor: params.tremor,
       wiggle: params.wiggle,
+      nibAngle: params.nibAngle,
+      fixation: params.fixation,
     },
   }
 }

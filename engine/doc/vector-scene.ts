@@ -69,7 +69,11 @@ export type VectorObject = Readonly<{
   transform: Affine
   style: VectorStyle
   /** The recipe used for this stroke, independent of the library entry. */
-  brush?: Readonly<{ definition: VectorBrush; seed: number }>
+  /**
+   * `tilt` is the pen's mean tilt direction while drawing, in radians, kept
+   * for a calligraphy nib to follow; a mouse stroke has none.
+   */
+  brush?: Readonly<{ definition: VectorBrush; seed: number; tilt?: number }>
   /**
    * An eraser's mark rather than a shape: its paint takes coverage away from
    * the objects under it in the stack, and those above are untouched. Its
@@ -215,10 +219,11 @@ export function checkObject(object: VectorObject): void {
       object.geometry.kind !== "path" ||
       !Number.isInteger(object.brush.seed) ||
       object.brush.seed < 0 ||
-      object.brush.seed > 0xffffffff
+      object.brush.seed > 0xffffffff ||
+      (object.brush.tilt !== undefined && !Number.isFinite(object.brush.tilt))
     )
       throw new Error(
-        "A vector brush stroke needs a path and an unsigned jitter seed."
+        "A vector brush stroke needs a path, an unsigned jitter seed and a finite tilt if any."
       )
   }
   checkGeometry(object.geometry)
@@ -267,6 +272,7 @@ export function parseScene(value: unknown): VectorScene {
             brush: {
               definition: parseVectorBrush(brush.definition),
               seed: brush.seed,
+              ...(brush.tilt === undefined ? {} : { tilt: brush.tilt }),
             },
           }
         : {}
