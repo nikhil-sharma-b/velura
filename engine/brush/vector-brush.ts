@@ -4,6 +4,8 @@ import {
   type PathNode,
   type Taper,
 } from "../doc/vector-path"
+import type { Point, VectorObject } from "../doc/vector-scene"
+import { patternOutlines, scatterOutlines } from "./vector-brush-art"
 
 /** How a profile stroke's two ends are finished; "style" keeps the shape style's cap. */
 export type ProfileCap = "style" | "round" | "flat"
@@ -124,22 +126,76 @@ type BrushBase = Readonly<{
   params: ProfileParams
 }>
 
-/** Only a pattern brush has `pattern`, and only a scatter brush `scatter`. */
-export type VectorBrush = BrushBase &
-  Readonly<
-    | { kind: "profile"; pattern?: never; scatter?: never }
-    | { kind: "calligraphy"; pattern?: never; scatter?: never }
-    | { kind: "pattern"; pattern: PatternParams; scatter?: never }
-    | { kind: "scatter"; scatter: ScatterParams; pattern?: never }
-  >
+/**
+ * Each kind's behaviour: its own fields, copied down from a saved brush
+ * (throwing on bad ones), and how it draws art in place of a stroke, null
+ * for a widened spine. A new kind is one entry here and one in the
+ * library's `KINDS`; the brush types follow from it.
+ */
+const VECTOR_BRUSH_KINDS = {
+  profile: { fields: () => ({}), outlines: null },
+  calligraphy: { fields: () => ({}), outlines: null },
+  pattern: {
+    fields: (brush) => ({ pattern: parsePattern(brush.pattern) }),
+    outlines: patternOutlines,
+  },
+  scatter: {
+    fields: (brush) => ({ scatter: parseScatter(brush.scatter) }),
+    outlines: scatterOutlines,
+  },
+} satisfies Record<
+  string,
+  {
+    fields(brush: Record<string, unknown>): object
+    outlines: ((object: VectorObject) => Point[][]) | null
+  }
+>
 
-export type VectorBrushKind = VectorBrush["kind"]
+type Kinds = typeof VECTOR_BRUSH_KINDS
+export type VectorBrushKind = keyof Kinds
+type KindFields<K extends VectorBrushKind> = ReturnType<Kinds[K]["fields"]>
+type FieldName = {
+  [K in VectorBrushKind]: keyof KindFields<K>
+}[VectorBrushKind]
+
+/** Only a pattern brush has `pattern`, and only a scatter brush `scatter`. */
+export type VectorBrush = {
+  [K in VectorBrushKind]: BrushBase &
+    Readonly<
+      { kind: K } & KindFields<K> & {
+          [F in Exclude<FieldName, keyof KindFields<K>>]?: never
+        }
+    >
+}[VectorBrushKind]
+
 /** The kinds that lay art made from a selection along the stroke. */
-export type ArtBrushKind = "pattern" | "scatter"
+export type ArtBrushKind = {
+  [K in VectorBrushKind]: Kinds[K]["outlines"] extends null ? never : K
+}[VectorBrushKind]
 export type ArtBrush<K extends ArtBrushKind = ArtBrushKind> = Extract<
   VectorBrush,
   { kind: K }
 >
+
+export const VECTOR_BRUSH_KIND_NAMES = Object.keys(
+  VECTOR_BRUSH_KINDS
+) as readonly VectorBrushKind[]
+
+export const isArtBrushKind = (kind: VectorBrushKind): kind is ArtBrushKind =>
+  VECTOR_BRUSH_KINDS[kind].outlines !== null
+
+export const ART_BRUSH_KINDS: readonly ArtBrushKind[] =
+  VECTOR_BRUSH_KIND_NAMES.filter(isArtBrushKind)
+
+/**
+ * A brush's art as filled outlines in the object's coordinates, for the
+ * kinds that draw art in place of a stroke; null for the rest.
+ */
+export function brushArtOutlines(object: VectorObject): Point[][] | null {
+  const outlines =
+    object.brush && VECTOR_BRUSH_KINDS[object.brush.definition.kind].outlines
+  return object.style.stroke && outlines ? outlines(object) : null
+}
 
 export const MIN_PRESSURE_CURVE = 0.25
 /** More nodes than any brush's art needs; past it, a selection is too busy to deform live. */
@@ -585,6 +641,24 @@ const share = (value: unknown, max = 1): value is number =>
   value <= max
 
 export function parseVectorBrush(value: unknown): VectorBrush {
+  return parseKind(value, null)
+}
+
+/** `value` read as a brush of `kind`; throws on any other brush. */
+export const parseArtBrush = <K extends ArtBrushKind>(
+  kind: K,
+  value: unknown
+): ArtBrush<K> => parseKind(value, kind)
+
+/**
+ * A saved brush copied down to the fields its kind uses, of `kind` unless
+ * that is null; throws on anything else. The one place the brush union is
+ * put together from a kind's fields, so the one cast.
+ */
+function parseKind<K extends VectorBrushKind>(
+  value: unknown,
+  kind: K | null
+): Extract<VectorBrush, { kind: K }> {
   const brush = value as VectorBrush
   const params = { ...NEUTRAL, ...brush?.params } as ProfileParams
   if (
@@ -595,7 +669,8 @@ export function parseVectorBrush(value: unknown): VectorBrush {
     typeof brush.name !== "string" ||
     !brush.name.trim() ||
     brush.name.length > 100 ||
-    !Object.hasOwn(KIND_FIELDS, brush.kind) ||
+    !Object.hasOwn(VECTOR_BRUSH_KINDS, brush.kind) ||
+    (kind !== null && brush.kind !== kind) ||
     typeof params.pressure !== "boolean" ||
     !share(params.taper?.start, MAX_TAPER) ||
     !share(params.taper?.end, MAX_TAPER) ||
@@ -630,30 +705,9 @@ export function parseVectorBrush(value: unknown): VectorBrush {
       nibAngle: params.nibAngle,
       fixation: params.fixation,
     },
-    ...KIND_FIELDS[brush.kind](brush),
-  } as VectorBrush
-}
-
-/**
- * Each kind's own fields, copied down from a saved brush; throws on bad
- * ones. A new kind is one entry here, one in `ART_OUTLINES` and one in the
- * library's `KINDS`.
- */
-const KIND_FIELDS: {
-  [K in VectorBrushKind]: (
-    brush: Record<string, unknown>
-  ) => Omit<Extract<VectorBrush, { kind: K }>, keyof BrushBase>
-} = {
-  profile: () => ({ kind: "profile" }),
-  calligraphy: () => ({ kind: "calligraphy" }),
-  pattern: (brush) => ({
-    kind: "pattern",
-    pattern: parsePattern(brush.pattern),
-  }),
-  scatter: (brush) => ({
-    kind: "scatter",
-    scatter: parseScatter(brush.scatter),
-  }),
+    kind: brush.kind,
+    ...VECTOR_BRUSH_KINDS[brush.kind].fields(brush),
+  } as Extract<VectorBrush, { kind: K }>
 }
 
 const finite = (...values: unknown[]) =>
