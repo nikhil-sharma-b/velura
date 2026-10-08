@@ -13,8 +13,12 @@ import {
 import {
   BUILTIN_VECTOR_BRUSHES,
   MAX_PRESSURE_CURVE,
+  MAX_SCATTER_SIZE,
+  MAX_SCATTER_SPACING,
+  MIN_SCATTER_SPACING,
   MIN_PRESSURE_CURVE,
   type PatternParams,
+  type ScatterParams,
   type ProfileParams,
   type VectorBrush,
   type VectorBrushKind,
@@ -39,7 +43,7 @@ export function VectorBrushLibrary({
   select,
   apply,
   canApply,
-  makePattern,
+  makeArt,
   close,
 }: {
   library: Library
@@ -48,8 +52,8 @@ export function VectorBrushLibrary({
   select(brush: VectorBrush): void
   apply(brush: VectorBrush): void
   canApply: boolean
-  /** A pattern brush made of the selected objects; throws when it cannot be. */
-  makePattern(): VectorBrush
+  /** A pattern or scatter brush made of the selected objects; throws when it cannot be. */
+  makeArt(kind: "pattern" | "scatter"): VectorBrush
   close(): void
 }) {
   const [editing, setEditing] = useState<VectorBrush | null>(null)
@@ -152,24 +156,27 @@ export function VectorBrushLibrary({
         >
           Duplicate brush
         </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!canApply}
-          onClick={() => {
-            try {
-              edit(makePattern(), null)
-            } catch (error) {
-              toast.error(
-                error instanceof Error
-                  ? error.message
-                  : "Could not make a pattern brush."
-              )
-            }
-          }}
-        >
-          Make pattern brush
-        </Button>
+        {(["pattern", "scatter"] as const).map((kind) => (
+          <Button
+            key={kind}
+            size="sm"
+            variant="outline"
+            disabled={!canApply}
+            onClick={() => {
+              try {
+                edit(makeArt(kind), null)
+              } catch (error) {
+                toast.error(
+                  error instanceof Error
+                    ? error.message
+                    : `Could not make a ${kind} brush.`
+                )
+              }
+            }}
+          >
+            Make {kind} brush
+          </Button>
+        ))}
       </div>
       <Dialog
         open={editing !== null}
@@ -221,7 +228,9 @@ export function VectorBrushLibrary({
                   className="rounded-lg border p-3"
                 >
                   <h3 className="mb-2 text-sm font-medium">{label}</h3>
-                  {kind === "pattern" ? (
+                  {kind === "scatter" ? (
+                    <ScatterSection brush={editing} change={setEditing} />
+                  ) : kind === "pattern" ? (
                     <PatternSection brush={editing} change={setEditing} />
                   ) : kind === "calligraphy" ? (
                     <CalligraphySection brush={editing} change={setEditing} />
@@ -254,7 +263,11 @@ export function VectorBrushLibrary({
 }
 
 /** A one-line summary of what a brush does with the hand. */
-function describe({ kind, params, pattern }: VectorBrush): string {
+function describe({ kind, params, pattern, scatter }: VectorBrush): string {
+  if (kind === "scatter")
+    return scatter?.align
+      ? "Art dropped along the stroke, turned with it"
+      : "Art dropped along the stroke"
   if (kind === "pattern")
     return pattern?.mode === "repeat"
       ? "Art repeated along the stroke"
@@ -491,6 +504,98 @@ function PatternSection({
       <p className="col-span-2 text-xs text-muted-foreground">
         The art is a stroke width tall. &ldquo;Pressure controls width&rdquo; in
         the width profile scales its thickness.
+      </p>
+    </div>
+  )
+}
+
+const SCATTER_SHARES = [
+  ["sizeJitter", "Size jitter"],
+  ["rotationJitter", "Rotation jitter"],
+] as const
+
+function ScatterSection({
+  brush,
+  change,
+}: {
+  brush: VectorBrush
+  change(brush: VectorBrush): void
+}) {
+  const { scatter } = brush
+  if (brush.kind !== "scatter" || !scatter)
+    return (
+      <p className="text-xs text-muted-foreground">
+        Select shapes on a vector layer and choose Make scatter brush to drop
+        copies of them along your strokes.
+      </p>
+    )
+  const set = (patch: Partial<ScatterParams>) =>
+    change({ ...brush, scatter: { ...scatter, ...patch } })
+  return (
+    <div className="grid grid-cols-2 gap-2 text-sm">
+      <label className="flex items-center gap-2">
+        Spacing (%)
+        <Input
+          type="number"
+          aria-label="Scatter spacing"
+          min={MIN_SCATTER_SPACING * 100}
+          max={MAX_SCATTER_SPACING * 100}
+          value={Math.round(scatter.spacing * 100)}
+          onChange={(event) =>
+            set({ spacing: Number(event.target.value) / 100 })
+          }
+        />
+      </label>
+      <label className="flex items-center gap-2">
+        Size (%)
+        <Input
+          type="number"
+          aria-label="Scatter size"
+          min={5}
+          max={MAX_SCATTER_SIZE * 100}
+          value={Math.round(scatter.size * 100)}
+          onChange={(event) => set({ size: Number(event.target.value) / 100 })}
+        />
+      </label>
+      {SCATTER_SHARES.map(([key, label]) => (
+        <label key={key} className="flex items-center gap-2">
+          {label} (%)
+          <Input
+            type="number"
+            aria-label={label}
+            min={0}
+            max={100}
+            value={Math.round(scatter[key] * 100)}
+            onChange={(event) =>
+              set({ [key]: Number(event.target.value) / 100 })
+            }
+          />
+        </label>
+      ))}
+      <label className="flex items-center gap-2">
+        Offset jitter (%)
+        <Input
+          type="number"
+          aria-label="Offset jitter"
+          min={0}
+          max={MAX_SCATTER_SIZE * 100}
+          value={Math.round(scatter.offsetJitter * 100)}
+          onChange={(event) =>
+            set({ offsetJitter: Number(event.target.value) / 100 })
+          }
+        />
+      </label>
+      <label className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={scatter.align}
+          onChange={(event) => set({ align: event.target.checked })}
+        />
+        Align to path
+      </label>
+      <p className="col-span-2 text-xs text-muted-foreground">
+        Spacing, size and offset are shares of the stroke width. &ldquo;Pressure
+        controls width&rdquo; in the width profile scales each copy.
       </p>
     </div>
   )
