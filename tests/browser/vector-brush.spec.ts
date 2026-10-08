@@ -662,6 +662,9 @@ test("a pattern brush's caps are picked from the selection", async ({
   await expect(
     page.getByRole("spinbutton", { name: "Start profile taper" })
   ).toHaveCount(0)
+  // Nor do the sections of kinds a pattern ignores show.
+  for (const name of ["Calligraphy", "Scatter"])
+    await expect(page.getByRole("region", { name })).toHaveCount(0)
   await pattern
     .getByRole("combobox", { name: "Shape 2 role" })
     .selectOption("end")
@@ -669,6 +672,17 @@ test("a pattern brush's caps are picked from the selection", async ({
     pattern.getByRole("combobox", { name: "Shape 2 role" })
   ).toHaveValue("end")
   await page.getByRole("textbox", { name: "Vector brush name" }).fill("Capped")
+  await page.getByRole("button", { name: "Save vector brush" }).click()
+  await expect(picker).toHaveAccessibleName("Choose vector brush: Capped")
+  // Reopened, its kept art can still be reassigned. By key: the picker's
+  // tooltip, up as focus returns to it, covers it.
+  await picker.press("Enter")
+  await page.getByRole("button", { name: "Edit Capped" }).click()
+  const reopened = page.getByRole("region", { name: "Pattern" })
+  const role = reopened.getByRole("combobox", { name: "Shape 2 role" })
+  await expect(role).toHaveValue("end")
+  await role.selectOption("start")
+  await expect(role).toHaveValue("start")
   await page.getByRole("button", { name: "Save vector brush" }).click()
   await expect(picker).toHaveAccessibleName("Choose vector brush: Capped")
   await page.getByRole("button", { name: "Vector brush tool" }).click()
@@ -684,8 +698,8 @@ test("a pattern brush's caps are picked from the selection", async ({
   const svg = await readFile(await download.path(), "utf8")
   const group = svg.match(/<g data-vector-brush="([^"]+)"/)
   const brush = JSON.parse(group![1].replaceAll("&quot;", '"'))
-  expect(brush.definition.pattern.start).toBeNull()
-  expect(brush.definition.pattern.end).not.toBeNull()
+  expect(brush.definition.pattern.start).not.toBeNull()
+  expect(brush.definition.pattern.end).toBeNull()
 })
 
 test("make a scatter brush from a selection and draw with it", async ({

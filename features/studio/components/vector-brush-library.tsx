@@ -27,7 +27,10 @@ import {
   type VectorBrush,
   type VectorBrushKind,
 } from "@/engine/brush/vector-brush"
-import type { PatternSource } from "@/engine/doc/vector-brush"
+import {
+  remakePatternBrush,
+  type PatternSource,
+} from "@/engine/doc/vector-brush"
 import { pathData } from "@/engine/store/export-svg"
 import type {
   VectorBrushLibrary as Library,
@@ -39,8 +42,9 @@ import { VectorBrushToolIcon } from "./brush-icon"
 type SectionProps = {
   brush: VectorBrush
   change(brush: VectorBrush): void
-  /** How the art was made from the selection; null once saved. */
+  /** How the art was assigned from its source shapes; null when it kept none. */
   source: PatternSource | null
+  /** The ids of the shapes the art was made from. */
   shapes: readonly string[]
   remake(source: PatternSource): void
 }
@@ -54,12 +58,7 @@ const KINDS: {
     label: string
     describe(brush: Extract<VectorBrush, { kind: K }>): string
     Section(props: SectionProps): ReactNode
-  } & (K extends ArtBrushKind
-    ? {
-        /** How a fresh brush is made from the selection, if it records it. */
-        madeFrom: PatternSource | null
-      }
-    : unknown)
+  }
 } = {
   profile: {
     label: "Width profile",
@@ -99,7 +98,6 @@ const KINDS: {
         ? "Art repeated along the stroke"
         : "Art stretched along the stroke",
     Section: (props) => <PatternSection {...props} />,
-    madeFrom: {},
   },
   scatter: {
     label: "Scatter",
@@ -108,11 +106,19 @@ const KINDS: {
         ? "Art dropped along the stroke, turned with it"
         : "Art dropped along the stroke",
     Section: (props) => <ScatterSection {...props} />,
-    madeFrom: null,
   },
 }
 
 const ART_KINDS = ["pattern", "scatter"] as const satisfies ArtBrushKind[]
+
+/**
+ * Whether a brush of kind `editing` shows `section`: an art brush shows the
+ * width profile and its own section, ignoring the other kinds'.
+ */
+const shows = (editing: VectorBrushKind, section: VectorBrushKind) =>
+  !(ART_KINDS as readonly VectorBrushKind[]).includes(editing) ||
+  section === "profile" ||
+  section === editing
 
 /** A one-line summary of what a brush does with the hand. */
 const describe = (brush: VectorBrush): string =>
@@ -126,7 +132,6 @@ export function VectorBrushLibrary({
   apply,
   canApply,
   makeArt,
-  selection,
   close,
 }: {
   library: Library
@@ -136,16 +141,10 @@ export function VectorBrushLibrary({
   apply(brush: VectorBrush): void
   canApply: boolean
   /** A pattern or scatter brush made of the selected objects; throws when it cannot be. */
-  makeArt(kind: ArtBrushKind, source?: PatternSource): ArtBrush
-  /** The selected objects' ids, to assign as caps or the axis. */
-  selection: readonly string[]
+  makeArt(kind: ArtBrushKind): ArtBrush
   close(): void
 }) {
   const [editing, setEditing] = useState<VectorBrush | null>(null)
-  /** How the brush being edited was made from the selection, if it was. */
-  const [source, setSource] = useState<PatternSource | null>(null)
-  /** The objects the art was made from, kept while the selection moves on. */
-  const [shapes, setShapes] = useState<readonly string[]>([])
   const [sourceId, setSourceId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   async function work(action: () => Promise<unknown>) {
@@ -162,13 +161,7 @@ export function VectorBrushLibrary({
       setBusy(false)
     }
   }
-  function edit(
-    brush: VectorBrush,
-    id: string | null,
-    from: PatternSource | null = null
-  ) {
-    setSource(from)
-    setShapes(selection)
+  function edit(brush: VectorBrush, id: string | null) {
     setSourceId(id)
     setEditing(structuredClone(brush))
   }
@@ -259,7 +252,7 @@ export function VectorBrushLibrary({
             disabled={!canApply}
             onClick={() => {
               try {
-                edit(makeArt(kind), null, KINDS[kind].madeFrom)
+                edit(makeArt(kind), null)
               } catch (error) {
                 toast.error(
                   error instanceof Error
@@ -316,52 +309,46 @@ export function VectorBrushLibrary({
                   }
                 />
               </label>
-              {Object.entries(KINDS).map(([kind, { label, Section }]) => (
-                <section
-                  key={kind}
-                  aria-label={label}
-                  className="rounded-lg border p-3"
-                >
-                  <h3 className="mb-2 text-sm font-medium">{label}</h3>
-                  <Section
-                    brush={editing}
-                    change={setEditing}
-                    source={source}
-                    shapes={shapes}
-                    remake={(next) => {
-                      if (editing.kind !== "pattern") return
-                      try {
-                        if (
-                          selection.length !== shapes.length ||
-                          selection.some((id) => !shapes.includes(id))
-                        )
-                          throw new Error(
-                            "Reselect the shapes this brush was made from to change its caps or axis."
-                          )
-                        const made = makeArt(
-                          "pattern",
-                          next
-                        ) as ArtBrush<"pattern">
-                        setEditing({
-                          ...editing,
-                          pattern: {
-                            ...made.pattern,
-                            mode: editing.pattern.mode,
-                            corners: editing.pattern.corners,
-                          },
-                        })
-                        setSource(next)
-                      } catch (error) {
-                        toast.error(
-                          error instanceof Error
-                            ? error.message
-                            : "Could not remake the pattern brush."
-                        )
+              {Object.entries(KINDS)
+                .filter(([kind]) =>
+                  shows(editing.kind, kind as VectorBrushKind)
+                )
+                .map(([kind, { label, Section }]) => (
+                  <section
+                    key={kind}
+                    aria-label={label}
+                    className="rounded-lg border p-3"
+                  >
+                    <h3 className="mb-2 text-sm font-medium">{label}</h3>
+                    <Section
+                      brush={editing}
+                      change={setEditing}
+                      source={
+                        editing.kind === "pattern"
+                          ? (editing.pattern.source?.made ?? null)
+                          : null
                       }
-                    }}
-                  />
-                </section>
-              ))}
+                      shapes={
+                        editing.kind === "pattern"
+                          ? (editing.pattern.source?.shapes.map((s) => s.id) ??
+                            [])
+                          : []
+                      }
+                      remake={(next) => {
+                        if (editing.kind !== "pattern") return
+                        try {
+                          setEditing(remakePatternBrush(editing, next))
+                        } catch (error) {
+                          toast.error(
+                            error instanceof Error
+                              ? error.message
+                              : "Could not remake the pattern brush."
+                          )
+                        }
+                      }}
+                    />
+                  </section>
+                ))}
               <Button type="submit" disabled={busy}>
                 {busy ? "Saving…" : "Save vector brush"}
               </Button>

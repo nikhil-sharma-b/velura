@@ -13,6 +13,7 @@ import {
 import {
   makePatternBrush,
   patternOutlines,
+  remakePatternBrush,
 } from "../../engine/doc/vector-brush"
 import type { PathNode } from "../../engine/doc/vector-path"
 import type { VectorObject } from "../../engine/doc/vector-scene"
@@ -483,5 +484,127 @@ describe("pattern brush authoring", () => {
     // The ring's middle is empty; its band is solid.
     expect(windingAt(mesh, 55, 0)).toBe(0)
     expect(windingAt(mesh, 2, 0)).not.toBe(0)
+  })
+
+  test("a saved brush keeps its source art, so caps and axis can be reassigned", () => {
+    const made = makePatternBrush(
+      [rect("s", 0, 0, 10, 20), rect("t", 10, 5, 40, 10)],
+      { start: ["s"] }
+    )
+    const saved = parseVectorBrush(JSON.parse(JSON.stringify(made)))
+    expect(saved).toEqual(made)
+    const art = { ...saved, pattern: { ...saved.pattern!, mode: "repeat" } }
+    const re = remakePatternBrush(art as typeof made, { end: ["s"] })
+    expect(re.pattern.start).toBeNull()
+    expect(re.pattern.end!.length).toBeCloseTo(0.5)
+    expect(re.pattern.tile.length).toBeCloseTo(2)
+    expect(re.pattern.mode).toBe("repeat")
+    expect(re.pattern.source!.made).toEqual({ end: ["s"] })
+    const upright = remakePatternBrush(art as typeof made, {
+      axis: "vertical",
+    })
+    expect(upright.pattern.tile.length).toBeCloseTo(2 / 5)
+  })
+
+  test("a brush without its source art cannot be remade", () => {
+    expect(() =>
+      remakePatternBrush(preset("Rope") as never, { start: [] })
+    ).toThrow()
+  })
+
+  test("a drawn axis may bend, and the art follows it", () => {
+    const path: [number, number][] = [
+      [0, 0],
+      [100, 0],
+      [100, 100],
+    ]
+    // Round joins, so the band is 10 px across even at the corner.
+    const plain = line("band", path, false, 10)
+    const band = {
+      ...plain,
+      style: {
+        ...plain.style,
+        stroke: { ...plain.style.stroke!, join: "round" as const },
+      },
+    }
+    const art = makePatternBrush([band, line("axis", path, false, 1)], {
+      axis: { drawn: "axis" },
+    })
+    const { tile } = art.pattern!
+    // 200 px along the bent axis, 10 px across it.
+    expect(tile.length).toBeCloseTo(20, 0)
+    const b = pieceBounds(tile.paths)
+    expect(b.minY).toBeCloseTo(-0.5, 1)
+    expect(b.maxY).toBeCloseTo(0.5, 1)
+  })
+})
+
+test("art is measured from the nearest part of a hooked axis, not its end's run-on", () => {
+  // Up a little, then round: the first segment's run-on passes the dot.
+  const axis = line(
+    "axis",
+    [
+      [0, 0],
+      [0, -10],
+      [200, -10],
+      [200, 200],
+      [10, 200],
+    ],
+    false,
+    1
+  )
+  const art = makePatternBrush([rect("dot", 3, 148, 4, 4), axis], {
+    axis: { drawn: "axis" },
+  })
+  // 48 to 52 px off the bottom arm, so 104 px tall: a sliver of a tile.
+  // Measured off the run-on it would be 3 to 7 px off, and 14 px tall.
+  expect(art.pattern.tile.length).toBeCloseTo(4 / 104, 2)
+})
+
+describe("stroked art joins", () => {
+  const corner: [number, number][] = [
+    [0, 0],
+    [100, 0],
+    [100, 100],
+  ]
+  const joined = (
+    join: "miter" | "round" | "bevel",
+    points: [number, number][] = corner
+  ) => {
+    const plain = line("l", points)
+    const object = {
+      ...plain,
+      style: { ...plain.style, stroke: { ...plain.style.stroke!, join } },
+    }
+    return makePatternBrush([object]).pattern.source!.shapes[0].paths.flatMap(
+      (p) => p.nodes
+    )
+  }
+  // How far the outline reaches from a corner, near it.
+  const reach = (nodes: PathNode[], x: number, y: number) =>
+    Math.max(
+      ...nodes.map((n) => Math.hypot(n.x - x, n.y - y)).filter((d) => d < 30)
+    )
+
+  test("a miter join reaches the corner of the offset edges", () => {
+    expect(reach(joined("miter"), 100, 0)).toBeCloseTo(Math.hypot(5, 5))
+  })
+
+  test("bevel and round joins stay a half width from the corner", () => {
+    const bevel = joined("bevel")
+    expect(bevel.some((n) => n.x > 100 && n.y < 0)).toBe(false)
+    const round = joined("round")
+    const outer = round.filter((n) => n.x > 100 + 1e-6 && n.y < -1e-6)
+    expect(outer.length).toBeGreaterThan(0)
+    for (const n of outer) expect(Math.hypot(n.x - 100, n.y)).toBeCloseTo(5)
+  })
+
+  test("a miter sharper than the limit bevels, as SVG does", () => {
+    const spike: [number, number][] = [
+      [0, 0],
+      [100, 0],
+      [0, 10],
+    ]
+    expect(reach(joined("miter", spike), 100, 0)).toBeLessThanOrEqual(5.001)
   })
 })
