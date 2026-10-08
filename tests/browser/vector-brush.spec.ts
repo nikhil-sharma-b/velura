@@ -614,6 +614,8 @@ test("make a pattern brush from a selection and draw with it", async ({
 test("a pattern brush's caps are picked from the selection", async ({
   page,
 }) => {
+  // Two shapes, a marquee and a stroke: slow where CI rasterizes in software.
+  test.slow()
   await page.goto("/")
   await expect(page.getByRole("main")).toHaveAttribute(
     "data-engine-status",
@@ -636,7 +638,7 @@ test("a pattern brush's caps are picked from the selection", async ({
   ]) {
     await page.mouse.move(x + x0, y - 10)
     await page.mouse.down()
-    await page.mouse.move(x + x1, y + 10, { steps: 5 })
+    await page.mouse.move(x + x1, y + 10, { steps: 2 })
     await page.mouse.up()
   }
   await page
@@ -645,7 +647,7 @@ test("a pattern brush's caps are picked from the selection", async ({
   // A marquee round both.
   await page.mouse.move(x - 80, y - 40)
   await page.mouse.down()
-  await page.mouse.move(x + 80, y + 40, { steps: 5 })
+  await page.mouse.move(x + 80, y + 40, { steps: 2 })
   await page.mouse.up()
   const picker = page.getByRole("button", { name: /^Choose vector brush/ })
   await picker.click()
