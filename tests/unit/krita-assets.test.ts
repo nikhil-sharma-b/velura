@@ -7,6 +7,7 @@ import {
   shrinkToFit,
   tipFromImage,
 } from "@/tooling/krita-assets/convert"
+import { rasteriseSvg } from "@/tooling/krita-assets/bundle"
 
 describe("a shipped tip", () => {
   test("keeps a greyscale brush's bytes, which already are ink", () => {
@@ -107,5 +108,18 @@ describe("a shipped asset's name", () => {
     expect(assetSlug("03_default-paper.png")).toBe("03-default-paper")
     expect(assetSlug("Cross01.pat")).toBe("cross01")
     expect(assetSlug("leaves-scattered.svg")).toBe("leaves-scattered")
+  })
+})
+
+describe("a shipped SVG tip", () => {
+  test("renders its shape as ink, fitted to the size asked for", () => {
+    // A black square filling the left half of a 4×2 viewBox.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="4" height="2" viewBox="0 0 4 2"><rect width="2" height="2" fill="black"/></svg>`
+    const tip = tipFromImage(rasteriseSvg(new TextEncoder().encode(svg), 8))
+    expect([tip.width, tip.height]).toEqual([8, 4])
+    for (let y = 0; y < 4; y++)
+      expect([...tip.data.subarray(y * 8, y * 8 + 8)]).toEqual([
+        255, 255, 255, 255, 0, 0, 0, 0,
+      ])
   })
 })
