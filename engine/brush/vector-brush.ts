@@ -41,7 +41,11 @@ export type ProfileParams = Readonly<{
 }>
 
 /** The kinds this build can draw; the rest are listed in the editor only. */
-export type DrawnVectorBrushKind = "profile" | "calligraphy" | "pattern"
+export type DrawnVectorBrushKind =
+  | "profile"
+  | "calligraphy"
+  | "pattern"
+  | "scatter"
 
 /** Whether a pattern's tile is drawn once along the stroke, or end to end. */
 export type PatternMode = "stretch" | "repeat"
@@ -69,6 +73,27 @@ export type PatternParams = Readonly<{
   end: PatternPiece | null
 }>
 
+/**
+ * Copies of `art` dropped along the stroke. The art is a pattern piece
+ * centred on each place; lengths are in stroke widths, jitters are shares
+ * of their widest swing, varied per copy by the stroke's seed.
+ */
+export type ScatterParams = Readonly<{
+  art: PatternPiece
+  /** From one copy's centre to the next, along the stroke. */
+  spacing: number
+  /** The art's height. */
+  size: number
+  /** Up to this share smaller or larger. */
+  sizeJitter: number
+  /** Up to this share of a half turn either way. */
+  rotationJitter: number
+  /** Up to this many stroke widths off the spine, either side. */
+  offsetJitter: number
+  /** Turned to follow the stroke, or kept upright. */
+  align: boolean
+}>
+
 export type VectorBrush = Readonly<{
   id: string
   name: string
@@ -76,6 +101,8 @@ export type VectorBrush = Readonly<{
   params: ProfileParams
   /** A pattern brush's art; other kinds have none. */
   pattern?: PatternParams
+  /** A scatter brush's art and placement; other kinds have none. */
+  scatter?: ScatterParams
 }>
 
 export const MIN_PRESSURE_CURVE = 0.25
@@ -84,6 +111,14 @@ export const MAX_PATTERN_NODES = 2000
 /** The longest a piece of art may be, in stroke widths. */
 export const MAX_PATTERN_LENGTH = 1000
 export const MAX_PRESSURE_CURVE = 4
+/** The closest and furthest scatter copies may be spaced, in stroke widths. */
+export const MIN_SCATTER_SPACING = 0.1
+export const MAX_SCATTER_SPACING = 50
+/** The smallest and largest scatter art may be, in stroke widths. */
+export const MIN_SCATTER_SIZE = 0.05
+export const MAX_SCATTER_SIZE = 10
+/** The furthest a scatter copy may jitter off the spine, in stroke widths. */
+export const MAX_SCATTER_OFFSET = 10
 
 /** What a brush saved before profiles had reads as: the plain pressure fit. */
 const NEUTRAL: Omit<ProfileParams, "pressure" | "taper"> = {
@@ -149,6 +184,34 @@ const pattern = (
   start: PatternPiece | null = null,
   end: PatternPiece | null = null
 ): PatternParams => ({ mode, corners, tile, start, end })
+
+/** An outline round `r(θ)` about the middle of a one-tall piece. */
+function polarPiece(
+  count: number,
+  r: (angle: number, i: number) => readonly [number, number]
+): PatternPiece {
+  const points = Array.from({ length: count }, (_, i) =>
+    r((2 * Math.PI * i) / count, i)
+  )
+  const ys = points.map(([, y]) => y),
+    xs = points.map(([x]) => x)
+  const height = Math.max(...ys) - Math.min(...ys)
+  const minX = Math.min(...xs),
+    middle = (Math.max(...ys) + Math.min(...ys)) / 2
+  return {
+    length: (Math.max(...xs) - minX) / height,
+    paths: [
+      outline(
+        points.map(([x, y]) => [(x - minX) / height, (y - middle) / height])
+      ),
+    ],
+  }
+}
+
+const scatter = (
+  art: PatternPiece,
+  params: Omit<ScatterParams, "art">
+): ScatterParams => ({ art, ...params })
 
 export const BUILTIN_VECTOR_BRUSHES: readonly VectorBrush[] = [
   {
@@ -365,6 +428,116 @@ export const BUILTIN_VECTOR_BRUSHES: readonly VectorBrush[] = [
       }
     ),
   },
+  {
+    id: "vector:dots",
+    name: "Dots",
+    kind: "scatter",
+    params: profile({ pressure: true }),
+    scatter: scatter(
+      polarPiece(24, (a) => [Math.cos(a), Math.sin(a)]),
+      {
+        spacing: 1.5,
+        size: 1,
+        sizeJitter: 0,
+        rotationJitter: 0,
+        offsetJitter: 0,
+        align: false,
+      }
+    ),
+  },
+  {
+    id: "vector:stars",
+    name: "Stars",
+    kind: "scatter",
+    params: profile({ pressure: false }),
+    scatter: scatter(
+      polarPiece(10, (a, i) => {
+        const r = i % 2 ? 0.4 : 1
+        return [r * Math.sin(a), -r * Math.cos(a)]
+      }),
+      {
+        spacing: 2,
+        size: 1.4,
+        sizeJitter: 0.4,
+        rotationJitter: 0.2,
+        offsetJitter: 0.6,
+        align: false,
+      }
+    ),
+  },
+  {
+    id: "vector:confetti",
+    name: "Confetti",
+    kind: "scatter",
+    params: profile({ pressure: false }),
+    scatter: scatter(
+      {
+        length: 2,
+        paths: [
+          outline([
+            [0, -0.5],
+            [2, -0.5],
+            [2, 0.5],
+            [0, 0.5],
+          ]),
+        ],
+      },
+      {
+        spacing: 1,
+        size: 0.4,
+        sizeJitter: 0.5,
+        rotationJitter: 1,
+        offsetJitter: 1.5,
+        align: false,
+      }
+    ),
+  },
+  {
+    id: "vector:leaves",
+    name: "Leaves",
+    kind: "scatter",
+    params: profile({ pressure: false }),
+    scatter: scatter(
+      polarPiece(24, (a) => [
+        1.5 * Math.cos(a),
+        0.5 * Math.sin(a) * (1 + Math.cos(a)) * 0.9,
+      ]),
+      {
+        spacing: 1.2,
+        size: 0.8,
+        sizeJitter: 0.3,
+        rotationJitter: 0.25,
+        offsetJitter: 0.3,
+        align: true,
+      }
+    ),
+  },
+  {
+    id: "vector:hearts",
+    name: "Hearts",
+    kind: "scatter",
+    params: profile({ pressure: false }),
+    scatter: scatter(
+      // The classic heart curve, point down.
+      polarPiece(32, (a) => [
+        16 * Math.sin(a) ** 3,
+        -(
+          13 * Math.cos(a) -
+          5 * Math.cos(2 * a) -
+          2 * Math.cos(3 * a) -
+          Math.cos(4 * a)
+        ),
+      ]),
+      {
+        spacing: 1.8,
+        size: 1,
+        sizeJitter: 0.2,
+        rotationJitter: 0.1,
+        offsetJitter: 0,
+        align: false,
+      }
+    ),
+  },
 ]
 
 const share = (value: unknown, max = 1): value is number =>
@@ -384,7 +557,7 @@ export function parseVectorBrush(value: unknown): VectorBrush {
     typeof brush.name !== "string" ||
     !brush.name.trim() ||
     brush.name.length > 100 ||
-    !["profile", "calligraphy", "pattern"].includes(brush.kind) ||
+    !["profile", "calligraphy", "pattern", "scatter"].includes(brush.kind) ||
     typeof params.pressure !== "boolean" ||
     !share(params.taper?.start, MAX_TAPER) ||
     !share(params.taper?.end, MAX_TAPER) ||
@@ -404,6 +577,8 @@ export function parseVectorBrush(value: unknown): VectorBrush {
   )
     throw new Error("A vector brush needs an id, name and valid parameters.")
   const art = brush.kind === "pattern" ? parsePattern(brush.pattern) : null
+  const scattered =
+    brush.kind === "scatter" ? parseScatter(brush.scatter) : null
   return {
     id: brush.id,
     name: brush.name.trim().replace(/\s+/g, " "),
@@ -422,6 +597,7 @@ export function parseVectorBrush(value: unknown): VectorBrush {
       fixation: params.fixation,
     },
     ...(art ? { pattern: art } : {}),
+    ...(scattered ? { scatter: scattered } : {}),
   }
 }
 
@@ -431,6 +607,30 @@ const finite = (...values: unknown[]) =>
 /** A pattern's art, copied down to the fields it uses; throws on anything else. */
 function parsePattern(value: unknown): PatternParams {
   const art = value as PatternParams
+  const piece = pieceParser()
+  try {
+    if (
+      !art ||
+      !["stretch", "repeat"].includes(art.mode) ||
+      !["bend", "split"].includes(art.corners)
+    )
+      throw new Error("bad pattern")
+    return {
+      mode: art.mode,
+      corners: art.corners,
+      tile: piece(art.tile),
+      start: art.start ? piece(art.start) : null,
+      end: art.end ? piece(art.end) : null,
+    }
+  } catch {
+    throw new Error(
+      `A pattern brush needs a tile of at most ${MAX_PATTERN_NODES} nodes, and a stretch or repeat mode.`
+    )
+  }
+}
+
+/** Reads pieces of art, at most `MAX_PATTERN_NODES` nodes between them. */
+function pieceParser() {
   let budget = MAX_PATTERN_NODES
   const point = (p: unknown) => {
     const q = p as { x: number; y: number } | null
@@ -472,23 +672,38 @@ function parsePattern(value: unknown): PatternParams {
       }),
     }
   }
+  return piece
+}
+
+/** A scatter's art and placement, copied down; throws on anything else. */
+function parseScatter(value: unknown): ScatterParams {
+  const params = value as ScatterParams
   try {
     if (
-      !art ||
-      !["stretch", "repeat"].includes(art.mode) ||
-      !["bend", "split"].includes(art.corners)
+      !params ||
+      !finite(params.spacing, params.size) ||
+      !(params.spacing >= MIN_SCATTER_SPACING) ||
+      !(params.spacing <= MAX_SCATTER_SPACING) ||
+      !(params.size >= MIN_SCATTER_SIZE) ||
+      !(params.size <= MAX_SCATTER_SIZE) ||
+      !share(params.sizeJitter) ||
+      !share(params.rotationJitter) ||
+      !share(params.offsetJitter, MAX_SCATTER_OFFSET) ||
+      typeof params.align !== "boolean"
     )
-      throw new Error("bad pattern")
+      throw new Error("bad scatter")
     return {
-      mode: art.mode,
-      corners: art.corners,
-      tile: piece(art.tile),
-      start: art.start ? piece(art.start) : null,
-      end: art.end ? piece(art.end) : null,
+      art: pieceParser()(params.art),
+      spacing: params.spacing,
+      size: params.size,
+      sizeJitter: params.sizeJitter,
+      rotationJitter: params.rotationJitter,
+      offsetJitter: params.offsetJitter,
+      align: params.align,
     }
   } catch {
     throw new Error(
-      `A pattern brush needs a tile of at most ${MAX_PATTERN_NODES} nodes, and a stretch or repeat mode.`
+      `A scatter brush needs art of at most ${MAX_PATTERN_NODES} nodes, and spacing, size and jitter in range.`
     )
   }
 }

@@ -8,6 +8,7 @@ import {
   createTiltDirection,
   createVelocityThinning,
   makePatternBrush,
+  makeScatterBrush,
 } from "./doc/vector-brush"
 import {
   selectTipFrame,
@@ -1303,6 +1304,8 @@ export interface Engine {
   exportSvg(options: SvgExportOptions): Promise<SvgExportResult>
   /** A pattern brush made of the selected vector objects, not yet saved. */
   patternBrushFromSelection(): VectorBrush
+  /** A scatter brush made of the selected vector objects, not yet saved. */
+  scatterBrushFromSelection(): VectorBrush
   /** A real ZIP backup containing the complete layer tree and every exact tile. */
   exportDocument(): Promise<Uint8Array>
   /** Validates a backup in full before replacing the open document. */
@@ -7636,6 +7639,14 @@ export function createEngine(
     patternBrushFromSelection() {
       const layer = selectedVectorLayer()
       return makePatternBrush(
+        layer.scene.objects.filter((o) =>
+          snapshot.vectorSelection.includes(o.id)
+        )
+      )
+    },
+    scatterBrushFromSelection() {
+      const layer = selectedVectorLayer()
+      return makeScatterBrush(
         layer.scene.objects.filter((o) =>
           snapshot.vectorSelection.includes(o.id)
         )

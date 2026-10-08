@@ -18,7 +18,7 @@
  * a point can be hit-tested against an object without drawing it.
  */
 
-import { patternOutlines, vectorBrushObject } from "../doc/vector-brush"
+import { brushArtOutlines, vectorBrushObject } from "../doc/vector-brush"
 import { flattenPath } from "../doc/vector-path"
 import type {
   FillRule,
@@ -444,11 +444,11 @@ export function tessellateObject(
   const shape = outline(object, detail)
   const points = transformed(object.transform, shape.points)
   const { fill, stroke } = object.style
-  // A pattern brush's art takes the place of its stroke, in the stroke's paint.
+  // A pattern or scatter brush's art takes the place of its stroke, in the
+  // stroke's paint.
   const art =
-    stroke && object.brush?.definition.kind === "pattern"
-      ? patternOutlines(object).map((o) => transformed(object.transform, o))
-      : null
+    brushArtOutlines(object)?.map((o) => transformed(object.transform, o)) ??
+    null
   return {
     fill: fill && shape.closed ? tessellateFill([points], fill.rule) : null,
     stroke: art

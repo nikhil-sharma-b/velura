@@ -1632,10 +1632,12 @@ export function CanvasHost({
                               })
                             }}
                             canApply={snapshot.vectorSelection.length > 0}
-                            makePattern={() => {
+                            makeArt={(kind) => {
                               if (!engine)
                                 throw new Error("The canvas is not ready.")
-                              return engine.patternBrushFromSelection()
+                              return kind === "scatter"
+                                ? engine.scatterBrushFromSelection()
+                                : engine.patternBrushFromSelection()
                             }}
                             close={() => setVectorBrushOpen(false)}
                           />

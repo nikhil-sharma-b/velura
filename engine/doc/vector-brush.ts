@@ -2,6 +2,7 @@ import {
   BUILTIN_VECTOR_BRUSHES,
   MAX_PATTERN_LENGTH,
   MAX_PATTERN_NODES,
+  MAX_SCATTER_SPACING,
   parseVectorBrush,
   type PatternPiece,
   type VectorBrush,
@@ -172,6 +173,7 @@ export function vectorBrushObject(object: VectorObject): VectorObject {
   if (
     !object.brush ||
     object.brush.definition.kind === "pattern" ||
+    object.brush.definition.kind === "scatter" ||
     object.geometry.kind !== "path" ||
     !object.style.stroke
   )
@@ -337,12 +339,12 @@ function runSampler({ points, widths, lengths }: Run, full: number) {
       to = lengths[j + 1] - s
     const t = from / (lengths[j + 1] - lengths[j])
     let { x: dx, y: dy } = dirs[j]
-    if (from < reach[j]) {
+    if (j > 0 && from < reach[j]) {
       const k = 0.5 * (1 - from / reach[j])
       dx += k * (dirs[j - 1].x - dirs[j].x)
       dy += k * (dirs[j - 1].y - dirs[j].y)
     }
-    if (to < reach[j + 1]) {
+    if (j + 2 < n && to < reach[j + 1]) {
       const k = 0.5 * (1 - to / reach[j + 1])
       dx += k * (dirs[j + 1].x - dirs[j].x)
       dy += k * (dirs[j + 1].y - dirs[j].y)
@@ -440,6 +442,89 @@ export function patternOutlines(object: VectorObject): Point[][] {
   return out
 }
 
+/** The most copies one scatter stroke drops; past it the rest are left off. */
+const MAX_SCATTER_COPIES = 4000
+
+/**
+ * A scatter brush's copies dropped along the stroke's spine: closed
+ * outlines in the object's coordinates, filled in the stroke's colour.
+ * Copy `i` sits `i` spacings from the start and takes its jitter from the
+ * seed and `i` alone, so editing the spine moves copies but never reshuffles
+ * them.
+ */
+export function scatterOutlines(object: VectorObject): Point[][] {
+  const scatter = object.brush?.definition.scatter
+  const { geometry, style } = object
+  if (!scatter || geometry.kind !== "path" || !style.stroke) return []
+  const full = style.stroke.width
+  const { seed } = object.brush!
+  const runs = spineRuns(
+    geometry,
+    full,
+    object.brush!.definition.params.pressure,
+    false
+  )
+  // Flattened once, about the art's middle, finely enough for its largest copy.
+  const most = scatter.size * (1 + scatter.sizeJitter) * full
+  const shape = scatter.art.paths.map((path) =>
+    flattenPath(path, most).points.map((p) => ({
+      x: p.x - scatter.art.length / 2,
+      y: p.y,
+    }))
+  )
+  const gap = scatter.spacing * full
+  const out: Point[][] = []
+  let i = 0
+  for (const { points, widths, lengths } of runs) {
+    const total = lengths.at(-1)!
+    let j = 0
+    for (let s = 0; s <= total && i < MAX_SCATTER_COPIES; s += gap, i++) {
+      while (j < points.length - 2 && lengths[j + 1] <= s) j++
+      const a = points[j],
+        b = points[j + 1]
+      const span = lengths[j + 1] - lengths[j]
+      const t = (s - lengths[j]) / span
+      const dx = (b.x - a.x) / span,
+        dy = (b.y - a.y) / span
+      const width = widths[j] + (widths[j + 1] - widths[j]) * t
+      const size =
+        scatter.size * width * (1 + scatter.sizeJitter * lattice(seed, 2, i))
+      const angle =
+        (scatter.align ? Math.atan2(dy, dx) : 0) +
+        scatter.rotationJitter * Math.PI * lattice(seed, 3, i)
+      const off = scatter.offsetJitter * full * lattice(seed, 4, i)
+      const cx = a.x + (b.x - a.x) * t - dy * off,
+        cy = a.y + (b.y - a.y) * t + dx * off
+      const cos = Math.cos(angle) * size,
+        sin = Math.sin(angle) * size
+      for (const outline of shape)
+        out.push(
+          outline.map((p) => ({
+            x: cx + p.x * cos - p.y * sin,
+            y: cy + p.x * sin + p.y * cos,
+          }))
+        )
+    }
+  }
+  return out
+}
+
+/**
+ * A brush's art as filled outlines in the object's coordinates, for the
+ * kinds that draw art in place of a stroke; null for the rest.
+ */
+export function brushArtOutlines(object: VectorObject): Point[][] | null {
+  if (!object.style.stroke) return null
+  switch (object.brush?.definition.kind) {
+    case "pattern":
+      return patternOutlines(object)
+    case "scatter":
+      return scatterOutlines(object)
+    default:
+      return null
+  }
+}
+
 /** Bézier circle handles: a quarter turn's handles are this share of the radius. */
 const KAPPA = 0.5522847498
 
@@ -506,22 +591,22 @@ function placedOutline(object: VectorObject): BezierPath {
 }
 
 /**
- * A pattern brush made of `objects`: their outlines laid on a horizontal
- * spine axis through the middle of their bounds, from its left edge, and
- * scaled so their height is one stroke width.
+ * `objects`' outlines laid on a horizontal axis through the middle of their
+ * bounds, from its left edge, scaled so their height is one stroke width.
  */
-export function makePatternBrush(
-  objects: readonly VectorObject[]
-): VectorBrush {
+function selectionArt(
+  objects: readonly VectorObject[],
+  what: string
+): PatternPiece {
   const paths = objects
     .filter((o) => !o.erase)
     .map(placedOutline)
     .filter((p) => p.nodes.length >= 2)
   if (!paths.length)
-    throw new Error("Select the shapes to make a pattern brush from.")
+    throw new Error(`Select the shapes to make a ${what} brush from.`)
   if (paths.reduce((sum, p) => sum + p.nodes.length, 0) > MAX_PATTERN_NODES)
     throw new Error(
-      `A pattern brush's art may have at most ${MAX_PATTERN_NODES} nodes.`
+      `A ${what} brush's art may have at most ${MAX_PATTERN_NODES} nodes.`
     )
   let minX = Infinity,
     minY = Infinity,
@@ -536,38 +621,73 @@ export function makePatternBrush(
     }
   const height = maxY - minY
   if (!(height > 1e-6))
-    throw new Error("A pattern brush's art needs some height.")
+    throw new Error(`A ${what} brush's art needs some height.`)
   if ((maxX - minX) / height > MAX_PATTERN_LENGTH)
     throw new Error(
-      `A pattern brush's art may be at most ${MAX_PATTERN_LENGTH} times as long as it is tall.`
+      `A ${what} brush's art may be at most ${MAX_PATTERN_LENGTH} times as long as it is tall.`
     )
   const middle = minY + height / 2
   const unit = (p: Point): Point => ({
     x: (p.x - minX) / height,
     y: (p.y - middle) / height,
   })
+  return {
+    length: Math.max(0.01, (maxX - minX) / height),
+    paths: paths.map((p) => ({
+      ...p,
+      nodes: p.nodes.map((n) => ({
+        ...unit(n),
+        in: n.in && unit(n.in),
+        out: n.out && unit(n.out),
+        type: n.type,
+      })),
+    })),
+  }
+}
+
+const solidParams = () =>
+  BUILTIN_VECTOR_BRUSHES.find((b) => b.id === "vector:solid")!.params
+
+/** A pattern brush made of `objects`, stretched once along the stroke. */
+export function makePatternBrush(
+  objects: readonly VectorObject[]
+): VectorBrush {
   return parseVectorBrush({
     id: "pattern",
     name: "Pattern brush",
     kind: "pattern",
-    params: BUILTIN_VECTOR_BRUSHES.find((b) => b.id === "vector:solid")!.params,
+    params: solidParams(),
     pattern: {
       mode: "stretch",
       corners: "bend",
-      tile: {
-        length: Math.max(0.01, (maxX - minX) / height),
-        paths: paths.map((p) => ({
-          ...p,
-          nodes: p.nodes.map((n) => ({
-            ...unit(n),
-            in: n.in && unit(n.in),
-            out: n.out && unit(n.out),
-            type: n.type,
-          })),
-        })),
-      },
+      tile: selectionArt(objects, "pattern"),
       start: null,
       end: null,
+    },
+  })
+}
+
+/**
+ * A scatter brush made of `objects`, a stroke width tall, upright and
+ * evenly spaced until its jitters are turned up.
+ */
+export function makeScatterBrush(
+  objects: readonly VectorObject[]
+): VectorBrush {
+  const art = selectionArt(objects, "scatter")
+  return parseVectorBrush({
+    id: "scatter",
+    name: "Scatter brush",
+    kind: "scatter",
+    params: solidParams(),
+    scatter: {
+      art,
+      spacing: Math.min(MAX_SCATTER_SPACING, Math.max(1, art.length * 1.25)),
+      size: 1,
+      sizeJitter: 0,
+      rotationJitter: 0,
+      offsetJitter: 0,
+      align: false,
     },
   })
 }
