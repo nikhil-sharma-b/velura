@@ -4,9 +4,9 @@
  *   bun run tooling/krita-assets.ts [--bundle path/to/Krita_4_Default_Resources.bundle]
  *
  * Reads Krita's Krita 4 default resource bundle — licensed CC0 in its own
- * `meta.xml` — and writes every tip and paper in it as a single-channel PNG
- * under `public/brushes/krita/`, with the manifest the studio lists them from
- * at `features/studio/lib/krita-textures.json`. Without `--bundle` it fetches
+ * `meta.xml` — and writes every tip and paper in it as a single-channel PNG,
+ * rasterising the SVG tips, under `public/brushes/krita/`, with the manifest
+ * the studio lists them from at `features/studio/lib/krita-textures.json`. Without `--bundle` it fetches
  * the bundle at the pinned commit below, so a re-run writes the same bytes.
  *
  * Only assets cross over. No Krita code is used: the files are read by
@@ -41,6 +41,7 @@ import {
   bundleBytes,
   COMMIT,
   readPng,
+  rasteriseSvg,
   REPOSITORY,
   unzip,
 } from "./krita-assets/bundle"
@@ -142,7 +143,15 @@ function write(files: string) {
         )
       } else if (file.endsWith(".png"))
         add(file, "tip", [fit(tipFromImage(readPng(read("brushes", file))))])
-      else skipped.push(`${file}: not a raster tip`)
+      else if (file.endsWith(".svg"))
+        add(file, "tip", [
+          fit(
+            tipFromImage(
+              rasteriseSvg(read("brushes", file), MAX_TEXTURE_DIMENSION)
+            )
+          ),
+        ])
+      else skipped.push(`${file}: not a tip`)
     } catch (error) {
       skipped.push(`${file}: ${(error as Error).message}`)
     }

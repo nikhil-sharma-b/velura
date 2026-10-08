@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process"
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { Resvg } from "@resvg/resvg-js"
 import { PNG } from "pngjs"
 
 import type { SourceImage } from "./convert"
@@ -46,5 +47,25 @@ export function readPng(bytes: Uint8Array): SourceImage {
     height: png.height,
     channels: 4,
     pixels: new Uint8Array(png.data),
+  }
+}
+
+/**
+ * Rasterises an SVG tip with its longest side at `size` pixels. Text is not
+ * drawn, so no system font can change the bytes.
+ */
+export function rasteriseSvg(bytes: Uint8Array, size: number): SourceImage {
+  const svg = Buffer.from(bytes)
+  const font = { loadSystemFonts: false }
+  const { width, height } = new Resvg(svg, { font })
+  const image = new Resvg(svg, {
+    font,
+    fitTo: { mode: width >= height ? "width" : "height", value: size },
+  }).render()
+  return {
+    width: image.width,
+    height: image.height,
+    channels: 4,
+    pixels: new Uint8Array(image.pixels),
   }
 }

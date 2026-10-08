@@ -117,6 +117,15 @@
       "source": "brushes/bristles_circle_sparse.png"
     },
     {
+      "id": "krita:bristles-circle-variable",
+      "name": "Bristles circle variable",
+      "kind": "tip",
+      "files": [
+        "tips/bristles-circle-variable.png"
+      ],
+      "source": "brushes/bristles_circle_variable.svg"
+    },
+    {
       "id": "krita:bristles-grouped",
       "name": "Bristles grouped",
       "kind": "tip",
@@ -382,6 +391,15 @@
       ],
       "source": "brushes/impressionism_brush.gih",
       "selection": "incremental"
+    },
+    {
+      "id": "krita:leaves-scattered",
+      "name": "Leaves scattered",
+      "kind": "tip",
+      "files": [
+        "tips/leaves-scattered.png"
+      ],
+      "source": "brushes/leaves-scattered.svg"
     },
     {
       "id": "krita:leaves",
@@ -824,6 +842,15 @@
         "tips/starfield.png"
       ],
       "source": "brushes/starfield.png"
+    },
+    {
+      "id": "krita:triangle",
+      "name": "Triangle",
+      "kind": "tip",
+      "files": [
+        "tips/triangle.png"
+      ],
+      "source": "brushes/triangle.svg"
     },
     {
       "id": "krita:vegetal",
