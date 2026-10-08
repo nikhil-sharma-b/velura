@@ -453,9 +453,9 @@ const MAX_SCATTER_COPIES = 4000
  * them.
  */
 export function scatterOutlines(object: VectorObject): Point[][] {
-  const art = object.brush?.definition.scatter
+  const scatter = object.brush?.definition.scatter
   const { geometry, style } = object
-  if (!art || geometry.kind !== "path" || !style.stroke) return []
+  if (!scatter || geometry.kind !== "path" || !style.stroke) return []
   const full = style.stroke.width
   const { seed } = object.brush!
   const runs = spineRuns(
@@ -465,14 +465,14 @@ export function scatterOutlines(object: VectorObject): Point[][] {
     false
   )
   // Flattened once, about the art's middle, finely enough for its largest copy.
-  const most = art.size * (1 + art.sizeJitter) * full
-  const shape = art.art.paths.map((path) =>
+  const most = scatter.size * (1 + scatter.sizeJitter) * full
+  const shape = scatter.art.paths.map((path) =>
     flattenPath(path, most).points.map((p) => ({
-      x: p.x - art.art.length / 2,
+      x: p.x - scatter.art.length / 2,
       y: p.y,
     }))
   )
-  const gap = art.spacing * full
+  const gap = scatter.spacing * full
   const out: Point[][] = []
   let i = 0
   for (const { points, widths, lengths } of runs) {
@@ -487,11 +487,12 @@ export function scatterOutlines(object: VectorObject): Point[][] {
       const dx = (b.x - a.x) / span,
         dy = (b.y - a.y) / span
       const width = widths[j] + (widths[j + 1] - widths[j]) * t
-      const size = art.size * width * (1 + art.sizeJitter * lattice(seed, 2, i))
+      const size =
+        scatter.size * width * (1 + scatter.sizeJitter * lattice(seed, 2, i))
       const angle =
-        (art.align ? Math.atan2(dy, dx) : 0) +
-        art.rotationJitter * Math.PI * lattice(seed, 3, i)
-      const off = art.offsetJitter * full * lattice(seed, 4, i)
+        (scatter.align ? Math.atan2(dy, dx) : 0) +
+        scatter.rotationJitter * Math.PI * lattice(seed, 3, i)
+      const off = scatter.offsetJitter * full * lattice(seed, 4, i)
       const cx = a.x + (b.x - a.x) * t - dy * off,
         cy = a.y + (b.y - a.y) * t + dx * off
       const cos = Math.cos(angle) * size,
@@ -644,7 +645,7 @@ function selectionArt(
   }
 }
 
-const SOLID = () =>
+const solidParams = () =>
   BUILTIN_VECTOR_BRUSHES.find((b) => b.id === "vector:solid")!.params
 
 /** A pattern brush made of `objects`, stretched once along the stroke. */
@@ -655,7 +656,7 @@ export function makePatternBrush(
     id: "pattern",
     name: "Pattern brush",
     kind: "pattern",
-    params: SOLID(),
+    params: solidParams(),
     pattern: {
       mode: "stretch",
       corners: "bend",
@@ -678,7 +679,7 @@ export function makeScatterBrush(
     id: "scatter",
     name: "Scatter brush",
     kind: "scatter",
-    params: SOLID(),
+    params: solidParams(),
     scatter: {
       art,
       spacing: Math.min(MAX_SCATTER_SPACING, Math.max(1, art.length * 1.25)),

@@ -114,8 +114,11 @@ export const MAX_PRESSURE_CURVE = 4
 /** The closest and furthest scatter copies may be spaced, in stroke widths. */
 export const MIN_SCATTER_SPACING = 0.1
 export const MAX_SCATTER_SPACING = 50
-/** The largest scatter art may be, in stroke widths. */
+/** The smallest and largest scatter art may be, in stroke widths. */
+export const MIN_SCATTER_SIZE = 0.05
 export const MAX_SCATTER_SIZE = 10
+/** The furthest a scatter copy may jitter off the spine, in stroke widths. */
+export const MAX_SCATTER_OFFSET = 10
 
 /** What a brush saved before profiles had reads as: the plain pressure fit. */
 const NEUTRAL: Omit<ProfileParams, "pressure" | "taper"> = {
@@ -183,7 +186,7 @@ const pattern = (
 ): PatternParams => ({ mode, corners, tile, start, end })
 
 /** An outline round `r(θ)` about the middle of a one-tall piece. */
-function round(
+function polarPiece(
   count: number,
   r: (angle: number, i: number) => readonly [number, number]
 ): PatternPiece {
@@ -431,7 +434,7 @@ export const BUILTIN_VECTOR_BRUSHES: readonly VectorBrush[] = [
     kind: "scatter",
     params: profile({ pressure: true }),
     scatter: scatter(
-      round(24, (a) => [Math.cos(a), Math.sin(a)]),
+      polarPiece(24, (a) => [Math.cos(a), Math.sin(a)]),
       {
         spacing: 1.5,
         size: 1,
@@ -448,7 +451,7 @@ export const BUILTIN_VECTOR_BRUSHES: readonly VectorBrush[] = [
     kind: "scatter",
     params: profile({ pressure: false }),
     scatter: scatter(
-      round(10, (a, i) => {
+      polarPiece(10, (a, i) => {
         const r = i % 2 ? 0.4 : 1
         return [r * Math.sin(a), -r * Math.cos(a)]
       }),
@@ -495,7 +498,7 @@ export const BUILTIN_VECTOR_BRUSHES: readonly VectorBrush[] = [
     kind: "scatter",
     params: profile({ pressure: false }),
     scatter: scatter(
-      round(24, (a) => [
+      polarPiece(24, (a) => [
         1.5 * Math.cos(a),
         0.5 * Math.sin(a) * (1 + Math.cos(a)) * 0.9,
       ]),
@@ -516,7 +519,7 @@ export const BUILTIN_VECTOR_BRUSHES: readonly VectorBrush[] = [
     params: profile({ pressure: false }),
     scatter: scatter(
       // The classic heart curve, point down.
-      round(32, (a) => [
+      polarPiece(32, (a) => [
         16 * Math.sin(a) ** 3,
         -(
           13 * Math.cos(a) -
@@ -681,11 +684,11 @@ function parseScatter(value: unknown): ScatterParams {
       !finite(params.spacing, params.size) ||
       !(params.spacing >= MIN_SCATTER_SPACING) ||
       !(params.spacing <= MAX_SCATTER_SPACING) ||
-      !(params.size > 0) ||
+      !(params.size >= MIN_SCATTER_SIZE) ||
       !(params.size <= MAX_SCATTER_SIZE) ||
       !share(params.sizeJitter) ||
       !share(params.rotationJitter) ||
-      !share(params.offsetJitter, MAX_SCATTER_SIZE) ||
+      !share(params.offsetJitter, MAX_SCATTER_OFFSET) ||
       typeof params.align !== "boolean"
     )
       throw new Error("bad scatter")

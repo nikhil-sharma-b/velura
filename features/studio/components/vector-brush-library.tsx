@@ -13,7 +13,9 @@ import {
 import {
   BUILTIN_VECTOR_BRUSHES,
   MAX_PRESSURE_CURVE,
+  MAX_SCATTER_OFFSET,
   MAX_SCATTER_SIZE,
+  MIN_SCATTER_SIZE,
   MAX_SCATTER_SPACING,
   MIN_SCATTER_SPACING,
   MIN_PRESSURE_CURVE,
@@ -551,7 +553,7 @@ function ScatterSection({
         <Input
           type="number"
           aria-label="Scatter size"
-          min={5}
+          min={MIN_SCATTER_SIZE * 100}
           max={MAX_SCATTER_SIZE * 100}
           value={Math.round(scatter.size * 100)}
           onChange={(event) => set({ size: Number(event.target.value) / 100 })}
@@ -578,7 +580,7 @@ function ScatterSection({
           type="number"
           aria-label="Offset jitter"
           min={0}
-          max={MAX_SCATTER_SIZE * 100}
+          max={MAX_SCATTER_OFFSET * 100}
           value={Math.round(scatter.offsetJitter * 100)}
           onChange={(event) =>
             set({ offsetJitter: Number(event.target.value) / 100 })
@@ -594,8 +596,9 @@ function ScatterSection({
         Align to path
       </label>
       <p className="col-span-2 text-xs text-muted-foreground">
-        Spacing, size and offset are shares of the stroke width. &ldquo;Pressure
-        controls width&rdquo; in the width profile scales each copy.
+        Spacing, size and offset are shares of the stroke width; rotation jitter
+        is a share of a half turn either way. &ldquo;Pressure controls
+        width&rdquo; in the width profile scales each copy.
       </p>
     </div>
   )
