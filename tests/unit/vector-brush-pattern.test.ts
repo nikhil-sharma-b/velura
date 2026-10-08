@@ -16,7 +16,7 @@ import {
 } from "../../engine/doc/vector-brush"
 import type { PathNode } from "../../engine/doc/vector-path"
 import type { VectorObject } from "../../engine/doc/vector-scene"
-import { tessellateObject } from "../../engine/geom/tessellate"
+import { tessellateObject, windingAt } from "../../engine/geom/tessellate"
 import { serializeSvg } from "../../engine/store/export-svg"
 
 const preset = (name: string): VectorBrush =>
@@ -307,5 +307,181 @@ describe("pattern brushes", () => {
     expect(brushData.definition.pattern.mode).toBe("repeat")
     expect(group![2]).toBe("M0 0 L100 0")
     expect(group![3].match(/<path /g)).toHaveLength(10)
+  })
+})
+
+const rect = (
+  id: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): VectorObject => ({
+  id,
+  transform: [1, 0, 0, 1, 0, 0],
+  geometry: { kind: "rect", x, y, width, height },
+  style: { fill: null, stroke: null },
+})
+
+const line = (
+  id: string,
+  points: [number, number][],
+  closed = false,
+  width = 10
+): VectorObject => ({
+  id,
+  transform: [1, 0, 0, 1, 0, 0],
+  geometry: {
+    kind: "path",
+    closed,
+    nodes: points.map(([x, y]) => ({
+      x,
+      y,
+      in: null,
+      out: null,
+      type: "cusp" as const,
+    })),
+  },
+  style: {
+    fill: null,
+    stroke: {
+      color: "#000000",
+      opacity: 1,
+      width,
+      cap: "butt",
+      join: "miter",
+    },
+  },
+})
+
+const pieceBounds = (paths: readonly { nodes: readonly PathNode[] }[]) => {
+  const xs = paths.flatMap((p) => p.nodes.map((n) => n.x))
+  const ys = paths.flatMap((p) => p.nodes.map((n) => n.y))
+  return {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys),
+  }
+}
+
+describe("pattern brush authoring", () => {
+  test("selected objects become start and end caps a shared stroke wide", () => {
+    const art = makePatternBrush(
+      [
+        rect("s", 0, 0, 10, 20),
+        rect("t", 10, 5, 40, 10),
+        rect("e", 50, 0, 20, 20),
+      ],
+      { start: ["s"], end: ["e"] }
+    )
+    expect(parseVectorBrush(art)).toEqual(art)
+    const { tile, start, end } = art.pattern!
+    // All three share the selection's 20 px height as one stroke width.
+    expect(start!.length).toBeCloseTo(0.5)
+    expect(tile.length).toBeCloseTo(2)
+    expect(end!.length).toBeCloseTo(1)
+    expect(pieceBounds(tile.paths).minX).toBeCloseTo(0)
+    expect(pieceBounds(tile.paths).minY).toBeCloseTo(-0.25)
+    expect(pieceBounds(end!.paths).minX).toBeCloseTo(0)
+    expect(pieceBounds(end!.paths).minY).toBeCloseTo(-0.5)
+  })
+
+  test("a selection that is all caps has no tile to make", () => {
+    expect(() =>
+      makePatternBrush([rect("s", 0, 0, 10, 10)], { start: ["s"] })
+    ).toThrow()
+  })
+
+  test("a vertical axis runs the art top to bottom", () => {
+    const art = makePatternBrush([rect("a", 0, 0, 10, 60)], {
+      axis: "vertical",
+    })
+    expect(art.pattern!.tile.length).toBeCloseTo(6)
+    const b = pieceBounds(art.pattern!.tile.paths)
+    expect(b.minX).toBeCloseTo(0)
+    expect(b.maxX).toBeCloseTo(6)
+    expect(b.minY).toBeCloseTo(-0.5)
+    expect(b.maxY).toBeCloseTo(0.5)
+  })
+
+  test("a drawn axis line sets the spine and is left out of the art", () => {
+    // A 60 by 10 bar turned 90°, with an axis drawn down its middle.
+    const art = makePatternBrush(
+      [
+        rect("a", 0, 0, 10, 60),
+        line(
+          "axis",
+          [
+            [5, 0],
+            [5, 60],
+          ],
+          false,
+          1
+        ),
+      ],
+      { axis: { drawn: "axis" } }
+    )
+    const { tile } = art.pattern!
+    expect(tile.paths).toHaveLength(1)
+    expect(tile.length).toBeCloseTo(6)
+    const b = pieceBounds(tile.paths)
+    expect(b.minY).toBeCloseTo(-0.5)
+    expect(b.maxY).toBeCloseTo(0.5)
+  })
+
+  test("a drawn axis must be one of the selected open paths", () => {
+    expect(() =>
+      makePatternBrush([rect("a", 0, 0, 10, 60)], { axis: { drawn: "a" } })
+    ).toThrow()
+  })
+
+  test("an open stroked path keeps its line as outlined art", () => {
+    const art = makePatternBrush([
+      line("l", [
+        [0, 0],
+        [100, 0],
+      ]),
+    ])
+    const { tile } = art.pattern!
+    expect(tile.length).toBeCloseTo(10)
+    expect(tile.paths).toHaveLength(1)
+    expect(tile.paths[0].closed).toBe(true)
+    const b = pieceBounds(tile.paths)
+    expect(b.minY).toBeCloseTo(-0.5)
+    expect(b.maxY).toBeCloseTo(0.5)
+  })
+
+  test("a closed stroke-only shape keeps a ring, not a filled disc", () => {
+    const art = makePatternBrush([
+      line(
+        "r",
+        [
+          [0, 0],
+          [100, 0],
+          [100, 100],
+          [0, 100],
+        ],
+        true
+      ),
+    ])
+    const { tile } = art.pattern!
+    expect(tile.paths).toHaveLength(2)
+    const object: VectorObject = {
+      ...stroke(art),
+      geometry: {
+        kind: "path",
+        closed: false,
+        nodes: [node(0, 0, 100), node(110, 0, 100)],
+      },
+      style: {
+        fill: null,
+        stroke: { ...stroke(art).style.stroke!, width: 100 },
+      },
+    }
+    const mesh = tessellateObject(object).stroke!
+    // The ring's middle is empty; its band is solid.
+    expect(windingAt(mesh, 55, 0)).toBe(0)
+    expect(windingAt(mesh, 2, 0)).not.toBe(0)
   })
 })
