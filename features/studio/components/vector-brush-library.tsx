@@ -19,6 +19,9 @@ import {
   MAX_SCATTER_SPACING,
   MIN_SCATTER_SPACING,
   MIN_PRESSURE_CURVE,
+  VECTOR_BRUSH_KIND_NAMES,
+  ART_BRUSH_KINDS,
+  isArtBrushKind,
   type ArtBrush,
   type ArtBrushKind,
   type PatternParams,
@@ -109,16 +112,12 @@ const KINDS: {
   },
 }
 
-const ART_KINDS = ["pattern", "scatter"] as const satisfies ArtBrushKind[]
-
 /**
  * Whether a brush of kind `editing` shows `section`: an art brush shows the
  * width profile and its own section, ignoring the other kinds'.
  */
 const shows = (editing: VectorBrushKind, section: VectorBrushKind) =>
-  !(ART_KINDS as readonly VectorBrushKind[]).includes(editing) ||
-  section === "profile" ||
-  section === editing
+  !isArtBrushKind(editing) || section === "profile" || section === editing
 
 /** A one-line summary of what a brush does with the hand. */
 const describe = (brush: VectorBrush): string =>
@@ -244,7 +243,7 @@ export function VectorBrushLibrary({
         >
           Duplicate brush
         </Button>
-        {ART_KINDS.map((kind) => (
+        {ART_BRUSH_KINDS.map((kind) => (
           <Button
             key={kind}
             size="sm"
@@ -309,10 +308,10 @@ export function VectorBrushLibrary({
                   }
                 />
               </label>
-              {Object.entries(KINDS)
-                .filter(([kind]) =>
-                  shows(editing.kind, kind as VectorBrushKind)
-                )
+              {VECTOR_BRUSH_KIND_NAMES.filter((kind) =>
+                shows(editing.kind, kind)
+              )
+                .map((kind) => [kind, KINDS[kind]] as const)
                 .map(([kind, { label, Section }]) => (
                   <section
                     key={kind}
