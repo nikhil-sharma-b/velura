@@ -191,6 +191,7 @@ Velura performance benchmark (D30)
   gpu         ${gpu}
   display     ${environment.refreshHz ?? "not measured"} Hz
   canvas      ${paced.canvas.width} x ${paced.canvas.height}
+  window      ${run.workload.viewport ? `${run.workload.viewport.width} x ${run.workload.viewport.height}` : "document-sized"}
   workload    ${run.workload.strokes} strokes, ${run.workload.samples} pen samples at ${run.workload.sampleRateHz} Hz
   stamps      ${paced.report.stamps.total} dabs paced, ${unpaced.report.stamps.total} unpaced
 
@@ -244,6 +245,8 @@ async function sweep(): Promise<void> {
   for (const size of SWEEP_SIZES) {
     const measured = await measure(pass, {
       ...BENCHMARK_WORKLOAD,
+      // A claim about the document's size, so the window grows with it.
+      viewport: undefined,
       width: size,
       height: size,
       strokes: SWEEP_STROKES,
@@ -283,6 +286,8 @@ async function layerSweep(): Promise<void> {
   for (const layers of LAYER_COUNTS) {
     const { report } = await measure(pass, {
       ...BENCHMARK_WORKLOAD,
+      // As the size ladder: the window is the document, as it was recorded.
+      viewport: undefined,
       width: LAYER_SWEEP_SIZE,
       height: LAYER_SWEEP_SIZE,
       strokes: SWEEP_STROKES,
@@ -549,14 +554,23 @@ function compare(run: BenchRun): void {
   } catch {
     return
   }
-  const machine = (entry: BenchRun) =>
-    JSON.stringify(entry.passes?.paced?.environment?.adapter)
+  // The same adapter painting through the same window: a run through a
+  // document-sized window measures a different frame from one through a
+  // screen-sized one.
+  const comparable = (entry: BenchRun) =>
+    JSON.stringify([
+      entry.passes?.paced?.environment?.adapter,
+      entry.workload.viewport ?? null,
+      !!entry.workload.colourDynamics,
+    ])
   const previous = history
     .slice(0, -1)
     .reverse()
-    .find((entry) => machine(entry) === machine(run))
+    .find((entry) => comparable(entry) === comparable(run))
   if (!previous) {
-    console.log("  No earlier run on this machine to compare against.\n")
+    console.log(
+      "  No earlier run on this machine and window to compare against.\n"
+    )
     return
   }
   const delta = (now: number, before: number, places = 2) =>

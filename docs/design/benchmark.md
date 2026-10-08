@@ -384,3 +384,50 @@ depth implementation measured 62.6 ms median latency; bounding the pass and
 halving the depth attachment removed that regression. The history retains
 that isolated intermediate run as well as the baseline and final run; the run
 made concurrently with browser tests is excluded from history.
+
+## D30 re-run: a screen-sized window (brush-library 14)
+
+The view transform (sharp-zoom 01) made the screen compositor window-sized,
+but the benchmark still dispatched an 8192² `resize` — the *window* — so every
+frame still presented 67 M pixels: the §1 cost, measured on purpose. The
+workload now paints the 8192² document through a 2560 × 1440 window with the
+view fitted (`BENCHMARK_WORKLOAD.viewport`). Strokes are still authored in
+document pixels across the whole document and mapped through the view, so the
+stamp pass and the dab count are unchanged. History compares runs only against
+runs with the same adapter, window and colour setting. The size and layer
+ladders keep a document-sized window, because they measure document scaling.
+
+Most of the throughput gain below is this change to what is measured, not a
+change to the engine: the old workload measured a window no display has.
+
+The baseline row was taken on a 60 Hz display, where the ticket's 76.3 FPS and
+18.7 ms came from a 75 Hz one; the paced pass waits on the panel, so its
+latency is not comparable across the two.
+
+The stroke buffer's clears are now bounded too (§2): `clearStroke` draws a
+far-plane triangle under a scissor over the union of the stamp passes since the
+last clear, emptying colour and coverage depth together, rather than issuing a
+load-op clear of 512 MiB of colour and 128 MiB of depth. A fresh depth texture
+still gets one whole clear on its first stamp pass, because it starts at zero.
+
+Apple GPU (M-series, integrated), 60 Hz display, Chrome 153/WebGPU, on top of
+`da7d5bfc`, isolated runs with no test browser open:
+
+| 8192² workload | window | sustained FPS | median pen-to-pixel | p95 pen-to-pixel | painting readbacks |
+|---|---|---:|---:|---:|---:|
+| Baseline `da7d5bfc` | 8192² | 71.9 | 22.4 ms | 25.8 ms | 0 |
+| Region-bounded stroke clears | 8192² | 76.9 | 22.3 ms | 26.1 ms | 0 |
+| Plus a screen-sized window | 2560 × 1440 | 476.2 | 17.0 ms | 18.6 ms | 0 |
+| Repeat | 2560 × 1440 | 476.2 | 16.2 ms | 18.5 ms | 0 |
+| `--colour` | 2560 × 1440 | 476.2 | 16.9 ms | 18.3 ms | 0 |
+| `--colour`, repeat | 2560 × 1440 | 476.2 | 16.2 ms | 18.5 ms | 0 |
+
+The sustained figure is the 2.1 ms p95 frame interval, quantized by the
+timer's 0.1 ms resolution, which is why it repeats exactly. Throughput clears
+120 FPS four times over, ordinary and colour alike.
+
+Latency does not yet meet 10 ms on this machine, and cannot be shown to: the
+latency is the oldest sample a frame consumes, so it is about one panel period
+(16.7 ms at 60 Hz) plus a fraction of a millisecond of GPU work. At 120 Hz the
+same arithmetic gives about 8.3 + 0.5 ms. Validating it needs a 120 Hz display;
+that run is tracked in brush-library ticket 17.

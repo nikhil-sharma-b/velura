@@ -40,6 +40,13 @@ export type Workload = {
 export type WorkloadOptions = {
   width: number
   height: number
+  /**
+   * The window the document is painted through, in device pixels, with the
+   * view fitted to it. Absent, the window is the document's own size — the
+   * arrangement before the view transform (sharp-zoom 01), kept for the
+   * ladders that measure how a frame scales with the document.
+   */
+  viewport?: { width: number; height: number }
   /** How many marks the pen makes. */
   strokes: number
   /** The stylus's reporting rate. 240 Hz is the fastest plausible pen (D26). */
@@ -78,6 +85,8 @@ export type WorkloadOptions = {
 export const BENCHMARK_WORKLOAD: WorkloadOptions = Object.freeze({
   width: 8192,
   height: 8192,
+  // A 1440p window: the document is 8192², the screen presenting it is not.
+  viewport: Object.freeze({ width: 2560, height: 1440 }),
   strokes: 12,
   sampleRateHz: 240,
   penSpeed: 4000,

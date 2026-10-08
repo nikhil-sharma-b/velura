@@ -103,6 +103,10 @@ describe("BENCHMARK_WORKLOAD", () => {
     expect(BENCHMARK_WORKLOAD.width).toBe(8192)
     expect(BENCHMARK_WORKLOAD.height).toBe(8192)
   })
+
+  test("is painted through a screen-sized window, not a document-sized one", () => {
+    expect(BENCHMARK_WORKLOAD.viewport).toEqual({ width: 2560, height: 1440 })
+  })
 })
 
 describe("createVectorWorkload", () => {

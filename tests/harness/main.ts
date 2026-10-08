@@ -382,7 +382,15 @@ window.remountEngine = (options) => {
   })
 }
 
-window.runBenchmark = (options) => runBenchmark(window.engine, canvas, options)
+window.runBenchmark = (options) => {
+  // A window smaller than the document needs the document's size up front:
+  // without it, the first resize makes a document the size of the window.
+  if (options.viewport)
+    window.remountEngine({
+      documentSize: { width: options.width, height: options.height },
+    })
+  return runBenchmark(window.engine, canvas, options)
+}
 window.runVectorBenchmark = (options) =>
   runVectorBenchmark(window.engine, canvas, options)
 window.runNavigationBenchmark = (options) =>

@@ -30,6 +30,7 @@ import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
 import { stampShader } from "../shaders/stamp"
 import { surfaceCompositeShader } from "../shaders/surface-composite"
+import { clearRegionShader } from "../shaders/clear-region"
 import {
   clearSelectionShader,
   copySelectionShader,
@@ -58,6 +59,9 @@ import {
 } from "../view/magnification"
 import { STAMP, STAMP_STRIDE } from "./stamp-instance"
 import { createStampLog } from "./stamp-log"
+
+/** Inverse coverage per stroke pixel (D27); the stamp and clear passes share it. */
+const COVERAGE_DEPTH_FORMAT: GPUTextureFormat = "depth16unorm"
 
 const LAYER_FORMAT: GPUTextureFormat = "rgba16float"
 const BYTES_PER_TEXEL = TILE_CHANNELS * 2
@@ -589,7 +593,7 @@ export function createRenderer(
         ],
       },
       depthStencil: {
-        format: "depth16unorm",
+        format: COVERAGE_DEPTH_FORMAT,
         depthWriteEnabled: accumulation === "coverage",
         depthCompare: accumulation === "coverage" ? "less-equal" : "always",
       },
@@ -600,6 +604,26 @@ export function createRenderer(
     coverage: stampPipelineFor("coverage"),
     buildup: stampPipelineFor("buildup"),
   }
+
+  const clearRegionModule = device.createShaderModule({
+    code: clearRegionShader,
+  })
+  const clearRegionPipeline = device.createRenderPipeline({
+    label: "clear stroke region",
+    layout: "auto",
+    vertex: { module: clearRegionModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: clearRegionModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format: LAYER_FORMAT }],
+    },
+    depthStencil: {
+      format: COVERAGE_DEPTH_FORMAT,
+      depthWriteEnabled: true,
+      depthCompare: "always",
+    },
+    primitive: { topology: "triangle-list" },
+  })
 
   const compositeModule = device.createShaderModule({
     code: surfaceCompositeShader,
@@ -1673,8 +1697,8 @@ export function createRenderer(
   /**
    * Empties a surface. A clear is a load operation, which a scissor rectangle
    * does not narrow, so this is always the whole surface — it runs when a
-   * stroke starts, ends or rewinds and when a cache is rebuilt, never on a
-   * frame of drawing.
+   * cache is rebuilt, never on a frame of drawing. The stroke buffer is
+   * cleared by region instead (`clearStroke`).
    */
   function clearSurface(surface: Surface) {
     const encoder = device.createCommandEncoder()
@@ -2520,10 +2544,48 @@ export function createRenderer(
     return { x, y, width: right - x, height: bottom - y }
   }
 
+  // Every pixel a stamp pass could have written since the buffer was last
+  // cleared, in whole pixels: the union of the passes' scissor rectangles.
+  const strokeDirty = { left: 0, top: 0, right: 0, bottom: 0 }
+
+  function resetStrokeDirty() {
+    strokeDirty.left = Infinity
+    strokeDirty.top = Infinity
+    strokeDirty.right = -Infinity
+    strokeDirty.bottom = -Infinity
+  }
+  resetStrokeDirty()
+
+  /**
+   * Empties the stroke buffer and its coverage depth where stamps reached,
+   * rather than across the document: a stroke clears what it painted.
+   */
   function clearStroke() {
     if (!stroke) throw new Error("The render target has not been sized.")
-    clearSurface(stroke)
-    clearCoverageDepth = true
+    stroke.empty = true
+    if (strokeDirty.right <= strokeDirty.left) return
+    const encoder = device.createCommandEncoder()
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: stroke.view, loadOp: "load", storeOp: "store" },
+      ],
+      depthStencilAttachment: {
+        view: coverageDepthView!,
+        depthLoadOp: "load",
+        depthStoreOp: "store",
+      },
+    })
+    pass.setPipeline(clearRegionPipeline)
+    pass.setScissorRect(
+      strokeDirty.left,
+      strokeDirty.top,
+      strokeDirty.right - strokeDirty.left,
+      strokeDirty.bottom - strokeDirty.top
+    )
+    pass.draw(3)
+    pass.end()
+    device.queue.submit([encoder.finish()])
+    resetStrokeDirty()
   }
 
   /** Draws `count` dabs of the current stroke into the buffer. */
@@ -2574,6 +2636,10 @@ export function createRenderer(
     if (right > left && bottom > top) {
       pass.setScissorRect(left, top, right - left, bottom - top)
       pass.draw(6, count)
+      strokeDirty.left = Math.min(strokeDirty.left, left)
+      strokeDirty.top = Math.min(strokeDirty.top, top)
+      strokeDirty.right = Math.max(strokeDirty.right, right)
+      strokeDirty.bottom = Math.max(strokeDirty.bottom, bottom)
     }
     pass.end()
     device.queue.submit([encoder.finish()])
@@ -2632,17 +2698,20 @@ export function createRenderer(
       // matrix both are measured against is rewritten all the same.
       for (const compositor of compositors) compositor.writeSpace()
       // The stroke buffer matches a layer texel for texel, so a dab lands at
-      // the same pixel in both and the composite is a straight copy. §6.2 wants
-      // it bounded to the stroke's region; it narrows to a tiled surface with
-      // the per-layer atlases (D-6.1), which is what bounds a layer too.
+      // the same pixel in both and the composite is a straight copy. Its
+      // storage stays document-sized until the per-layer atlases (D-6.1); its
+      // clears are already bounded to what each stroke painted (§6.2).
       stroke = createSurface()
       coverageDepth = device.createTexture({
         size: { width, height },
-        format: "depth16unorm",
+        format: COVERAGE_DEPTH_FORMAT,
         usage: GPUTextureUsage.RENDER_ATTACHMENT,
       })
       coverageDepthView = coverageDepth.createView()
+      // A new depth texture holds zeros, so the first stamp pass clears it
+      // whole; after that only the regions stamps reached are cleared.
       clearCoverageDepth = true
+      resetStrokeDirty()
       // Only the viewport changes with a resize; the tip flag, the ink and the
       // grain settings are the brush's and outlive it.
       device.queue.writeBuffer(
