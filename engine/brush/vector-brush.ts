@@ -61,6 +61,40 @@ export type PatternParams = Readonly<{
   /** Drawn once at the stroke's start and end; the tile fills between. */
   start: PatternPiece | null
   end: PatternPiece | null
+  /** The art it was made from, kept so caps and axis can be reassigned. */
+  source?: PatternSourceArt | null
+}>
+
+/**
+ * A selected object's art in document coordinates, and its open path when
+ * it could be drawn as the axis.
+ */
+export type PatternShape = Readonly<{
+  id: string
+  paths: readonly BezierPath[]
+  line: BezierPath | null
+}>
+
+/**
+ * The line a pattern's art is laid along: across the middle of the art,
+ * left to right or top to bottom, or an open path among the selection.
+ */
+export type PatternAxis =
+  | "horizontal"
+  | "vertical"
+  | Readonly<{ drawn: string }>
+
+/** Which selected objects are caps, and the axis the art lies on. */
+export type PatternSource = Readonly<{
+  start?: readonly string[]
+  end?: readonly string[]
+  axis?: PatternAxis
+}>
+
+/** The objects a pattern was made from, and how they were assigned. */
+export type PatternSourceArt = Readonly<{
+  shapes: readonly PatternShape[]
+  made: PatternSource
 }>
 
 /**
@@ -111,6 +145,8 @@ export const MIN_PRESSURE_CURVE = 0.25
 /** More nodes than any brush's art needs; past it, a selection is too busy to deform live. */
 export const MAX_PATTERN_NODES = 2000
 /** The longest a piece of art may be, in stroke widths. */
+/** The most nodes a pattern's kept source art, axis line included, may have. */
+export const MAX_PATTERN_SOURCE_NODES = MAX_PATTERN_NODES * 2
 export const MAX_PATTERN_LENGTH = 1000
 export const MAX_PRESSURE_CURVE = 4
 /** The closest and furthest scatter copies may be spaced, in stroke widths. */
@@ -634,12 +670,14 @@ function parsePattern(value: unknown): PatternParams {
       !["bend", "split"].includes(art.corners)
     )
       throw new Error("bad pattern")
+    const source = parseSourceArt(art.source)
     return {
       mode: art.mode,
       corners: art.corners,
       tile: piece(art.tile),
       start: art.start ? piece(art.start) : null,
       end: art.end ? piece(art.end) : null,
+      ...(source && { source }),
     }
   } catch {
     throw new Error(
@@ -648,15 +686,91 @@ function parsePattern(value: unknown): PatternParams {
   }
 }
 
+const ids = (value: unknown): string[] | undefined => {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || !value.every((id) => typeof id === "string"))
+    throw new Error("bad ids")
+  return [...value]
+}
+
+/**
+ * The art a pattern was made from, copied down; null when missing or bad,
+ * so a brush that cannot be remade still draws.
+ */
+function parseSourceArt(value: unknown): PatternSourceArt | null {
+  const source = value as PatternSourceArt | null | undefined
+  if (!source) return null
+  try {
+    let budget = MAX_PATTERN_SOURCE_NODES
+    const path = (value: unknown, closed?: boolean): BezierPath => {
+      const p = value as BezierPath
+      if (!Array.isArray(p?.nodes) || p.nodes.length < 2)
+        throw new Error("bad path")
+      if ((budget -= p.nodes.length) < 0) throw new Error("too many")
+      return {
+        kind: "path",
+        closed: closed ?? !!p.closed,
+        nodes: p.nodes.map(parseNode),
+      }
+    }
+    if (!Array.isArray(source.shapes) || !source.shapes.length)
+      throw new Error("bad shapes")
+    const shapes = source.shapes.map((shape): PatternShape => {
+      if (typeof shape?.id !== "string" || !Array.isArray(shape.paths))
+        throw new Error("bad shape")
+      return {
+        id: shape.id,
+        paths: shape.paths.map((p: unknown) => path(p, true)),
+        line: shape.line ? path(shape.line, false) : null,
+      }
+    })
+    const made = source.made ?? {}
+    const axis = made.axis
+    if (
+      axis !== undefined &&
+      axis !== "horizontal" &&
+      axis !== "vertical" &&
+      typeof (axis as { drawn?: unknown })?.drawn !== "string"
+    )
+      throw new Error("bad axis")
+    const start = ids(made.start),
+      end = ids(made.end)
+    return {
+      shapes,
+      made: {
+        ...(start && { start }),
+        ...(end && { end }),
+        ...(axis !== undefined && {
+          axis: typeof axis === "string" ? axis : { drawn: axis.drawn },
+        }),
+      },
+    }
+  } catch {
+    return null
+  }
+}
+
+const parsePoint = (p: unknown) => {
+  const q = p as { x: number; y: number } | null
+  if (q === null) return null
+  if (!q || !finite(q.x, q.y)) throw new Error("bad point")
+  return { x: q.x, y: q.y }
+}
+
+const parseNode = (n: PathNode): PathNode => {
+  if (!n || !finite(n.x, n.y)) throw new Error("bad node")
+  return {
+    x: n.x,
+    y: n.y,
+    in: parsePoint(n.in ?? null),
+    out: parsePoint(n.out ?? null),
+    type: n.type === "smooth" ? "smooth" : "cusp",
+  }
+}
+
 /** Reads pieces of art, at most `MAX_PATTERN_NODES` nodes between them. */
 function pieceParser() {
   let budget = MAX_PATTERN_NODES
-  const point = (p: unknown) => {
-    const q = p as { x: number; y: number } | null
-    if (q === null) return null
-    if (!q || !finite(q.x, q.y)) throw new Error("bad point")
-    return { x: q.x, y: q.y }
-  }
   const piece = (value: unknown): PatternPiece => {
     const p = value as PatternPiece
     if (
@@ -677,16 +791,7 @@ function pieceParser() {
         return {
           kind: "path",
           closed: true,
-          nodes: path.nodes.map((n: PathNode): PathNode => {
-            if (!n || !finite(n.x, n.y)) throw new Error("bad node")
-            return {
-              x: n.x,
-              y: n.y,
-              in: point(n.in ?? null),
-              out: point(n.out ?? null),
-              type: n.type === "smooth" ? "smooth" : "cusp",
-            }
-          }),
+          nodes: path.nodes.map(parseNode),
         }
       }),
     }

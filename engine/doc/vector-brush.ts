@@ -2,10 +2,14 @@ import {
   BUILTIN_VECTOR_BRUSHES,
   MAX_PATTERN_LENGTH,
   MAX_PATTERN_NODES,
+  MAX_PATTERN_SOURCE_NODES,
   MAX_SCATTER_SPACING,
   parseVectorBrush,
   type ArtBrush,
+  type PatternAxis,
   type PatternPiece,
+  type PatternShape,
+  type PatternSource,
   type VectorBrush,
   type VectorBrushKind,
 } from "../brush/vector-brush"
@@ -19,6 +23,7 @@ import {
 } from "./vector-path"
 import type {
   LineCap,
+  LineJoin,
   Point,
   SceneCommand,
   VectorObject,
@@ -596,10 +601,12 @@ function placedOutline(object: VectorObject): BezierPath {
   }
 }
 
-/** Miters reach at most this many half widths out; past it they are cut short. */
+/** Miters reach at most this many half widths out; past it they bevel, as in SVG. */
 const MITER_LIMIT = 4
-/** Segments in a half turn of a stroke's round cap. */
+/** Segments in a half turn of a stroke's round cap or join. */
 const CAP_SEGMENTS = 8
+/** Turns gentler than this join at their miter, whatever the join. */
+const GENTLE = Math.cos(Math.PI / 32)
 
 const cusp = (p: Point): PathNode => ({
   x: p.x,
@@ -609,16 +616,33 @@ const cusp = (p: Point): PathNode => ({
   type: "cusp",
 })
 
+/** Points `half` from `at` swept the short way from direction `from` to `to`. */
+function arc(at: Point, from: Point, to: Point, half: number): Point[] {
+  const a = Math.atan2(from.y, from.x)
+  let turn = Math.atan2(to.y, to.x) - a
+  turn -= 2 * Math.PI * Math.round(turn / (2 * Math.PI))
+  const steps = Math.max(
+    1,
+    Math.ceil((CAP_SEGMENTS * Math.abs(turn)) / Math.PI)
+  )
+  return Array.from({ length: steps + 1 }, (_, k) => {
+    const t = a + (turn * k) / steps
+    return { x: at.x + Math.cos(t) * half, y: at.y + Math.sin(t) * half }
+  })
+}
+
 /**
  * A stroke `width` wide along `points` as closed outlines: one for an open
  * line, capped by `cap`, and for a closed one an outer and an inner ring
  * wound against each other, so a nonzero fill leaves the middle empty.
+ * Corners take `join` on their outer side, as SVG draws them.
  */
 function strokeOutlines(
   points: readonly Point[],
   closed: boolean,
   width: number,
-  cap: LineCap
+  cap: LineCap,
+  join: LineJoin
 ): Point[][] {
   const pts = points.filter(
     (p, i) =>
@@ -640,21 +664,36 @@ function strokeOutlines(
   }
   const segments = closed ? n : n - 1
   const normals = Array.from({ length: segments }, (_, i) => normal(i))
-  // Each vertex pushed out along its mitred normal, cut back past the limit.
+  // Each vertex pushed out to `side`: gentle turns and the inner side meet
+  // at the miter, the outer side of a sharper one takes the join.
   const offset = (side: number): Point[] =>
-    pts.map((p, i) => {
+    pts.flatMap((p, i) => {
       const before = closed ? normals[(i - 1 + n) % n] : normals[i - 1]
       const after = closed ? normals[i % n] : normals[i]
-      const m =
-        before && after
-          ? { x: before.x + after.x, y: before.y + after.y }
-          : (before ?? after)
+      const at = (u: Point, k = 1): Point => ({
+        x: p.x + side * u.x * half * k,
+        y: p.y + side * u.y * half * k,
+      })
+      if (!before || !after) return [at((before ?? after)!)]
+      const m = { x: before.x + after.x, y: before.y + after.y }
       const len = Math.hypot(m.x, m.y)
-      const ref = after ?? before
-      const cos = len > 1e-9 ? (m.x * ref.x + m.y * ref.y) / len : 1
-      const k = Math.min(MITER_LIMIT, 1 / Math.max(cos, 1e-9))
-      const u = len > 1e-9 ? { x: m.x / len, y: m.y / len } : ref
-      return { x: p.x + side * u.x * half * k, y: p.y + side * u.y * half * k }
+      const cos = len > 1e-9 ? (m.x * after.x + m.y * after.y) / len : 0
+      const u = len > 1e-9 ? { x: m.x / len, y: m.y / len } : after
+      const k = 1 / Math.max(cos, 1e-9)
+      if (cos >= GENTLE) return [at(u, k)]
+      // The inner side doubles back through the vertex, so a short segment
+      // is not overshot; a nonzero fill covers the loop.
+      const turn = before.x * after.y - before.y * after.x
+      if (side * turn > 0) return [at(before), p, at(after)]
+      if (join === "miter" && k <= MITER_LIMIT) return [at(u, k)]
+      if (join === "round")
+        return arc(
+          p,
+          { x: side * before.x, y: side * before.y },
+          { x: side * after.x, y: side * after.y },
+          half
+        )
+      return [at(before), at(after)]
     })
   const left = offset(1),
     right = offset(-1)
@@ -688,7 +727,7 @@ function strokeOutlines(
   return [
     [
       ...left,
-      ...end(pts[n - 1], along(n - 2, n - 1), left[n - 1]),
+      ...end(pts[n - 1], along(n - 2, n - 1), left.at(-1)!),
       ...back,
       ...end(pts[0], along(1, 0), right[0]),
     ],
@@ -710,83 +749,192 @@ function objectArt(object: VectorObject): BezierPath[] {
     const [a, b, c, d] = object.transform as Affine
     const width = stroke.width * Math.sqrt(Math.abs(a * d - b * c))
     const flat = flattenPath({ ...outline, closed: !open }, 1)
-    for (const ring of strokeOutlines(flat.points, !open, width, stroke.cap))
+    for (const ring of strokeOutlines(
+      flat.points,
+      !open,
+      width,
+      stroke.cap,
+      stroke.join
+    ))
       if (ring.length >= 3)
         art.push({ kind: "path", closed: true, nodes: ring.map(cusp) })
   }
   return art
 }
 
+export type { PatternAxis, PatternSource }
+
+/** Each object's art, and its open path should it be drawn as the axis. */
+function shapesOf(objects: readonly VectorObject[]): PatternShape[] {
+  return objects
+    .filter((object) => !object.erase)
+    .map((object) => {
+      const g = object.geometry
+      return {
+        id: object.id,
+        paths: objectArt(object).filter((p) => p.nodes.length >= 2),
+        line:
+          g.kind === "path" && !g.closed && g.nodes.length >= 2
+            ? { ...placedOutline(object), closed: false }
+            : null,
+      }
+    })
+}
+
+/** A drawn axis bent further than this, in pixels, off its chord bends the art. */
+const BENT = 0.5
+/** Most pieces one edge of art is cut into to bend round a drawn axis. */
+const BEND_PIECES = 32
+
 /**
- * The line a pattern's art is laid along: across the middle of the art,
- * left to right or top to bottom, or an open path among the selection.
+ * Maps document points onto a drawn axis: x the distance along it, y the
+ * signed distance off it, and the axis's length. Art off either end runs on
+ * straight off it. Null when the axis is straight enough to use its chord.
  */
-export type PatternAxis =
-  | "horizontal"
-  | "vertical"
-  | Readonly<{ drawn: string }>
+function bentFrame(
+  line: BezierPath
+): { frame: (p: Point) => Point; length: number } | null {
+  const pts = flattenPath(line, 4).points.filter(
+    (p, i, all) =>
+      i === 0 || Math.hypot(p.x - all[i - 1].x, p.y - all[i - 1].y) > 1e-9
+  )
+  const a = pts[0],
+    b = pts.at(-1)!
+  const chord = Math.hypot(b.x - a.x, b.y - a.y)
+  const off = (p: Point) =>
+    Math.abs((p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x)) / chord
+  if (pts.length < 3 || (chord > 1e-6 && pts.every((p) => off(p) <= BENT)))
+    return null
+  const lengths = [0]
+  const dirs = pts.slice(1).map((p, i) => {
+    const d = Math.hypot(p.x - pts[i].x, p.y - pts[i].y)
+    lengths.push(lengths[i] + d)
+    return { x: (p.x - pts[i].x) / d, y: (p.y - pts[i].y) / d }
+  })
+  const last = dirs.length - 1
+  const frame = (p: Point): Point => {
+    let best = { d: Infinity, x: 0, y: 0 }
+    dirs.forEach((dir, j) => {
+      const from = pts[j]
+      const span = lengths[j + 1] - lengths[j]
+      const raw = (p.x - from.x) * dir.x + (p.y - from.y) * dir.y
+      const off = (t: number) => ({
+        x: p.x - from.x - dir.x * t,
+        y: p.y - from.y - dir.y * t,
+      })
+      // The nearest segment is judged clamped to each, so a far bend's
+      // extension never wins; only then does art past the axis's ends run
+      // on straight off them.
+      const t = Math.min(span, Math.max(0, raw))
+      const near = off(t)
+      const d = Math.hypot(near.x, near.y)
+      if (d >= best.d) return
+      const clamped = raw < 0 ? -1 : raw > span ? 1 : 0
+      const past = (clamped < 0 && j === 0) || (clamped > 0 && j === last)
+      const v = past ? off(raw) : near
+      // At a vertex the side is judged against both segments' heading.
+      const other = clamped && !past ? dirs[j + clamped] : dir
+      const side = Math.sign((dir.x + other.x) * v.y - (dir.y + other.y) * v.x)
+      best = {
+        d,
+        x: lengths[j] + (past ? raw : t),
+        y: side * Math.hypot(v.x, v.y),
+      }
+    })
+    return { x: best.x, y: best.y }
+  }
+  return { frame, length: lengths.at(-1)! }
+}
 
-/** Which selected objects are caps, and the axis the art lies on. */
-export type PatternSource = Readonly<{
-  start?: readonly string[]
-  end?: readonly string[]
-  axis?: PatternAxis
-}>
+/** `path` as straight edges no longer than `step`, ready to bend. */
+function densify(path: BezierPath, step: number): BezierPath {
+  const pts = flattenPath(path, 4).points
+  const nodes: PathNode[] = []
+  const count = path.closed ? pts.length : pts.length - 1
+  for (let i = 0; i < count; i++) {
+    const a = pts[i],
+      b = pts[(i + 1) % pts.length]
+    const pieces = Math.min(
+      BEND_PIECES,
+      Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / step))
+    )
+    for (let k = 0; k < pieces; k++)
+      nodes.push(
+        cusp({
+          x: a.x + ((b.x - a.x) * k) / pieces,
+          y: a.y + ((b.y - a.y) * k) / pieces,
+        })
+      )
+  }
+  if (!path.closed) nodes.push(cusp(pts.at(-1)!))
+  return { kind: "path", closed: path.closed, nodes }
+}
 
 /**
- * `objects`' art in pieces, each laid on the axis from its own start, all
+ * `shapes`' art in pieces, each laid on the axis from its own start, all
  * scaled so the whole selection's height across the axis is one stroke
- * width. Pieces `roles` names no objects for come back null.
+ * width. Pieces `roleOf` names no shapes for are left out.
  */
 function selectionArt<R extends string>(
-  objects: readonly VectorObject[],
+  shapes: readonly PatternShape[],
   what: string,
-  roleOf: (object: VectorObject) => R,
+  roleOf: (id: string) => R,
   axis: PatternAxis = "horizontal"
 ): Map<R, PatternPiece> {
   let frame: (p: Point) => Point
-  let line: VectorObject | undefined
+  let drawn: string | null = null
+  let bend: ((path: BezierPath) => BezierPath) | null = null
   if (axis === "horizontal") frame = (p) => p
   else if (axis === "vertical") frame = (p) => ({ x: p.y, y: -p.x })
   else {
-    line = objects.find((o) => o.id === axis.drawn)
-    if (
-      !line ||
-      line.geometry.kind !== "path" ||
-      line.geometry.closed ||
-      line.geometry.nodes.length < 2
-    )
+    drawn = axis.drawn
+    const line = shapes.find((s) => s.id === axis.drawn)?.line
+    if (!line)
       throw new Error(
         `Draw the ${what} brush's axis as an open path, and select it with the art.`
       )
-    const nodes = placedOutline(line).nodes
-    const a = nodes[0],
-      b = nodes.at(-1)!
+    const a = line.nodes[0],
+      b = line.nodes.at(-1)!
     const d = Math.hypot(b.x - a.x, b.y - a.y)
-    if (!(d > 1e-6))
-      throw new Error(`A ${what} brush's axis needs some length.`)
-    const u = { x: (b.x - a.x) / d, y: (b.y - a.y) / d }
-    frame = (p) => ({
-      x: (p.x - a.x) * u.x + (p.y - a.y) * u.y,
-      y: -(p.x - a.x) * u.y + (p.y - a.y) * u.x,
-    })
+    const bent = bentFrame(line)
+    if (bent) {
+      frame = bent.frame
+      // Edges cut finely enough to bend, coarser should that pass the
+      // node limit.
+      const art = shapes
+        .filter((s) => s.id !== axis.drawn)
+        .flatMap((s) => s.paths)
+      let step = bent.length / 64
+      const nodes = () =>
+        art.reduce((sum, p) => sum + densify(p, step).nodes.length, 0)
+      while (step < bent.length && nodes() > MAX_PATTERN_NODES) step *= 2
+      bend = (path) => densify(path, step)
+    } else {
+      if (!(d > 1e-6))
+        throw new Error(`A ${what} brush's axis needs some length.`)
+      const u = { x: (b.x - a.x) / d, y: (b.y - a.y) / d }
+      frame = (p) => ({
+        x: (p.x - a.x) * u.x + (p.y - a.y) * u.y,
+        y: -(p.x - a.x) * u.y + (p.y - a.y) * u.x,
+      })
+    }
   }
   const groups = new Map<R, BezierPath[]>()
-  for (const object of objects) {
-    if (object.erase || object === line) continue
-    const paths = objectArt(object)
-      .filter((p) => p.nodes.length >= 2)
-      .map((p): BezierPath => ({
-        ...p,
-        nodes: p.nodes.map((n) => ({
+  for (const shape of shapes) {
+    if (shape.id === drawn || !shape.paths.length) continue
+    const paths = shape.paths.map((p): BezierPath => {
+      const path = bend ? bend(p) : p
+      return {
+        ...path,
+        nodes: path.nodes.map((n) => ({
           ...frame(n),
           in: n.in && frame(n.in),
           out: n.out && frame(n.out),
           type: n.type,
         })),
-      }))
-    if (!paths.length) continue
-    const role = roleOf(object)
+      }
+    })
+    const role = roleOf(shape.id)
     groups.set(role, [...(groups.get(role) ?? []), ...paths])
   }
   const all = [...groups.values()].flat()
@@ -812,8 +960,8 @@ function selectionArt<R extends string>(
   }
   const whole = extent(all)
   // A drawn axis is the art's middle; otherwise the middle of its bounds.
-  const middle = line ? 0 : (whole.minY + whole.maxY) / 2
-  const height = line
+  const middle = drawn ? 0 : (whole.minY + whole.maxY) / 2
+  const height = drawn
     ? 2 * Math.max(Math.abs(whole.minY), Math.abs(whole.maxY))
     : whole.maxY - whole.minY
   if (!(height > 1e-6))
@@ -848,29 +996,34 @@ function selectionArt<R extends string>(
 const solidParams = () =>
   BUILTIN_VECTOR_BRUSHES.find((b) => b.id === "vector:solid")!.params
 
-/**
- * A pattern brush made of `objects`, stretched once along the stroke: those
- * `source` names as caps drawn at the ends, the rest the tile between.
- */
-export function makePatternBrush(
-  objects: readonly VectorObject[],
-  source: PatternSource = {}
+/** A stretched pattern brush made of `shapes` as `made` assigns them. */
+function patternFromShapes(
+  shapes: readonly PatternShape[],
+  made: PatternSource
 ): ArtBrush<"pattern"> {
   const pieces = selectionArt(
-    objects,
+    shapes,
     "pattern",
-    (o) =>
-      source.start?.includes(o.id)
+    (id) =>
+      made.start?.includes(id)
         ? "start"
-        : source.end?.includes(o.id)
+        : made.end?.includes(id)
           ? "end"
           : "tile",
-    source.axis
+    made.axis
   )
   const tile = pieces.get("tile")
   if (!tile)
     throw new Error(
       "A pattern brush needs some art between its caps for the tile."
+    )
+  // The kept art is held to the limit a saved brush is read back with.
+  const kept = shapes
+    .flatMap((s) => [...s.paths, ...(s.line ? [s.line] : [])])
+    .reduce((sum, p) => sum + p.nodes.length, 0)
+  if (kept > MAX_PATTERN_SOURCE_NODES)
+    throw new Error(
+      `A pattern brush's source art may have at most ${MAX_PATTERN_SOURCE_NODES} nodes.`
     )
   return parseVectorBrush({
     id: "pattern",
@@ -883,8 +1036,45 @@ export function makePatternBrush(
       tile,
       start: pieces.get("start") ?? null,
       end: pieces.get("end") ?? null,
+      source: { shapes, made },
     },
   }) as ArtBrush<"pattern">
+}
+
+/**
+ * A pattern brush made of `objects`, stretched once along the stroke: those
+ * `source` names as caps drawn at the ends, the rest the tile between. It
+ * keeps the objects' art, so `remakePatternBrush` can reassign them later.
+ */
+export function makePatternBrush(
+  objects: readonly VectorObject[],
+  source: PatternSource = {}
+): ArtBrush<"pattern"> {
+  return patternFromShapes(shapesOf(objects), source)
+}
+
+/**
+ * `brush` with its kept source art reassigned to caps and axis by `source`,
+ * keeping everything else about it; throws when it kept none.
+ */
+export function remakePatternBrush(
+  brush: ArtBrush<"pattern">,
+  source: PatternSource
+): ArtBrush<"pattern"> {
+  const kept = brush.pattern.source
+  if (!kept)
+    throw new Error(
+      "This pattern brush keeps no source art, so its caps and axis are fixed."
+    )
+  const made = patternFromShapes(kept.shapes, source).pattern
+  return {
+    ...brush,
+    pattern: {
+      ...made,
+      mode: brush.pattern.mode,
+      corners: brush.pattern.corners,
+    },
+  }
 }
 
 /**
@@ -894,7 +1084,9 @@ export function makePatternBrush(
 export function makeScatterBrush(
   objects: readonly VectorObject[]
 ): ArtBrush<"scatter"> {
-  const art = selectionArt(objects, "scatter", () => "art").get("art")!
+  const art = selectionArt(shapesOf(objects), "scatter", () => "art").get(
+    "art"
+  )!
   return parseVectorBrush({
     id: "scatter",
     name: "Scatter brush",
