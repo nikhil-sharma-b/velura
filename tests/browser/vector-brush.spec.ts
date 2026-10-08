@@ -586,10 +586,11 @@ test("make a pattern brush from a selection and draw with it", async ({
   await page.getByRole("textbox", { name: "Vector brush name" }).fill("Bricks")
   await page.getByRole("button", { name: "Save vector brush" }).click()
   await expect(picker).toHaveAccessibleName("Choose vector brush: Bricks")
+  // Few steps: CI rasterizes in software, and each move redraws the stroke.
   await page.getByRole("button", { name: "Vector brush tool" }).click()
   await page.mouse.move(x - 150, y + 80)
   await page.mouse.down()
-  await page.mouse.move(x + 150, y + 80, { steps: 30 })
+  await page.mouse.move(x + 150, y + 80, { steps: 10 })
   await page.mouse.up()
   await page.getByRole("button", { name: "Export or import" }).click()
   const [download] = await Promise.all([
@@ -649,10 +650,11 @@ test("make a scatter brush from a selection and draw with it", async ({
   await page.getByRole("textbox", { name: "Vector brush name" }).fill("Tiles")
   await page.getByRole("button", { name: "Save vector brush" }).click()
   await expect(picker).toHaveAccessibleName("Choose vector brush: Tiles")
+  // Few steps: CI rasterizes in software, and each move redraws the stroke.
   await page.getByRole("button", { name: "Vector brush tool" }).click()
   await page.mouse.move(x - 150, y + 80)
   await page.mouse.down()
-  await page.mouse.move(x + 150, y + 80, { steps: 30 })
+  await page.mouse.move(x + 150, y + 80, { steps: 10 })
   await page.mouse.up()
   await page.getByRole("button", { name: "Export or import" }).click()
   const [download] = await Promise.all([
