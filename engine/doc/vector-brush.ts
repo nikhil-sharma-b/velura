@@ -4,8 +4,10 @@ import {
   MAX_PATTERN_NODES,
   MAX_SCATTER_SPACING,
   parseVectorBrush,
+  type ArtBrush,
   type PatternPiece,
   type VectorBrush,
+  type VectorBrushKind,
 } from "../brush/vector-brush"
 import type { Affine } from "./transform-session"
 import {
@@ -173,8 +175,7 @@ function shift(node: PathNode, dx: number, dy: number): PathNode {
 export function vectorBrushObject(object: VectorObject): VectorObject {
   if (
     !object.brush ||
-    object.brush.definition.kind === "pattern" ||
-    object.brush.definition.kind === "scatter" ||
+    ART_OUTLINES[object.brush.definition.kind] ||
     object.geometry.kind !== "path" ||
     !object.style.stroke
   )
@@ -515,15 +516,19 @@ export function scatterOutlines(object: VectorObject): Point[][] {
  * kinds that draw art in place of a stroke; null for the rest.
  */
 export function brushArtOutlines(object: VectorObject): Point[][] | null {
-  if (!object.style.stroke) return null
-  switch (object.brush?.definition.kind) {
-    case "pattern":
-      return patternOutlines(object)
-    case "scatter":
-      return scatterOutlines(object)
-    default:
-      return null
-  }
+  const outlines = object.brush && ART_OUTLINES[object.brush.definition.kind]
+  return object.style.stroke && outlines ? outlines(object) : null
+}
+
+/** How each kind draws art in place of a stroke; null for a widened spine. */
+const ART_OUTLINES: Record<
+  VectorBrushKind,
+  ((object: VectorObject) => Point[][]) | null
+> = {
+  profile: null,
+  calligraphy: null,
+  pattern: patternOutlines,
+  scatter: scatterOutlines,
 }
 
 /** Bézier circle handles: a quarter turn's handles are this share of the radius. */
@@ -850,7 +855,7 @@ const solidParams = () =>
 export function makePatternBrush(
   objects: readonly VectorObject[],
   source: PatternSource = {}
-): VectorBrush {
+): ArtBrush<"pattern"> {
   const pieces = selectionArt(
     objects,
     "pattern",
@@ -879,7 +884,7 @@ export function makePatternBrush(
       start: pieces.get("start") ?? null,
       end: pieces.get("end") ?? null,
     },
-  })
+  }) as ArtBrush<"pattern">
 }
 
 /**
@@ -888,7 +893,7 @@ export function makePatternBrush(
  */
 export function makeScatterBrush(
   objects: readonly VectorObject[]
-): VectorBrush {
+): ArtBrush<"scatter"> {
   const art = selectionArt(objects, "scatter", () => "art").get("art")!
   return parseVectorBrush({
     id: "scatter",
@@ -904,7 +909,7 @@ export function makeScatterBrush(
       offsetJitter: 0,
       align: false,
     },
-  })
+  }) as ArtBrush<"scatter">
 }
 
 export function applyVectorBrush(

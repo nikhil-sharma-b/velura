@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, type ReactNode } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -19,6 +19,8 @@ import {
   MAX_SCATTER_SPACING,
   MIN_SCATTER_SPACING,
   MIN_PRESSURE_CURVE,
+  type ArtBrush,
+  type ArtBrushKind,
   type PatternParams,
   type ScatterParams,
   type ProfileParams,
@@ -33,12 +35,88 @@ import type {
 } from "../lib/vector-brush-store"
 import { VectorBrushToolIcon } from "./brush-icon"
 
-const SECTIONS: Record<VectorBrushKind, string> = {
-  profile: "Width profile",
-  calligraphy: "Calligraphy",
-  pattern: "Pattern",
-  scatter: "Scatter",
+/** What every kind's editor section is handed. */
+type SectionProps = {
+  brush: VectorBrush
+  change(brush: VectorBrush): void
+  /** How the art was made from the selection; null once saved. */
+  source: PatternSource | null
+  shapes: readonly string[]
+  remake(source: PatternSource): void
 }
+
+/**
+ * Each kind's editor section and one-line summary; art kinds also say how
+ * a fresh brush is made from the selection. A new kind is one entry here.
+ */
+const KINDS: {
+  [K in VectorBrushKind]: {
+    label: string
+    describe(brush: Extract<VectorBrush, { kind: K }>): string
+    Section(props: SectionProps): ReactNode
+  } & (K extends ArtBrushKind
+    ? {
+        /** How a fresh brush is made from the selection, if it records it. */
+        madeFrom: PatternSource | null
+      }
+    : unknown)
+} = {
+  profile: {
+    label: "Width profile",
+    describe: ({ params }) => {
+      if (params.wiggle) return "A line that wanders either side of the spine"
+      if (params.tremor > 0.2) return "Blotchy width that swells and pinches"
+      if (params.pressure)
+        return params.thinning
+          ? "Wider when pressed, thinner when fast"
+          : "Press harder for a wider line"
+      return params.caps === "flat"
+        ? "Constant width with square ends"
+        : "Constant width at any pressure"
+    },
+    Section: ({ brush, change }) => (
+      <ProfileSection
+        params={brush.params}
+        pressureOnly={brush.kind === "pattern"}
+        change={(params) =>
+          change({ ...brush, params: { ...brush.params, ...params } })
+        }
+      />
+    ),
+  },
+  calligraphy: {
+    label: "Calligraphy",
+    describe: ({ params }) =>
+      params.fixation < 1
+        ? "A nib that turns as the pen leans"
+        : "A broad nib held at a fixed angle",
+    Section: (props) => <CalligraphySection {...props} />,
+  },
+  pattern: {
+    label: "Pattern",
+    describe: ({ pattern }) =>
+      pattern.mode === "repeat"
+        ? "Art repeated along the stroke"
+        : "Art stretched along the stroke",
+    Section: (props) => <PatternSection {...props} />,
+    madeFrom: {},
+  },
+  scatter: {
+    label: "Scatter",
+    describe: ({ scatter }) =>
+      scatter.align
+        ? "Art dropped along the stroke, turned with it"
+        : "Art dropped along the stroke",
+    Section: (props) => <ScatterSection {...props} />,
+    madeFrom: null,
+  },
+}
+
+const ART_KINDS = ["pattern", "scatter"] as const satisfies ArtBrushKind[]
+
+/** A one-line summary of what a brush does with the hand. */
+const describe = (brush: VectorBrush): string =>
+  (KINDS[brush.kind].describe as (brush: VectorBrush) => string)(brush)
 
 export function VectorBrushLibrary({
   library,
@@ -58,7 +136,7 @@ export function VectorBrushLibrary({
   apply(brush: VectorBrush): void
   canApply: boolean
   /** A pattern or scatter brush made of the selected objects; throws when it cannot be. */
-  makeArt(kind: "pattern" | "scatter", source?: PatternSource): VectorBrush
+  makeArt(kind: ArtBrushKind, source?: PatternSource): ArtBrush
   /** The selected objects' ids, to assign as caps or the axis. */
   selection: readonly string[]
   close(): void
@@ -173,7 +251,7 @@ export function VectorBrushLibrary({
         >
           Duplicate brush
         </Button>
-        {(["pattern", "scatter"] as const).map((kind) => (
+        {ART_KINDS.map((kind) => (
           <Button
             key={kind}
             size="sm"
@@ -181,7 +259,7 @@ export function VectorBrushLibrary({
             disabled={!canApply}
             onClick={() => {
               try {
-                edit(makeArt(kind), null, kind === "pattern" ? {} : null)
+                edit(makeArt(kind), null, KINDS[kind].madeFrom)
               } catch (error) {
                 toast.error(
                   error instanceof Error
@@ -238,67 +316,50 @@ export function VectorBrushLibrary({
                   }
                 />
               </label>
-              {Object.entries(SECTIONS).map(([kind, label]) => (
+              {Object.entries(KINDS).map(([kind, { label, Section }]) => (
                 <section
                   key={kind}
                   aria-label={label}
                   className="rounded-lg border p-3"
                 >
                   <h3 className="mb-2 text-sm font-medium">{label}</h3>
-                  {kind === "scatter" ? (
-                    <ScatterSection brush={editing} change={setEditing} />
-                  ) : kind === "pattern" ? (
-                    <PatternSection
-                      brush={editing}
-                      change={setEditing}
-                      source={source}
-                      shapes={shapes}
-                      remake={(next) => {
-                        try {
-                          if (
-                            selection.length !== shapes.length ||
-                            selection.some((id) => !shapes.includes(id))
+                  <Section
+                    brush={editing}
+                    change={setEditing}
+                    source={source}
+                    shapes={shapes}
+                    remake={(next) => {
+                      if (editing.kind !== "pattern") return
+                      try {
+                        if (
+                          selection.length !== shapes.length ||
+                          selection.some((id) => !shapes.includes(id))
+                        )
+                          throw new Error(
+                            "Reselect the shapes this brush was made from to change its caps or axis."
                           )
-                            throw new Error(
-                              "Reselect the shapes this brush was made from to change its caps or axis."
-                            )
-                          const made = makeArt("pattern", next).pattern!
-                          setEditing({
-                            ...editing,
-                            pattern: {
-                              ...made,
-                              mode: editing.pattern!.mode,
-                              corners: editing.pattern!.corners,
-                            },
-                          })
-                          setSource(next)
-                        } catch (error) {
-                          toast.error(
-                            error instanceof Error
-                              ? error.message
-                              : "Could not remake the pattern brush."
-                          )
-                        }
-                      }}
-                    />
-                  ) : kind === "calligraphy" ? (
-                    <CalligraphySection brush={editing} change={setEditing} />
-                  ) : kind === "profile" ? (
-                    <ProfileSection
-                      params={editing.params}
-                      pressureOnly={editing.kind === "pattern"}
-                      change={(params) =>
+                        const made = makeArt(
+                          "pattern",
+                          next
+                        ) as ArtBrush<"pattern">
                         setEditing({
                           ...editing,
-                          params: { ...editing.params, ...params },
+                          pattern: {
+                            ...made.pattern,
+                            mode: editing.pattern.mode,
+                            corners: editing.pattern.corners,
+                          },
                         })
+                        setSource(next)
+                      } catch (error) {
+                        toast.error(
+                          error instanceof Error
+                            ? error.message
+                            : "Could not remake the pattern brush."
+                        )
                       }
-                    />
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      This brush kind will be available in a future update.
-                    </p>
-                  )}
+                    }}
+                  />
                 </section>
               ))}
               <Button type="submit" disabled={busy}>
@@ -310,31 +371,6 @@ export function VectorBrushLibrary({
       </Dialog>
     </>
   )
-}
-
-/** A one-line summary of what a brush does with the hand. */
-function describe({ kind, params, pattern, scatter }: VectorBrush): string {
-  if (kind === "scatter")
-    return scatter?.align
-      ? "Art dropped along the stroke, turned with it"
-      : "Art dropped along the stroke"
-  if (kind === "pattern")
-    return pattern?.mode === "repeat"
-      ? "Art repeated along the stroke"
-      : "Art stretched along the stroke"
-  if (kind === "calligraphy")
-    return params.fixation < 1
-      ? "A nib that turns as the pen leans"
-      : "A broad nib held at a fixed angle"
-  if (params.wiggle) return "A line that wanders either side of the spine"
-  if (params.tremor > 0.2) return "Blotchy width that swells and pinches"
-  if (params.pressure)
-    return params.thinning
-      ? "Wider when pressed, thinner when fast"
-      : "Press harder for a wider line"
-  return params.caps === "flat"
-    ? "Constant width with square ends"
-    : "Constant width at any pressure"
 }
 
 const SHARES = [
@@ -383,19 +419,12 @@ function ProfileSection({
         (["start", "end"] as const).map((end) => (
           <label key={end} className="flex items-center gap-2">
             {end === "start" ? "Start" : "End"} taper (%)
-            <Input
-              type="number"
-              aria-label={`${end === "start" ? "Start" : "End"} profile taper`}
-              min={0}
-              max={50}
-              value={params.taper[end] * 100}
-              onChange={(event) =>
-                change({
-                  taper: {
-                    ...params.taper,
-                    [end]: Number(event.target.value) / 100,
-                  },
-                })
+            <PercentInput
+              label={`${end === "start" ? "Start" : "End"} profile taper`}
+              max={0.5}
+              value={params.taper[end]}
+              change={(share) =>
+                change({ taper: { ...params.taper, [end]: share } })
               }
             />
           </label>
@@ -421,15 +450,10 @@ function ProfileSection({
         SHARES.map(([key, label]) => (
           <label key={key} className="flex items-center gap-2">
             {label} (%)
-            <Input
-              type="number"
-              aria-label={label}
-              min={0}
-              max={100}
-              value={Math.round(params[key] * 100)}
-              onChange={(event) =>
-                change({ [key]: Number(event.target.value) / 100 })
-              }
+            <PercentInput
+              label={label}
+              value={params[key]}
+              change={(share) => change({ [key]: share })}
             />
           </label>
         ))}
@@ -437,14 +461,8 @@ function ProfileSection({
   )
 }
 
-function CalligraphySection({
-  brush,
-  change,
-}: {
-  brush: VectorBrush
-  change(brush: VectorBrush): void
-}) {
-  const { params } = brush
+function CalligraphySection({ brush, change }: SectionProps) {
+  const { id, name, params } = brush
   const set = (patch: Partial<ProfileParams>) =>
     change({ ...brush, params: { ...params, ...patch } })
   const on = brush.kind === "calligraphy"
@@ -456,7 +474,9 @@ function CalligraphySection({
           checked={on}
           onChange={(event) =>
             change({
-              ...brush,
+              id,
+              name,
+              params,
               kind: event.target.checked ? "calligraphy" : "profile",
             })
           }
@@ -477,30 +497,20 @@ function CalligraphySection({
       </label>
       <label className="flex items-center gap-2">
         Nib edge (%)
-        <Input
-          type="number"
-          aria-label="Nib edge"
+        <PercentInput
+          label="Nib edge"
           disabled={!on}
-          min={0}
-          max={100}
-          value={Math.round(params.minWidth * 100)}
-          onChange={(event) =>
-            set({ minWidth: Number(event.target.value) / 100 })
-          }
+          value={params.minWidth}
+          change={(minWidth) => set({ minWidth })}
         />
       </label>
       <label className="col-span-2 flex items-center gap-2">
         Fixation (%)
-        <Input
-          type="number"
-          aria-label="Nib fixation"
+        <PercentInput
+          label="Nib fixation"
           disabled={!on}
-          min={0}
-          max={100}
-          value={Math.round(params.fixation * 100)}
-          onChange={(event) =>
-            set({ fixation: Number(event.target.value) / 100 })
-          }
+          value={params.fixation}
+          change={(fixation) => set({ fixation })}
         />
       </label>
       <p className="col-span-2 text-xs text-muted-foreground">
@@ -521,22 +531,15 @@ function PatternSection({
   source,
   shapes,
   remake,
-}: {
-  brush: VectorBrush
-  change(brush: VectorBrush): void
-  /** How the art was made from the selection; null once saved. */
-  source: PatternSource | null
-  shapes: readonly string[]
-  remake(source: PatternSource): void
-}) {
-  const { pattern } = brush
-  if (brush.kind !== "pattern" || !pattern)
+}: SectionProps) {
+  if (brush.kind !== "pattern")
     return (
       <p className="text-xs text-muted-foreground">
         Select shapes on a vector layer and choose Make pattern brush to lay
         them along your strokes.
       </p>
     )
+  const { pattern } = brush
   const set = (patch: Partial<PatternParams>) =>
     change({ ...brush, pattern: { ...pattern, ...patch } })
   const axis = source?.axis ?? "horizontal"
@@ -654,75 +657,56 @@ const SCATTER_SHARES = [
   ["rotationJitter", "Rotation jitter"],
 ] as const
 
-function ScatterSection({
-  brush,
-  change,
-}: {
-  brush: VectorBrush
-  change(brush: VectorBrush): void
-}) {
-  const { scatter } = brush
-  if (brush.kind !== "scatter" || !scatter)
+function ScatterSection({ brush, change }: SectionProps) {
+  if (brush.kind !== "scatter")
     return (
       <p className="text-xs text-muted-foreground">
         Select shapes on a vector layer and choose Make scatter brush to drop
         copies of them along your strokes.
       </p>
     )
+  const { scatter } = brush
   const set = (patch: Partial<ScatterParams>) =>
     change({ ...brush, scatter: { ...scatter, ...patch } })
   return (
     <div className="grid grid-cols-2 gap-2 text-sm">
       <label className="flex items-center gap-2">
         Spacing (%)
-        <Input
-          type="number"
-          aria-label="Scatter spacing"
-          min={MIN_SCATTER_SPACING * 100}
-          max={MAX_SCATTER_SPACING * 100}
-          value={Math.round(scatter.spacing * 100)}
-          onChange={(event) =>
-            set({ spacing: Number(event.target.value) / 100 })
-          }
+        <PercentInput
+          label="Scatter spacing"
+          min={MIN_SCATTER_SPACING}
+          max={MAX_SCATTER_SPACING}
+          value={scatter.spacing}
+          change={(spacing) => set({ spacing })}
         />
       </label>
       <label className="flex items-center gap-2">
         Size (%)
-        <Input
-          type="number"
-          aria-label="Scatter size"
-          min={MIN_SCATTER_SIZE * 100}
-          max={MAX_SCATTER_SIZE * 100}
-          value={Math.round(scatter.size * 100)}
-          onChange={(event) => set({ size: Number(event.target.value) / 100 })}
+        <PercentInput
+          label="Scatter size"
+          min={MIN_SCATTER_SIZE}
+          max={MAX_SCATTER_SIZE}
+          value={scatter.size}
+          change={(size) => set({ size })}
         />
       </label>
       {SCATTER_SHARES.map(([key, label]) => (
         <label key={key} className="flex items-center gap-2">
           {label} (%)
-          <Input
-            type="number"
-            aria-label={label}
-            min={0}
-            max={100}
-            value={Math.round(scatter[key] * 100)}
-            onChange={(event) =>
-              set({ [key]: Number(event.target.value) / 100 })
-            }
+          <PercentInput
+            label={label}
+            value={scatter[key]}
+            change={(share) => set({ [key]: share })}
           />
         </label>
       ))}
       <label className="flex items-center gap-2">
         Offset jitter (%)
-        <Input
-          type="number"
-          aria-label="Offset jitter"
-          min={0}
-          max={MAX_SCATTER_OFFSET * 100}
-          value={Math.round(scatter.offsetJitter * 100)}
-          onChange={(event) =>
-            set({ offsetJitter: Number(event.target.value) / 100 })
-          }
+        <PercentInput
+          label="Offset jitter"
+          max={MAX_SCATTER_OFFSET}
+          value={scatter.offsetJitter}
+          change={(offsetJitter) => set({ offsetJitter })}
         />
       </label>
       <label className="flex items-center gap-2">
@@ -739,6 +723,35 @@ function ScatterSection({
         width&rdquo; in the width profile scales each copy.
       </p>
     </div>
+  )
+}
+
+/** A share edited as a whole percentage; `min` and `max` are shares too. */
+function PercentInput({
+  label,
+  value,
+  change,
+  min = 0,
+  max = 1,
+  disabled,
+}: {
+  label: string
+  value: number
+  change(share: number): void
+  min?: number
+  max?: number
+  disabled?: boolean
+}) {
+  return (
+    <Input
+      type="number"
+      aria-label={label}
+      disabled={disabled}
+      min={min * 100}
+      max={max * 100}
+      value={Math.round(value * 100)}
+      onChange={(event) => change(Number(event.target.value) / 100)}
+    />
   )
 }
 

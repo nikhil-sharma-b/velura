@@ -1,6 +1,7 @@
 import {
   BUILTIN_VECTOR_BRUSHES,
   parseVectorBrush,
+  type ArtBrush,
   type VectorBrush,
 } from "./brush/vector-brush"
 import {
@@ -401,6 +402,8 @@ export type {
 export {
   BUILTIN_VECTOR_BRUSHES,
   parseVectorBrush,
+  type ArtBrush,
+  type ArtBrushKind,
   type VectorBrush,
   type VectorBrushKind,
 } from "./brush/vector-brush"
@@ -1307,9 +1310,9 @@ export interface Engine {
    * A pattern brush made of the selected vector objects, not yet saved;
    * `source` picks out its caps and spine axis.
    */
-  patternBrushFromSelection(source?: PatternSource): VectorBrush
+  patternBrushFromSelection(source?: PatternSource): ArtBrush<"pattern">
   /** A scatter brush made of the selected vector objects, not yet saved. */
-  scatterBrushFromSelection(): VectorBrush
+  scatterBrushFromSelection(): ArtBrush<"scatter">
   /** A real ZIP backup containing the complete layer tree and every exact tile. */
   exportDocument(): Promise<Uint8Array>
   /** Validates a backup in full before replacing the open document. */

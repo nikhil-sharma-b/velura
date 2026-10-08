@@ -5,9 +5,6 @@ import {
   type Taper,
 } from "../doc/vector-path"
 
-/** Kind-specific sections are extended by brush-library issues 10–12. */
-export type VectorBrushKind = "profile" | "calligraphy" | "pattern" | "scatter"
-
 /** How a profile stroke's two ends are finished; "style" keeps the shape style's cap. */
 export type ProfileCap = "style" | "round" | "flat"
 
@@ -39,13 +36,6 @@ export type ProfileParams = Readonly<{
   /** How far the nib holds its angle (1) rather than following tilt (0). */
   fixation: number
 }>
-
-/** The kinds this build can draw; the rest are listed in the editor only. */
-export type DrawnVectorBrushKind =
-  | "profile"
-  | "calligraphy"
-  | "pattern"
-  | "scatter"
 
 /** Whether a pattern's tile is drawn once along the stroke, or end to end. */
 export type PatternMode = "stretch" | "repeat"
@@ -94,16 +84,28 @@ export type ScatterParams = Readonly<{
   align: boolean
 }>
 
-export type VectorBrush = Readonly<{
+type BrushBase = Readonly<{
   id: string
   name: string
-  kind: DrawnVectorBrushKind
   params: ProfileParams
-  /** A pattern brush's art; other kinds have none. */
-  pattern?: PatternParams
-  /** A scatter brush's art and placement; other kinds have none. */
-  scatter?: ScatterParams
 }>
+
+/** Only a pattern brush has `pattern`, and only a scatter brush `scatter`. */
+export type VectorBrush = BrushBase &
+  Readonly<
+    | { kind: "profile"; pattern?: never; scatter?: never }
+    | { kind: "calligraphy"; pattern?: never; scatter?: never }
+    | { kind: "pattern"; pattern: PatternParams; scatter?: never }
+    | { kind: "scatter"; scatter: ScatterParams; pattern?: never }
+  >
+
+export type VectorBrushKind = VectorBrush["kind"]
+/** The kinds that lay art made from a selection along the stroke. */
+export type ArtBrushKind = "pattern" | "scatter"
+export type ArtBrush<K extends ArtBrushKind = ArtBrushKind> = Extract<
+  VectorBrush,
+  { kind: K }
+>
 
 export const MIN_PRESSURE_CURVE = 0.25
 /** More nodes than any brush's art needs; past it, a selection is too busy to deform live. */
@@ -557,7 +559,7 @@ export function parseVectorBrush(value: unknown): VectorBrush {
     typeof brush.name !== "string" ||
     !brush.name.trim() ||
     brush.name.length > 100 ||
-    !["profile", "calligraphy", "pattern", "scatter"].includes(brush.kind) ||
+    !Object.hasOwn(KIND_FIELDS, brush.kind) ||
     typeof params.pressure !== "boolean" ||
     !share(params.taper?.start, MAX_TAPER) ||
     !share(params.taper?.end, MAX_TAPER) ||
@@ -576,13 +578,9 @@ export function parseVectorBrush(value: unknown): VectorBrush {
     !["style", "round", "flat"].includes(params.caps)
   )
     throw new Error("A vector brush needs an id, name and valid parameters.")
-  const art = brush.kind === "pattern" ? parsePattern(brush.pattern) : null
-  const scattered =
-    brush.kind === "scatter" ? parseScatter(brush.scatter) : null
   return {
     id: brush.id,
     name: brush.name.trim().replace(/\s+/g, " "),
-    kind: brush.kind,
     params: {
       pressure: params.pressure,
       pressureCurve: params.pressureCurve,
@@ -596,9 +594,30 @@ export function parseVectorBrush(value: unknown): VectorBrush {
       nibAngle: params.nibAngle,
       fixation: params.fixation,
     },
-    ...(art ? { pattern: art } : {}),
-    ...(scattered ? { scatter: scattered } : {}),
-  }
+    ...KIND_FIELDS[brush.kind](brush),
+  } as VectorBrush
+}
+
+/**
+ * Each kind's own fields, copied down from a saved brush; throws on bad
+ * ones. A new kind is one entry here, one in `ART_OUTLINES` and one in the
+ * library's `KINDS`.
+ */
+const KIND_FIELDS: {
+  [K in VectorBrushKind]: (
+    brush: Record<string, unknown>
+  ) => Omit<Extract<VectorBrush, { kind: K }>, keyof BrushBase>
+} = {
+  profile: () => ({ kind: "profile" }),
+  calligraphy: () => ({ kind: "calligraphy" }),
+  pattern: (brush) => ({
+    kind: "pattern",
+    pattern: parsePattern(brush.pattern),
+  }),
+  scatter: (brush) => ({
+    kind: "scatter",
+    scatter: parseScatter(brush.scatter),
+  }),
 }
 
 const finite = (...values: unknown[]) =>
