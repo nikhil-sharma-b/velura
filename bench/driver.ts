@@ -9,7 +9,12 @@
  * runs.
  */
 
-import type { Engine, FrameTiming, SceneCommand } from "../engine"
+import {
+  docToScreen,
+  type Engine,
+  type FrameTiming,
+  type SceneCommand,
+} from "../engine"
 import {
   createVectorWorkload,
   type VectorWorkloadOptions,
@@ -280,15 +285,20 @@ export async function runBenchmark(
   options: WorkloadOptions
 ): Promise<RunResult> {
   const workload = createWorkload(options)
-  canvas.style.width = `${VIEWPORT}px`
-  canvas.style.height = `${VIEWPORT}px`
-  await engine.dispatch({
-    type: "resize",
+  const windowSize = options.viewport ?? {
     width: workload.width,
     height: workload.height,
+  }
+  canvas.style.width = `${VIEWPORT}px`
+  canvas.style.height = `${(VIEWPORT * windowSize.height) / windowSize.width}px`
+  await engine.dispatch({
+    type: "resize",
+    width: windowSize.width,
+    height: windowSize.height,
     devicePixelRatio: 1,
   })
   await engine.dispatch({ type: "initialize" })
+  if (options.viewport) await engine.dispatch({ type: "fitView" })
   if (options.colourDynamics) {
     await engine.dispatch({ type: "setColor", hex: "#e04030" })
     await engine.dispatch({
@@ -315,18 +325,28 @@ export async function runBenchmark(
   if (snapshot.status !== "ready")
     throw new Error(`The engine is ${snapshot.status}, not ready.`)
 
-  // Canvas pixels to client pixels. The document is larger than its window, so
-  // strokes authored across the whole document are painted across the whole
-  // document — the point of measuring at full size.
+  // Document pixels to client pixels, through the view. Strokes authored
+  // across the whole document are painted across the whole document — the
+  // point of measuring at full size — however small the window shows it.
   const bounds = canvas.getBoundingClientRect()
+  const toScreen = docToScreen(
+    snapshot.view,
+    { width: snapshot.width, height: snapshot.height },
+    { width: canvas.width, height: canvas.height }
+  )
   const toClientX = (x: number) =>
     bounds.left + (x * bounds.width) / canvas.width
   const toClientY = (y: number) =>
     bounds.top + (y * bounds.height) / canvas.height
+  const docToClientX = (x: number, y: number) =>
+    toClientX(toScreen[0] * x + toScreen[2] * y + toScreen[4])
+  const docToClientY = (x: number, y: number) =>
+    toClientY(toScreen[1] * x + toScreen[3] * y + toScreen[5])
 
+  // A fitted view is unrotated, so each axis maps on its own.
   await buildLayerStack(engine, canvas, workload.options.layers ?? 1, {
-    toClientX,
-    toClientY,
+    toClientX: (x) => docToClientX(x, 0),
+    toClientY: (y) => docToClientY(0, y),
   })
   const feather = workload.options.feather
   if (feather !== undefined) {
@@ -368,8 +388,8 @@ export async function runBenchmark(
         isPrimary: true,
         bubbles: true,
         cancelable: true,
-        clientX: toClientX(sample.x),
-        clientY: toClientY(sample.y),
+        clientX: docToClientX(sample.x, sample.y),
+        clientY: docToClientY(sample.x, sample.y),
         pressure: sample.pressure,
         tiltX: sample.tiltX,
         tiltY: sample.tiltY,
