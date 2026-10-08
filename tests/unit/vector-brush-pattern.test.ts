@@ -209,6 +209,23 @@ describe("pattern deformation", () => {
     expect(after).toHaveLength(2 * before.length)
   })
 
+  test("art reaching past a bent stroke's ends extends straight off them", () => {
+    const art = brush({
+      mode: "stretch",
+      tile: { length: 1, paths: [square(-0.2, 1.2)] },
+    })
+    const outlines = patternOutlines(
+      stroke(art, [node(0, 0), node(50, 0), node(50, 50)])
+    )
+    const points = outlines.flat()
+    expect(points.length).toBeGreaterThan(0)
+    expect(
+      points.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
+    ).toBe(true)
+    expect(Math.min(...points.map((p) => p.x))).toBeLessThan(0)
+    expect(Math.max(...points.map((p) => p.y))).toBeGreaterThan(50)
+  })
+
   test("a long stroke deforms well within a frame", () => {
     const nodes = Array.from({ length: 200 }, (_, i) =>
       node(i * 20, Math.sin(i / 5) * 40)

@@ -337,12 +337,12 @@ function runSampler({ points, widths, lengths }: Run, full: number) {
       to = lengths[j + 1] - s
     const t = from / (lengths[j + 1] - lengths[j])
     let { x: dx, y: dy } = dirs[j]
-    if (from < reach[j]) {
+    if (j > 0 && from < reach[j]) {
       const k = 0.5 * (1 - from / reach[j])
       dx += k * (dirs[j - 1].x - dirs[j].x)
       dy += k * (dirs[j - 1].y - dirs[j].y)
     }
-    if (to < reach[j + 1]) {
+    if (j + 2 < n && to < reach[j + 1]) {
       const k = 0.5 * (1 - to / reach[j + 1])
       dx += k * (dirs[j + 1].x - dirs[j].x)
       dy += k * (dirs[j + 1].y - dirs[j].y)
