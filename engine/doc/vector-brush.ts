@@ -16,6 +16,7 @@ import {
   type PathNode,
 } from "./vector-path"
 import type {
+  LineCap,
   Point,
   SceneCommand,
   VectorObject,
@@ -590,68 +591,282 @@ function placedOutline(object: VectorObject): BezierPath {
   }
 }
 
+/** Miters reach at most this many half widths out; past it they are cut short. */
+const MITER_LIMIT = 4
+/** Segments in a half turn of a stroke's round cap. */
+const CAP_SEGMENTS = 8
+
+const cusp = (p: Point): PathNode => ({
+  x: p.x,
+  y: p.y,
+  in: null,
+  out: null,
+  type: "cusp",
+})
+
 /**
- * `objects`' outlines laid on a horizontal axis through the middle of their
- * bounds, from its left edge, scaled so their height is one stroke width.
+ * A stroke `width` wide along `points` as closed outlines: one for an open
+ * line, capped by `cap`, and for a closed one an outer and an inner ring
+ * wound against each other, so a nonzero fill leaves the middle empty.
  */
-function selectionArt(
+function strokeOutlines(
+  points: readonly Point[],
+  closed: boolean,
+  width: number,
+  cap: LineCap
+): Point[][] {
+  const pts = points.filter(
+    (p, i) =>
+      i === 0 || Math.hypot(p.x - points[i - 1].x, p.y - points[i - 1].y) > 1e-9
+  )
+  if (closed && pts.length > 2) {
+    const a = pts[0],
+      b = pts.at(-1)!
+    if (Math.hypot(a.x - b.x, a.y - b.y) <= 1e-9) pts.pop()
+  }
+  const n = pts.length
+  if (n < 2) return []
+  const half = width / 2
+  const normal = (i: number) => {
+    const a = pts[i],
+      b = pts[(i + 1) % n]
+    const d = Math.hypot(b.x - a.x, b.y - a.y)
+    return { x: -(b.y - a.y) / d, y: (b.x - a.x) / d }
+  }
+  const segments = closed ? n : n - 1
+  const normals = Array.from({ length: segments }, (_, i) => normal(i))
+  // Each vertex pushed out along its mitred normal, cut back past the limit.
+  const offset = (side: number): Point[] =>
+    pts.map((p, i) => {
+      const before = closed ? normals[(i - 1 + n) % n] : normals[i - 1]
+      const after = closed ? normals[i % n] : normals[i]
+      const m =
+        before && after
+          ? { x: before.x + after.x, y: before.y + after.y }
+          : (before ?? after)
+      const len = Math.hypot(m.x, m.y)
+      const ref = after ?? before
+      const cos = len > 1e-9 ? (m.x * ref.x + m.y * ref.y) / len : 1
+      const k = Math.min(MITER_LIMIT, 1 / Math.max(cos, 1e-9))
+      const u = len > 1e-9 ? { x: m.x / len, y: m.y / len } : ref
+      return { x: p.x + side * u.x * half * k, y: p.y + side * u.y * half * k }
+    })
+  const left = offset(1),
+    right = offset(-1)
+  const back = [...right].reverse()
+  if (closed) return [left, back]
+  const end = (at: Point, dir: Point, from: Point): Point[] => {
+    if (cap === "butt") return []
+    if (cap === "square")
+      return [
+        { x: from.x + dir.x * half, y: from.y + dir.y * half },
+        {
+          x: 2 * at.x - from.x + dir.x * half,
+          y: 2 * at.y - from.y + dir.y * half,
+        },
+      ]
+    const start = Math.atan2(from.y - at.y, from.x - at.x)
+    const turn = Math.atan2(dir.y, dir.x) - start
+    const sweep =
+      turn - 2 * Math.PI * Math.round(turn / (2 * Math.PI)) > 0
+        ? Math.PI
+        : -Math.PI
+    return Array.from({ length: CAP_SEGMENTS - 1 }, (_, k) => {
+      const t = start + (sweep * (k + 1)) / CAP_SEGMENTS
+      return { x: at.x + Math.cos(t) * half, y: at.y + Math.sin(t) * half }
+    })
+  }
+  const along = (i: number, j: number) => {
+    const d = Math.hypot(pts[j].x - pts[i].x, pts[j].y - pts[i].y)
+    return { x: (pts[j].x - pts[i].x) / d, y: (pts[j].y - pts[i].y) / d }
+  }
+  return [
+    [
+      ...left,
+      ...end(pts[n - 1], along(n - 2, n - 1), left[n - 1]),
+      ...back,
+      ...end(pts[0], along(1, 0), right[0]),
+    ],
+  ]
+}
+
+/**
+ * The art an object paints, placed by its transform: its fill's outline,
+ * and its stroke as outlines of its own, so a stroke-only or open path keeps
+ * its line. An object with neither fill nor stroke counts as filled.
+ */
+function objectArt(object: VectorObject): BezierPath[] {
+  const outline = placedOutline(object)
+  const { fill, stroke } = object.style
+  const open = object.geometry.kind === "path" && !object.geometry.closed
+  const art: BezierPath[] = []
+  if (fill || (!stroke && !open)) art.push(outline)
+  if (stroke && stroke.width > 0) {
+    const [a, b, c, d] = object.transform as Affine
+    const width = stroke.width * Math.sqrt(Math.abs(a * d - b * c))
+    const flat = flattenPath({ ...outline, closed: !open }, 1)
+    for (const ring of strokeOutlines(flat.points, !open, width, stroke.cap))
+      if (ring.length >= 3)
+        art.push({ kind: "path", closed: true, nodes: ring.map(cusp) })
+  }
+  return art
+}
+
+/**
+ * The line a pattern's art is laid along: across the middle of the art,
+ * left to right or top to bottom, or an open path among the selection.
+ */
+export type PatternAxis =
+  | "horizontal"
+  | "vertical"
+  | Readonly<{ drawn: string }>
+
+/** Which selected objects are caps, and the axis the art lies on. */
+export type PatternSource = Readonly<{
+  start?: readonly string[]
+  end?: readonly string[]
+  axis?: PatternAxis
+}>
+
+/**
+ * `objects`' art in pieces, each laid on the axis from its own start, all
+ * scaled so the whole selection's height across the axis is one stroke
+ * width. Pieces `roles` names no objects for come back null.
+ */
+function selectionArt<R extends string>(
   objects: readonly VectorObject[],
-  what: string
-): PatternPiece {
-  const paths = objects
-    .filter((o) => !o.erase)
-    .map(placedOutline)
-    .filter((p) => p.nodes.length >= 2)
-  if (!paths.length)
+  what: string,
+  roleOf: (object: VectorObject) => R,
+  axis: PatternAxis = "horizontal"
+): Map<R, PatternPiece> {
+  let frame: (p: Point) => Point
+  let line: VectorObject | undefined
+  if (axis === "horizontal") frame = (p) => p
+  else if (axis === "vertical") frame = (p) => ({ x: p.y, y: -p.x })
+  else {
+    line = objects.find((o) => o.id === axis.drawn)
+    if (
+      !line ||
+      line.geometry.kind !== "path" ||
+      line.geometry.closed ||
+      line.geometry.nodes.length < 2
+    )
+      throw new Error(
+        `Draw the ${what} brush's axis as an open path, and select it with the art.`
+      )
+    const nodes = placedOutline(line).nodes
+    const a = nodes[0],
+      b = nodes.at(-1)!
+    const d = Math.hypot(b.x - a.x, b.y - a.y)
+    if (!(d > 1e-6))
+      throw new Error(`A ${what} brush's axis needs some length.`)
+    const u = { x: (b.x - a.x) / d, y: (b.y - a.y) / d }
+    frame = (p) => ({
+      x: (p.x - a.x) * u.x + (p.y - a.y) * u.y,
+      y: -(p.x - a.x) * u.y + (p.y - a.y) * u.x,
+    })
+  }
+  const groups = new Map<R, BezierPath[]>()
+  for (const object of objects) {
+    if (object.erase || object === line) continue
+    const paths = objectArt(object)
+      .filter((p) => p.nodes.length >= 2)
+      .map((p): BezierPath => ({
+        ...p,
+        nodes: p.nodes.map((n) => ({
+          ...frame(n),
+          in: n.in && frame(n.in),
+          out: n.out && frame(n.out),
+          type: n.type,
+        })),
+      }))
+    if (!paths.length) continue
+    const role = roleOf(object)
+    groups.set(role, [...(groups.get(role) ?? []), ...paths])
+  }
+  const all = [...groups.values()].flat()
+  if (!all.length)
     throw new Error(`Select the shapes to make a ${what} brush from.`)
-  if (paths.reduce((sum, p) => sum + p.nodes.length, 0) > MAX_PATTERN_NODES)
+  if (all.reduce((sum, p) => sum + p.nodes.length, 0) > MAX_PATTERN_NODES)
     throw new Error(
       `A ${what} brush's art may have at most ${MAX_PATTERN_NODES} nodes.`
     )
-  let minX = Infinity,
-    minY = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity
-  for (const path of paths)
-    for (const p of flattenPath(path).points) {
-      minX = Math.min(minX, p.x)
-      minY = Math.min(minY, p.y)
-      maxX = Math.max(maxX, p.x)
-      maxY = Math.max(maxY, p.y)
-    }
-  const height = maxY - minY
+  const extent = (paths: readonly BezierPath[]) => {
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity
+    for (const path of paths)
+      for (const p of flattenPath(path).points) {
+        minX = Math.min(minX, p.x)
+        minY = Math.min(minY, p.y)
+        maxX = Math.max(maxX, p.x)
+        maxY = Math.max(maxY, p.y)
+      }
+    return { minX, minY, maxX, maxY }
+  }
+  const whole = extent(all)
+  // A drawn axis is the art's middle; otherwise the middle of its bounds.
+  const middle = line ? 0 : (whole.minY + whole.maxY) / 2
+  const height = line
+    ? 2 * Math.max(Math.abs(whole.minY), Math.abs(whole.maxY))
+    : whole.maxY - whole.minY
   if (!(height > 1e-6))
     throw new Error(`A ${what} brush's art needs some height.`)
-  if ((maxX - minX) / height > MAX_PATTERN_LENGTH)
-    throw new Error(
-      `A ${what} brush's art may be at most ${MAX_PATTERN_LENGTH} times as long as it is tall.`
-    )
-  const middle = minY + height / 2
-  const unit = (p: Point): Point => ({
-    x: (p.x - minX) / height,
-    y: (p.y - middle) / height,
-  })
-  return {
-    length: Math.max(0.01, (maxX - minX) / height),
-    paths: paths.map((p) => ({
-      ...p,
-      nodes: p.nodes.map((n) => ({
-        ...unit(n),
-        in: n.in && unit(n.in),
-        out: n.out && unit(n.out),
-        type: n.type,
+  const pieces = new Map<R, PatternPiece>()
+  for (const [role, paths] of groups) {
+    const { minX, maxX } = extent(paths)
+    if ((maxX - minX) / height > MAX_PATTERN_LENGTH)
+      throw new Error(
+        `A ${what} brush's art may be at most ${MAX_PATTERN_LENGTH} times as long as it is tall.`
+      )
+    const unit = (p: Point): Point => ({
+      x: (p.x - minX) / height,
+      y: (p.y - middle) / height,
+    })
+    pieces.set(role, {
+      length: Math.max(0.01, (maxX - minX) / height),
+      paths: paths.map((p) => ({
+        ...p,
+        nodes: p.nodes.map((n) => ({
+          ...unit(n),
+          in: n.in && unit(n.in),
+          out: n.out && unit(n.out),
+          type: n.type,
+        })),
       })),
-    })),
+    })
   }
+  return pieces
 }
 
 const solidParams = () =>
   BUILTIN_VECTOR_BRUSHES.find((b) => b.id === "vector:solid")!.params
 
-/** A pattern brush made of `objects`, stretched once along the stroke. */
+/**
+ * A pattern brush made of `objects`, stretched once along the stroke: those
+ * `source` names as caps drawn at the ends, the rest the tile between.
+ */
 export function makePatternBrush(
-  objects: readonly VectorObject[]
+  objects: readonly VectorObject[],
+  source: PatternSource = {}
 ): VectorBrush {
+  const pieces = selectionArt(
+    objects,
+    "pattern",
+    (o) =>
+      source.start?.includes(o.id)
+        ? "start"
+        : source.end?.includes(o.id)
+          ? "end"
+          : "tile",
+    source.axis
+  )
+  const tile = pieces.get("tile")
+  if (!tile)
+    throw new Error(
+      "A pattern brush needs some art between its caps for the tile."
+    )
   return parseVectorBrush({
     id: "pattern",
     name: "Pattern brush",
@@ -660,9 +875,9 @@ export function makePatternBrush(
     pattern: {
       mode: "stretch",
       corners: "bend",
-      tile: selectionArt(objects, "pattern"),
-      start: null,
-      end: null,
+      tile,
+      start: pieces.get("start") ?? null,
+      end: pieces.get("end") ?? null,
     },
   })
 }
@@ -674,7 +889,7 @@ export function makePatternBrush(
 export function makeScatterBrush(
   objects: readonly VectorObject[]
 ): VectorBrush {
-  const art = selectionArt(objects, "scatter")
+  const art = selectionArt(objects, "scatter", () => "art").get("art")!
   return parseVectorBrush({
     id: "scatter",
     name: "Scatter brush",

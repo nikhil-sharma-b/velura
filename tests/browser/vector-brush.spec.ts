@@ -611,6 +611,81 @@ test("make a pattern brush from a selection and draw with it", async ({
   expect(exported!.paths).toBeGreaterThan(2)
 })
 
+test("a pattern brush's caps are picked from the selection", async ({
+  page,
+}) => {
+  await page.goto("/")
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  await page
+    .getByRole("region", { name: "Layers" })
+    .getByRole("button", { name: "Add vector layer" })
+    .click()
+  const box = (await page
+    .getByRole("img", { name: "Drawing canvas" })
+    .boundingBox())!
+  const x = box.x + box.width / 2,
+    y = box.y + box.height / 2
+  // The art: a long body, then a short square end.
+  await page.getByRole("button", { name: "Rectangle tool" }).click()
+  for (const [x0, x1] of [
+    [-60, 20],
+    [30, 50],
+  ]) {
+    await page.mouse.move(x + x0, y - 10)
+    await page.mouse.down()
+    await page.mouse.move(x + x1, y + 10, { steps: 5 })
+    await page.mouse.up()
+  }
+  await page
+    .getByRole("button", { name: "Select objects", exact: true })
+    .click()
+  // A marquee round both.
+  await page.mouse.move(x - 80, y - 40)
+  await page.mouse.down()
+  await page.mouse.move(x + 80, y + 40, { steps: 5 })
+  await page.mouse.up()
+  const picker = page.getByRole("button", { name: /^Choose vector brush/ })
+  await picker.click()
+  await page
+    .getByRole("button", { name: "Make pattern brush", exact: true })
+    .click()
+  const pattern = page.getByRole("region", { name: "Pattern" })
+  await expect(
+    pattern.getByRole("img", { name: "Pattern preview" })
+  ).toBeVisible()
+  // Patterns ignore tapers, so the width profile hides them.
+  await expect(
+    page.getByRole("spinbutton", { name: "Start profile taper" })
+  ).toHaveCount(0)
+  await pattern
+    .getByRole("combobox", { name: "Shape 2 role" })
+    .selectOption("end")
+  await expect(
+    pattern.getByRole("combobox", { name: "Shape 2 role" })
+  ).toHaveValue("end")
+  await page.getByRole("textbox", { name: "Vector brush name" }).fill("Capped")
+  await page.getByRole("button", { name: "Save vector brush" }).click()
+  await expect(picker).toHaveAccessibleName("Choose vector brush: Capped")
+  await page.getByRole("button", { name: "Vector brush tool" }).click()
+  await page.mouse.move(x - 150, y + 80)
+  await page.mouse.down()
+  await page.mouse.move(x + 150, y + 80, { steps: 10 })
+  await page.mouse.up()
+  await page.getByRole("button", { name: "Export or import" }).click()
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: "Export SVG" }).click(),
+  ])
+  const svg = await readFile(await download.path(), "utf8")
+  const group = svg.match(/<g data-vector-brush="([^"]+)"/)
+  const brush = JSON.parse(group![1].replaceAll("&quot;", '"'))
+  expect(brush.definition.pattern.start).toBeNull()
+  expect(brush.definition.pattern.end).not.toBeNull()
+})
+
 test("make a scatter brush from a selection and draw with it", async ({
   page,
 }) => {

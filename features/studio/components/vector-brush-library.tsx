@@ -25,6 +25,8 @@ import {
   type VectorBrush,
   type VectorBrushKind,
 } from "@/engine/brush/vector-brush"
+import type { PatternSource } from "@/engine/doc/vector-brush"
+import { pathData } from "@/engine/store/export-svg"
 import type {
   VectorBrushLibrary as Library,
   VectorBrushStore,
@@ -46,6 +48,7 @@ export function VectorBrushLibrary({
   apply,
   canApply,
   makeArt,
+  selection,
   close,
 }: {
   library: Library
@@ -55,10 +58,16 @@ export function VectorBrushLibrary({
   apply(brush: VectorBrush): void
   canApply: boolean
   /** A pattern or scatter brush made of the selected objects; throws when it cannot be. */
-  makeArt(kind: "pattern" | "scatter"): VectorBrush
+  makeArt(kind: "pattern" | "scatter", source?: PatternSource): VectorBrush
+  /** The selected objects' ids, to assign as caps or the axis. */
+  selection: readonly string[]
   close(): void
 }) {
   const [editing, setEditing] = useState<VectorBrush | null>(null)
+  /** How the brush being edited was made from the selection, if it was. */
+  const [source, setSource] = useState<PatternSource | null>(null)
+  /** The objects the art was made from, kept while the selection moves on. */
+  const [shapes, setShapes] = useState<readonly string[]>([])
   const [sourceId, setSourceId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   async function work(action: () => Promise<unknown>) {
@@ -75,7 +84,13 @@ export function VectorBrushLibrary({
       setBusy(false)
     }
   }
-  function edit(brush: VectorBrush, id: string | null) {
+  function edit(
+    brush: VectorBrush,
+    id: string | null,
+    from: PatternSource | null = null
+  ) {
+    setSource(from)
+    setShapes(selection)
     setSourceId(id)
     setEditing(structuredClone(brush))
   }
@@ -166,7 +181,7 @@ export function VectorBrushLibrary({
             disabled={!canApply}
             onClick={() => {
               try {
-                edit(makeArt(kind), null)
+                edit(makeArt(kind), null, kind === "pattern" ? {} : null)
               } catch (error) {
                 toast.error(
                   error instanceof Error
@@ -233,12 +248,45 @@ export function VectorBrushLibrary({
                   {kind === "scatter" ? (
                     <ScatterSection brush={editing} change={setEditing} />
                   ) : kind === "pattern" ? (
-                    <PatternSection brush={editing} change={setEditing} />
+                    <PatternSection
+                      brush={editing}
+                      change={setEditing}
+                      source={source}
+                      shapes={shapes}
+                      remake={(next) => {
+                        try {
+                          if (
+                            selection.length !== shapes.length ||
+                            selection.some((id) => !shapes.includes(id))
+                          )
+                            throw new Error(
+                              "Reselect the shapes this brush was made from to change its caps or axis."
+                            )
+                          const made = makeArt("pattern", next).pattern!
+                          setEditing({
+                            ...editing,
+                            pattern: {
+                              ...made,
+                              mode: editing.pattern!.mode,
+                              corners: editing.pattern!.corners,
+                            },
+                          })
+                          setSource(next)
+                        } catch (error) {
+                          toast.error(
+                            error instanceof Error
+                              ? error.message
+                              : "Could not remake the pattern brush."
+                          )
+                        }
+                      }}
+                    />
                   ) : kind === "calligraphy" ? (
                     <CalligraphySection brush={editing} change={setEditing} />
                   ) : kind === "profile" ? (
                     <ProfileSection
                       params={editing.params}
+                      pressureOnly={editing.kind === "pattern"}
                       change={(params) =>
                         setEditing({
                           ...editing,
@@ -299,9 +347,12 @@ const SHARES = [
 
 function ProfileSection({
   params,
+  pressureOnly,
   change,
 }: {
   params: ProfileParams
+  /** A pattern's art keeps its own shape, so only pressure reaches it. */
+  pressureOnly: boolean
   change(params: Partial<ProfileParams>): void
 }) {
   return (
@@ -328,56 +379,60 @@ function ProfileSection({
           }
         />
       </label>
-      {(["start", "end"] as const).map((end) => (
-        <label key={end} className="flex items-center gap-2">
-          {end === "start" ? "Start" : "End"} taper (%)
-          <Input
-            type="number"
-            aria-label={`${end === "start" ? "Start" : "End"} profile taper`}
-            min={0}
-            max={50}
-            value={params.taper[end] * 100}
+      {!pressureOnly &&
+        (["start", "end"] as const).map((end) => (
+          <label key={end} className="flex items-center gap-2">
+            {end === "start" ? "Start" : "End"} taper (%)
+            <Input
+              type="number"
+              aria-label={`${end === "start" ? "Start" : "End"} profile taper`}
+              min={0}
+              max={50}
+              value={params.taper[end] * 100}
+              onChange={(event) =>
+                change({
+                  taper: {
+                    ...params.taper,
+                    [end]: Number(event.target.value) / 100,
+                  },
+                })
+              }
+            />
+          </label>
+        ))}
+      {!pressureOnly && (
+        <label className="flex items-center gap-2">
+          Caps
+          <select
+            aria-label="Profile caps"
+            className="h-8 rounded-md border bg-transparent px-2"
+            value={params.caps}
             onChange={(event) =>
-              change({
-                taper: {
-                  ...params.taper,
-                  [end]: Number(event.target.value) / 100,
-                },
-              })
+              change({ caps: event.target.value as ProfileParams["caps"] })
             }
-          />
+          >
+            <option value="style">Shape style</option>
+            <option value="round">Round</option>
+            <option value="flat">Flat</option>
+          </select>
         </label>
-      ))}
-      <label className="flex items-center gap-2">
-        Caps
-        <select
-          aria-label="Profile caps"
-          className="h-8 rounded-md border bg-transparent px-2"
-          value={params.caps}
-          onChange={(event) =>
-            change({ caps: event.target.value as ProfileParams["caps"] })
-          }
-        >
-          <option value="style">Shape style</option>
-          <option value="round">Round</option>
-          <option value="flat">Flat</option>
-        </select>
-      </label>
-      {SHARES.map(([key, label]) => (
-        <label key={key} className="flex items-center gap-2">
-          {label} (%)
-          <Input
-            type="number"
-            aria-label={label}
-            min={0}
-            max={100}
-            value={Math.round(params[key] * 100)}
-            onChange={(event) =>
-              change({ [key]: Number(event.target.value) / 100 })
-            }
-          />
-        </label>
-      ))}
+      )}
+      {!pressureOnly &&
+        SHARES.map(([key, label]) => (
+          <label key={key} className="flex items-center gap-2">
+            {label} (%)
+            <Input
+              type="number"
+              aria-label={label}
+              min={0}
+              max={100}
+              value={Math.round(params[key] * 100)}
+              onChange={(event) =>
+                change({ [key]: Number(event.target.value) / 100 })
+              }
+            />
+          </label>
+        ))}
     </div>
   )
 }
@@ -456,12 +511,23 @@ function CalligraphySection({
   )
 }
 
+const AXES = { horizontal: "Horizontal", vertical: "Vertical" } as const
+
+type Role = "tile" | "start" | "end"
+
 function PatternSection({
   brush,
   change,
+  source,
+  shapes,
+  remake,
 }: {
   brush: VectorBrush
   change(brush: VectorBrush): void
+  /** How the art was made from the selection; null once saved. */
+  source: PatternSource | null
+  shapes: readonly string[]
+  remake(source: PatternSource): void
 }) {
   const { pattern } = brush
   if (brush.kind !== "pattern" || !pattern)
@@ -473,8 +539,80 @@ function PatternSection({
     )
   const set = (patch: Partial<PatternParams>) =>
     change({ ...brush, pattern: { ...pattern, ...patch } })
+  const axis = source?.axis ?? "horizontal"
+  const drawn = typeof axis === "object" ? axis.drawn : null
+  const roleOf = (id: string): Role =>
+    source?.start?.includes(id)
+      ? "start"
+      : source?.end?.includes(id)
+        ? "end"
+        : "tile"
+  const assign = (id: string, role: Role) => {
+    const without = (ids?: readonly string[]) =>
+      (ids ?? []).filter((other) => other !== id)
+    remake({
+      ...source,
+      start:
+        role === "start"
+          ? [...without(source?.start), id]
+          : without(source?.start),
+      end:
+        role === "end" ? [...without(source?.end), id] : without(source?.end),
+    })
+  }
   return (
     <div className="grid grid-cols-2 gap-2 text-sm">
+      <PatternPreview pattern={pattern} />
+      {source && (
+        <>
+          <label className="col-span-2 flex items-center gap-2">
+            Spine axis
+            <select
+              aria-label="Pattern axis"
+              className="h-8 rounded-md border bg-transparent px-2"
+              value={drawn === null ? (axis as string) : `drawn:${drawn}`}
+              onChange={(event) => {
+                const value = event.target.value
+                remake({
+                  ...source,
+                  axis: value.startsWith("drawn:")
+                    ? { drawn: value.slice("drawn:".length) }
+                    : (value as keyof typeof AXES),
+                })
+              }}
+            >
+              {Object.entries(AXES).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+              {shapes.map((id, i) => (
+                <option key={id} value={`drawn:${id}`}>
+                  Drawn: shape {i + 1}
+                </option>
+              ))}
+            </select>
+          </label>
+          {shapes.map(
+            (id, i) =>
+              id !== drawn && (
+                <label key={id} className="flex items-center gap-2">
+                  Shape {i + 1}
+                  <select
+                    aria-label={`Shape ${i + 1} role`}
+                    className="h-8 rounded-md border bg-transparent px-2"
+                    value={roleOf(id)}
+                    onChange={(event) => assign(id, event.target.value as Role)}
+                  >
+                    <option value="tile">Tile</option>
+                    <option value="start">Start cap</option>
+                    <option value="end">End cap</option>
+                  </select>
+                </label>
+              )
+          )}
+        </>
+      )}
       <label className="flex items-center gap-2">
         Fit
         <select
@@ -601,5 +739,52 @@ function ScatterSection({
         width&rdquo; in the width profile scales each copy.
       </p>
     </div>
+  )
+}
+
+/** The art laid out flat: start cap, tile, end cap, a stroke width tall. */
+function PatternPreview({ pattern }: { pattern: PatternParams }) {
+  const gap = 0.2
+  let x = 0
+  const pieces = [pattern.start, pattern.tile, pattern.end].flatMap(
+    (piece, i) => {
+      if (!piece) return []
+      const at = x
+      x += piece.length + gap
+      return [{ piece, at, tile: i === 1 }]
+    }
+  )
+  const width = x - gap
+  return (
+    <svg
+      role="img"
+      aria-label="Pattern preview"
+      className="col-span-2 h-16 w-full rounded-md border bg-muted/40 text-foreground"
+      viewBox={`${-gap} -0.7 ${width + 2 * gap} 1.4`}
+      preserveAspectRatio="xMidYMid meet"
+    >
+      {pieces.map(({ piece, at, tile }) => (
+        <g key={at} transform={`translate(${at} 0)`}>
+          {tile && (
+            <rect
+              x={0}
+              y={-0.5}
+              width={piece.length}
+              height={1}
+              fill="none"
+              stroke="currentColor"
+              strokeOpacity={0.25}
+              strokeWidth={0.02}
+              strokeDasharray="0.06 0.04"
+            />
+          )}
+          <path
+            d={piece.paths.map(pathData).join(" ")}
+            fill="currentColor"
+            fillRule="nonzero"
+          />
+        </g>
+      ))}
+    </svg>
   )
 }

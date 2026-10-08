@@ -1632,13 +1632,14 @@ export function CanvasHost({
                               })
                             }}
                             canApply={snapshot.vectorSelection.length > 0}
-                            makeArt={(kind) => {
+                            makeArt={(kind, source) => {
                               if (!engine)
                                 throw new Error("The canvas is not ready.")
                               return kind === "scatter"
                                 ? engine.scatterBrushFromSelection()
-                                : engine.patternBrushFromSelection()
+                                : engine.patternBrushFromSelection(source)
                             }}
+                            selection={snapshot.vectorSelection}
                             close={() => setVectorBrushOpen(false)}
                           />
                         </PopoverPrimitive.Content>

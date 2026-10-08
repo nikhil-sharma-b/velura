@@ -27,7 +27,7 @@ const escape = (value: string) =>
     )
 
 /** Keep authored anchors and handles as native SVG cubic segments. */
-function pathData(path: BezierPath): string {
+export function pathData(path: BezierPath): string {
   const first = path.nodes[0]
   const commands = [`M${first.x} ${first.y}`]
   const segments = path.closed ? path.nodes.length : path.nodes.length - 1
