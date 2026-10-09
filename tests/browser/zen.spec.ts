@@ -52,3 +52,21 @@ test("f hides the controls, painting still lands, and f restores them", async ({
   await page.keyboard.press("f")
   await expect(undo).toBeDisabled()
 })
+
+test("zen leaves a dot that brings the controls back", async ({ page }) => {
+  await page.goto("/")
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  const layers = page.getByRole("region", { name: "Layers" })
+  await expect(layers).toBeVisible()
+  const dot = page.getByRole("button", { name: "Leave zen mode" })
+  await expect(dot).toBeHidden()
+
+  await page.keyboard.press("f")
+  await expect(layers).toBeHidden()
+  await dot.click()
+  await expect(layers).toBeVisible()
+  await expect(dot).toBeHidden()
+})

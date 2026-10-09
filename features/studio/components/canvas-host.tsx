@@ -2503,6 +2503,27 @@ export function CanvasHost({
         className="pointer-events-none absolute inset-0"
         hidden={zen || snapshot.status !== "ready"}
       />
+      {/* Zen's one mark: says the controls are put away, not broken, and
+          brings them back. */}
+      {zen && snapshot.status === "ready" && (
+        <IconButton
+          label="Leave zen mode"
+          command="view.zen"
+          side="right"
+          variant="ghost"
+          // A white dot that subtracts itself from whatever is beneath: dark
+          // on light paint, light on dark. The blend sits on the button, not
+          // the dot, as opacity on the button would blend the dot only with
+          // the button.
+          className="group absolute top-2 left-2 size-6 rounded-full p-0 mix-blend-difference hover:bg-transparent dark:hover:bg-transparent"
+          onClick={() => setZen(false)}
+        >
+          <span
+            aria-hidden
+            className="size-1.5 shrink-0 rounded-full bg-white transition-transform group-hover:scale-150"
+          />
+        </IconButton>
+      )}
       {snapshot.status !== "ready" && (
         <div className="absolute inset-0 grid place-items-center bg-background p-6">
           <section
