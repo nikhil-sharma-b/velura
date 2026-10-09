@@ -296,3 +296,27 @@ test("a click on the canvas closes the library without painting", async ({
   await click()
   await expect(undo).toBeEnabled()
 })
+
+test("closed by a click the trigger shows no tooltip; closed by Escape it has focus back", async ({
+  page,
+}) => {
+  await openLibrary(page)
+  const trigger = page.locator('button[aria-label^="Choose brush:"]')
+  const canvas = (await page
+    .locator('canvas[aria-label="Drawing canvas"]')
+    .boundingBox())!
+  await page.mouse.click(
+    canvas.x + canvas.width * 0.6,
+    canvas.y + canvas.height * 0.5
+  )
+  await expect(library(page)).toBeHidden()
+  await page.waitForTimeout(600)
+  await expect(page.getByRole("tooltip")).toHaveCount(0)
+  await expect(trigger).not.toBeFocused()
+
+  await trigger.click()
+  await expect(library(page)).toBeVisible()
+  await page.keyboard.press("Escape")
+  await expect(library(page)).toBeHidden()
+  await expect(trigger).toBeFocused()
+})

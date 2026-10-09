@@ -136,6 +136,7 @@ import {
 import { BrushLibrary } from "./brush-library"
 import { TiltToggle } from "./tilt-toggle"
 import { IconButton } from "./icon-button"
+import { returnFocusForKeysOnly } from "@/lib/input-modality"
 import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
 import { ShapeStylePanel } from "./shape-style-panel"
@@ -359,6 +360,7 @@ function ShapeToolSlot({
       </PopoverPrimitive.Anchor>
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Content
+          onCloseAutoFocus={returnFocusForKeysOnly}
           side="right"
           align="start"
           sideOffset={10}
@@ -539,6 +541,7 @@ function QuickSetting({
       </PopoverPrimitive.Trigger>
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Content
+          onCloseAutoFocus={returnFocusForKeysOnly}
           side="right"
           align="start"
           sideOffset={10}
@@ -1616,14 +1619,12 @@ export function CanvasHost({
                       </PopoverPrimitive.Trigger>
                       <PopoverPrimitive.Portal>
                         <PopoverPrimitive.Content
+                          onCloseAutoFocus={returnFocusForKeysOnly}
                           side="right"
                           align="end"
                           sideOffset={10}
                           collisionPadding={12}
                           aria-label="Choose a vector brush"
-                          // Focus handed back to the trigger would open its
-                          // tooltip over the taper setting beside it.
-                          onCloseAutoFocus={(event) => event.preventDefault()}
                           className="scroll-rounded z-50 max-h-[var(--radix-popover-content-available-height)] w-72 overflow-y-auto rounded-xl border bg-background p-3 shadow-xl"
                         >
                           <VectorBrushLibrary
@@ -1682,6 +1683,7 @@ export function CanvasHost({
                       </PopoverPrimitive.Trigger>
                       <PopoverPrimitive.Portal>
                         <PopoverPrimitive.Content
+                          onCloseAutoFocus={returnFocusForKeysOnly}
                           side="right"
                           align="end"
                           sideOffset={10}
@@ -1749,6 +1751,7 @@ export function CanvasHost({
                       </PopoverPrimitive.Trigger>
                       <PopoverPrimitive.Portal>
                         <PopoverPrimitive.Content
+                          onCloseAutoFocus={returnFocusForKeysOnly}
                           side="right"
                           align="start"
                           sideOffset={10}
@@ -1917,6 +1920,7 @@ export function CanvasHost({
                     </PopoverPrimitive.Trigger>
                     <PopoverPrimitive.Portal>
                       <PopoverPrimitive.Content
+                        onCloseAutoFocus={returnFocusForKeysOnly}
                         side="right"
                         align="start"
                         sideOffset={10}
