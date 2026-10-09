@@ -291,9 +291,11 @@ export function PreferencesPanel<Context>({
                                       replace: chord,
                                     })
                                   }}
-                                  className="h-6 bg-muted px-2 font-mono hover:bg-accent"
+                                  className="group flex h-6 items-center focus-visible:outline-2 focus-visible:outline-primary"
                                 >
-                                  {format(chord)}
+                                  <Kbd className="group-hover:bg-accent group-hover:text-accent-foreground">
+                                    {format(chord)}
+                                  </Kbd>
                                 </button>
                                 <Button
                                   variant="ghost"
