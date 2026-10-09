@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test"
 
+import { refreshTokenKey } from "../../features/library/lib/saved-session"
+
 const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL
 
 /**
@@ -8,7 +10,7 @@ const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL
  */
 test("a saved session sends / to the library", async ({ page }) => {
   test.skip(!convexUrl, "needs NEXT_PUBLIC_CONVEX_URL")
-  const key = `__convexAuthRefreshToken_${convexUrl!.replace(/[^a-zA-Z0-9]/g, "")}`
+  const key = refreshTokenKey(convexUrl!)
   await page.addInitScript((key) => {
     localStorage.setItem(key, "a-refresh-token")
   }, key)

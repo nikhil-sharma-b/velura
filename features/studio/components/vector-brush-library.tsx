@@ -254,7 +254,7 @@ export function VectorBrushLibrary({
                       </span>
                     </span>
                   </button>
-                  {library.brushes.some((b) => b.id === brush.id) && (
+                  {name === MINE && (
                     <div className="flex gap-1 px-3">
                       <Button
                         size="sm"

@@ -11,11 +11,15 @@
 export function hasSavedSession(): boolean {
   const url = process.env.NEXT_PUBLIC_CONVEX_URL
   if (!url) return false
-  const key = `__convexAuthRefreshToken_${url.replace(/[^a-zA-Z0-9]/g, "")}`
   try {
-    return window.localStorage.getItem(key) !== null
+    return window.localStorage.getItem(refreshTokenKey(url)) !== null
   } catch {
     // Storage blocked: no session could have been kept either.
     return false
   }
+}
+
+/** Where Convex Auth keeps a deployment's refresh token in localStorage. */
+export function refreshTokenKey(convexUrl: string): string {
+  return `__convexAuthRefreshToken_${convexUrl.replace(/[^a-zA-Z0-9]/g, "")}`
 }

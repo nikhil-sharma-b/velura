@@ -60,15 +60,13 @@ function glyphs(text: string) {
       const icon = ICONS[part]
       if (!icon) return part
       const { Glyph, extent, weight = "bold" } = icon
+      const size = `${(0.7 * 256) / extent}em`
       return (
         <span key={i} className="inline-flex">
           <Glyph
             aria-hidden
             weight={weight}
-            style={{
-              width: `${(0.7 * 256) / extent}em`,
-              height: `${(0.7 * 256) / extent}em`,
-            }}
+            style={{ width: size, height: size }}
           />
           <span className="sr-only">{part}</span>
         </span>
