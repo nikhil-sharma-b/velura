@@ -1621,7 +1621,7 @@ export function CanvasHost({
                           // Focus handed back to the trigger would open its
                           // tooltip over the taper setting beside it.
                           onCloseAutoFocus={(event) => event.preventDefault()}
-                          className="z-50 max-h-[var(--radix-popover-content-available-height)] w-72 overflow-y-auto rounded-xl border bg-background p-3 shadow-xl"
+                          className="scroll-rounded z-50 max-h-[var(--radix-popover-content-available-height)] w-72 overflow-y-auto rounded-xl border bg-background p-3 shadow-xl"
                         >
                           <VectorBrushLibrary
                             library={vectorBrushLibrary}
@@ -1683,7 +1683,7 @@ export function CanvasHost({
                           sideOffset={10}
                           collisionPadding={12}
                           aria-label="Choose an eraser"
-                          className="z-50 max-h-[var(--radix-popover-content-available-height)] w-72 overflow-y-auto rounded-xl border bg-background p-3 shadow-xl"
+                          className="scroll-rounded z-50 max-h-[var(--radix-popover-content-available-height)] w-72 overflow-y-auto rounded-xl border bg-background p-3 shadow-xl"
                         >
                           <h2 className="mb-2 text-sm font-medium">Erasers</h2>
                           {(["solid", "pressure"] as const).map((kind) => (
@@ -1749,7 +1749,7 @@ export function CanvasHost({
                           sideOffset={10}
                           collisionPadding={12}
                           aria-label="Choose a brush"
-                          className="z-50 max-h-[min(36rem,var(--radix-popover-content-available-height))] w-80 max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border bg-background shadow-xl outline-none"
+                          className="scroll-rounded z-50 max-h-[min(36rem,var(--radix-popover-content-available-height))] w-80 max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border bg-background shadow-xl outline-none"
                         >
                           {engine && (
                             <BrushLibrary
@@ -2285,7 +2285,7 @@ export function CanvasHost({
           </TooltipProvider>
 
           {engine && colorOpen && (
-            <aside className="absolute top-16 left-16 z-10 max-h-[calc(100dvh-5rem)] w-72 max-w-[calc(100vw-5rem)] overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/95 shadow-xl backdrop-blur-xl">
+            <aside className="scroll-rounded absolute top-16 left-16 z-10 max-h-[calc(100dvh-5rem)] w-72 max-w-[calc(100vw-5rem)] overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/95 shadow-xl backdrop-blur-xl">
               <ColorPanel
                 engine={engine}
                 snapshot={snapshot}
@@ -2332,7 +2332,7 @@ export function CanvasHost({
             {engine && panelsOpen && (
               <aside
                 className={cn(
-                  "pointer-events-auto flex min-h-0 w-full flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl",
+                  "scroll-rounded pointer-events-auto flex min-h-0 w-full flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl",
                   // The layers keep their height and the editor below them
                   // scrolls, up to half the column so a long stack cannot
                   // crowd the editor out.
@@ -2359,7 +2359,7 @@ export function CanvasHost({
             {engine && brushOpen && snapshot.tool !== "eraser" && (
               <aside
                 ref={brushPanel}
-                className="pointer-events-auto flex min-h-0 w-full shrink flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl"
+                className="scroll-rounded pointer-events-auto flex min-h-0 w-full shrink flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl"
               >
                 <BrushEditor
                   brush={snapshot.brush}
