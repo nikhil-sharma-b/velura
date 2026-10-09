@@ -111,7 +111,9 @@ test("a selected object's fill colour and outline width change from the shape op
   await width.fill("24")
   await width.press("Enter")
   await expect(width).toHaveValue("24")
-  await sizeSetting.click()
+  // Escape rather than the trigger: an open popover is modal, so the rest of
+  // the studio, its trigger included, is out of the accessibility tree.
+  await page.keyboard.press("Escape")
   await expect(sizeSetting).toHaveAccessibleName("Width: 24 px")
 
   // The colour last, with the options left open: a colour lands on the next

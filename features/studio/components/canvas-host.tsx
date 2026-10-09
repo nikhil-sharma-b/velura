@@ -333,7 +333,9 @@ function ShapeToolSlot({
   const held = SHAPE_TOOLS.find((shape) => shape === tool)
   if (held && held !== shown) setShown(held)
   return (
-    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+    // Every popover over the canvas is modal: the click that closes it reaches
+    // nothing else, so dismissing a panel never leaves a mark on the canvas.
+    <PopoverPrimitive.Root modal open={open} onOpenChange={setOpen}>
       <PopoverPrimitive.Anchor asChild>
         <RailAction
           label={VECTOR_TOOL_RAIL[shown].label}
@@ -520,7 +522,7 @@ function QuickSetting({
   // The value sits under the icon rather than beside it, so the panel keeps
   // the tool bar's width: a readout is what tells a setting from a tool.
   return (
-    <PopoverPrimitive.Root>
+    <PopoverPrimitive.Root modal>
       <PopoverPrimitive.Trigger asChild>
         <IconButton
           label={`${label}: ${value}`}
@@ -1591,6 +1593,7 @@ export function CanvasHost({
                     snapshot.tool === "objectSelect") &&
                     snapshot.vectorSelection.length > 0) ? (
                     <PopoverPrimitive.Root
+                      modal
                       open={vectorBrushOpen}
                       onOpenChange={setVectorBrushOpen}
                     >
@@ -1654,6 +1657,7 @@ export function CanvasHost({
                     </PopoverPrimitive.Root>
                   ) : snapshot.tool === "eraser" ? (
                     <PopoverPrimitive.Root
+                      modal
                       open={eraserOpen}
                       onOpenChange={setEraserOpen}
                     >
@@ -1722,6 +1726,7 @@ export function CanvasHost({
                     </PopoverPrimitive.Root>
                   ) : (
                     <PopoverPrimitive.Root
+                      modal
                       open={libraryOpen}
                       onOpenChange={setLibraryOpen}
                     >
@@ -1895,6 +1900,7 @@ export function CanvasHost({
                 here rather than only in app settings because the thing it has
                 to be judged against is the canvas. */}
                   <PopoverPrimitive.Root
+                    modal
                     open={pressureOpen}
                     onOpenChange={setPressureOpen}
                   >

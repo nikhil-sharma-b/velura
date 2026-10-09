@@ -264,3 +264,35 @@ test("the brush and size a document was left with are restored", async ({
   await page.getByRole("button", { name: "Brush editor" }).click()
   await expect(editor(page)).toContainText("Inking pen")
 })
+
+test("a click on the canvas closes the library without painting", async ({
+  page,
+}) => {
+  await openLibrary(page)
+  // By attribute: while the panel is open the rest of the studio is hidden
+  // from the accessibility tree, as a modal's surroundings are.
+  const undo = page.locator('button[aria-label="Undo"]')
+  await expect(undo).toBeDisabled()
+  const canvas = (await page
+    .locator('canvas[aria-label="Drawing canvas"]')
+    .boundingBox())!
+  const x = canvas.x + canvas.width * 0.6
+  const y = canvas.y + canvas.height * 0.5
+  // A hand's click: the pointer arrives over the canvas, then presses.
+  const click = async () => {
+    await page.mouse.move(x - 40, y - 20, { steps: 5 })
+    await page.mouse.move(x, y, { steps: 10 })
+    await page.mouse.down()
+    await page.waitForTimeout(80)
+    await page.mouse.up()
+  }
+  await click()
+  await expect(library(page)).toBeHidden()
+  // Nothing went down: no stroke to undo.
+  await page.waitForTimeout(300)
+  await expect(undo).toBeDisabled()
+
+  // The next click paints, as it would have with no panel open.
+  await click()
+  await expect(undo).toBeEnabled()
+})
