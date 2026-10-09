@@ -471,7 +471,9 @@ export function BrushEditor({
         </p>
       )}
       <Tabs defaultValue="shape">
-        <TabsList className="w-full">
+        {/* Six tabs do not fit the panel's width in one row: two rows of
+            three keep every name whole rather than scrolling the panel. */}
+        <TabsList className="grid w-full grid-cols-3 gap-px *:h-7 group-data-horizontal/tabs:h-auto">
           <TabsTrigger value="shape">Shape</TabsTrigger>
           <TabsTrigger value="scatter">Scatter</TabsTrigger>
           <TabsTrigger value="colour">Colour</TabsTrigger>

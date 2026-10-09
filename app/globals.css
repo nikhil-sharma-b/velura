@@ -223,10 +223,20 @@
   }
   .scroll-rounded::-webkit-scrollbar {
     width: 10px;
+    height: 10px;
   }
   .scroll-rounded::-webkit-scrollbar-track {
     background: transparent;
+  }
+  .scroll-rounded::-webkit-scrollbar-track:vertical {
     margin-block: var(--scroll-inset);
+  }
+  .scroll-rounded::-webkit-scrollbar-track:horizontal {
+    margin-inline: var(--scroll-inset);
+  }
+  /* Where the two bars would meet: left unstyled, it is an opaque square. */
+  .scroll-rounded::-webkit-scrollbar-corner {
+    background: transparent;
   }
   .scroll-rounded::-webkit-scrollbar-thumb {
     border: 3px solid transparent;
