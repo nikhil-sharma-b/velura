@@ -1,6 +1,9 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
+
+import { hasSavedSession } from "@/features/library/lib/saved-session"
 
 import { opfsAvailable } from "@/engine/store/blob-store"
 import { CanvasHost } from "./canvas-host"
@@ -13,6 +16,13 @@ import { anonymousDocumentId } from "../lib/anonymous-document"
  * still there on the next visit (§9a).
  */
 export function AnonymousStudio() {
+  const router = useRouter()
+  // Someone signed in lands in their library, not on a signed-out canvas
+  // asking them to sign in. Checked after hydration, as the server cannot
+  // see the session; the studio is still starting up when it leaves.
+  useEffect(() => {
+    if (hasSavedSession()) router.replace("/library")
+  }, [router])
   const [documentId] = useState<string | undefined>(() =>
     typeof window === "undefined" ? undefined : anonymousDocumentId()
   )
