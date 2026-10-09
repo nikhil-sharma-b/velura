@@ -122,3 +122,18 @@ test("reassign, unbind and reset all", async ({ page }) => {
   await page.keyboard.press("e")
   await expect(eraser).toHaveAttribute("aria-pressed", "true")
 })
+
+test("the palette's Keyboard shortcuts opens the shortcut list", async ({
+  page,
+}) => {
+  await openStudio(page)
+  await page.keyboard.press("ControlOrMeta+k")
+  await page
+    .getByRole("combobox", { name: "Search commands" })
+    .fill("keyboard shortcuts")
+  await page.keyboard.press("Enter")
+  const dialog = page.getByRole("dialog", { name: "Preferences" })
+  await expect(
+    dialog.getByRole("region", { name: "Keyboard shortcuts" })
+  ).toBeVisible()
+})

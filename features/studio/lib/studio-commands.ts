@@ -396,6 +396,16 @@ export const studioCommands = createRegistry<StudioContext>([
     run: ({ openPreferences }) => openPreferences(),
   },
   {
+    // The shortcuts live in Preferences, where they are rebound too; this is
+    // the name someone looking for them types into the palette.
+    id: "preferences.shortcuts",
+    label: "Keyboard shortcuts",
+    category: "General",
+    keybinds: [],
+    repeat: false,
+    run: ({ openPreferences }) => openPreferences(),
+  },
+  {
     // F, where Photoshop cycles its screen modes. Not Tab: in a browser Tab
     // is how the keyboard moves between the controls, and zen should not
     // cost anyone that.
