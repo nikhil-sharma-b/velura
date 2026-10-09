@@ -137,3 +137,24 @@ test("the palette's Keyboard shortcuts opens the shortcut list", async ({
     dialog.getByRole("region", { name: "Keyboard shortcuts" })
   ).toBeVisible()
 })
+
+test("the theme is chosen in preferences and survives a reload", async ({
+  page,
+}) => {
+  await page.emulateMedia({ colorScheme: "light" })
+  await openStudio(page)
+  const html = page.locator("html")
+  await expect(html).not.toHaveClass(/dark/)
+  const dialog = await openPreferences(page)
+  const theme = dialog.getByRole("combobox", { name: "Theme" })
+  await expect(theme).toHaveText("Match system")
+  await theme.click()
+  await page.getByRole("option", { name: "Dark" }).click()
+  await expect(html).toHaveClass(/dark/)
+
+  await openStudio(page)
+  await expect(html).toHaveClass(/dark/)
+  await expect(
+    (await openPreferences(page)).getByRole("combobox", { name: "Theme" })
+  ).toHaveText("Dark")
+})

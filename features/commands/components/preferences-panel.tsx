@@ -5,6 +5,7 @@ import {
   PlusIcon,
   XIcon,
 } from "@phosphor-icons/react"
+import { useTheme } from "next-themes"
 import { useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
@@ -81,6 +82,8 @@ export function PreferencesPanel<Context>({
   const overrides = useKeybindOverrides()
   const registry = useBoundRegistry(defaults)
   const magnification = useRasterMagnification()
+  // The same choice D toggles, kept by next-themes on this device.
+  const { theme, setTheme } = useTheme()
   const [capture, setCapture] = useState<Capture>()
   const [pending, setPending] = useState<Pending>()
   // The modifier pressed alone since capture began, so a key already held
@@ -163,6 +166,29 @@ export function PreferencesPanel<Context>({
             Settings for Velura on this device.
           </DialogDescription>
         </div>
+        <section
+          aria-labelledby="preferences-appearance"
+          className="flex flex-col gap-2"
+        >
+          <h3 id="preferences-appearance" className="font-medium">
+            Appearance
+          </h3>
+          <div className="flex items-center justify-between gap-2">
+            <label htmlFor="preferences-theme">Theme</label>
+            <Select value={theme ?? "system"} onValueChange={setTheme}>
+              <SelectTrigger id="preferences-theme">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="system">Match system</SelectItem>
+                  <SelectItem value="light">Light</SelectItem>
+                  <SelectItem value="dark">Dark</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+        </section>
         <section
           aria-labelledby="preferences-canvas"
           className="flex flex-col gap-2"
