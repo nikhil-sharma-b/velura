@@ -335,7 +335,7 @@ export function PreferencesPanel<Context>({
                                   }}
                                   className="group flex items-center hover:bg-accent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
                                 >
-                                  <Kbd className="bg-transparent text-foreground group-hover:text-accent-foreground">
+                                  <Kbd className="border-0 bg-transparent text-foreground group-hover:text-accent-foreground">
                                     {format(chord)}
                                   </Kbd>
                                 </button>
