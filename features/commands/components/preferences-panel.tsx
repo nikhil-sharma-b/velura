@@ -1,6 +1,10 @@
 "use client"
 
-import { XIcon } from "@phosphor-icons/react"
+import {
+  ArrowCounterClockwiseIcon,
+  PlusIcon,
+  XIcon,
+} from "@phosphor-icons/react"
 import { useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
@@ -243,19 +247,24 @@ export function PreferencesPanel<Context>({
               </Button>
             </div>
           )}
-          <div className="min-h-0 overflow-y-auto">
+          <div className="-mx-2 min-h-0 overflow-y-auto">
             {categories.map((category) => (
               <div key={category} className="mb-3">
-                <h4 className="mb-1 text-muted-foreground">{category}</h4>
+                <h4 className="sticky top-0 z-10 bg-popover px-2 py-1 text-muted-foreground">
+                  {category}
+                </h4>
                 <ul>
                   {registry
                     .list()
                     .filter((command) => command.category === category)
                     .map((command) => {
                       const chords = registry.keybinds(command.id)
+                      const changed = command.id in overrides
                       const capturing = (replace?: Chord) =>
                         capture?.id === command.id &&
                         capture.replace === replace
+                      // The slot being filled keeps a keycap's shape, outlined
+                      // in the accent so it reads as waiting on the keyboard.
                       const captureButton = () => (
                         <button
                           autoFocus
@@ -263,7 +272,7 @@ export function PreferencesPanel<Context>({
                           onKeyDown={onCaptureKeyDown}
                           onKeyUp={onCaptureKeyUp}
                           onBlur={() => setCapture(undefined)}
-                          className="h-6 bg-accent px-2 font-mono text-accent-foreground"
+                          className="h-6 border border-primary bg-primary/10 px-2 text-xs text-foreground outline-none motion-safe:animate-pulse"
                         >
                           Press a key…
                         </button>
@@ -272,18 +281,51 @@ export function PreferencesPanel<Context>({
                         <li
                           key={command.id}
                           data-command={command.id}
-                          className="flex min-h-8 flex-wrap items-center gap-1 py-0.5"
+                          className="group/row flex min-h-9 flex-wrap items-center justify-end gap-1.5 px-2 py-1 focus-within:bg-muted/40 hover:bg-muted/40"
                         >
-                          <span className="flex-1 truncate">
+                          <span className="flex flex-1 items-center gap-1.5 truncate">
                             {command.label}
+                            {changed && (
+                              <span
+                                title="Changed from the default"
+                                className="size-1.5 shrink-0 rounded-full bg-primary"
+                              />
+                            )}
                           </span>
+                          {capturing() ? (
+                            captureButton()
+                          ) : (
+                            // An empty keycap waiting to be filled.
+                            <button
+                              aria-label={`Add a shortcut for ${command.label}`}
+                              onClick={() => {
+                                setPending(undefined)
+                                setCapture({ id: command.id })
+                              }}
+                              // Shown on the row's hover or focus once it has a key, so a
+                              // column of them does not crowd the keys themselves. It
+                              // sits left of the keys, which keeps them flush right
+                              // while it holds its place unseen.
+                              className={`flex h-6 items-center gap-1 border border-dashed border-muted-foreground/50 px-2 text-xs text-muted-foreground hover:border-solid hover:border-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-primary ${chords.length > 0 ? "opacity-0 group-focus-within/row:opacity-100 group-hover/row:opacity-100" : ""}`}
+                            >
+                              <PlusIcon className="size-3" />
+                              Add
+                            </button>
+                          )}
                           {chords.map((chord) =>
                             capturing(chord) ? (
                               <span key={chord}>{captureButton()}</span>
                             ) : (
-                              <span key={chord} className="flex items-center">
+                              // One keycap, two halves: the key rebinds, the
+                              // cross takes it off. The border is what says
+                              // both are there to be pressed.
+                              <span
+                                key={chord}
+                                className="flex h-6 items-stretch border border-border bg-muted/60"
+                              >
                                 <button
                                   aria-label={`Change ${format(chord)} for ${command.label}`}
+                                  title="Change"
                                   onClick={() => {
                                     setPending(undefined)
                                     setCapture({
@@ -291,16 +333,15 @@ export function PreferencesPanel<Context>({
                                       replace: chord,
                                     })
                                   }}
-                                  className="group flex h-6 items-center focus-visible:outline-2 focus-visible:outline-primary"
+                                  className="group flex items-center hover:bg-accent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
                                 >
-                                  <Kbd className="group-hover:bg-accent group-hover:text-accent-foreground">
+                                  <Kbd className="bg-transparent text-foreground group-hover:text-accent-foreground">
                                     {format(chord)}
                                   </Kbd>
                                 </button>
-                                <Button
-                                  variant="ghost"
-                                  size="icon-xs"
+                                <button
                                   aria-label={`Remove ${format(chord)} from ${command.label}`}
+                                  title="Remove"
                                   onClick={() =>
                                     writeKeybindOverrides(
                                       unbind(
@@ -311,39 +352,26 @@ export function PreferencesPanel<Context>({
                                       )
                                     )
                                   }
+                                  className="grid w-5 place-items-center border-l border-border text-muted-foreground hover:bg-destructive/15 hover:text-destructive focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
                                 >
-                                  <XIcon />
-                                </Button>
+                                  <XIcon className="size-3" />
+                                </button>
                               </span>
                             )
                           )}
-                          {capturing() ? (
-                            captureButton()
-                          ) : (
+                          {changed && (
                             <Button
                               variant="ghost"
-                              size="xs"
-                              aria-label={`Add a shortcut for ${command.label}`}
-                              onClick={() => {
-                                setPending(undefined)
-                                setCapture({ id: command.id })
-                              }}
-                            >
-                              Add
-                            </Button>
-                          )}
-                          {command.id in overrides && (
-                            <Button
-                              variant="ghost"
-                              size="xs"
+                              size="icon-xs"
                               aria-label={`Reset ${command.label}`}
+                              title="Reset to default"
                               onClick={() =>
                                 writeKeybindOverrides(
                                   resetCommand(defaults, overrides, command.id)
                                 )
                               }
                             >
-                              Reset
+                              <ArrowCounterClockwiseIcon />
                             </Button>
                           )}
                         </li>
