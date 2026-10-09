@@ -3,6 +3,7 @@
 import { useAuthActions } from "@convex-dev/auth/react"
 import {
   CopyIcon,
+  GearIcon,
   PencilSimpleIcon,
   ShareNetworkIcon,
   SignOutIcon,
@@ -16,6 +17,7 @@ import {
   useAction,
   useQuery,
 } from "convex/react"
+import dynamic from "next/dynamic"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
@@ -31,7 +33,17 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Input } from "@/components/ui/input"
 import {
   Dialog,
@@ -61,6 +73,11 @@ import {
 } from "@/features/library/lib/preview-cache"
 import { APP_NAME } from "@/lib/constants"
 import { cn } from "@/lib/utils"
+
+const LibraryPreferences = dynamic(
+  () => import("@/features/library/components/library-preferences"),
+  { ssr: false }
+)
 
 export function DocumentLibrary() {
   return (
@@ -98,31 +115,90 @@ function SignedOutNotice() {
 }
 
 function LibraryHeader() {
-  const { signOut } = useAuthActions()
-  const router = useRouter()
-
   return (
     <header className="flex items-center justify-between gap-4">
       <h1 className="font-heading-display font-heading text-4xl">Documents</h1>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         <NewDocumentDialog />
-        <Button
-          variant="ghost"
-          onClick={async () => {
-            // Everything the browser holds for this account — the JWT and the
-            // refresh token — goes with the server session, so a shared machine
-            // is left with nothing to reopen.
-            await signOut()
-            forgetAccountKeybinds()
-            forgetAccountRulers()
-            router.replace("/signin")
-          }}
-        >
-          <SignOutIcon />
-          Sign out
-        </Button>
+        <ProfileMenu />
       </div>
     </header>
+  )
+}
+
+/** The address's first letter, standing in for a picture none was given. */
+function initial(viewer: { name: string | null; email: string | null }) {
+  return (viewer.name ?? viewer.email ?? "?").trim().charAt(0).toUpperCase()
+}
+
+/**
+ * Who is signed in, and what belongs to the account rather than a document:
+ * its preferences, which follow it to every device, and signing out.
+ */
+function ProfileMenu() {
+  const viewer = useQuery(api.users.viewer)
+  const { signOut } = useAuthActions()
+  const router = useRouter()
+  const [preferencesOpen, setPreferencesOpen] = useState(false)
+  // Loaded on first opening: it brings the studio's command list with it.
+  const [preferencesWanted, setPreferencesWanted] = useState(false)
+
+  if (!viewer) return <Skeleton className="size-8 rounded-full" />
+  const shown = viewer.name ?? viewer.email ?? "Your account"
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          aria-label={`Account: ${shown}`}
+          className="rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        >
+          <Avatar>
+            {viewer.image && <AvatarImage src={viewer.image} alt="" />}
+            <AvatarFallback className="bg-primary/15 font-medium text-foreground">
+              {initial(viewer)}
+            </AvatarFallback>
+          </Avatar>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-56">
+          <DropdownMenuLabel className="flex flex-col gap-0.5 font-normal">
+            {viewer.name && <span className="font-medium">{viewer.name}</span>}
+            <span className="truncate text-muted-foreground">
+              {viewer.email ?? "Signed in"}
+            </span>
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => {
+              setPreferencesWanted(true)
+              setPreferencesOpen(true)
+            }}
+          >
+            <GearIcon />
+            Preferences…
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={async () => {
+              // Everything the browser holds for this account — the JWT and the
+              // refresh token — goes with the server session, so a shared
+              // machine is left with nothing to reopen.
+              await signOut()
+              forgetAccountKeybinds()
+              forgetAccountRulers()
+              router.replace("/signin")
+            }}
+          >
+            <SignOutIcon />
+            Sign out
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {preferencesWanted && (
+        <LibraryPreferences
+          open={preferencesOpen}
+          onOpenChange={setPreferencesOpen}
+        />
+      )}
+    </>
   )
 }
 
