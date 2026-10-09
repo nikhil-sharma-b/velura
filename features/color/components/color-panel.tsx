@@ -24,6 +24,7 @@ import { studioCommands } from "@/features/studio/lib/studio-commands"
 import { useBoundRegistry } from "@/features/commands/hooks/use-keybind-overrides"
 
 import type { PaletteRecord, PaletteStore } from "../lib/palette-store"
+import { ColorWheel } from "./color-wheel"
 import { IconButton } from "@/features/studio/components/icon-button"
 
 /**
@@ -107,7 +108,7 @@ function ColorSlider({
       {/* The track carries the gradient so the slider shows the colours it is
           choosing between, which is most of what makes a picker readable. */}
       <div
-        className="rounded-full border border-border/60"
+        className="rounded-full ring-1 ring-foreground/15 ring-inset"
         style={{ background: gradient }}
       >
         <Slider
@@ -343,17 +344,9 @@ export function ColorPanel({
   )
   const [hexText, setHexText] = useState(snapshot.color.hex)
   const hex = useMemo(() => hexFor(choice), [choice])
-  // Each ramp costs a gamut search per stop, so each is rebuilt only when the
-  // axes it is drawn against move — dragging hue does not redraw the hue ramp.
-  const { lightness, saturation, hue } = choice
-  const hueRamp = useMemo(
-    () => ramp("hue", { lightness, saturation }, 24),
-    [lightness, saturation]
-  )
-  const saturationRamp = useMemo(
-    () => ramp("saturation", { lightness, hue }),
-    [lightness, hue]
-  )
+  // The lightness ramp costs a gamut search per stop, so it is rebuilt only
+  // when the hue or saturation it is drawn against moves.
+  const { saturation, hue } = choice
   const lightnessRamp = useMemo(
     () => ramp("lightness", { saturation, hue }),
     [saturation, hue]
@@ -388,7 +381,9 @@ export function ColorPanel({
 
   /** A colour the artist has settled on, rather than dragged through. */
   const commitColor = (nextHex: string) => {
-    setChoice(choiceFromHex(nextHex))
+    // A grey's hex has no hue, so settling on the colour already shown keeps
+    // the hue the artist was on rather than one read back from the hex.
+    if (nextHex !== hexFor(choice)) setChoice(choiceFromHex(nextHex))
     setHexText(nextHex)
     setSentHex(nextHex)
     void engine.dispatch({ type: "setColor", hex: nextHex })
@@ -450,22 +445,12 @@ export function ColorPanel({
         />
       </div>
 
-      <ColorSlider
-        label="Hue"
-        value={choice.hue}
-        max={360}
-        format={`${Math.round(choice.hue)}°`}
-        gradient={hueRamp}
-        onChange={(hue) => apply({ ...choice, hue })}
-        onCommit={() => commitColor(hex)}
-      />
-      <ColorSlider
-        label="Saturation"
-        value={choice.saturation}
-        max={1}
-        format={`${Math.round(choice.saturation * 100)}%`}
-        gradient={saturationRamp}
-        onChange={(saturation) => apply({ ...choice, saturation })}
+      <ColorWheel
+        lightness={choice.lightness}
+        hue={choice.hue}
+        saturation={choice.saturation}
+        hex={hex}
+        onChange={(turn) => apply({ ...choice, ...turn })}
         onCommit={() => commitColor(hex)}
       />
       <ColorSlider
