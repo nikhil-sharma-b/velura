@@ -13,7 +13,12 @@ import { cn } from "@/lib/utils"
 
 import { usePlatform } from "../hooks/use-keybinds"
 import { chordFromEvent, formatChord } from "../lib/chord"
-import { closesPalette, paletteEntries, rememberRecent } from "../lib/palette"
+import {
+  closesPalette,
+  paletteSections,
+  rememberRecent,
+  type PaletteEntry,
+} from "../lib/palette"
 import type { Registry } from "../lib/registry"
 
 const RECENT_KEY = "velura.recentCommands"
@@ -97,10 +102,21 @@ export function CommandPalette<Context>({
     if (open) search.current?.focus()
   }, [open])
 
-  const entries = open
-    ? paletteEntries(registry, context, query, recent, [toggleId])
+  const sections = open
+    ? paletteSections(registry, context, query, recent, [toggleId])
     : []
+  // The arrow keys walk the rows in the order they are shown, across headings.
+  const entries = sections.flatMap((section) => section.entries)
   const highlighted = Math.min(active, Math.max(0, entries.length - 1))
+
+  // The arrow keys can walk past the rows in view; the row they land on is
+  // brought into it, its heading too when it is a section's first.
+  useEffect(() => {
+    if (!open) return
+    document
+      .getElementById(`${listId}-${highlighted}`)
+      ?.scrollIntoView({ block: "nearest" })
+  }, [open, listId, highlighted])
 
   const run = (index: number) => {
     const entry = entries[index]
@@ -131,6 +147,36 @@ export function CommandPalette<Context>({
       run(highlighted)
     }
   }
+
+  /** A command's row; under a heading it leaves its category unsaid. */
+  const row = (
+    entry: PaletteEntry<Context>,
+    index: number,
+    showCategory: boolean
+  ) => (
+    <li
+      key={entry.command.id}
+      id={`${listId}-${index}`}
+      role="option"
+      aria-selected={index === highlighted}
+      aria-disabled={!entry.available}
+      onPointerMove={() => setActive(index)}
+      onClick={() => run(index)}
+      className={cn(
+        "flex cursor-default items-center gap-2 px-2 py-1.5",
+        index === highlighted && "bg-accent text-accent-foreground",
+        !entry.available && "opacity-50"
+      )}
+    >
+      <span className="flex-1 truncate">{entry.command.label}</span>
+      {showCategory && (
+        <span className="text-muted-foreground">{entry.command.category}</span>
+      )}
+      {entry.keybinds[0] !== undefined && (
+        <Kbd>{formatChord(entry.keybinds[0], platform)}</Kbd>
+      )}
+    </li>
+  )
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -173,30 +219,29 @@ export function CommandPalette<Context>({
               No commands match.
             </li>
           )}
-          {entries.map((entry, index) => (
-            <li
-              key={entry.command.id}
-              id={`${listId}-${index}`}
-              role="option"
-              aria-selected={index === highlighted}
-              aria-disabled={!entry.available}
-              onPointerMove={() => setActive(index)}
-              onClick={() => run(index)}
-              className={cn(
-                "flex cursor-default items-center gap-2 px-2 py-1.5",
-                index === highlighted && "bg-accent text-accent-foreground",
-                !entry.available && "opacity-50"
-              )}
-            >
-              <span className="flex-1 truncate">{entry.command.label}</span>
-              <span className="text-muted-foreground">
-                {entry.command.category}
-              </span>
-              {entry.keybinds[0] !== undefined && (
-                <Kbd>{formatChord(entry.keybinds[0], platform)}</Kbd>
-              )}
-            </li>
-          ))}
+          {sections.map((section, i) => {
+            const first = sections
+              .slice(0, i)
+              .reduce((count, { entries }) => count + entries.length, 0)
+            const rows = section.entries.map((entry, offset) =>
+              row(entry, first + offset, !section.title)
+            )
+            return section.title ? (
+              <li key={section.title} role="presentation">
+                <ul role="group" aria-label={section.title}>
+                  <li
+                    role="presentation"
+                    className="px-2 pt-2 pb-1 text-muted-foreground"
+                  >
+                    {section.title}
+                  </li>
+                  {rows}
+                </ul>
+              </li>
+            ) : (
+              rows
+            )
+          })}
         </ul>
       </DialogContent>
     </Dialog>

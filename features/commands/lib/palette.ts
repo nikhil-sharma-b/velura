@@ -74,6 +74,45 @@ export function paletteEntries<Context>(
     }))
 }
 
+/** A run of palette rows under one heading; a search's rows have none. */
+export interface PaletteSection<Context> {
+  title?: string
+  entries: PaletteEntry<Context>[]
+}
+
+/**
+ * The rows as the palette lays them out. A search is one ranked list, best
+ * first. With nothing typed there is nothing to rank by, so the rows are
+ * shown as a browsable index: what ran recently, then each category in the
+ * registry's order. Each command appears once.
+ */
+export function paletteSections<Context>(
+  registry: Registry<Context>,
+  context: Context,
+  query: string,
+  recent: readonly string[],
+  hidden: readonly string[] = []
+): PaletteSection<Context>[] {
+  const entries = paletteEntries(registry, context, query, recent, hidden)
+  if (query.trim()) return [{ entries }]
+  // An empty query ranks by recency alone, so the recent rows lead.
+  const ran = new Set(recent)
+  const sections: PaletteSection<Context>[] = [
+    {
+      title: "Recent",
+      entries: entries.filter((entry) => ran.has(entry.command.id)),
+    },
+    ...registry.categories().map((category) => ({
+      title: category,
+      entries: entries.filter(
+        (entry) =>
+          entry.command.category === category && !ran.has(entry.command.id)
+      ),
+    })),
+  ]
+  return sections.filter((section) => section.entries.length)
+}
+
 /** The recent list after running a command: it first, the oldest let go. */
 export function rememberRecent(
   recent: readonly string[],

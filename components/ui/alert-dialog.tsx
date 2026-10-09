@@ -3,6 +3,7 @@
 import * as React from "react"
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
 
+import { returnFocusForKeysOnly } from "@/lib/input-modality"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 
@@ -47,6 +48,7 @@ function AlertDialogOverlay({
 function AlertDialogContent({
   className,
   size = "default",
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
   size?: "default" | "sm"
@@ -62,6 +64,10 @@ function AlertDialogContent({
           className
         )}
         {...props}
+        onCloseAutoFocus={(event) => {
+          returnFocusForKeysOnly(event)
+          onCloseAutoFocus?.(event)
+        }}
       />
     </AlertDialogPortal>
   )

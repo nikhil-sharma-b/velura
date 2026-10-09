@@ -378,869 +378,909 @@ function resize(direction: 1 | -1): Pick<StudioCommand, "run" | "available"> {
  * unmodified keys: the hand that reaches for them is the one not holding the
  * pen, and it should not have to hold a modifier too.
  */
-export const studioCommands = createRegistry<StudioContext>([
-  {
-    id: PALETTE_COMMAND,
-    label: "Command palette",
-    category: "General",
-    keybinds: ["mod+k"],
-    repeat: false,
-    run: ({ togglePalette }) => togglePalette(),
-  },
-  {
-    id: "preferences.open",
-    label: "Preferences",
-    category: "General",
-    keybinds: ["mod+,"],
-    repeat: false,
-    run: ({ openPreferences }) => openPreferences(),
-  },
-  {
-    // F, where Photoshop cycles its screen modes. Not Tab: in a browser Tab
-    // is how the keyboard moves between the controls, and zen should not
-    // cost anyone that.
-    id: "view.zen",
-    label: "Zen mode",
-    category: "View",
-    keybinds: ["f"],
-    repeat: false,
-    run: ({ toggleZen }) => toggleZen(),
-  },
-  {
-    id: "edit.undo",
-    label: "Undo",
-    category: "Edit",
-    keybinds: ["mod+z"],
-    available: (context) => !!context.engine && !context.historyBusy(),
-    run: ({ engine }) => void engine?.dispatch({ type: "undo" }),
-  },
-  {
-    id: "edit.redo",
-    label: "Redo",
-    category: "Edit",
-    keybinds: ["mod+shift+z", "mod+y", "mod+shift+y"],
-    available: (context) => !!context.engine && !context.historyBusy(),
-    run: ({ engine }) => void engine?.dispatch({ type: "redo" }),
-  },
-  {
-    id: "tool.brush",
-    label: "Brush tool",
-    category: "Tools",
-    keybinds: ["b"],
-    ...dispatching({ type: "setTool", tool: "brush" }),
-  },
-  {
-    id: "tool.eraser",
-    label: "Eraser tool",
-    category: "Tools",
-    keybinds: ["e"],
-    ...dispatching({ type: "setTool", tool: "eraser" }),
-  },
-  {
-    // M, the marquee in every editor the hand learned on; Shift for the
-    // ellipse, since there is no second marquee key to cycle to.
-    id: "tool.rectSelect",
-    label: "Rectangle select tool",
-    category: "Tools",
-    keybinds: ["m"],
-    ...dispatching({ type: "setTool", tool: "rectSelect" }),
-  },
-  {
-    id: "tool.ellipseSelect",
-    label: "Ellipse select tool",
-    category: "Tools",
-    keybinds: ["shift+m"],
-    ...dispatching({ type: "setTool", tool: "ellipseSelect" }),
-  },
-  {
-    // L for the lasso, as M is for the marquee; Shift for the polygonal one.
-    id: "tool.lasso",
-    label: "Lasso tool",
-    category: "Tools",
-    keybinds: ["l"],
-    ...dispatching({ type: "setTool", tool: "lasso" }),
-  },
-  {
-    id: "tool.polygonLasso",
-    label: "Polygonal lasso tool",
-    category: "Tools",
-    // On the node tool with segments selected, the key makes them lines
-    // (Inkscape); everywhere else, and from the palette, it is the lasso.
-    keybinds: ["shift+l"],
-    available: hasEngine,
-    run: (context, key) =>
-      void context.engine?.dispatch(
-        key && segmentsSelected(context.engine)
-          ? { type: "setVectorSegmentShape", shape: "line" }
-          : { type: "setTool", tool: "polygonLasso" }
+export const studioCommands = createRegistry<StudioContext>(
+  [
+    {
+      id: PALETTE_COMMAND,
+      label: "Command palette",
+      category: "General",
+      keybinds: ["mod+k"],
+      repeat: false,
+      run: ({ togglePalette }) => togglePalette(),
+    },
+    {
+      id: "preferences.open",
+      label: "Preferences",
+      category: "General",
+      keybinds: ["mod+,"],
+      repeat: false,
+      run: ({ openPreferences }) => openPreferences(),
+    },
+    {
+      // The shortcuts live in Preferences, where they are rebound too; this is
+      // the name someone looking for them types into the palette.
+      id: "preferences.shortcuts",
+      label: "Keyboard shortcuts",
+      category: "General",
+      keybinds: [],
+      repeat: false,
+      run: ({ openPreferences }) => openPreferences(),
+    },
+    {
+      // F, where Photoshop cycles its screen modes. Not Tab: in a browser Tab
+      // is how the keyboard moves between the controls, and zen should not
+      // cost anyone that.
+      id: "view.zen",
+      label: "Zen mode",
+      category: "View",
+      keybinds: ["f"],
+      repeat: false,
+      run: ({ toggleZen }) => toggleZen(),
+    },
+    {
+      id: "edit.undo",
+      label: "Undo",
+      category: "Edit",
+      keybinds: ["mod+z"],
+      available: (context) => !!context.engine && !context.historyBusy(),
+      run: ({ engine }) => void engine?.dispatch({ type: "undo" }),
+    },
+    {
+      id: "edit.redo",
+      label: "Redo",
+      category: "Edit",
+      keybinds: ["mod+shift+z", "mod+y", "mod+shift+y"],
+      available: (context) => !!context.engine && !context.historyBusy(),
+      run: ({ engine }) => void engine?.dispatch({ type: "redo" }),
+    },
+    {
+      id: "tool.brush",
+      label: "Brush tool",
+      category: "Tools",
+      keybinds: ["b"],
+      ...dispatching({ type: "setTool", tool: "brush" }),
+    },
+    {
+      id: "tool.eraser",
+      label: "Eraser tool",
+      category: "Tools",
+      keybinds: ["e"],
+      ...dispatching({ type: "setTool", tool: "eraser" }),
+    },
+    {
+      // M, the marquee in every editor the hand learned on; Shift for the
+      // ellipse, since there is no second marquee key to cycle to.
+      id: "tool.rectSelect",
+      label: "Rectangle selection tool",
+      category: "Tools",
+      keybinds: ["m"],
+      ...dispatching({ type: "setTool", tool: "rectSelect" }),
+    },
+    {
+      id: "tool.ellipseSelect",
+      label: "Ellipse selection tool",
+      category: "Tools",
+      keybinds: ["shift+m"],
+      ...dispatching({ type: "setTool", tool: "ellipseSelect" }),
+    },
+    {
+      // L for the lasso, as M is for the marquee; Shift for the polygonal one.
+      id: "tool.lasso",
+      label: "Lasso selection tool",
+      category: "Tools",
+      keybinds: ["l"],
+      ...dispatching({ type: "setTool", tool: "lasso" }),
+    },
+    {
+      id: "tool.polygonLasso",
+      label: "Polygonal lasso selection tool",
+      category: "Tools",
+      // On the node tool with segments selected, the key makes them lines
+      // (Inkscape); everywhere else, and from the palette, it is the lasso.
+      keybinds: ["shift+l"],
+      available: hasEngine,
+      run: (context, key) =>
+        void context.engine?.dispatch(
+          key && segmentsSelected(context.engine)
+            ? { type: "setVectorSegmentShape", shape: "line" }
+            : { type: "setTool", tool: "polygonLasso" }
+        ),
+    },
+    {
+      // W, the wand in every editor the hand learned on.
+      id: "tool.magicWand",
+      label: "Magic wand tool",
+      category: "Tools",
+      keybinds: ["w"],
+      ...dispatching({ type: "setTool", tool: "magicWand" }),
+    },
+    {
+      // Shift+V: V is the move tool elsewhere, and this moves only the outline.
+      id: "tool.moveSelection",
+      label: "Move selection outline tool",
+      category: "Tools",
+      keybinds: ["shift+v"],
+      ...dispatching({ type: "setTool", tool: "moveSelection" }),
+    },
+    {
+      // V, the selection tool in every vector editor the hand learned on.
+      id: "tool.objectSelect",
+      label: "Object selection tool",
+      category: "Tools",
+      keybinds: ["v"],
+      ...nodesOr(
+        transforming(() => ({ kind: "flip", axis: "vertical" })),
+        dispatching({ type: "setTool", tool: "objectSelect" })
       ),
-  },
-  {
-    // W, the wand in every editor the hand learned on.
-    id: "tool.magicWand",
-    label: "Magic wand tool",
-    category: "Tools",
-    keybinds: ["w"],
-    ...dispatching({ type: "setTool", tool: "magicWand" }),
-  },
-  {
-    // Shift+V: V is the move tool elsewhere, and this moves only the outline.
-    id: "tool.moveSelection",
-    label: "Move selection outline tool",
-    category: "Tools",
-    keybinds: ["shift+v"],
-    ...dispatching({ type: "setTool", tool: "moveSelection" }),
-  },
-  {
-    // U, the shape tool in every editor the hand learned on.
-    id: "tool.rectangle",
-    label: "Rectangle tool",
-    category: "Tools",
-    keybinds: ["u"],
-    ...dispatching({ type: "setTool", tool: "rectangle" }),
-  },
-  {
-    id: "tool.ellipse",
-    label: "Ellipse tool",
-    category: "Tools",
-    ...dispatching({ type: "setTool", tool: "ellipse" }),
-  },
-  {
-    id: "tool.line",
-    label: "Line tool",
-    category: "Tools",
-    ...dispatching({ type: "setTool", tool: "line" }),
-  },
-  {
-    id: "tool.polygon",
-    label: "Polygon tool",
-    category: "Tools",
-    ...dispatching({ type: "setTool", tool: "polygon" }),
-  },
-  {
-    id: "tool.pen",
-    label: "Pen tool",
-    category: "Tools",
-    keybinds: ["p"],
-    ...dispatching({ type: "setTool", tool: "pen" }),
-  },
-  {
-    id: "tool.node",
-    label: "Node tool",
-    category: "Tools",
-    keybinds: ["n"],
-    ...dispatching({ type: "setTool", tool: "node" }),
-  },
-  {
-    id: "node.next",
-    label: "Select next node",
-    category: "Tools",
-    keybinds: ["tab"],
-    ...onNodeTool({ type: "stepVectorNode", direction: 1 }),
-  },
-  {
-    id: "node.previous",
-    label: "Select previous node",
-    category: "Tools",
-    keybinds: ["shift+tab"],
-    ...onNodeTool({ type: "stepVectorNode", direction: -1 }),
-  },
-  {
-    id: "tool.pressure",
-    label: "Vector brush tool",
-    category: "Tools",
-    ...dispatching({ type: "setTool", tool: "pressure" }),
-  },
-  {
-    id: "path.finish",
-    label: "Finish open pen path",
-    category: "Tools",
-    ...dispatching({ type: "finishPenPath" }),
-    available: ({ engine }) =>
-      !!engine &&
-      engine.getSnapshot().tool === "pen" &&
-      engine.getSnapshot().penNodes.length >= 2,
-  },
-  {
-    id: "path.closePolygon",
-    label: "Close polygon",
-    category: "Tools",
-    keybinds: ["enter"],
-    ...dispatching({ type: "closePolygon" }),
-    available: ({ engine }) =>
-      !!engine && engine.getSnapshot().tool === "polygon",
-  },
-  {
-    id: "node.delete",
-    label: "Delete selected nodes",
-    category: "Tools",
-    ...onSelectedNodes({ type: "deleteVectorNode" }),
-  },
-  {
-    id: "node.deleteWithoutRefit",
-    label: "Delete selected nodes without keeping the shape",
-    category: "Tools",
-    keybinds: ["mod+delete", "mod+backspace"],
-    ...onSelectedNodes({ type: "deleteVectorNode", refit: false }),
-  },
-  {
-    id: "node.insert",
-    label: "Insert nodes in selected segments",
-    category: "Tools",
-    // Mac keyboards have no Insert key.
-    keybinds: ["insert", "shift+i"],
-    ...onSelectedNodes({ type: "insertVectorNodes" }),
-  },
-  {
-    id: "node.break",
-    label: "Break path at selected nodes",
-    category: "Tools",
-    keybinds: ["shift+b"],
-    ...onSelectedNodes({ type: "breakVectorNodes" }),
-  },
-  {
-    id: "node.join",
-    label: "Join selected curves",
-    category: "Tools",
-    keybinds: ["shift+j"],
-    ...onJoinableEnds({ type: "joinVectorNodes" }, "merge"),
-  },
-  {
-    id: "node.joinWithSegment",
-    label: "Join selected curves with a segment",
-    category: "Tools",
-    keybinds: ["alt+j"],
-    ...onJoinableEnds({ type: "joinVectorNodes", segment: true }, "segment"),
-  },
-  {
-    id: "segment.delete",
-    label: "Delete selected segments",
-    category: "Tools",
-    keybinds: ["alt+delete", "alt+backspace"],
-    ...onSelectedSegments({ type: "deleteVectorSegments" }),
-  },
-  {
-    id: "segment.line",
-    label: "Make selected segments lines",
-    category: "Tools",
-    // Shift+L reaches it through the polygonal lasso's binding, above.
-    ...onSelectedSegments({ type: "setVectorSegmentShape", shape: "line" }),
-  },
-  {
-    id: "segment.curve",
-    label: "Make selected segments curves",
-    category: "Tools",
-    keybinds: ["shift+u"],
-    ...onSelectedSegments({ type: "setVectorSegmentShape", shape: "curve" }),
-  },
-  {
-    id: "node.cusp",
-    label: "Make selected nodes cusp",
-    category: "Tools",
-    keybinds: ["shift+c"],
-    ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "cusp" }),
-  },
-  {
-    id: "node.smooth",
-    label: "Make selected nodes smooth",
-    category: "Tools",
-    keybinds: ["shift+s"],
-    ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "smooth" }),
-  },
-  {
-    id: "node.symmetric",
-    label: "Make selected nodes symmetric",
-    category: "Tools",
-    keybinds: ["shift+y"],
-    ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "symmetric" }),
-  },
-  {
-    id: "node.auto",
-    label: "Make selected nodes auto-smooth",
-    category: "Tools",
-    keybinds: ["shift+a"],
-    ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "auto" }),
-  },
-  {
-    id: "node.flipHorizontal",
-    label: "Flip selected nodes horizontally",
-    category: "Tools",
-    // H reaches it through the canvas flip's binding, which hands over to
-    // the nodes while any are selected.
-    ...transforming(() => ({ kind: "flip", axis: "horizontal" })),
-  },
-  {
-    id: "node.flipVertical",
-    label: "Flip selected nodes vertically",
-    category: "Tools",
-    keybinds: ["v"],
-    ...transforming(() => ({ kind: "flip", axis: "vertical" })),
-  },
-  // Alt steps by one screen pixel. A Mac's Option turns these keys into
-  // other characters, so those are bound beside the plain ones.
-  {
-    id: "node.scaleDownPixel",
-    label: "Scale selected nodes down one screen pixel",
-    category: "Tools",
-    keybinds: ["alt+,", "alt+<", "alt+≤", "alt+¯"],
-    ...transforming((engine) => ({ kind: "scale", by: -screenPixel(engine) })),
-  },
-  {
-    id: "node.scaleUpPixel",
-    label: "Scale selected nodes up one screen pixel",
-    category: "Tools",
-    keybinds: ["alt+.", "alt+>", "alt+≥", "alt+˘"],
-    ...transforming((engine) => ({ kind: "scale", by: screenPixel(engine) })),
-  },
-  {
-    id: "node.rotateLeftPixel",
-    label: "Rotate selected nodes left one screen pixel",
-    category: "Tools",
-    keybinds: ["alt+[", "alt+“"],
-    ...transforming((engine) => ({
-      kind: "rotate",
-      arc: -screenPixel(engine),
-    })),
-  },
-  {
-    id: "node.rotateRightPixel",
-    label: "Rotate selected nodes right one screen pixel",
-    category: "Tools",
-    keybinds: ["alt+]", "alt+‘"],
-    ...transforming((engine) => ({ kind: "rotate", arc: screenPixel(engine) })),
-  },
-  {
-    id: "tool.objectSelect",
-    label: "Select objects tool",
-    category: "Tools",
-    ...dispatching({ type: "setTool", tool: "objectSelect" }),
-  },
-  {
-    id: "object.transform",
-    label: "Transform objects",
-    category: "Tools",
-    ...onVectorSelection({ type: "beginVectorTransform" }),
-  },
-  {
-    id: "object.duplicate",
-    label: "Duplicate objects",
-    category: "Tools",
-    ...onVectorSelection({ type: "duplicateVectorObjects" }),
-  },
-  {
-    id: "object.delete",
-    label: "Delete objects",
-    category: "Tools",
-    // With nodes selected the key deletes them, keeping the shape, as the
-    // node tool's own Delete does in Inkscape.
-    keybinds: ["delete", "backspace"],
-    ...nodesOr(
-      { type: "deleteVectorNode" },
-      onVectorSelection({ type: "deleteVectorObjects" })
-    ),
-  },
-  {
-    // Escape lets go of an outline half drawn, the polygonal lasso's above
-    // all, as it does in every editor with one.
-    id: "select.abandonOutline",
-    label: "Abandon selection outline",
-    category: "Select",
-    keybinds: ["escape"],
-    ...dispatching({ type: "abandonSelectionGesture" }),
-  },
-  {
-    id: "select.all",
-    label: "Select all",
-    category: "Select",
-    keybinds: ["mod+a"],
-    ...dispatching({ type: "selectAll" }),
-  },
-  {
-    id: "select.deselect",
-    label: "Deselect",
-    category: "Select",
-    keybinds: ["mod+d"],
-    ...dispatching({ type: "deselect" }),
-  },
-  {
-    id: "select.invert",
-    label: "Invert selection",
-    category: "Select",
-    keybinds: ["mod+shift+i"],
-    ...dispatching({ type: "invertSelection" }),
-  },
-  {
-    // Unbound by default: shift+f6 elsewhere, which no hand reaches for.
-    id: "select.feather",
-    label: "Feather selection",
-    category: "Select",
-    available: ({ engine }) => !!engine?.getSnapshot().selection,
-    run: (context) => context.openFeather(),
-  },
-  {
-    // Layer via copy, on the key every editor the hand learned on gives it.
-    id: "select.copyToLayer",
-    label: "Copy selection to new layer",
-    category: "Select",
-    keybinds: ["mod+j"],
-    ...dispatching({ type: "copySelectionToLayer" }),
-  },
-  {
-    // A held modifier rather than a tool (D-input): the canvas samples while
-    // it is down, and painting resumes the moment it is let go.
-    id: "tool.eyedropper",
-    label: "Eyedropper",
-    category: "Tools",
-    keybinds: ["alt"],
-    run: () => {},
-    momentary: {
-      start: ({ setSampling }) => setSampling(true),
-      end: ({ setSampling }) => setSampling(false),
     },
-  },
-  // The brackets, because that is where every hand trained on Photoshop,
-  // Procreate, Krita or Clip Studio already reaches — a size change is the
-  // adjustment made most often, and it should not cost a trip to a panel.
-  {
-    id: "brush.sizeUp",
-    label: "Increase brush size",
-    category: "Brush",
-    keybinds: ["]"],
-    // With nodes selected the brackets turn them, as in Inkscape.
-    ...nodesOr(
-      transforming(() => ({ kind: "rotate", angle: NODE_ROTATE_STEP })),
-      resize(1)
-    ),
-  },
-  {
-    id: "brush.sizeDown",
-    label: "Decrease brush size",
-    category: "Brush",
-    keybinds: ["["],
-    ...nodesOr(
-      transforming(() => ({ kind: "rotate", angle: -NODE_ROTATE_STEP })),
-      resize(-1)
-    ),
-  },
-  {
-    id: "layer.add",
-    label: "Add layer",
-    category: "Layers",
-    ...dispatching({ type: "addLayer" }),
-  },
-  {
-    id: "layer.addVector",
-    label: "Add vector layer",
-    category: "Layers",
-    ...dispatching({ type: "addVectorLayer" }),
-  },
-  {
-    id: "layer.group",
-    label: "Group active layer",
-    category: "Layers",
-    ...dispatching({ type: "addGroup" }),
-  },
-  {
-    id: "layer.duplicate",
-    label: "Duplicate layer",
-    category: "Layers",
-    ...onLayer((layer) => ({ type: "duplicateLayer", id: layer.id }), isLeaf),
-  },
-  {
-    id: "layer.clear",
-    label: "Clear layer",
-    category: "Layers",
-    ...onLayer(
-      (layer) => ({ type: "clearLayer", id: layer.id }),
-      (layer) =>
-        (layer.kind === "vector" && !layer.locked) || isPaintable(layer)
-    ),
-    // Clearing wipes every mark on the layer, so it waits for a yes.
-    run: (context) => {
-      const layer = targetLayer(context)
-      if (layer) context.confirmClear(layer)
+    {
+      // U, the shape tool in every editor the hand learned on.
+      id: "tool.rectangle",
+      label: "Rectangle tool",
+      category: "Tools",
+      keybinds: ["u"],
+      ...dispatching({ type: "setTool", tool: "rectangle" }),
     },
-  },
-  // Filters (18) open on the layer and wait in a dialog for their settings;
-  // the dialog is the engine's open filter, not a state of its own.
-  ...(Object.keys(FILTER_LABELS) as FilterKind[]).map(
-    (kind): StudioCommand => ({
-      id: `filter.${kind}`,
-      label: `${FILTER_LABELS[kind]}…`,
-      category: "Filters",
+    {
+      id: "tool.ellipse",
+      label: "Ellipse tool",
+      category: "Tools",
+      ...dispatching({ type: "setTool", tool: "ellipse" }),
+    },
+    {
+      id: "tool.line",
+      label: "Line tool",
+      category: "Tools",
+      ...dispatching({ type: "setTool", tool: "line" }),
+    },
+    {
+      id: "tool.polygon",
+      label: "Polygon tool",
+      category: "Tools",
+      ...dispatching({ type: "setTool", tool: "polygon" }),
+    },
+    {
+      id: "tool.pen",
+      label: "Pen tool",
+      category: "Tools",
+      keybinds: ["p"],
+      ...dispatching({ type: "setTool", tool: "pen" }),
+    },
+    {
+      id: "tool.node",
+      label: "Node tool",
+      category: "Tools",
+      keybinds: ["n"],
+      ...dispatching({ type: "setTool", tool: "node" }),
+    },
+    {
+      id: "node.next",
+      label: "Select next node",
+      category: "Nodes",
+      keybinds: ["tab"],
+      ...onNodeTool({ type: "stepVectorNode", direction: 1 }),
+    },
+    {
+      id: "node.previous",
+      label: "Select previous node",
+      category: "Nodes",
+      keybinds: ["shift+tab"],
+      ...onNodeTool({ type: "stepVectorNode", direction: -1 }),
+    },
+    {
+      id: "tool.pressure",
+      label: "Vector brush tool",
+      category: "Tools",
+      ...dispatching({ type: "setTool", tool: "pressure" }),
+    },
+    {
+      id: "path.finish",
+      label: "Finish open pen path",
+      category: "Tools",
+      ...dispatching({ type: "finishPenPath" }),
+      available: ({ engine }) =>
+        !!engine &&
+        engine.getSnapshot().tool === "pen" &&
+        engine.getSnapshot().penNodes.length >= 2,
+    },
+    {
+      id: "path.closePolygon",
+      label: "Close polygon",
+      category: "Tools",
+      keybinds: ["enter"],
+      ...dispatching({ type: "closePolygon" }),
+      available: ({ engine }) =>
+        !!engine && engine.getSnapshot().tool === "polygon",
+    },
+    {
+      id: "node.delete",
+      label: "Delete selected nodes",
+      category: "Nodes",
+      ...onSelectedNodes({ type: "deleteVectorNode" }),
+    },
+    {
+      id: "node.deleteWithoutRefit",
+      label: "Delete selected nodes without keeping the shape",
+      category: "Nodes",
+      keybinds: ["mod+delete", "mod+backspace"],
+      ...onSelectedNodes({ type: "deleteVectorNode", refit: false }),
+    },
+    {
+      id: "node.insert",
+      label: "Insert nodes in selected segments",
+      category: "Nodes",
+      // Mac keyboards have no Insert key.
+      keybinds: ["insert", "shift+i"],
+      ...onSelectedNodes({ type: "insertVectorNodes" }),
+    },
+    {
+      id: "node.break",
+      label: "Break path at selected nodes",
+      category: "Nodes",
+      keybinds: ["shift+b"],
+      ...onSelectedNodes({ type: "breakVectorNodes" }),
+    },
+    {
+      id: "node.join",
+      label: "Join selected curves",
+      category: "Nodes",
+      keybinds: ["shift+j"],
+      ...onJoinableEnds({ type: "joinVectorNodes" }, "merge"),
+    },
+    {
+      id: "node.joinWithSegment",
+      label: "Join selected curves with a segment",
+      category: "Nodes",
+      keybinds: ["alt+j"],
+      ...onJoinableEnds({ type: "joinVectorNodes", segment: true }, "segment"),
+    },
+    {
+      id: "segment.delete",
+      label: "Delete selected segments",
+      category: "Nodes",
+      keybinds: ["alt+delete", "alt+backspace"],
+      ...onSelectedSegments({ type: "deleteVectorSegments" }),
+    },
+    {
+      id: "segment.line",
+      label: "Make selected segments lines",
+      category: "Nodes",
+      // Shift+L reaches it through the polygonal lasso's binding, above.
+      ...onSelectedSegments({ type: "setVectorSegmentShape", shape: "line" }),
+    },
+    {
+      id: "segment.curve",
+      label: "Make selected segments curves",
+      category: "Nodes",
+      keybinds: ["shift+u"],
+      ...onSelectedSegments({ type: "setVectorSegmentShape", shape: "curve" }),
+    },
+    {
+      id: "node.cusp",
+      label: "Make selected nodes cusp",
+      category: "Nodes",
+      keybinds: ["shift+c"],
+      ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "cusp" }),
+    },
+    {
+      id: "node.smooth",
+      label: "Make selected nodes smooth",
+      category: "Nodes",
+      keybinds: ["shift+s"],
+      ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "smooth" }),
+    },
+    {
+      id: "node.symmetric",
+      label: "Make selected nodes symmetric",
+      category: "Nodes",
+      keybinds: ["shift+y"],
+      ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "symmetric" }),
+    },
+    {
+      id: "node.auto",
+      label: "Make selected nodes auto-smooth",
+      category: "Nodes",
+      keybinds: ["shift+a"],
+      ...onSelectedNodes({ type: "setVectorNodeType", nodeType: "auto" }),
+    },
+    {
+      id: "node.flipHorizontal",
+      label: "Flip selected nodes horizontally",
+      category: "Nodes",
+      // H reaches it through the canvas flip's binding, which hands over to
+      // the nodes while any are selected.
+      ...transforming(() => ({ kind: "flip", axis: "horizontal" })),
+    },
+    {
+      id: "node.flipVertical",
+      label: "Flip selected nodes vertically",
+      category: "Nodes",
+      // V reaches it through the object selection tool's binding, which hands
+      // over to the nodes while any are selected, as H does for the canvas.
+      ...transforming(() => ({ kind: "flip", axis: "vertical" })),
+    },
+    // Alt steps by one screen pixel. A Mac's Option turns these keys into
+    // other characters, so those are bound beside the plain ones.
+    {
+      id: "node.scaleDownPixel",
+      label: "Scale selected nodes down one screen pixel",
+      category: "Nodes",
+      keybinds: ["alt+,", "alt+<", "alt+≤", "alt+¯"],
+      ...transforming((engine) => ({
+        kind: "scale",
+        by: -screenPixel(engine),
+      })),
+    },
+    {
+      id: "node.scaleUpPixel",
+      label: "Scale selected nodes up one screen pixel",
+      category: "Nodes",
+      keybinds: ["alt+.", "alt+>", "alt+≥", "alt+˘"],
+      ...transforming((engine) => ({ kind: "scale", by: screenPixel(engine) })),
+    },
+    {
+      id: "node.rotateLeftPixel",
+      label: "Rotate selected nodes left one screen pixel",
+      category: "Nodes",
+      keybinds: ["alt+[", "alt+“"],
+      ...transforming((engine) => ({
+        kind: "rotate",
+        arc: -screenPixel(engine),
+      })),
+    },
+    {
+      id: "node.rotateRightPixel",
+      label: "Rotate selected nodes right one screen pixel",
+      category: "Nodes",
+      keybinds: ["alt+]", "alt+‘"],
+      ...transforming((engine) => ({
+        kind: "rotate",
+        arc: screenPixel(engine),
+      })),
+    },
+    {
+      id: "object.transform",
+      label: "Transform objects",
+      category: "Objects",
+      ...onVectorSelection({ type: "beginVectorTransform" }),
+    },
+    {
+      id: "object.duplicate",
+      label: "Duplicate objects",
+      category: "Objects",
+      ...onVectorSelection({ type: "duplicateVectorObjects" }),
+    },
+    {
+      id: "object.delete",
+      label: "Delete objects",
+      category: "Objects",
+      // With nodes selected the key deletes them, keeping the shape, as the
+      // node tool's own Delete does in Inkscape.
+      keybinds: ["delete", "backspace"],
+      ...nodesOr(
+        { type: "deleteVectorNode" },
+        onVectorSelection({ type: "deleteVectorObjects" })
+      ),
+    },
+    {
+      // Escape lets go of an outline half drawn, the polygonal lasso's above
+      // all, as it does in every editor with one.
+      id: "select.abandonOutline",
+      label: "Cancel selection",
+      category: "Select",
+      keybinds: ["escape"],
+      ...dispatching({ type: "abandonSelectionGesture" }),
+    },
+    {
+      id: "select.all",
+      label: "Select all",
+      category: "Select",
+      keybinds: ["mod+a"],
+      ...dispatching({ type: "selectAll" }),
+    },
+    {
+      id: "select.deselect",
+      label: "Deselect",
+      category: "Select",
+      keybinds: ["mod+d"],
+      ...dispatching({ type: "deselect" }),
+    },
+    {
+      id: "select.invert",
+      label: "Invert selection",
+      category: "Select",
+      keybinds: ["mod+shift+i"],
+      ...dispatching({ type: "invertSelection" }),
+    },
+    {
+      // Unbound by default: shift+f6 elsewhere, which no hand reaches for.
+      id: "select.feather",
+      label: "Feather selection",
+      category: "Select",
+      available: ({ engine }) => !!engine?.getSnapshot().selection,
+      run: (context) => context.openFeather(),
+    },
+    {
+      // Layer via copy, on the key every editor the hand learned on gives it.
+      id: "select.copyToLayer",
+      label: "Copy selection to new layer",
+      category: "Select",
+      keybinds: ["mod+j"],
+      ...dispatching({ type: "copySelectionToLayer" }),
+    },
+    {
+      // A held modifier rather than a tool (D-input): the canvas samples while
+      // it is down, and painting resumes the moment it is let go.
+      id: "tool.eyedropper",
+      label: "Eyedropper",
+      category: "Tools",
+      keybinds: ["alt"],
+      run: () => {},
+      momentary: {
+        start: ({ setSampling }) => setSampling(true),
+        end: ({ setSampling }) => setSampling(false),
+      },
+    },
+    // The brackets, because that is where every hand trained on Photoshop,
+    // Procreate, Krita or Clip Studio already reaches — a size change is the
+    // adjustment made most often, and it should not cost a trip to a panel.
+    {
+      id: "brush.sizeUp",
+      label: "Increase brush size",
+      category: "Brush",
+      keybinds: ["]"],
+      // With nodes selected the brackets turn them, as in Inkscape.
+      ...nodesOr(
+        transforming(() => ({ kind: "rotate", angle: NODE_ROTATE_STEP })),
+        resize(1)
+      ),
+    },
+    {
+      id: "brush.sizeDown",
+      label: "Decrease brush size",
+      category: "Brush",
+      keybinds: ["["],
+      ...nodesOr(
+        transforming(() => ({ kind: "rotate", angle: -NODE_ROTATE_STEP })),
+        resize(-1)
+      ),
+    },
+    {
+      id: "layer.add",
+      label: "Add layer",
+      category: "Layers",
+      ...dispatching({ type: "addLayer" }),
+    },
+    {
+      id: "layer.addVector",
+      label: "Add vector layer",
+      category: "Layers",
+      ...dispatching({ type: "addVectorLayer" }),
+    },
+    {
+      id: "layer.group",
+      label: "Group active layer",
+      category: "Layers",
+      ...dispatching({ type: "addGroup" }),
+    },
+    {
+      id: "layer.duplicate",
+      label: "Duplicate layer",
+      category: "Layers",
+      ...onLayer((layer) => ({ type: "duplicateLayer", id: layer.id }), isLeaf),
+    },
+    {
+      id: "layer.clear",
+      label: "Clear layer",
+      category: "Layers",
       ...onLayer(
-        (layer) => ({ type: "beginFilter", id: layer.id, kind }),
-        isPaintable
+        (layer) => ({ type: "clearLayer", id: layer.id }),
+        (layer) =>
+          (layer.kind === "vector" && !layer.locked) || isPaintable(layer)
       ),
-    })
-  ),
-  {
-    // The document keeps at least one layer to paint on, so the last one
-    // left — alone or inside a group — cannot go.
-    id: "layer.delete",
-    label: "Delete layer",
-    category: "Layers",
-    ...onLayer(
-      (layer) => ({ type: "removeLayer", id: layer.id }),
-      (layer, { engine }) => {
-        const removed = layer.kind === "group" ? leafCount(layer.children) : 1
-        return leafCount(engine!.getSnapshot().layers) > removed
-      }
-    ),
-    // Deleting takes the layer and all on it, so it waits for a yes.
-    run: (context) => {
-      const layer = targetLayer(context)
-      if (layer) context.confirmDelete(layer)
+      // Clearing wipes every mark on the layer, so it waits for a yes.
+      run: (context) => {
+        const layer = targetLayer(context)
+        if (layer) context.confirmClear(layer)
+      },
     },
-  },
-  {
-    id: "layer.toggleVisible",
-    label: "Show or hide layer",
-    category: "Layers",
-    ...onLayer((layer) => ({
-      type: "setLayer",
-      id: layer.id,
-      visible: !layer.visible,
-    })),
-  },
-  {
-    id: "layer.toggleLock",
-    label: "Lock or unlock layer",
-    category: "Layers",
-    ...onLayer(
-      (layer) => ({
+    // Filters (18) open on the layer and wait in a dialog for their settings;
+    // the dialog is the engine's open filter, not a state of its own.
+    ...(Object.keys(FILTER_LABELS) as FilterKind[]).map(
+      (kind): StudioCommand => ({
+        id: `filter.${kind}`,
+        label: `${FILTER_LABELS[kind]}…`,
+        category: "Filters",
+        ...onLayer(
+          (layer) => ({ type: "beginFilter", id: layer.id, kind }),
+          isPaintable
+        ),
+      })
+    ),
+    {
+      // The document keeps at least one layer to paint on, so the last one
+      // left — alone or inside a group — cannot go.
+      id: "layer.delete",
+      label: "Delete layer",
+      category: "Layers",
+      ...onLayer(
+        (layer) => ({ type: "removeLayer", id: layer.id }),
+        (layer, { engine }) => {
+          const removed = layer.kind === "group" ? leafCount(layer.children) : 1
+          return leafCount(engine!.getSnapshot().layers) > removed
+        }
+      ),
+      // Deleting takes the layer and all on it, so it waits for a yes.
+      run: (context) => {
+        const layer = targetLayer(context)
+        if (layer) context.confirmDelete(layer)
+      },
+    },
+    {
+      id: "layer.toggleVisible",
+      label: "Show or hide layer",
+      category: "Layers",
+      ...onLayer((layer) => ({
         type: "setLayer",
         id: layer.id,
-        locked: !(layer.kind !== "group" && layer.locked),
-      }),
-      isLeaf
-    ),
-  },
-  {
-    id: "layer.toggleClip",
-    label: "Clip to layer below",
-    category: "Layers",
-    ...onLayer((layer) => ({
-      type: "setLayer",
-      id: layer.id,
-      clip: !layer.clip,
-    })),
-  },
-  {
-    // A layer without a mask gets one; one with a mask starts painting it.
-    id: "layer.mask",
-    label: "Add or paint mask",
-    category: "Layers",
-    ...onLayer(
-      (layer) => ({
-        type: layer.mask ? "selectMask" : "addMask",
-        id: layer.id,
-      }),
-      isLeaf
-    ),
-  },
-  {
-    id: "layer.toggleMask",
-    label: "Enable or disable mask",
-    category: "Layers",
-    ...onLayer(
-      (layer) => ({
-        type: "setMaskEnabled",
-        id: layer.id,
-        enabled: !layer.mask?.enabled,
-      }),
-      (layer) => !!layer.mask
-    ),
-  },
-  {
-    id: "layer.removeMask",
-    label: "Remove mask",
-    category: "Layers",
-    ...onLayer(
-      (layer) => ({ type: "removeMask", id: layer.id }),
-      (layer) => !!layer.mask
-    ),
-  },
-  {
-    id: "layer.transformImage",
-    label: "Move, scale or rotate image",
-    category: "Layers",
-    ...onLayer(
-      (layer) => ({ type: "beginImageTransform", id: layer.id }),
-      (layer) => layer.kind === "raster" && !!layer.image && !!layer.placed
-    ),
-  },
-  {
-    id: "layer.transform",
-    label: "Move, scale or rotate layer",
-    category: "Layers",
-    keybinds: ["mod+t"],
-    ...onLayer(
-      (layer) => ({ type: "beginLayerTransform", id: layer.id }),
-      (layer) => layer.kind === "raster" && !layer.image
-    ),
-  },
-  {
-    id: "layer.flipHorizontal",
-    label: "Flip layer horizontally",
-    category: "Layers",
-    ...onLayer(
-      (layer) => ({ type: "flipLayer", id: layer.id, axis: "horizontal" }),
-      (layer) => layer.kind === "raster" && !layer.image
-    ),
-  },
-  {
-    id: "layer.flipVertical",
-    label: "Flip layer vertically",
-    category: "Layers",
-    ...onLayer(
-      (layer) => ({ type: "flipLayer", id: layer.id, axis: "vertical" }),
-      (layer) => layer.kind === "raster" && !layer.image
-    ),
-  },
-  ...alignCommands(),
-  {
-    id: "layer.makePaintable",
-    label: "Paint on image (changes the photo)",
-    category: "Layers",
-    ...onLayer(
-      (layer) => ({ type: "makeLayerPaintable", id: layer.id }),
-      (layer) => layer.kind === "raster" && !!layer.image
-    ),
-  },
-  {
-    id: "layer.rasterise",
-    label: "Rasterise layer",
-    category: "Layers",
-    ...onLayer(
-      (layer) => ({ type: "rasteriseLayer", id: layer.id }),
-      (layer) => layer.kind === "vector"
-    ),
-  },
-  {
-    id: "document.clear",
-    label: "Clear canvas",
-    category: "Document",
-    ...dispatching({ type: "clearDocument" }),
-  },
-  {
-    id: "view.zoomIn",
-    label: "Zoom in",
-    category: "View",
-    keybinds: ["=", "+"],
-    ...dispatching({ type: "zoomView", factor: ZOOM_STEP }),
-  },
-  {
-    id: "view.zoomOut",
-    label: "Zoom out",
-    category: "View",
-    keybinds: ["-", "_"],
-    ...dispatching({ type: "zoomView", factor: 1 / ZOOM_STEP }),
-  },
-  // The brackets are size; rotation takes the pair beside them, which is
-  // where Krita and Blender put a step through an angle too.
-  {
-    id: "view.rotateLeft",
-    label: "Rotate left",
-    category: "View",
-    keybinds: [",", "<"],
-    // With nodes selected the pair scales them, as in Inkscape.
-    ...nodesOr(
-      transforming(() => ({ kind: "scale", by: -NODE_SCALE_STEP })),
-      dispatching({ type: "rotateView", radians: -ROTATE_STEP })
-    ),
-  },
-  {
-    id: "view.rotateRight",
-    label: "Rotate right",
-    category: "View",
-    keybinds: [".", ">"],
-    ...nodesOr(
-      transforming(() => ({ kind: "scale", by: NODE_SCALE_STEP })),
-      dispatching({ type: "rotateView", radians: ROTATE_STEP })
-    ),
-  },
-  {
-    id: "view.flip",
-    label: "Flip canvas horizontally",
-    category: "View",
-    keybinds: ["h"],
-    ...nodesOr(
-      transforming(() => ({ kind: "flip", axis: "horizontal" })),
-      dispatching({ type: "flipView" })
-    ),
-  },
-  {
-    id: "view.toggleSnapping",
-    label: "Toggle snapping",
-    category: "View",
-    keybinds: ["mod+;"],
-    ...dispatching(({ engine }) => ({
-      type: "setSnapping",
-      enabled: !engine?.getSnapshot().snapping,
-    })),
-  },
-  {
-    id: "view.toggleRulers",
-    label: "Toggle rulers",
-    category: "View",
-    keybinds: ["shift+r"],
-    available: hasEngine,
-    // A preference (08), remembered as well as shown, so a reload keeps it.
-    run: ({ engine }) => {
-      const visible = !engine?.getSnapshot().rulersVisible
-      writeRulersVisible(visible)
-      void engine?.dispatch({ type: "setRulersVisible", visible })
+        visible: !layer.visible,
+      })),
     },
-  },
-  {
-    id: "view.toggleGuides",
-    label: "Show or hide guides",
-    category: "View",
-    keybinds: ["mod+'"],
-    ...dispatching(({ engine }) => ({
-      type: "setGuidesVisible",
-      visible: !engine?.getSnapshot().guidesVisible,
-    })),
-  },
-  {
-    id: "view.clearGuides",
-    label: "Clear guides",
-    category: "View",
-    available: ({ engine }) => !!engine?.getSnapshot().guides.length,
-    run: ({ engine }) => void engine?.dispatch({ type: "clearGuides" }),
-  },
-  {
-    id: "view.toggleStraightEdge",
-    label: "Place or remove the straight-edge",
-    category: "View",
-    keybinds: ["mod+shift+l"],
-    ...dispatching(({ engine }) => {
-      const snapshot = engine?.getSnapshot()
-      // Laid down level across the middle of the canvas, where it can be
-      // seen and picked up; the artist moves and turns it from there.
-      return {
-        type: "setStraightEdge",
-        edge: snapshot?.straightEdge
-          ? null
-          : {
-              x: (snapshot?.width ?? 0) / 2,
-              y: (snapshot?.height ?? 0) / 2,
-              angle: 0,
-            },
-      }
-    }),
-  },
-  {
-    id: "view.fit",
-    label: "Fit canvas to window",
-    category: "View",
-    keybinds: ["0"],
-    ...dispatching((context) => ({
-      type: "fitView",
-      occludedRight: context.occludedRight(),
-    })),
-  },
-  {
-    // Fit is the overview; with shift it is the way back to square. The
-    // shifted key arrives as `)` on a US layout and as `0` on the layouts that
-    // put a digit there unshifted, so both spellings mean the same key.
-    id: "view.reset",
-    label: "Reset view",
-    category: "View",
-    keybinds: ["shift+0", ")"],
-    ...dispatching((context) => ({
-      type: "resetView",
-      occludedRight: context.occludedRight(),
-    })),
-  },
-  // The arrows nudge the canvas, for the artist who has no wheel under the
-  // hand that is free; with nodes selected on the node tool, they nudge those.
-  {
-    id: "view.panLeft",
-    label: "Pan left",
-    category: "View",
-    keybinds: ["arrowleft"],
-    ...panOrNudge(-1, 0),
-  },
-  {
-    id: "view.panRight",
-    label: "Pan right",
-    category: "View",
-    keybinds: ["arrowright"],
-    ...panOrNudge(1, 0),
-  },
-  {
-    id: "view.panUp",
-    label: "Pan up",
-    category: "View",
-    keybinds: ["arrowup"],
-    ...panOrNudge(0, -1),
-  },
-  {
-    id: "view.panDown",
-    label: "Pan down",
-    category: "View",
-    keybinds: ["arrowdown"],
-    ...panOrNudge(0, 1),
-  },
-  {
-    id: "node.nudgeLeftFar",
-    label: "Nudge nodes left far",
-    category: "Tools",
-    keybinds: ["shift+arrowleft"],
-    ...panOrNudge(-1, 0, () => NODE_NUDGE_FAR),
-  },
-  {
-    id: "node.nudgeLeftPixel",
-    label: "Nudge nodes left one screen pixel",
-    category: "Tools",
-    keybinds: ["alt+arrowleft"],
-    ...panOrNudge(-1, 0, (engine) => 1 / engine.getSnapshot().view.zoom),
-  },
-  {
-    id: "node.nudgeRightFar",
-    label: "Nudge nodes right far",
-    category: "Tools",
-    keybinds: ["shift+arrowright"],
-    ...panOrNudge(1, 0, () => NODE_NUDGE_FAR),
-  },
-  {
-    id: "node.nudgeRightPixel",
-    label: "Nudge nodes right one screen pixel",
-    category: "Tools",
-    keybinds: ["alt+arrowright"],
-    ...panOrNudge(1, 0, (engine) => 1 / engine.getSnapshot().view.zoom),
-  },
-  {
-    id: "node.nudgeUpFar",
-    label: "Nudge nodes up far",
-    category: "Tools",
-    keybinds: ["shift+arrowup"],
-    ...panOrNudge(0, -1, () => NODE_NUDGE_FAR),
-  },
-  {
-    id: "node.nudgeUpPixel",
-    label: "Nudge nodes up one screen pixel",
-    category: "Tools",
-    keybinds: ["alt+arrowup"],
-    ...panOrNudge(0, -1, (engine) => 1 / engine.getSnapshot().view.zoom),
-  },
-  {
-    id: "node.nudgeDownFar",
-    label: "Nudge nodes down far",
-    category: "Tools",
-    keybinds: ["shift+arrowdown"],
-    ...panOrNudge(0, 1, () => NODE_NUDGE_FAR),
-  },
-  {
-    id: "node.nudgeDownPixel",
-    label: "Nudge nodes down one screen pixel",
-    category: "Tools",
-    keybinds: ["alt+arrowdown"],
-    ...panOrNudge(0, 1, (engine) => 1 / engine.getSnapshot().view.zoom),
-  },
-])
+    {
+      id: "layer.toggleLock",
+      label: "Lock or unlock layer",
+      category: "Layers",
+      ...onLayer(
+        (layer) => ({
+          type: "setLayer",
+          id: layer.id,
+          locked: !(layer.kind !== "group" && layer.locked),
+        }),
+        isLeaf
+      ),
+    },
+    {
+      id: "layer.toggleClip",
+      label: "Clip to layer below",
+      category: "Layers",
+      ...onLayer((layer) => ({
+        type: "setLayer",
+        id: layer.id,
+        clip: !layer.clip,
+      })),
+    },
+    {
+      // A layer without a mask gets one; one with a mask starts painting it.
+      id: "layer.mask",
+      label: "Add or paint mask",
+      category: "Layers",
+      ...onLayer(
+        (layer) => ({
+          type: layer.mask ? "selectMask" : "addMask",
+          id: layer.id,
+        }),
+        isLeaf
+      ),
+    },
+    {
+      id: "layer.toggleMask",
+      label: "Enable or disable mask",
+      category: "Layers",
+      ...onLayer(
+        (layer) => ({
+          type: "setMaskEnabled",
+          id: layer.id,
+          enabled: !layer.mask?.enabled,
+        }),
+        (layer) => !!layer.mask
+      ),
+    },
+    {
+      id: "layer.removeMask",
+      label: "Remove mask",
+      category: "Layers",
+      ...onLayer(
+        (layer) => ({ type: "removeMask", id: layer.id }),
+        (layer) => !!layer.mask
+      ),
+    },
+    {
+      id: "layer.transformImage",
+      label: "Move, scale or rotate image",
+      category: "Layers",
+      ...onLayer(
+        (layer) => ({ type: "beginImageTransform", id: layer.id }),
+        (layer) => layer.kind === "raster" && !!layer.image && !!layer.placed
+      ),
+    },
+    {
+      id: "layer.transform",
+      label: "Move, scale or rotate layer",
+      category: "Layers",
+      keybinds: ["mod+t"],
+      ...onLayer(
+        (layer) => ({ type: "beginLayerTransform", id: layer.id }),
+        (layer) => layer.kind === "raster" && !layer.image
+      ),
+    },
+    {
+      id: "layer.flipHorizontal",
+      label: "Flip layer horizontally",
+      category: "Layers",
+      ...onLayer(
+        (layer) => ({ type: "flipLayer", id: layer.id, axis: "horizontal" }),
+        (layer) => layer.kind === "raster" && !layer.image
+      ),
+    },
+    {
+      id: "layer.flipVertical",
+      label: "Flip layer vertically",
+      category: "Layers",
+      ...onLayer(
+        (layer) => ({ type: "flipLayer", id: layer.id, axis: "vertical" }),
+        (layer) => layer.kind === "raster" && !layer.image
+      ),
+    },
+    ...alignCommands(),
+    {
+      id: "layer.makePaintable",
+      label: "Paint on image (changes the photo)",
+      category: "Layers",
+      ...onLayer(
+        (layer) => ({ type: "makeLayerPaintable", id: layer.id }),
+        (layer) => layer.kind === "raster" && !!layer.image
+      ),
+    },
+    {
+      id: "layer.rasterise",
+      label: "Rasterise layer",
+      category: "Layers",
+      ...onLayer(
+        (layer) => ({ type: "rasteriseLayer", id: layer.id }),
+        (layer) => layer.kind === "vector"
+      ),
+    },
+    {
+      id: "document.clear",
+      label: "Clear canvas",
+      category: "Document",
+      ...dispatching({ type: "clearDocument" }),
+    },
+    {
+      id: "view.zoomIn",
+      label: "Zoom in",
+      category: "View",
+      keybinds: ["=", "+"],
+      ...dispatching({ type: "zoomView", factor: ZOOM_STEP }),
+    },
+    {
+      id: "view.zoomOut",
+      label: "Zoom out",
+      category: "View",
+      keybinds: ["-", "_"],
+      ...dispatching({ type: "zoomView", factor: 1 / ZOOM_STEP }),
+    },
+    // The brackets are size; rotation takes the pair beside them, which is
+    // where Krita and Blender put a step through an angle too.
+    {
+      id: "view.rotateLeft",
+      label: "Rotate left",
+      category: "View",
+      keybinds: [",", "<"],
+      // With nodes selected the pair scales them, as in Inkscape.
+      ...nodesOr(
+        transforming(() => ({ kind: "scale", by: -NODE_SCALE_STEP })),
+        dispatching({ type: "rotateView", radians: -ROTATE_STEP })
+      ),
+    },
+    {
+      id: "view.rotateRight",
+      label: "Rotate right",
+      category: "View",
+      keybinds: [".", ">"],
+      ...nodesOr(
+        transforming(() => ({ kind: "scale", by: NODE_SCALE_STEP })),
+        dispatching({ type: "rotateView", radians: ROTATE_STEP })
+      ),
+    },
+    {
+      id: "view.flip",
+      label: "Flip canvas horizontally",
+      category: "View",
+      keybinds: ["h"],
+      ...nodesOr(
+        transforming(() => ({ kind: "flip", axis: "horizontal" })),
+        dispatching({ type: "flipView" })
+      ),
+    },
+    {
+      id: "view.toggleSnapping",
+      label: "Toggle snapping",
+      category: "View",
+      keybinds: ["mod+;"],
+      ...dispatching(({ engine }) => ({
+        type: "setSnapping",
+        enabled: !engine?.getSnapshot().snapping,
+      })),
+    },
+    {
+      id: "view.toggleRulers",
+      label: "Toggle rulers",
+      category: "View",
+      keybinds: ["shift+r"],
+      available: hasEngine,
+      // A preference (08), remembered as well as shown, so a reload keeps it.
+      run: ({ engine }) => {
+        const visible = !engine?.getSnapshot().rulersVisible
+        writeRulersVisible(visible)
+        void engine?.dispatch({ type: "setRulersVisible", visible })
+      },
+    },
+    {
+      id: "view.toggleGuides",
+      label: "Show or hide guides",
+      category: "View",
+      keybinds: ["mod+'"],
+      ...dispatching(({ engine }) => ({
+        type: "setGuidesVisible",
+        visible: !engine?.getSnapshot().guidesVisible,
+      })),
+    },
+    {
+      id: "view.clearGuides",
+      label: "Clear guides",
+      category: "View",
+      available: ({ engine }) => !!engine?.getSnapshot().guides.length,
+      run: ({ engine }) => void engine?.dispatch({ type: "clearGuides" }),
+    },
+    {
+      id: "view.toggleStraightEdge",
+      label: "Place or remove the straight-edge",
+      category: "View",
+      keybinds: ["mod+shift+l"],
+      ...dispatching(({ engine }) => {
+        const snapshot = engine?.getSnapshot()
+        // Laid down level across the middle of the canvas, where it can be
+        // seen and picked up; the artist moves and turns it from there.
+        return {
+          type: "setStraightEdge",
+          edge: snapshot?.straightEdge
+            ? null
+            : {
+                x: (snapshot?.width ?? 0) / 2,
+                y: (snapshot?.height ?? 0) / 2,
+                angle: 0,
+              },
+        }
+      }),
+    },
+    {
+      id: "view.fit",
+      label: "Fit canvas to window",
+      category: "View",
+      keybinds: ["0"],
+      ...dispatching((context) => ({
+        type: "fitView",
+        occludedRight: context.occludedRight(),
+      })),
+    },
+    {
+      // Fit is the overview; with shift it is the way back to square. The
+      // shifted key arrives as `)` on a US layout and as `0` on the layouts that
+      // put a digit there unshifted, so both spellings mean the same key.
+      id: "view.reset",
+      label: "Reset view",
+      category: "View",
+      keybinds: ["shift+0", ")"],
+      ...dispatching((context) => ({
+        type: "resetView",
+        occludedRight: context.occludedRight(),
+      })),
+    },
+    // The arrows nudge the canvas, for the artist who has no wheel under the
+    // hand that is free; with nodes selected on the node tool, they nudge those.
+    {
+      id: "view.panLeft",
+      label: "Pan left",
+      category: "View",
+      keybinds: ["arrowleft"],
+      ...panOrNudge(-1, 0),
+    },
+    {
+      id: "view.panRight",
+      label: "Pan right",
+      category: "View",
+      keybinds: ["arrowright"],
+      ...panOrNudge(1, 0),
+    },
+    {
+      id: "view.panUp",
+      label: "Pan up",
+      category: "View",
+      keybinds: ["arrowup"],
+      ...panOrNudge(0, -1),
+    },
+    {
+      id: "view.panDown",
+      label: "Pan down",
+      category: "View",
+      keybinds: ["arrowdown"],
+      ...panOrNudge(0, 1),
+    },
+    {
+      id: "node.nudgeLeftFar",
+      label: "Nudge nodes left far",
+      category: "Nodes",
+      keybinds: ["shift+arrowleft"],
+      ...panOrNudge(-1, 0, () => NODE_NUDGE_FAR),
+    },
+    {
+      id: "node.nudgeLeftPixel",
+      label: "Nudge nodes left one screen pixel",
+      category: "Nodes",
+      keybinds: ["alt+arrowleft"],
+      ...panOrNudge(-1, 0, (engine) => 1 / engine.getSnapshot().view.zoom),
+    },
+    {
+      id: "node.nudgeRightFar",
+      label: "Nudge nodes right far",
+      category: "Nodes",
+      keybinds: ["shift+arrowright"],
+      ...panOrNudge(1, 0, () => NODE_NUDGE_FAR),
+    },
+    {
+      id: "node.nudgeRightPixel",
+      label: "Nudge nodes right one screen pixel",
+      category: "Nodes",
+      keybinds: ["alt+arrowright"],
+      ...panOrNudge(1, 0, (engine) => 1 / engine.getSnapshot().view.zoom),
+    },
+    {
+      id: "node.nudgeUpFar",
+      label: "Nudge nodes up far",
+      category: "Nodes",
+      keybinds: ["shift+arrowup"],
+      ...panOrNudge(0, -1, () => NODE_NUDGE_FAR),
+    },
+    {
+      id: "node.nudgeUpPixel",
+      label: "Nudge nodes up one screen pixel",
+      category: "Nodes",
+      keybinds: ["alt+arrowup"],
+      ...panOrNudge(0, -1, (engine) => 1 / engine.getSnapshot().view.zoom),
+    },
+    {
+      id: "node.nudgeDownFar",
+      label: "Nudge nodes down far",
+      category: "Nodes",
+      keybinds: ["shift+arrowdown"],
+      ...panOrNudge(0, 1, () => NODE_NUDGE_FAR),
+    },
+    {
+      id: "node.nudgeDownPixel",
+      label: "Nudge nodes down one screen pixel",
+      category: "Nodes",
+      keybinds: ["alt+arrowdown"],
+      ...panOrNudge(0, 1, (engine) => 1 / engine.getSnapshot().view.zoom),
+    },
+  ],
+  // Lists read from the everyday to the specialist: what every session uses,
+  // then the tools and what they act on, then the vector editing a pen user
+  // reaches for, and the rarer document-wide commands last.
+  [
+    "General",
+    "Edit",
+    "View",
+    "Tools",
+    "Select",
+    "Brush",
+    "Layers",
+    "Objects",
+    "Nodes",
+    "Filters",
+    "Document",
+  ]
+)
 
 /** Runs a studio command by id, as a button does, if it is available. */
 export function runStudioCommand(id: string, context: StudioContext) {

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, type ReactNode } from "react"
+import { CaretRightIcon } from "@phosphor-icons/react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -123,6 +124,16 @@ const shows = (editing: VectorBrushKind, section: VectorBrushKind) =>
 const describe = (brush: VectorBrush): string =>
   (KINDS[brush.kind].describe as (brush: VectorBrush) => string)(brush)
 
+/** The shelf's groups of built-ins, by what kind of mark they make. */
+const GROUPS: { name: string; kinds: readonly VectorBrushKind[] }[] = [
+  { name: "Pens", kinds: ["profile"] },
+  { name: "Calligraphy", kinds: ["calligraphy"] },
+  { name: "Pattern", kinds: ["pattern"] },
+  { name: "Scatter", kinds: ["scatter"] },
+]
+
+const MINE = "My brushes"
+
 export function VectorBrushLibrary({
   library,
   store,
@@ -146,6 +157,33 @@ export function VectorBrushLibrary({
   const [editing, setEditing] = useState<VectorBrush | null>(null)
   const [sourceId, setSourceId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const shelf = [
+    ...(library.brushes.length > 0
+      ? [{ name: MINE, brushes: library.brushes }]
+      : []),
+    ...GROUPS.map(({ name, kinds }) => ({
+      name,
+      brushes: BUILTIN_VECTOR_BRUSHES.filter((b) => kinds.includes(b.kind)),
+    })),
+  ]
+  /**
+   * Groups folded shut. Pens and the artist's own stay open, as does
+   * whichever group holds the brush in hand, so it is never hidden.
+   */
+  const [folded, setFolded] = useState<ReadonlySet<string>>(
+    () =>
+      new Set(
+        GROUPS.slice(1)
+          .filter(({ kinds }) => !kinds.includes(current.kind))
+          .map(({ name }) => name)
+      )
+  )
+  const toggle = (name: string) =>
+    setFolded((was) => {
+      const next = new Set(was)
+      if (!next.delete(name)) next.add(name)
+      return next
+    })
   async function work(action: () => Promise<unknown>) {
     setBusy(true)
     try {
@@ -167,52 +205,79 @@ export function VectorBrushLibrary({
   return (
     <>
       <h2 className="mb-2 text-sm font-medium">Vector brushes</h2>
-      {[...BUILTIN_VECTOR_BRUSHES, ...library.brushes].map((brush) => (
-        <div key={brush.id} className="mb-1">
-          <button
-            type="button"
-            aria-label={`${brush.name} vector brush`}
-            aria-pressed={current.id === brush.id}
-            className="flex w-full items-center gap-3 rounded-lg border border-transparent p-3 text-left hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
-            onClick={() => {
-              select(brush)
-              close()
-            }}
-          >
-            <VectorBrushToolIcon
-              kind={brush.params.pressure ? "pressure" : "solid"}
-              className="size-5"
-            />
-            <span>
-              <span className="block text-xs font-medium">
-                {brush.name} vector brush
-              </span>
-              <span className="block text-[10px] text-muted-foreground">
-                {describe(brush)}
-              </span>
-            </span>
-          </button>
-          {library.brushes.some((b) => b.id === brush.id) && (
-            <div className="flex gap-1 px-3">
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => edit(brush, brush.id)}
+      {shelf.map(({ name, brushes }) => {
+        const open = !folded.has(name)
+        return (
+          <section key={name} className="mb-2">
+            <h3 className="mb-1 text-xs font-medium text-muted-foreground">
+              <button
+                type="button"
+                aria-expanded={open}
+                className="flex w-full items-center gap-1 rounded-sm px-1 py-1 text-left focus-visible:outline-2 focus-visible:outline-primary"
+                onClick={() => toggle(name)}
               >
-                Edit {brush.name}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={busy}
-                onClick={() => void work(() => store.remove(brush.id))}
-              >
-                Delete {brush.name}
-              </Button>
-            </div>
-          )}
-        </div>
-      ))}
+                <CaretRightIcon
+                  className={`size-3 transition-transform ${open ? "rotate-90" : ""}`}
+                />
+                {name}
+                <span
+                  aria-hidden
+                  className="ml-auto font-normal text-muted-foreground/70"
+                >
+                  {brushes.length}
+                </span>
+              </button>
+            </h3>
+            {open &&
+              brushes.map((brush) => (
+                <div key={brush.id} className="mb-1">
+                  <button
+                    type="button"
+                    aria-label={`${brush.name} vector brush`}
+                    aria-pressed={current.id === brush.id}
+                    className="flex w-full items-center gap-3 rounded-lg border border-transparent p-3 text-left hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
+                    onClick={() => {
+                      select(brush)
+                      close()
+                    }}
+                  >
+                    <VectorBrushToolIcon
+                      kind={brush.params.pressure ? "pressure" : "solid"}
+                      className="size-5"
+                    />
+                    <span>
+                      <span className="block text-xs font-medium">
+                        {brush.name} vector brush
+                      </span>
+                      <span className="block text-[10px] text-muted-foreground">
+                        {describe(brush)}
+                      </span>
+                    </span>
+                  </button>
+                  {name === MINE && (
+                    <div className="flex gap-1 px-3">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => edit(brush, brush.id)}
+                      >
+                        Edit {brush.name}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => void work(() => store.remove(brush.id))}
+                      >
+                        Delete {brush.name}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ))}
+          </section>
+        )
+      })}
       {!library.loaded && (
         <p className="text-xs text-muted-foreground">Loading brushes…</p>
       )}

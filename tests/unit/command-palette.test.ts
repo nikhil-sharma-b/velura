@@ -3,6 +3,7 @@ import {
   closesPalette,
   fuzzyScore,
   paletteEntries,
+  paletteSections,
   rememberRecent,
 } from "../../features/commands/lib/palette"
 import {
@@ -120,5 +121,37 @@ describe("closesPalette", () => {
     expect(closesPalette(registry(["mod+k"]), "mod+j", "palette.toggle")).toBe(
       false
     )
+  })
+})
+
+describe("paletteSections", () => {
+  const registry = createRegistry(
+    [
+      command("a", "Alpha", { category: "Late" }),
+      command("b", "Beta", { category: "Early" }),
+      command("c", "Gamma", { category: "Late" }),
+    ],
+    ["Early", "Late"]
+  )
+  const sections = (query: string, recent: string[]) =>
+    paletteSections(registry, { on: true }, query, recent).map((section) => [
+      section.title,
+      section.entries.map((entry) => entry.command.id),
+    ])
+
+  test("with nothing typed, recent first, then categories in order", () => {
+    expect(sections("", ["c"])).toEqual([
+      ["Recent", ["c"]],
+      ["Early", ["b"]],
+      ["Late", ["a"]],
+    ])
+    expect(sections("", [])).toEqual([
+      ["Early", ["b"]],
+      ["Late", ["a", "c"]],
+    ])
+  })
+
+  test("a search is one ranked list with no headings", () => {
+    expect(sections("gam", ["a"])).toEqual([[undefined, ["c"]]])
   })
 })

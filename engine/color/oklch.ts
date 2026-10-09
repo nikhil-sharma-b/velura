@@ -56,7 +56,7 @@ function linearSrgbToOklab(color: Rgb): [number, number, number] {
   ]
 }
 
-function oklabToLinearSrgb(lab: Rgb): [number, number, number] {
+export function oklabToLinearSrgb(lab: Rgb): [number, number, number] {
   const long = (lab[0] + 0.3963377774 * lab[1] + 0.2158037573 * lab[2]) ** 3
   const medium = (lab[0] - 0.1055613458 * lab[1] - 0.0638541728 * lab[2]) ** 3
   const short = (lab[0] - 0.0894841775 * lab[1] - 1.291485548 * lab[2]) ** 3

@@ -697,6 +697,7 @@ describe("filter commands", () => {
       "rotateView",
       "setBrush",
       "flipView",
+      "setTool",
     ])
   })
 

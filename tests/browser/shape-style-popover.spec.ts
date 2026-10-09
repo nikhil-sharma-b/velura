@@ -55,7 +55,7 @@ test("a selected object's fill colour and outline width change from the shape op
   ).toHaveCount(0)
   await page.keyboard.press("Escape")
 
-  await page.getByRole("button", { name: "Select objects" }).click()
+  await page.getByRole("button", { name: "Object selection tool" }).click()
   await page.mouse.click(cx, cy)
   await trigger.click()
   await expect(options.getByText("Selected objects")).toBeVisible()
@@ -111,7 +111,9 @@ test("a selected object's fill colour and outline width change from the shape op
   await width.fill("24")
   await width.press("Enter")
   await expect(width).toHaveValue("24")
-  await sizeSetting.click()
+  // Escape rather than the trigger: an open popover is modal, so the rest of
+  // the studio, its trigger included, is out of the accessibility tree.
+  await page.keyboard.press("Escape")
   await expect(sizeSetting).toHaveAccessibleName("Width: 24 px")
 
   // The colour last, with the options left open: a colour lands on the next
@@ -186,7 +188,7 @@ test("two curves selected whole join from the objects' actions", async ({
     }
     await page.getByRole("button", { name: "Finish open path" }).click()
   }
-  await page.getByRole("button", { name: "Select objects" }).click()
+  await page.getByRole("button", { name: "Object selection tool" }).click()
   // A band round both curves selects them.
   await page.mouse.move(cx - 100, cy - 80)
   await page.mouse.down()

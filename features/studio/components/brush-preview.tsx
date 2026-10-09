@@ -1,5 +1,6 @@
 "use client"
 
+import { useTheme } from "next-themes"
 import { useEffect, useRef } from "react"
 
 import type { Brush } from "@/engine/brush/brush"
@@ -47,6 +48,9 @@ export function BrushPreview({
   cached?: boolean
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  // The ink is the text colour, read as the stroke is drawn; a theme change
+  // swaps it, so it redraws rather than leave a light stroke on a light panel.
+  const { resolvedTheme } = useTheme()
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -132,7 +136,7 @@ export function BrushPreview({
     const observer = new ResizeObserver(draw)
     observer.observe(canvas)
     return () => observer.disconnect()
-  }, [brush, cached])
+  }, [brush, cached, resolvedTheme])
 
   return (
     <canvas

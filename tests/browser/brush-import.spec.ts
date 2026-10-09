@@ -126,8 +126,10 @@ test("a Krita preset is imported, reports what it lost, and paints", async ({
   await expect(
     library.getByRole("button", { name: "Paint with Imported Round" })
   ).toHaveAttribute("aria-pressed", "true")
+  // By attribute: the library is open, and modal, so the rail is hidden
+  // from the accessibility tree.
   await expect(
-    page.getByRole("button", { name: "Choose brush: Imported Round" })
+    page.locator('button[aria-label="Choose brush: Imported Round"]')
   ).toBeVisible()
   await paintsAMark(page)
 })
@@ -144,7 +146,7 @@ test("a GIMP image hose is imported as a tip set and paints", async ({
   ])
   await expect(page.getByText("Imported 1 brush")).toBeVisible()
   await expect(
-    page.getByRole("button", { name: "Choose brush: Pebbles" })
+    page.locator('button[aria-label="Choose brush: Pebbles"]')
   ).toBeVisible()
   await paintsAMark(page)
 

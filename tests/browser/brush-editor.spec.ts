@@ -322,3 +322,25 @@ test("fitting the view with the editor open keeps the piece clear of it", async 
     expect((r + g + b) / 3).toBeLessThan(128)
   }).toPass({ timeout: 10_000 })
 })
+
+test("the preview stroke takes the theme's ink when the theme changes", async ({
+  page,
+}) => {
+  await page.emulateMedia({ colorScheme: "dark" })
+  await openEditor(page)
+  const preview = editor(page).getByTestId("brush-preview")
+  // The darkest ink on the canvas: the stroke's core.
+  const darkest = () =>
+    preview.evaluate((canvas: HTMLCanvasElement) => {
+      const { data } = canvas
+        .getContext("2d")!
+        .getImageData(0, 0, canvas.width, canvas.height)
+      let min = 255
+      for (let i = 0; i < data.length; i += 4)
+        if (data[i + 3] > 200) min = Math.min(min, data[i])
+      return min
+    })
+  await expect.poll(darkest).toBeGreaterThan(150)
+  await page.emulateMedia({ colorScheme: "light" })
+  await expect.poll(darkest).toBeLessThan(100)
+})

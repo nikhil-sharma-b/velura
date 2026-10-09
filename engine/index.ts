@@ -3146,6 +3146,35 @@ export function createEngine(
     publish({ vectorSelection: ids })
   }
 
+  /**
+   * Selects the vector layer's objects among `ids`, or all of them; the
+   * eraser's cut-outs are not objects an artist picks.
+   */
+  function selectVectorObjects(ids?: readonly string[]) {
+    cancelVectorTransform()
+    setVectorSelection(
+      selectedVectorLayer()
+        .scene.objects.filter((o) => !o.erase && (!ids || ids.includes(o.id)))
+        .map((o) => o.id)
+    )
+  }
+
+  /** The node tool lets go of its nodes before the paths; true if it did. */
+  function releaseNodes(): boolean {
+    if (tool !== "node" || !snapshot.vectorNodes.length) return false
+    dropShapeDrag()
+    publish({ vectorNodes: [] })
+    return true
+  }
+
+  /** Lets go of the selected objects; true if any were held. */
+  function releaseObjects(): boolean {
+    if (!snapshot.vectorSelection.length) return false
+    cancelVectorTransform()
+    publish({ vectorSelection: [] })
+    return true
+  }
+
   function selectVectorRegion(
     region: Point | Extent | readonly Point[],
     additive = false
@@ -6424,16 +6453,9 @@ export function createEngine(
         case "editVectorLayer":
           editScene(command.id, command.commands, "edit shapes")
           break
-        case "selectVectorObjects": {
-          cancelVectorTransform()
-          const layer = selectedVectorLayer()
-          setVectorSelection(
-            layer.scene.objects
-              .filter((o) => !o.erase && command.ids.includes(o.id))
-              .map((o) => o.id)
-          )
+        case "selectVectorObjects":
+          selectVectorObjects(command.ids)
           break
-        }
         case "selectVectorRegion":
           selectVectorRegion(command.region, command.additive)
           break
@@ -7147,21 +7169,30 @@ export function createEngine(
             publish({ vectorNodes: allNodes(snapshot.vectorPaths) })
             break
           }
+          // With the object tool, every object on the vector layer.
+          if (
+            tool === "objectSelect" &&
+            activeLayer(requireDocument()).kind === "vector"
+          ) {
+            selectVectorObjects()
+            break
+          }
           commitSelection("select all", selectAll(requireDocument()))
           break
         case "abandonSelectionGesture":
-          // The node tool lets go of its nodes first, then of the paths.
-          if (tool === "node" && snapshot.vectorNodes.length) {
-            dropShapeDrag()
-            publish({ vectorNodes: [] })
-            break
-          }
+          if (releaseNodes()) break
           dropShapeDrag()
-          cancelVectorTransform()
-          publish({ vectorSelection: [] })
+          releaseObjects()
           dropMarquee()
           break
         case "deselect":
+          // The vector tools let go of what they hold, as Escape does; the
+          // pixel selection is left alone.
+          if (
+            releaseNodes() ||
+            ((tool === "objectSelect" || tool === "node") && releaseObjects())
+          )
+            break
           requireDocument()
           commitSelection("deselect", null)
           break

@@ -284,19 +284,26 @@ test("each selection family has one rail slot that swaps on a second press", asy
       "true"
     )
 
-  await page.getByRole("button", { name: "Lasso tool", exact: true }).click()
-  await pressed("Lasso tool")
-  await page.getByRole("button", { name: "Lasso tool", exact: true }).click()
-  await pressed("Polygonal lasso tool")
+  await page
+    .getByRole("button", { name: "Lasso selection tool", exact: true })
+    .click()
+  await pressed("Lasso selection tool")
+  await page
+    .getByRole("button", { name: "Lasso selection tool", exact: true })
+    .click()
+  await pressed("Polygonal lasso selection tool")
 
   // The slot remembers, and follows the keys as well as the pointer.
   await page.keyboard.press("Shift+M")
-  await pressed("Ellipse select tool")
+  await pressed("Ellipse selection tool")
   await expect(
-    page.getByRole("button", { name: "Polygonal lasso tool", exact: true })
+    page.getByRole("button", {
+      name: "Polygonal lasso selection tool",
+      exact: true,
+    })
   ).toHaveAttribute("aria-pressed", "false")
   await page.keyboard.press("l")
-  await pressed("Lasso tool")
-  await page.getByRole("button", { name: "Ellipse select tool" }).click()
-  await pressed("Ellipse select tool")
+  await pressed("Lasso selection tool")
+  await page.getByRole("button", { name: "Ellipse selection tool" }).click()
+  await pressed("Ellipse selection tool")
 })

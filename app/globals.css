@@ -214,6 +214,49 @@
 }
 
 @layer utilities {
+  /* A rounded panel that scrolls. The browser paints its scrollbar track as a
+     square strip over the panel's rounded corners; inset from the ends by the
+     corner's radius, with a clear track and a floating thumb, it stays inside
+     the curve. Firefox, which has no track inset, clips it to the radius. */
+  .scroll-rounded {
+    --scroll-inset: var(--radius-xl);
+  }
+  .scroll-rounded::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  .scroll-rounded::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scroll-rounded::-webkit-scrollbar-track:vertical {
+    margin-block: var(--scroll-inset);
+  }
+  .scroll-rounded::-webkit-scrollbar-track:horizontal {
+    margin-inline: var(--scroll-inset);
+  }
+  /* Where the two bars would meet: left unstyled, it is an opaque square. */
+  .scroll-rounded::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  .scroll-rounded::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background: color-mix(in srgb, var(--foreground) 28%, transparent)
+      padding-box;
+  }
+  .scroll-rounded::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--foreground) 45%, transparent);
+  }
+  /* Set where the pseudo-elements are not understood only: a browser that
+     knows both lets scrollbar-color override them. */
+  @supports not selector(::-webkit-scrollbar) {
+    .scroll-rounded {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--foreground) 28%, transparent)
+        transparent;
+    }
+  }
+
   /* Wordmark and empty-state headings only — Karla needs real negative
      tracking once it is set above ~30px or the words drift apart. */
   .font-heading-display {

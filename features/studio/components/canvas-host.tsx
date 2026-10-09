@@ -136,6 +136,10 @@ import {
 import { BrushLibrary } from "./brush-library"
 import { TiltToggle } from "./tilt-toggle"
 import { IconButton } from "./icon-button"
+import {
+  lastInputWasPointer,
+  returnFocusForKeysOnly,
+} from "@/lib/input-modality"
 import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
 import { ShapeStylePanel } from "./shape-style-panel"
@@ -188,7 +192,10 @@ type FamilyMember = {
  * then the freehand tools, the pen and the brush, then the shapes.
  */
 const VECTOR_TOOL_RAIL = {
-  objectSelect: { label: "Select objects", icon: <CursorIcon weight="fill" /> },
+  objectSelect: {
+    label: "Object selection tool",
+    icon: <CursorIcon weight="fill" />,
+  },
   node: { label: "Node tool", icon: <CursorIcon /> },
   pen: { label: "Pen tool", icon: <PenNibIcon /> },
   pressure: { label: "Vector brush tool", icon: <PaintBrushIcon /> },
@@ -209,23 +216,28 @@ const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
   [
     {
       tool: "rectSelect",
-      label: "Rectangle select tool",
-      name: "rectangle select",
+      label: "Rectangle selection tool",
+      name: "rectangle selection",
       icon: <SelectionIcon />,
     },
     {
       tool: "ellipseSelect",
-      label: "Ellipse select tool",
-      name: "ellipse select",
+      label: "Ellipse selection tool",
+      name: "ellipse selection",
       icon: <CircleDashedIcon />,
     },
   ],
   [
-    { tool: "lasso", label: "Lasso tool", name: "lasso", icon: <LassoIcon /> },
+    {
+      tool: "lasso",
+      label: "Lasso selection tool",
+      name: "lasso selection",
+      icon: <LassoIcon />,
+    },
     {
       tool: "polygonLasso",
-      label: "Polygonal lasso tool",
-      name: "polygonal lasso",
+      label: "Polygonal lasso selection tool",
+      name: "polygonal lasso selection",
       icon: <PolygonIcon />,
     },
   ],
@@ -325,7 +337,9 @@ function ShapeToolSlot({
   const held = SHAPE_TOOLS.find((shape) => shape === tool)
   if (held && held !== shown) setShown(held)
   return (
-    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+    // Every popover over the canvas is modal: the click that closes it reaches
+    // nothing else, so dismissing a panel never leaves a mark on the canvas.
+    <PopoverPrimitive.Root modal open={open} onOpenChange={setOpen}>
       <PopoverPrimitive.Anchor asChild>
         <RailAction
           label={VECTOR_TOOL_RAIL[shown].label}
@@ -349,6 +363,7 @@ function ShapeToolSlot({
       </PopoverPrimitive.Anchor>
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Content
+          onCloseAutoFocus={returnFocusForKeysOnly}
           side="right"
           align="start"
           sideOffset={10}
@@ -512,7 +527,7 @@ function QuickSetting({
   // The value sits under the icon rather than beside it, so the panel keeps
   // the tool bar's width: a readout is what tells a setting from a tool.
   return (
-    <PopoverPrimitive.Root>
+    <PopoverPrimitive.Root modal>
       <PopoverPrimitive.Trigger asChild>
         <IconButton
           label={`${label}: ${value}`}
@@ -529,6 +544,7 @@ function QuickSetting({
       </PopoverPrimitive.Trigger>
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Content
+          onCloseAutoFocus={returnFocusForKeysOnly}
           side="right"
           align="start"
           sideOffset={10}
@@ -1583,6 +1599,7 @@ export function CanvasHost({
                     snapshot.tool === "objectSelect") &&
                     snapshot.vectorSelection.length > 0) ? (
                     <PopoverPrimitive.Root
+                      modal
                       open={vectorBrushOpen}
                       onOpenChange={setVectorBrushOpen}
                     >
@@ -1605,15 +1622,13 @@ export function CanvasHost({
                       </PopoverPrimitive.Trigger>
                       <PopoverPrimitive.Portal>
                         <PopoverPrimitive.Content
+                          onCloseAutoFocus={returnFocusForKeysOnly}
                           side="right"
                           align="end"
                           sideOffset={10}
                           collisionPadding={12}
                           aria-label="Choose a vector brush"
-                          // Focus handed back to the trigger would open its
-                          // tooltip over the taper setting beside it.
-                          onCloseAutoFocus={(event) => event.preventDefault()}
-                          className="z-50 max-h-[var(--radix-popover-content-available-height)] w-72 overflow-y-auto rounded-xl border bg-background p-3 shadow-xl"
+                          className="scroll-rounded z-50 max-h-[var(--radix-popover-content-available-height)] w-72 overflow-y-auto rounded-xl border bg-background p-3 shadow-xl"
                         >
                           <VectorBrushLibrary
                             library={vectorBrushLibrary}
@@ -1646,6 +1661,7 @@ export function CanvasHost({
                     </PopoverPrimitive.Root>
                   ) : snapshot.tool === "eraser" ? (
                     <PopoverPrimitive.Root
+                      modal
                       open={eraserOpen}
                       onOpenChange={setEraserOpen}
                     >
@@ -1670,12 +1686,13 @@ export function CanvasHost({
                       </PopoverPrimitive.Trigger>
                       <PopoverPrimitive.Portal>
                         <PopoverPrimitive.Content
+                          onCloseAutoFocus={returnFocusForKeysOnly}
                           side="right"
                           align="end"
                           sideOffset={10}
                           collisionPadding={12}
                           aria-label="Choose an eraser"
-                          className="z-50 max-h-[var(--radix-popover-content-available-height)] w-72 overflow-y-auto rounded-xl border bg-background p-3 shadow-xl"
+                          className="scroll-rounded z-50 max-h-[var(--radix-popover-content-available-height)] w-72 overflow-y-auto rounded-xl border bg-background p-3 shadow-xl"
                         >
                           <h2 className="mb-2 text-sm font-medium">Erasers</h2>
                           {(["solid", "pressure"] as const).map((kind) => (
@@ -1714,6 +1731,7 @@ export function CanvasHost({
                     </PopoverPrimitive.Root>
                   ) : (
                     <PopoverPrimitive.Root
+                      modal
                       open={libraryOpen}
                       onOpenChange={setLibraryOpen}
                     >
@@ -1736,12 +1754,13 @@ export function CanvasHost({
                       </PopoverPrimitive.Trigger>
                       <PopoverPrimitive.Portal>
                         <PopoverPrimitive.Content
+                          onCloseAutoFocus={returnFocusForKeysOnly}
                           side="right"
                           align="start"
                           sideOffset={10}
                           collisionPadding={12}
                           aria-label="Choose a brush"
-                          className="z-50 max-h-[min(36rem,var(--radix-popover-content-available-height))] w-80 max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border bg-background shadow-xl outline-none"
+                          className="scroll-rounded z-50 max-h-[min(36rem,var(--radix-popover-content-available-height))] w-80 max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border bg-background shadow-xl outline-none"
                         >
                           {engine && (
                             <BrushLibrary
@@ -1887,6 +1906,7 @@ export function CanvasHost({
                 here rather than only in app settings because the thing it has
                 to be judged against is the canvas. */}
                   <PopoverPrimitive.Root
+                    modal
                     open={pressureOpen}
                     onOpenChange={setPressureOpen}
                   >
@@ -1903,6 +1923,7 @@ export function CanvasHost({
                     </PopoverPrimitive.Trigger>
                     <PopoverPrimitive.Portal>
                       <PopoverPrimitive.Content
+                        onCloseAutoFocus={returnFocusForKeysOnly}
                         side="right"
                         align="start"
                         sideOffset={10}
@@ -2277,7 +2298,7 @@ export function CanvasHost({
           </TooltipProvider>
 
           {engine && colorOpen && (
-            <aside className="absolute top-16 left-16 z-10 max-h-[calc(100dvh-5rem)] w-72 max-w-[calc(100vw-5rem)] overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/95 shadow-xl backdrop-blur-xl">
+            <aside className="scroll-rounded absolute top-16 left-16 z-10 max-h-[calc(100dvh-5rem)] w-72 max-w-[calc(100vw-5rem)] overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/95 shadow-xl backdrop-blur-xl">
               <ColorPanel
                 engine={engine}
                 snapshot={snapshot}
@@ -2324,7 +2345,7 @@ export function CanvasHost({
             {engine && panelsOpen && (
               <aside
                 className={cn(
-                  "pointer-events-auto flex min-h-0 w-full flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl",
+                  "scroll-rounded pointer-events-auto flex min-h-0 w-full flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl",
                   // The layers keep their height and the editor below them
                   // scrolls, up to half the column so a long stack cannot
                   // crowd the editor out.
@@ -2351,7 +2372,7 @@ export function CanvasHost({
             {engine && brushOpen && snapshot.tool !== "eraser" && (
               <aside
                 ref={brushPanel}
-                className="pointer-events-auto flex min-h-0 w-full shrink flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl"
+                className="scroll-rounded pointer-events-auto flex min-h-0 w-full shrink flex-col overflow-y-auto rounded-xl border border-studio-edge bg-studio-surface/88 shadow-xl backdrop-blur-xl"
               >
                 <BrushEditor
                   brush={snapshot.brush}
@@ -2360,7 +2381,9 @@ export function CanvasHost({
                   edited={brushEdited}
                   onClose={() => {
                     setBrushOpen(false)
-                    brushButton.current?.focus()
+                    // As the popovers do: focus back for the keyboard only,
+                    // or the button's tooltip opens under a moved-on pointer.
+                    if (!lastInputWasPointer()) brushButton.current?.focus()
                   }}
                   onEdit={(next) => void engine.dispatch(brushCommand(next))}
                   onImportTexture={async (files, kind) => {
@@ -2503,6 +2526,27 @@ export function CanvasHost({
         className="pointer-events-none absolute inset-0"
         hidden={zen || snapshot.status !== "ready"}
       />
+      {/* Zen's one mark: says the controls are put away, not broken, and
+          brings them back. */}
+      {zen && snapshot.status === "ready" && (
+        <IconButton
+          label="Leave zen mode"
+          command="view.zen"
+          side="right"
+          variant="ghost"
+          // A white dot that subtracts itself from whatever is beneath: dark
+          // on light paint, light on dark. The blend sits on the button, not
+          // the dot, as opacity on the button would blend the dot only with
+          // the button.
+          className="group absolute top-2 left-2 size-6 rounded-full p-0 mix-blend-difference hover:bg-transparent dark:hover:bg-transparent"
+          onClick={() => setZen(false)}
+        >
+          <span
+            aria-hidden
+            className="size-1.5 shrink-0 rounded-full bg-white transition-transform group-hover:scale-150"
+          />
+        </IconButton>
+      )}
       {snapshot.status !== "ready" && (
         <div className="absolute inset-0 grid place-items-center bg-background p-6">
           <section
