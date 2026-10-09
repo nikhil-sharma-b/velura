@@ -4,6 +4,7 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 import * as React from "react"
 
 import { Button } from "@/components/ui/button"
+import { returnFocusForKeysOnly } from "@/lib/input-modality"
 import { cn } from "@/lib/utils"
 import { XIcon } from "@phosphor-icons/react"
 
@@ -52,6 +53,7 @@ function DialogContent({
   children,
   showCloseButton = true,
   overlayClassName,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -67,6 +69,10 @@ function DialogContent({
           className
         )}
         {...props}
+        onCloseAutoFocus={(event) => {
+          returnFocusForKeysOnly(event)
+          onCloseAutoFocus?.(event)
+        }}
       >
         {children}
         {showCloseButton && (

@@ -136,7 +136,10 @@ import {
 import { BrushLibrary } from "./brush-library"
 import { TiltToggle } from "./tilt-toggle"
 import { IconButton } from "./icon-button"
-import { returnFocusForKeysOnly } from "@/lib/input-modality"
+import {
+  lastInputWasPointer,
+  returnFocusForKeysOnly,
+} from "@/lib/input-modality"
 import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
 import { ShapeStylePanel } from "./shape-style-panel"
@@ -2378,7 +2381,9 @@ export function CanvasHost({
                   edited={brushEdited}
                   onClose={() => {
                     setBrushOpen(false)
-                    brushButton.current?.focus()
+                    // As the popovers do: focus back for the keyboard only,
+                    // or the button's tooltip opens under a moved-on pointer.
+                    if (!lastInputWasPointer()) brushButton.current?.focus()
                   }}
                   onEdit={(next) => void engine.dispatch(brushCommand(next))}
                   onImportTexture={async (files, kind) => {
