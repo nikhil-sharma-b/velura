@@ -1153,3 +1153,34 @@ test("on a turned view, a band selects what lies inside it as drawn on screen", 
     )
     .toEqual(["a"])
 })
+
+test("with the object tool, select all takes every object and deselect lets them go", async ({
+  page,
+}) => {
+  await openCanvas(page)
+  const id = await addVectorLayer(page)
+  await edit(page, id, [
+    { type: "add", object: rect("a", { x: 10, y: 10, width: 20, height: 20 }) },
+    { type: "add", object: rect("b", { x: 60, y: 10, width: 20, height: 20 }) },
+  ])
+  const state = () =>
+    page.evaluate(() => {
+      const s = window.engine.getSnapshot()
+      return { objects: [...s.vectorSelection].sort(), pixels: !!s.selection }
+    })
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setTool", tool: "objectSelect" })
+    await window.engine.dispatch({ type: "selectAll" })
+  })
+  expect(await state()).toEqual({ objects: ["a", "b"], pixels: false })
+
+  await page.evaluate(() => window.engine.dispatch({ type: "deselect" }))
+  expect(await state()).toEqual({ objects: [], pixels: false })
+
+  // Away from the vector tools, select all is the canvas's pixels again.
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setTool", tool: "rectSelect" })
+    await window.engine.dispatch({ type: "selectAll" })
+  })
+  expect(await state()).toEqual({ objects: [], pixels: true })
+})

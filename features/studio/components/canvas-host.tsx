@@ -188,7 +188,10 @@ type FamilyMember = {
  * then the freehand tools, the pen and the brush, then the shapes.
  */
 const VECTOR_TOOL_RAIL = {
-  objectSelect: { label: "Select objects", icon: <CursorIcon weight="fill" /> },
+  objectSelect: {
+    label: "Object selection tool",
+    icon: <CursorIcon weight="fill" />,
+  },
   node: { label: "Node tool", icon: <CursorIcon /> },
   pen: { label: "Pen tool", icon: <PenNibIcon /> },
   pressure: { label: "Vector brush tool", icon: <PaintBrushIcon /> },
@@ -209,23 +212,28 @@ const SELECTION_FAMILIES: readonly (readonly [FamilyMember, FamilyMember])[] = [
   [
     {
       tool: "rectSelect",
-      label: "Rectangle select tool",
-      name: "rectangle select",
+      label: "Rectangle selection tool",
+      name: "rectangle selection",
       icon: <SelectionIcon />,
     },
     {
       tool: "ellipseSelect",
-      label: "Ellipse select tool",
-      name: "ellipse select",
+      label: "Ellipse selection tool",
+      name: "ellipse selection",
       icon: <CircleDashedIcon />,
     },
   ],
   [
-    { tool: "lasso", label: "Lasso tool", name: "lasso", icon: <LassoIcon /> },
+    {
+      tool: "lasso",
+      label: "Lasso selection tool",
+      name: "lasso selection",
+      icon: <LassoIcon />,
+    },
     {
       tool: "polygonLasso",
-      label: "Polygonal lasso tool",
-      name: "polygonal lasso",
+      label: "Polygonal lasso selection tool",
+      name: "polygonal lasso selection",
       icon: <PolygonIcon />,
     },
   ],

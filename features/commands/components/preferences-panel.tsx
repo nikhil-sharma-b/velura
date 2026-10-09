@@ -135,9 +135,7 @@ export function PreferencesPanel<Context>({
     lone.current = undefined
   }
 
-  const categories = [
-    ...new Set(registry.list().map((command) => command.category)),
-  ]
+  const categories = registry.categories()
 
   return (
     <Dialog

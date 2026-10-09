@@ -55,7 +55,7 @@ test("a selected object's fill colour and outline width change from the shape op
   ).toHaveCount(0)
   await page.keyboard.press("Escape")
 
-  await page.getByRole("button", { name: "Select objects" }).click()
+  await page.getByRole("button", { name: "Object selection tool" }).click()
   await page.mouse.click(cx, cy)
   await trigger.click()
   await expect(options.getByText("Selected objects")).toBeVisible()
@@ -186,7 +186,7 @@ test("two curves selected whole join from the objects' actions", async ({
     }
     await page.getByRole("button", { name: "Finish open path" }).click()
   }
-  await page.getByRole("button", { name: "Select objects" }).click()
+  await page.getByRole("button", { name: "Object selection tool" }).click()
   // A band round both curves selects them.
   await page.mouse.move(cx - 100, cy - 80)
   await page.mouse.down()

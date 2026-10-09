@@ -34,7 +34,8 @@ export function applyOverrides<Context>(
         ? override.filter((chord) => claimed.get(chord) === command.id)
         : defaults.keybinds(command.id).filter((chord) => !claimed.has(chord))
       return { ...command, keybinds: [...new Set(keybinds)] }
-    })
+    }),
+    defaults.categories()
   )
 }
 

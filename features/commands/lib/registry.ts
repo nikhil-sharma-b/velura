@@ -37,10 +37,16 @@ export interface Registry<Context> {
   keybinds(id: string): readonly Chord[]
   /** The command a chord is bound to, if any. */
   lookup(chord: Chord): Command<Context> | undefined
+  /**
+   * Every category in the order lists show them: the registry's own order
+   * first, then any it does not name, as their commands come.
+   */
+  categories(): readonly string[]
 }
 
 export function createRegistry<Context>(
-  commands: readonly Command<Context>[]
+  commands: readonly Command<Context>[],
+  order: readonly string[] = []
 ): Registry<Context> {
   const byId = new Map<string, Command<Context>>()
   const chords = new Map<string, readonly Chord[]>()
@@ -65,5 +71,14 @@ export function createRegistry<Context>(
     list: () => commands,
     keybinds: (id) => chords.get(id) ?? [],
     lookup: (chord) => byChord.get(chord),
+    categories: () => {
+      const present = new Set(commands.map((command) => command.category))
+      return [
+        ...new Set([
+          ...order.filter((category) => present.has(category)),
+          ...present,
+        ]),
+      ]
+    },
   }
 }

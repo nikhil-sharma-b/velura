@@ -72,7 +72,7 @@ test("pick a preset, draw, and apply another preset to the selected stroke", asy
   await page.mouse.move(x + 100, y, { steps: 20 })
   await page.mouse.up()
   await page
-    .getByRole("button", { name: "Select objects", exact: true })
+    .getByRole("button", { name: "Object selection tool", exact: true })
     .click()
   await page.mouse.click(x, y)
   await page.getByRole("button", { name: /^Choose vector brush/ }).click()
@@ -569,7 +569,7 @@ test("make a pattern brush from a selection and draw with it", async ({
   await page.mouse.move(x + 60, y + 10, { steps: 5 })
   await page.mouse.up()
   await page
-    .getByRole("button", { name: "Select objects", exact: true })
+    .getByRole("button", { name: "Object selection tool", exact: true })
     .click()
   // On its edge: an unfilled shape is picked by its outline.
   await page.mouse.click(x - 60, y)
@@ -642,7 +642,7 @@ test("a pattern brush's caps are picked from the selection", async ({
     await page.mouse.up()
   }
   await page
-    .getByRole("button", { name: "Select objects", exact: true })
+    .getByRole("button", { name: "Object selection tool", exact: true })
     .click()
   // A marquee round both.
   await page.mouse.move(x - 80, y - 40)
@@ -726,7 +726,7 @@ test("make a scatter brush from a selection and draw with it", async ({
   await page.mouse.move(x + 10, y + 10, { steps: 5 })
   await page.mouse.up()
   await page
-    .getByRole("button", { name: "Select objects", exact: true })
+    .getByRole("button", { name: "Object selection tool", exact: true })
     .click()
   // On its edge: an unfilled shape is picked by its outline.
   await page.mouse.click(x - 10, y)
