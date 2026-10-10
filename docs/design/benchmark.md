@@ -507,3 +507,36 @@ A stroke that reaches more than 64 tiles allocates another 32 MiB page as it
 goes, once per 64 tiles. Pages past the first are released when the stroke
 ends, and the first is kept for the next stroke. A stroke that covered the
 whole of an 8192² layer would hold the 512 MiB the copy always did.
+
+## Pigment mixing: wet sweep (live brushes 11)
+
+`bun run bench/run.ts --wet` now measures the shared pigment model through
+wet strokes over a prepainted blue ground, with yellow ink. It runs a paced
+pass for pointer latency and an unpaced pass for throughput, at 64 px and
+512 px diameter, with pickup zero and 0.8, on 2048² and 8192² documents.
+Spacing is 0.125 of the diameter and flow is 0.3. The six-stroke workload and
+2560 × 1440 viewport otherwise match the smudge sweep.
+
+Apple M4, 75 Hz desktop display, real WebGPU adapter, 2026-10-10, model from
+`e3a220e`:
+
+| document | diameter | pickup | sustained fps | paced p95 latency | painting readbacks |
+| --- | --- | --- | --- | --- | --- |
+| 2048² | 64 px | 0 | 588.2 | 18.8 ms | 0 |
+| 2048² | 64 px | 0.8 | 909.1 | 18.0 ms | 0 |
+| 2048² | 512 px | 0 | 833.3 | 15.4 ms | 0 |
+| 2048² | 512 px | 0.8 | 833.3 | 14.8 ms | 0 |
+| 8192² | 64 px | 0 | 370.4 | 18.6 ms | 0 |
+| 8192² | 64 px | 0.8 | 270.3 | 17.2 ms | 0 |
+| 8192² | 512 px | 0 | 344.8 | 16.7 ms | 0 |
+| 8192² | 512 px | 0.8 | 400.0 | 17.7 ms | 0 |
+
+Every measured row clears D30's 120 fps throughput bar with the model on.
+The latency bar remains unmet on this display, as in the earlier brush and
+smudge measurements; this run does not establish under 10 ms. A 120 Hz
+validation run is still required. Other painting benchmarks were running
+on this machine during part of the sweep, so these are conservative shared
+machine observations, not an isolated before/after regression comparison.
+No wet spacing change is justified by these throughput results. This sweep
+covers the pigment ticket's model-on measurement; ticket 10 still owns the
+broader dry comparison, densest supported spacing and opening-frame analysis.
