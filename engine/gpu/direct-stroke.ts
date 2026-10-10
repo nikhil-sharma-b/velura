@@ -1,4 +1,5 @@
 import { type PixelRect, TILE_SIZE } from "../doc/tile-grid"
+import type { LinearColor } from "../doc/tiled-layer"
 import { smudgeShader } from "../shaders/smudge"
 import {
   MAX_SMUDGE_DABS_PER_DRAW,
@@ -30,11 +31,22 @@ export type DirectStrokeContext = {
   noSelection: GPUTexture
 }
 
+/** What the direct stroke is told as it opens. */
+export type DirectOpening = {
+  /** The surface the stroke reads and writes. */
+  target: Surface
+  /**
+   * The colour a wet brush lays, premultiplied and in linear light. Null is
+   * smudge, which lays nothing whatever flow its dabs name.
+   */
+  lay: LinearColor | null
+}
+
 /**
  * The direct stroke, and what the renderer has to tell it about the things
  * it holds on to between dabs.
  */
-export interface DirectStroke extends StrokeRenderer<Surface> {
+export interface DirectStroke extends StrokeRenderer<DirectOpening> {
   /** The tip or the selection was replaced: the views held of them are stale. */
   invalidateBinding(): void
   /**
@@ -54,7 +66,8 @@ const MAX_CARRY_SIZE = 2048
 /**
  * The stroke that reads and writes its surface as it goes (D29, smudge 01):
  * each dab is mixed towards the pixel one dab's travel behind it, so what was
- * under the tip a step ago is dragged to where the tip is now.
+ * under the tip a step ago is dragged to where the tip is now. A wet brush's
+ * dab is then mixed towards the stroke's colour (D41); smudge's is not.
  */
 export function createDirectStroke(
   device: GPUDevice,
@@ -66,6 +79,10 @@ export function createDirectStroke(
   let session:
     | {
         target: Surface
+        /** Whether the stroke lays colour: a wet brush's, and not smudge's. */
+        lays: boolean
+        /** Whether the surface held nothing as the stroke opened. */
+        wasEmpty: boolean
         /** Null until the first dab says where the stroke began. */
         last: { x: number; y: number } | null
         reached: { left: number; top: number; right: number; bottom: number }
@@ -95,7 +112,7 @@ export function createDirectStroke(
    * any of them is replaced.
    */
   let bindGroup: GPUBindGroup | undefined
-  const params = new Float32Array(8)
+  const params = new Float32Array(12)
   const shaderModule = device.createShaderModule({ code: smudgeShader })
   const pipeline = device.createRenderPipeline({
     label: "smudge",
@@ -140,6 +157,7 @@ export function createDirectStroke(
               offset: SMUDGE.ORIGIN_X * 4,
               format: "float32x2",
             },
+            { shaderLocation: 8, offset: SMUDGE.FLOW * 4, format: "float32" },
           ],
         },
       ],
@@ -192,18 +210,20 @@ export function createDirectStroke(
       const x = dabs[dab + SMUDGE.CENTER_X]
       const y = dabs[dab + SMUDGE.CENTER_Y]
       // The first dab has come from nowhere.
-      if (!stroke.last) {
-        stroke.last = { x, y }
-        continue
-      }
+      stroke.last ??= { x, y }
       const travelX = x - stroke.last.x
       const travelY = y - stroke.last.y
       stroke.last.x = x
       stroke.last.y = y
-      // A still tip drags nothing, and nor does one with no strength: a
-      // stroke at none leaves the layer, and its history, as they were.
-      if (travelX === 0 && travelY === 0) continue
-      if (!(dabs[dab + SMUDGE.STRENGTH] > 0)) continue
+      const flow = stroke.lays ? dabs[dab + SMUDGE.FLOW] : 0
+      // A still tip drags nothing, and nor does one with no strength or with
+      // nothing under it; a dab that lays nothing either is not drawn, so a
+      // stroke of them leaves the layer, and its history, as they were.
+      const drags =
+        (travelX !== 0 || travelY !== 0) &&
+        dabs[dab + SMUDGE.STRENGTH] > 0 &&
+        !stroke.target.empty
+      if (!drags && !(flow > 0)) continue
       // Rotated textured quads fit inside sqrt(2) radii.
       const reach = dabs[dab + SMUDGE.RADIUS] * Math.SQRT2
       const left = Math.max(clipLeft, Math.floor(x - reach))
@@ -231,6 +251,7 @@ export function createDirectStroke(
       need = Math.max(need, span)
       const instance = drawn * SMUDGE_INSTANCE_STRIDE
       drawnDabs.set(dabs.subarray(dab, dab + SMUDGE_STRIDE), instance)
+      drawnDabs[instance + SMUDGE.FLOW] = flow
       drawnDabs[instance + SMUDGE.TRAVEL_X] = travelX
       drawnDabs[instance + SMUDGE.TRAVEL_Y] = travelY
       drawnDabs[instance + SMUDGE.ORIGIN_X] = fromLeft
@@ -248,6 +269,7 @@ export function createDirectStroke(
       stroke.reached.top = Math.min(stroke.reached.top, top)
       stroke.reached.right = Math.max(stroke.reached.right, right)
       stroke.reached.bottom = Math.max(stroke.reached.bottom, bottom)
+      stroke.target.empty = false
       drawn++
     }
     if (drawn === 0) return
@@ -401,7 +423,7 @@ export function createDirectStroke(
 
   function end(keep: boolean): PixelRect | null {
     if (!session) return null
-    const { target, reached, kept } = session
+    const { target, reached, kept, wasEmpty } = session
     session = undefined
     const region =
       reached.right > reached.left && reached.bottom > reached.top
@@ -418,6 +440,7 @@ export function createDirectStroke(
       for (const [tile, slot] of kept)
         copyBackupTile(encoder, target, tile, slot, "restore")
       device.queue.submit([encoder.finish()])
+      target.empty = wasEmpty
     }
     trimBackup()
     return keep ? region : null
@@ -426,13 +449,18 @@ export function createDirectStroke(
   return {
     /**
      * Nothing is copied yet: each tile is kept as it is when a dab first
-     * writes to it. A surface that holds nothing has nothing to smear.
+     * writes to it. A surface that holds nothing has nothing to smear, so
+     * only a stroke that lays colour opens on one.
      */
-    begin(target) {
-      if (target.empty) return false
+    begin({ target, lay }) {
+      if (target.empty && !lay) return false
       if (session) end(false)
+      if (lay) params.set(lay, 8)
+      else params.fill(0, 8)
       session = {
         target,
+        lays: !!lay,
+        wasEmpty: target.empty,
         last: null,
         reached: {
           left: Infinity,
@@ -446,7 +474,7 @@ export function createDirectStroke(
     },
     /**
      * Dabs are laid out as `SMUDGE` says. The first of a stroke has nothing
-     * behind it and only marks where the stroke began.
+     * behind it: it marks where the stroke began, and drags nothing.
      */
     draw(dabs, count) {
       if (!session || count <= 0) return

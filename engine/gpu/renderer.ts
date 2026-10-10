@@ -347,23 +347,25 @@ export interface Renderer {
    */
   endFilter(keep: boolean): void
   /**
-   * Starts a smudge stroke on one surface (smudge 01). Nothing is copied
-   * yet: each tile is kept as it is when a dab first writes to it, which is
-   * what a cancel puts back. False when the surface holds nothing, and so
-   * has nothing to smear.
+   * Starts a direct stroke on one surface (smudge 01, D41): a wet brush's,
+   * which lays `lay`, or with null a smudge. Nothing is copied yet: each
+   * tile is kept as it is when a dab first writes to it, which is what a
+   * cancel puts back. False for a smudge when the surface holds nothing,
+   * and so has nothing to smear.
    */
-  beginSmudge(surfaceId: string): boolean
+  beginDirect(surfaceId: string, lay: LinearColor | null): boolean
   /**
-   * Draws `count` smudge dabs (see `SMUDGE`) straight into the surface
-   * being smudged, each dragging in what lay one dab's travel behind it. The first
-   * dab of a stroke has nothing behind it and only marks where it began.
+   * Draws `count` dabs (see `SMUDGE`) straight into the surface of the
+   * direct stroke, each dragging in what lay one dab's travel behind it and
+   * laying the stroke's colour by its flow. The first dab of a stroke has
+   * nothing behind it to drag.
    */
-  smudge(dabs: Float32Array, count: number): void
+  drawDirect(dabs: Float32Array, count: number): void
   /**
-   * Ends the smudge stroke: kept, the surface holds the smear and the region
+   * Ends the direct stroke: kept, the surface holds the mark and the region
    * it reached is returned; not kept, the surface holds what it did before.
    */
-  endSmudge(keep: boolean): PixelRect | null
+  endDirect(keep: boolean): PixelRect | null
   /**
    * Draws what the selection covers of one surface into another, in
    * proportion to the coverage (11). Returns the region it wrote, or null
@@ -2972,14 +2974,16 @@ export function createRenderer(
       return drawFilter(filter)
     },
     endFilter,
-    beginSmudge(surfaceId) {
-      const target = surfaces.get(surfaceId)
-      return !!target && direct.begin(target)
+    beginDirect(surfaceId, lay) {
+      // A wet brush may be the first thing to paint on its layer. The paint
+      // target has its surface already, so nothing is allocated at pen-down.
+      const target = lay ? ensureSurface(surfaceId) : surfaces.get(surfaceId)
+      return !!target && direct.begin({ target, lay })
     },
-    smudge(dabs, count) {
+    drawDirect(dabs, count) {
       direct.draw(dabs, count)
     },
-    endSmudge(keep) {
+    endDirect(keep) {
       return direct.end(keep)
     },
     copySelected(sourceId, targetId) {

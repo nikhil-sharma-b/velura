@@ -95,6 +95,32 @@ describe("brushes on the account", () => {
     expect(await artist.query(api.brushes.list, {})).toEqual([])
   })
 
+  test("a wet brush comes back wet, and a dry one with no wet setting", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    await artist.mutation(api.brushes.save, { name: "Dry", definition: pencil })
+    await artist.mutation(api.brushes.save, {
+      name: "Oil",
+      definition: {
+        ...pencil,
+        rendering: { ...pencil.rendering, wet: { pickup: 0.4 } },
+      },
+    })
+
+    const [dry, oil] = await artist.query(api.brushes.list, {})
+    expect(dry.definition.rendering).toEqual(pencil.rendering)
+    expect(oil.definition.rendering.wet).toEqual({ pickup: 0.4 })
+    expect(
+      artist.mutation(api.brushes.save, {
+        name: "Bad",
+        definition: {
+          ...pencil,
+          rendering: { ...pencil.rendering, wet: { pickup: 2 } },
+        },
+      })
+    ).rejects.toThrow("pickup")
+  })
+
   test("signing out leaves the shelf empty rather than throwing", async () => {
     const t = setup()
     expect(await t.query(api.brushes.list, {})).toEqual([])

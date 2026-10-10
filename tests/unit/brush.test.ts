@@ -70,6 +70,17 @@ describe("brush definition", () => {
     expect(brushSpacing(hair)).toBeGreaterThan(0)
   })
 
+  test("a wet brush's dabs are never under a pixel apart", () => {
+    const wet = {
+      ...PENCIL,
+      rendering: { ...PENCIL.rendering, wet: { pickup: 0.5 } },
+    }
+    // The pencil's own 0.8 px would leave a dab no whole pixel behind it.
+    expect(brushSpacing(wet)).toBe(1)
+    const broad = { ...wet, shape: { ...wet.shape, radius: 20 } }
+    expect(brushSpacing(broad)).toBeCloseTo(4, 6)
+  })
+
   test("a clone shares nothing with the brush it came from", () => {
     const copy = cloneBrush(PENCIL)
     expect(copy).toEqual(PENCIL)

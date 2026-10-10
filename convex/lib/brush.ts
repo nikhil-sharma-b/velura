@@ -1,6 +1,6 @@
 import { validateTexture } from "../../engine/brush/texture"
 import { validateTipSelection } from "../../engine/brush/tip-sets"
-import { validateBrushColor } from "../../engine/brush/brush"
+import { validateBrushColor, validateBrushWet } from "../../engine/brush/brush"
 /**
  * What a stored brush is, in the shape of `convex/lib/palette.ts`: rules that
  * hold with or without a database, so the library panel and the mutation it
@@ -20,6 +20,7 @@ import type {
   BrushGrain,
   BrushRendering,
   BrushShape,
+  BrushWet,
 } from "../../engine/brush/brush"
 import { type Modulator, validateDynamics } from "../../engine/brush/dynamics"
 import { type BrushScatter, validateScatter } from "../../engine/brush/scatter"
@@ -144,11 +145,19 @@ function normaliseRendering(value: unknown): BrushRendering {
     rendering.accumulation !== "buildup"
   )
     throw new Error("Brush accumulation must be coverage or buildup.")
-  return {
+  const next: BrushRendering = {
     accumulation: rendering.accumulation,
     opacity: inRange(rendering.opacity, "opacity", 0, 1),
     flow: inRange(rendering.flow, "flow", 0, 1),
   }
+  // Absent on every brush saved before a brush could be wet, and absent is
+  // what draws the way those brushes always drew.
+  if (rendering.wet !== undefined && rendering.wet !== null) {
+    const wet = rendering.wet as BrushWet
+    validateBrushWet(wet)
+    next.wet = { pickup: wet.pickup }
+  }
+  return next
 }
 
 function normaliseModulators(value: unknown): Modulator[] {
