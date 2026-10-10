@@ -87,6 +87,46 @@ describe("the brush editor's preview stroke", () => {
     for (const dab of preview.dabs) expect(dab.opacity).toBeCloseTo(0.5, 6)
   })
 
+  test("a wet brush previews wet: its dabs laid by flow, with no stroke opacity or coverage over them", () => {
+    const rendering = {
+      accumulation: "coverage" as const,
+      opacity: 0.4,
+      flow: 0.5,
+    }
+    const dry = previewStroke(brush({ rendering }), BOX)
+    expect(dry.opacity).toBeCloseTo(0.4, 6)
+    expect(dry.accumulation).toBe("coverage")
+    const wet = previewStroke(
+      brush({ rendering: { ...rendering, wet: { pickup: 0.5 } } }),
+      BOX
+    )
+    expect(wet.opacity).toBe(1)
+    expect(wet.accumulation).toBe("buildup")
+    for (const dab of wet.dabs) expect(dab.opacity).toBeCloseTo(0.5, 6)
+  })
+
+  test("a wet brush previews without its scatter or colour jitter, as it draws", () => {
+    const jittery = brush({
+      scatter: { amount: 2, count: 3, axes: "both" },
+      dynamics: [
+        { source: "random", target: "hue", range: [0, 1], mix: "add" },
+        { source: "random", target: "lightness", range: [-1, 1], mix: "add" },
+      ],
+    })
+    const dry = previewStroke(jittery, BOX)
+    expect(dry.tinted).toBe(true)
+    const wet = previewStroke(
+      { ...jittery, rendering: { ...jittery.rendering, wet: { pickup: 0.5 } } },
+      BOX
+    )
+    const plain = previewStroke(
+      brush({ rendering: { ...jittery.rendering, wet: { pickup: 0.5 } } }),
+      BOX
+    )
+    expect(wet.tinted).toBe(false)
+    expect(wet.dabs).toEqual(plain.dabs)
+  })
+
   test("is the same stroke every time, so a redraw does not reshuffle it", () => {
     const speckle: Modulator = {
       source: "random",

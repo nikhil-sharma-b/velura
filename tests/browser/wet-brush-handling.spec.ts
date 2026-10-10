@@ -368,6 +368,78 @@ test("a device with no force sensor draws a wet brush at its settings", async ({
   )
 })
 
+const PICKUP_BY_PRESSURE: Modulator[] = [
+  { source: "pressure", target: "pickup", range: [0, 1], mix: "multiply" },
+]
+/** Two short dry bars on the row, alike but for where they are. */
+const BARS = [
+  { from: 60, to: 75 },
+  { from: 150, to: 165 },
+]
+/** The middle of each bar, where a dab that drags pulls its paint away. */
+const MIDDLE = BARS.map((bar) => Math.round((bar.from + bar.to) / 2))
+
+/**
+ * One stroke that lays nothing along the row, over the two bars: the layer
+ * with the bars on it and after the stroke.
+ */
+async function draggedOverBars(
+  page: Page,
+  dynamics: Modulator[],
+  samples: Sample[],
+  pointerType: "pen" | "mouse" = "pen"
+) {
+  const origin = await openCanvas(page)
+  for (const bar of BARS) await stroke(page, origin, bar.from, bar.to)
+  const painted = await pixels(page)
+  await dispatch(page, { type: "setBrush", dynamics })
+  // No flow, so nothing is laid and every change is paint dragged.
+  await setWet(page, 0, 0.9)
+  await penStroke(page, samples, pointerType)
+  return { painted, image: await pixels(page) }
+}
+
+test("pressing harder drags more paint along a wet stroke's length", async ({
+  page,
+}) => {
+  const samples = run(20, 230, [0.05, 1])
+  const mapped = await draggedOverBars(page, PICKUP_BY_PRESSURE, samples)
+  const plain = await draggedOverBars(page, [], samples)
+  const dragged = (drawn: typeof mapped, x: number) =>
+    change(drawn.image, drawn.painted, x)
+  // Lightly over the first bar, hard over the second: far more of the
+  // second is dragged away, where a brush whose pickup is its setting drags
+  // them alike.
+  expect(dragged(mapped, MIDDLE[0])).toBeGreaterThan(0)
+  expect(dragged(mapped, MIDDLE[0])).toBeLessThan(
+    dragged(mapped, MIDDLE[1]) / 4
+  )
+  expect(dragged(mapped, MIDDLE[0])).toBeLessThan(dragged(plain, MIDDLE[0]) / 4)
+  expect(
+    Math.abs(dragged(plain, MIDDLE[0]) - dragged(plain, MIDDLE[1]))
+  ).toBeLessThan(dragged(plain, MIDDLE[1]) / 4)
+})
+
+test("a device with no force sensor runs a wet brush's pickup at its setting", async ({
+  page,
+}) => {
+  const samples = run(20, 230, 0.2)
+  const mapped = await draggedOverBars(
+    page,
+    PICKUP_BY_PRESSURE,
+    samples,
+    "mouse"
+  )
+  const plain = await draggedOverBars(page, [], samples, "mouse")
+  expect(mapped.image).toEqual(plain.image)
+  expect(change(plain.image, plain.painted, MIDDLE[1])).toBeGreaterThan(0)
+  // A pen that says how lightly it is pressed is listened to.
+  const pen = await draggedOverBars(page, PICKUP_BY_PRESSURE, samples)
+  expect(change(pen.image, pen.painted, MIDDLE[1])).toBeLessThan(
+    change(plain.image, plain.painted, MIDDLE[1]) / 4
+  )
+})
+
 /**
  * Down to the right and back up, pressing harder all the way: a path on
  * which every way of choosing a frame chooses more than one.

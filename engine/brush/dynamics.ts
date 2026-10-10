@@ -12,9 +12,10 @@ import { type Curve, LINEAR_CURVE, sampleCurve } from "./curve"
  * brush editor (D32) show a live preview without a canvas.
  *
  * What the graph produces is a *modulation*, not a finished dab: `size`,
- * `flow`, `opacity`, `roundness` and `scatter` scale the brush's own values
- * and `angle` and `hue` offset them. That is what lets one dynamics list be
- * shared between brushes of different sizes and read the same on each.
+ * `flow`, `opacity`, `roundness`, `scatter` and `pickup` scale the brush's
+ * own values and `angle` and `hue` offset them. That is what lets one
+ * dynamics list be shared between brushes of different sizes and read the
+ * same on each.
  */
 
 /**
@@ -66,6 +67,11 @@ export type DynamicsTarget =
    * did.
    */
   | "scatter"
+  /**
+   * How much a wet brush picks up, as a multiple of the brush's own pickup
+   * (D41). A dry brush has none, and draws the same however this is driven.
+   */
+  | "pickup"
   /** Hue rotation, as a turn. */
   | "hue"
   | "saturation"
@@ -110,6 +116,7 @@ export type StampParams = {
   roundness: number
   grainDepth: number
   scatter: number
+  pickup: number
   hue: number
   saturation: number
   lightness: number
@@ -127,6 +134,7 @@ export const NEUTRAL_STAMP_PARAMS: StampParams = Object.freeze({
   roundness: 1,
   grainDepth: 1,
   scatter: 1,
+  pickup: 1,
   hue: 0,
   saturation: 0,
   lightness: 0,
@@ -178,6 +186,7 @@ const LIMITS: Readonly<
   roundness: [0.01, 1],
   grainDepth: [0, 1],
   scatter: [0, 16],
+  pickup: [0, 1],
   saturation: [-1, 1],
   lightness: [-1, 1],
 })

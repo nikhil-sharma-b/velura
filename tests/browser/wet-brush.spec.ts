@@ -15,6 +15,8 @@ const ROW = 60
 const BAR = { from: 40, to: 100 }
 const RED = "#d0202a"
 const BLUE = "#1040e0"
+/** Blue as the canvas presents it, laid whole. */
+const BLUE_PIXEL = [16, 64, 224, 255]
 /** What a brush is made wet with here. */
 const PICKUP = 0.5
 
@@ -170,7 +172,6 @@ test("a wet stroke dragged out of one colour carries it into the next", async ({
   const overRed = await strokeOver("bar")
   const overNothing = await strokeOver("empty")
   const red = rgba(overRed, 50)
-  const blue = [16, 64, 224, 255]
 
   // Past the bar's end the stroke over red holds red the other does not.
   for (const x of [125, 140])
@@ -182,9 +183,64 @@ test("a wet stroke dragged out of one colour carries it into the next", async ({
     distance(rgba(overRed, 170), red)
   )
   // And blue was laid into the red where the stroke began.
-  expect(distance(rgba(overRed, 80), blue)).toBeLessThan(
-    distance(red, blue) - 20
+  expect(distance(rgba(overRed, 80), BLUE_PIXEL)).toBeLessThan(
+    distance(red, BLUE_PIXEL) - 20
   )
+})
+
+test("at no pickup a wet brush covers and drags nothing", async ({ page }) => {
+  /** A blue wet stroke at full flow out of where the bar is, with or without it. */
+  async function strokeOver(ground: "bar" | "empty") {
+    const origin = await openCanvas(page)
+    await addLayer(page)
+    if (ground === "bar") await paintBar(page, origin)
+    await setColour(page, BLUE)
+    await setWet(page, { pickup: 0 }, 1)
+    await stroke(page, origin, 70, 180)
+    return pixels(page)
+  }
+  const overRed = await strokeOver("bar")
+  const overNothing = await strokeOver("empty")
+  // Inside the bar the stroke covers: what is there is the brush's blue.
+  expect(distance(rgba(overRed, 90), BLUE_PIXEL)).toBeLessThan(12)
+  // Past the bar's end no red came along: the stroke is the one drawn on
+  // nothing, pixel for pixel.
+  const clear = BAR.to + 12 + 2
+  for (let x = clear; x < WIDTH; x++)
+    for (let y = ROW - 14; y <= ROW + 14; y++)
+      expect(rgba(overRed, x, y)).toEqual(rgba(overNothing, x, y))
+})
+
+test("at no pickup and no flow a wet brush changes nothing and is not a step", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await paintBar(page, origin)
+  const painted = await pixels(page)
+  const before = await steps(page)
+  await setWet(page, { pickup: 0 }, 0)
+  await idleDrag(page, origin, 70, 180)
+  expect(await pixels(page)).toEqual(painted)
+  expect(await steps(page)).toBe(before)
+})
+
+test("at high pickup and low flow a wet brush mostly blends", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await paintBar(page, origin)
+  const red = rgba(await pixels(page), 50)
+  await setColour(page, BLUE)
+  await setWet(page, { pickup: 0.9 }, 0.05)
+  await stroke(page, origin, 70, 180)
+  const image = await pixels(page)
+  // Where it ran over red it is still nearer red than the colour it laid.
+  for (const x of [80, 95])
+    expect(distance(rgba(image, x), red)).toBeLessThan(
+      distance(rgba(image, x), BLUE_PIXEL)
+    )
 })
 
 test("at no flow a wet brush lays nothing and drags as smudge does", async ({

@@ -25,7 +25,8 @@ import { createScatterPlacer, MAX_SCATTER_COUNT } from "@/engine/brush/scatter"
  * is dialled in by eye rather than by trial and error on the work.
  *
  * It shows size, flow, opacity, angle, roundness, scatter, per-dab colour and
- * the paper's bite.
+ * the paper's bite. A wet brush is shown laying its colour; what it drags
+ * needs paint under it, which this box does not have.
  */
 
 export type PreviewDab = {
@@ -164,6 +165,11 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
   // The last dab lands at the end of the path, so the stroke fills the box
   // whatever the spacing divides into.
   const step = arc / (count - 1)
+  // A wet stroke goes straight onto the layer (D41), each dab mixed over the
+  // last by its flow: there is no stroke opacity to apply and no coverage to
+  // take, whatever the brush still holds for when it is dry again. Nor is a
+  // wet dab scattered or its colour moved, so the preview leaves both out.
+  const wet = !!brush.rendering.wet
   const params: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   const context: StampContext = { ...NEUTRAL_STAMP_CONTEXT }
   const dabs: PreviewDab[] = []
@@ -185,12 +191,12 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
       opacity: brush.rendering.flow * params.flow,
       angle: brush.shape.angle + params.angle,
       roundness: brush.shape.roundness * params.roundness,
-      hue: params.hue * (brush.color?.hue ?? 1),
-      saturation: params.saturation * (brush.color?.saturation ?? 1),
-      lightness: params.lightness * (brush.color?.lightness ?? 1),
+      hue: wet ? 0 : params.hue * (brush.color?.hue ?? 1),
+      saturation: wet ? 0 : params.saturation * (brush.color?.saturation ?? 1),
+      lightness: wet ? 0 : params.lightness * (brush.color?.lightness ?? 1),
     }
     const thrown = scatter.place(
-      brush.scatter,
+      wet ? undefined : brush.scatter,
       params.scatter,
       dab.radius,
       context.direction,
@@ -205,8 +211,8 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
   }
   return {
     dabs,
-    opacity: brush.rendering.opacity,
-    accumulation: brush.rendering.accumulation,
+    opacity: wet ? 1 : brush.rendering.opacity,
+    accumulation: wet ? "buildup" : brush.rendering.accumulation,
     grainDepth: brush.grain?.depth ?? 0,
     tinted: dabs.some(
       (dab) => dab.hue !== 0 || dab.saturation !== 0 || dab.lightness !== 0

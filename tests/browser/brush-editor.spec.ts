@@ -252,6 +252,93 @@ test("a brush is made wet on the Rendering tab, and saved wet it is wet after a 
   await expect(editor(page).getByText("No changes")).toBeVisible()
 })
 
+test("wet swaps the stroke's controls for pickup, and a saved wet brush keeps its pickup", async ({
+  page,
+}) => {
+  await openEditor(page)
+  const panel = editor(page)
+  await panel.getByRole("tab", { name: "Rendering" }).click()
+  const wet = panel.getByRole("switch", { name: "Wet" })
+  const opacity = panel.getByRole("slider", { name: "Opacity", exact: true })
+  const accumulation = panel.getByRole("combobox", { name: "Accumulation" })
+  const pickup = panel.getByRole("slider", { name: "Pickup", exact: true })
+
+  // A dry brush has a stroke opacity and an accumulation, and no pickup.
+  await expect(pickup).toHaveCount(0)
+  await accumulation.click()
+  await page.getByRole("option", { name: /^Buildup/ }).click()
+  await opacity.focus()
+  await opacity.press("ArrowLeft")
+  const set = await opacity.getAttribute("aria-valuenow")
+  await expect(
+    panel.getByRole("slider", { name: "Flow", exact: true })
+  ).toBeVisible()
+
+  // Wet, what the stroke buffer provides is gone and pickup is there in its
+  // place, from none to all, with flow named for what it does.
+  await wet.click()
+  await expect(opacity).toHaveCount(0)
+  await expect(accumulation).toHaveCount(0)
+  await expect(pickup).toHaveAttribute("aria-valuemin", "0")
+  await expect(pickup).toHaveAttribute("aria-valuemax", "1")
+  await expect(pickup).toHaveAttribute("aria-valuenow", "0.5")
+  await expect(
+    panel.getByRole("slider", { name: "Flow (colour laid)" })
+  ).toBeVisible()
+
+  // Dry again, the hidden settings come back as they were left.
+  await wet.click()
+  await expect(pickup).toHaveCount(0)
+  await expect(opacity).toHaveAttribute("aria-valuenow", set!)
+  await expect(accumulation).toContainText("Buildup")
+
+  await wet.click()
+  const typed = panel.locator('input[aria-label="Pickup"]')
+  await typed.fill("80")
+  await typed.press("Enter")
+  await expect(pickup).toHaveAttribute("aria-valuenow", "0.8")
+
+  // Pickup is something to map onto only while the brush is wet.
+  await panel.getByRole("tab", { name: "Dynamics" }).click()
+  const existing = await panel.getByTestId(/^mapping-/).count()
+  await panel.getByRole("button", { name: "Add mapping" }).click()
+  const parameter = panel.getByRole("combobox", {
+    name: `Mapping ${existing + 1} parameter`,
+  })
+  await parameter.click()
+  await page.getByRole("option", { name: "Pickup" }).click()
+  await expect(parameter).toContainText("Pickup")
+
+  await panel.getByRole("button", { name: "Save brush" }).click()
+  await expect(panel.getByText("No changes")).toBeVisible()
+  // The store writes once the hand has settled, so the reload waits for it.
+  await page.waitForTimeout(1_500)
+  await page.reload()
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  await page.getByRole("button", { name: "Brush editor" }).click()
+  await panel.getByRole("tab", { name: "Rendering" }).click()
+  await expect(wet).toHaveAttribute("aria-checked", "true")
+  await expect(pickup).toHaveAttribute("aria-valuenow", "0.8")
+  await panel.getByRole("tab", { name: "Dynamics" }).click()
+  await expect(parameter).toContainText("Pickup")
+  await panel.getByRole("tab", { name: "Rendering" }).click()
+
+  // Dried, a mapping already on pickup keeps its name and a new one is not
+  // offered it.
+  await wet.click()
+  await panel.getByRole("tab", { name: "Dynamics" }).click()
+  await expect(parameter).toContainText("Pickup")
+  await panel.getByRole("button", { name: "Add mapping" }).click()
+  await panel
+    .getByRole("combobox", { name: `Mapping ${existing + 2} parameter` })
+    .click()
+  await expect(page.getByRole("option", { name: "Size" })).toBeVisible()
+  await expect(page.getByRole("option", { name: "Pickup" })).toHaveCount(0)
+})
+
 test("the preview stroke re-renders as the brush changes", async ({ page }) => {
   await openEditor(page)
   const panel = editor(page)

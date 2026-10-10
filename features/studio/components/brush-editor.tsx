@@ -107,9 +107,21 @@ const TARGETS: Record<DynamicsTarget, { label: string; drawn: boolean }> = {
   roundness: { label: "Roundness", drawn: true },
   grainDepth: { label: "Grain depth", drawn: true },
   scatter: { label: "Scatter", drawn: true },
+  pickup: { label: "Pickup", drawn: true },
   hue: { label: "Hue", drawn: true },
   saturation: { label: "Saturation", drawn: true },
   lightness: { label: "Lightness", drawn: true },
+}
+
+/**
+ * The targets a mapping may be moved onto. Pickup is a wet brush's alone
+ * (D41), so a dry brush is not offered it; a mapping already on it keeps it
+ * listed, since the mapping stays on the brush while wet is off.
+ */
+function targetsFor(wet: boolean, current: DynamicsTarget): DynamicsTarget[] {
+  return (Object.keys(TARGETS) as DynamicsTarget[]).filter(
+    (target) => target !== "pickup" || wet || current === "pickup"
+  )
 }
 
 function targetLabel(target: DynamicsTarget): string {
@@ -225,11 +237,14 @@ function TextureSelect({
 function Mapping({
   modulator,
   index,
+  wet,
   onChange,
   onRemove,
 }: {
   modulator: Modulator
   index: number
+  /** Whether the brush is wet, and so has a pickup to map onto. */
+  wet: boolean
   onChange(next: Modulator): void
   onRemove(): void
 }) {
@@ -292,9 +307,9 @@ function Mapping({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {Object.keys(TARGETS).map((target) => (
+            {targetsFor(wet, modulator.target).map((target) => (
               <SelectItem key={target} value={target}>
-                {targetLabel(target as DynamicsTarget)}
+                {targetLabel(target)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -406,6 +421,7 @@ export function BrushEditor({
   const grain = brush.grain
   const scatter = brush.scatter ?? NO_SCATTER
   const color = brush.color ?? UNIT_COLOR
+  const wet = brush.rendering.wet
   const legacyScatter = legacyScatterMappings(brush)
   const [importProblem, setImportProblem] = useState<string | null>(null)
   const own = textures.filter((id) => !shipped.has(id))
@@ -800,13 +816,11 @@ export function BrushEditor({
           <button
             type="button"
             role="switch"
-            aria-checked={!!brush.rendering.wet}
+            aria-checked={!!wet}
             onClick={() =>
               apply({
                 rendering: {
-                  wet: brush.rendering.wet
-                    ? null
-                    : { pickup: DEFAULT_WET_PICKUP },
+                  wet: wet ? null : { pickup: DEFAULT_WET_PICKUP },
                 },
               })
             }
@@ -814,48 +828,67 @@ export function BrushEditor({
           >
             <span className="text-xs text-foreground">Wet</span>
             <span className="text-[11px] leading-tight text-muted-foreground">
-              {brush.rendering.wet
+              {wet
                 ? "Lays colour and drags the paint under it along"
                 : "Lays colour over the paint under it"}
             </span>
           </button>
-          <div className="space-y-1.5">
-            <Label className="text-xs">Dabs within a stroke</Label>
-            <Select
-              value={brush.rendering.accumulation}
-              onValueChange={(accumulation) =>
-                apply({
-                  rendering: {
-                    accumulation: accumulation as "coverage" | "buildup",
-                  },
-                })
-              }
-            >
-              <SelectTrigger className="w-full" aria-label="Accumulation">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="coverage">
-                  Coverage — a crossing stays flat
-                </SelectItem>
-                <SelectItem value="buildup">
-                  Buildup — a crossing darkens
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {/* A wet stroke is written straight to the layer (D41), so what the
+              stroke buffer provides cannot apply to it. Those controls are
+              hidden and their values left on the brush, where turning wet
+              off finds them again. */}
+          {wet ? (
+            <SliderSetting
+              label="Pickup"
+              value={wet.pickup}
+              min={0}
+              max={1}
+              step={0.01}
+              scale={100}
+              unit="%"
+              onChange={(pickup) => apply({ rendering: { wet: { pickup } } })}
+            />
+          ) : (
+            <>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Dabs within a stroke</Label>
+                <Select
+                  value={brush.rendering.accumulation}
+                  onValueChange={(accumulation) =>
+                    apply({
+                      rendering: {
+                        accumulation: accumulation as "coverage" | "buildup",
+                      },
+                    })
+                  }
+                >
+                  <SelectTrigger className="w-full" aria-label="Accumulation">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="coverage">
+                      Coverage — a crossing stays flat
+                    </SelectItem>
+                    <SelectItem value="buildup">
+                      Buildup — a crossing darkens
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <SliderSetting
+                label="Opacity"
+                value={brush.rendering.opacity}
+                min={0}
+                max={1}
+                step={0.01}
+                scale={100}
+                unit="%"
+                onChange={(opacity) => apply({ rendering: { opacity } })}
+              />
+            </>
+          )}
           <SliderSetting
-            label="Opacity"
-            value={brush.rendering.opacity}
-            min={0}
-            max={1}
-            step={0.01}
-            scale={100}
-            unit="%"
-            onChange={(opacity) => apply({ rendering: { opacity } })}
-          />
-          <SliderSetting
-            label="Flow"
+            label={wet ? "Flow (colour laid)" : "Flow"}
             value={brush.rendering.flow}
             min={0}
             max={1}
@@ -879,6 +912,7 @@ export function BrushEditor({
               key={index}
               index={index}
               modulator={modulator}
+              wet={!!wet}
               onChange={(next) =>
                 apply({
                   dynamics: dynamics.map((existing, at) =>
