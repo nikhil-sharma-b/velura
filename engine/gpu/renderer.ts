@@ -790,6 +790,18 @@ export function createRenderer(
     feather,
   }
 
+  /**
+   * The paper as the direct stroke reads it, kept in step with `setGrain`: a
+   * smooth surface, at no depth, until a brush names one.
+   */
+  const grainSurface = {
+    texture: grainTexture,
+    sampler: grainSampler,
+    scale: 1,
+    depth: 0,
+    movement: 0,
+  }
+
   const stampUniform = device.createBuffer({
     size: STAMP_UNIFORM_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -1527,6 +1539,7 @@ export function createRenderer(
   const direct = createDirectStroke(device, {
     size: () => documentSize,
     tip: () => tipShape,
+    grain: () => grainSurface,
     selection: () => selection,
     noSelection,
   })
@@ -2580,12 +2593,21 @@ export function createRenderer(
         throw new Error("Grain movement must be a finite value in [0, 1].")
       grainTexture.destroy()
       grainTexture = texture ? uploadTexture(texture) : createWhiteTexture()
+      grainSurface.texture = grainTexture
+      grainSurface.scale = scale
+      // A brush with no grain texture keeps a depth of zero whatever it
+      // asked for: white paper bites nothing, and saying so is cheaper.
+      grainSurface.depth = texture ? depth : 0
+      grainSurface.movement = movement
+      direct.invalidateBinding()
       device.queue.writeBuffer(
         stampUniform,
         GRAIN_OFFSET,
-        // A brush with no grain texture keeps a depth of zero whatever it
-        // asked for: white paper bites nothing, and saying so is cheaper.
-        new Float32Array([scale, texture ? depth : 0, movement])
+        new Float32Array([
+          grainSurface.scale,
+          grainSurface.depth,
+          grainSurface.movement,
+        ])
       )
       refreshStampBindGroup()
     },

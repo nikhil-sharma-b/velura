@@ -67,6 +67,7 @@ const steps = (page: Page) =>
  */
 async function paintedBlock(page: Page): Promise<string> {
   return page.evaluate(async () => {
+    const stepsBefore = window.engine.historyUsage().steps
     const width = 100
     const height = 60
     const pixels = new Uint8ClampedArray(width * height * 4)
@@ -88,6 +89,17 @@ async function paintedBlock(page: Page): Promise<string> {
     })
     await window.engine.dispatch({ type: "commitImageTransform" })
     await window.engine.dispatch({ type: "makeLayerPaintable", id })
+    // The undo steps these record land a little after the commands answer,
+    // so they are waited out: a test counting steps from here must not take
+    // one of them for its own.
+    let landed = stepsBefore
+    while (
+      landed === stepsBefore ||
+      landed !== window.engine.historyUsage().steps
+    ) {
+      landed = window.engine.historyUsage().steps
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
     return id
   })
 }
