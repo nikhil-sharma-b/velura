@@ -103,8 +103,24 @@ describe("the working brush an editor holds", () => {
       grain: null,
       color: null,
       scatter: null,
+      wet: null,
       dynamics: [],
     })
+  })
+
+  test("wet is turned on and off, and reaches the engine either way", () => {
+    const wet = editBrush(saved(), { rendering: { wet: { pickup: 0.5 } } })
+    expect(wet.rendering.wet).toEqual({ pickup: 0.5 })
+    expect(brushCommand(wet).wet).toEqual({ pickup: 0.5 })
+    // Another control's edit leaves it wet.
+    expect(editBrush(wet, { rendering: { flow: 0.2 } }).rendering.wet).toEqual({
+      pickup: 0.5,
+    })
+
+    const dry = editBrush(wet, { rendering: { wet: null } })
+    expect("wet" in dry.rendering).toBe(false)
+    expect(isBrushEdited(saved(), dry)).toBe(false)
+    expect(brushCommand(dry).wet).toBe(null)
   })
 
   test("scatter travels with the brush, and a brush without it clears it", () => {

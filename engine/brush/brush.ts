@@ -79,6 +79,27 @@ export type BrushRendering = {
   opacity: number
   /** Opacity of a single dab. */
   flow: number
+  /**
+   * Absent means a dry brush, drawn through the stroke buffer. Present, the
+   * brush lays its colour by `flow` and drags the paint already on the layer
+   * along with it, straight into the layer (D41): the stroke's opacity and
+   * accumulation stay on the brush, unread, so turning wet off restores them.
+   */
+  wet?: BrushWet
+}
+
+export type BrushWet = {
+  /** How much of the paint one dab behind is carried forward, in [0, 1]. */
+  pickup: number
+}
+
+/** What a brush picks up when it is first made wet. */
+export const DEFAULT_WET_PICKUP = 0.5
+
+export function validateBrushWet(wet: BrushWet): void {
+  const pickup = wet?.pickup
+  if (!Number.isFinite(pickup) || pickup < 0 || pickup > 1)
+    throw new Error("Brush pickup must be in [0, 1].")
 }
 
 /** Amplitudes scaling the graph's colour offsets. Absent means unit scales.
@@ -141,9 +162,14 @@ export function dabSpacing(brush: Brush, radius: number): number {
   return Math.max(0.05, radius * 2 * brush.shape.spacing)
 }
 
-/** Distance between dabs in canvas pixels, for a brush at rest. */
+/**
+ * Distance between dabs in canvas pixels, for a brush at rest. A wet brush's
+ * is never under a pixel, where a dab would have no whole pixel behind it to
+ * drag.
+ */
 export function brushSpacing(brush: Brush): number {
-  return dabSpacing(brush, brush.shape.radius)
+  const spacing = dabSpacing(brush, brush.shape.radius)
+  return brush.rendering.wet ? Math.max(1, spacing) : spacing
 }
 
 /** A brush is plain data, so a copy is a deep clone and nothing else. */

@@ -64,6 +64,52 @@ describe("brushes kept in this browser", () => {
     expect(store.read().brushes).toEqual([])
   })
 
+  test("a wet brush is still wet after a reload", async () => {
+    const storage = fakeStorage()
+    const wet = {
+      ...pencil,
+      rendering: { ...pencil.rendering, wet: { pickup: 0.4 } },
+    }
+    await createLocalBrushes(storage).save("Oil", "", wet)
+
+    const [reopened] = createLocalBrushes(storage).read().brushes
+    expect(reopened.brush.rendering.wet).toEqual({ pickup: 0.4 })
+  })
+
+  test("a brush stored before brushes could be wet loads dry, as it was", () => {
+    const stored = {
+      id: "local:1",
+      name: "Sketching",
+      set: DEFAULT_BRUSH_SET,
+      order: 0,
+      brush: pencil,
+    }
+    const storage = fakeStorage({
+      "velura.brushes": JSON.stringify({ brushes: [stored], textures: [] }),
+    })
+
+    const [reopened] = createLocalBrushes(storage).read().brushes
+    expect(reopened.brush).toEqual(pencil)
+    expect("wet" in reopened.brush.rendering).toBe(false)
+  })
+
+  test("refuses a wet brush whose pickup is outside [0, 1]", async () => {
+    const store = createLocalBrushes(fakeStorage())
+    for (const pickup of [-0.1, 1.1, Number.NaN])
+      expect(
+        store.save("Bad", "", {
+          ...pencil,
+          rendering: { ...pencil.rendering, wet: { pickup } },
+        })
+      ).rejects.toThrow("pickup")
+    for (const pickup of [0, 1])
+      await store.save("Edge", "", {
+        ...pencil,
+        rendering: { ...pencil.rendering, wet: { pickup } },
+      })
+    expect(store.read().brushes.length).toBe(2)
+  })
+
   test("a texture is kept beside the brushes that name it", async () => {
     const storage = fakeStorage()
     const store = createLocalBrushes(storage)

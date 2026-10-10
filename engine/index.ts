@@ -84,6 +84,8 @@ import {
   type BrushColor,
   validateBrushColor,
   type BrushGrain,
+  type BrushWet,
+  validateBrushWet,
   brushSpacing,
   dabSpacing,
   cloneBrush,
@@ -411,6 +413,7 @@ export type {
   BrushGrain,
   BrushShape,
   BrushRendering,
+  BrushWet,
 } from "./brush/brush"
 export {
   BUILTIN_VECTOR_BRUSHES,
@@ -692,6 +695,11 @@ export type EngineCommand =
       grain?: BrushGrain | null
       /** Dabs thrown off the path, and how many. Null lays one, on it. */
       scatter?: BrushScatter | null
+      /**
+       * Makes the brush wet, with how much it picks up (D41). Null dries it:
+       * it draws through the stroke buffer again.
+       */
+      wet?: BrushWet | null
       /** Replaces the dynamics graph outright; see `evaluateDynamics`. */
       dynamics?: Modulator[]
     }
@@ -1747,12 +1755,18 @@ export function createEngine(
   const stamps = new Float32Array(MAX_STAMPS_PER_DRAW * STAMP_STRIDE)
   let tipDab = 0
   let stampCount = 0
-  // What a smudge stroke in flight is smearing (smudge 01): the layer, or the
-  // mask being painted over it (smudge 04). Its dabs go straight into that
-  // surface rather than the stroke buffer, in an array of their own.
-  let smudgeTargetId: string | undefined
-  const smudgeDabs = new Float32Array(MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_STRIDE)
-  let smudgeCount = 0
+  // What a direct stroke in flight is drawn into: a smudge's (smudge 01) or
+  // a wet brush's (D41) layer, or the mask a smudge is smearing (smudge 04).
+  // Its dabs go straight into that surface rather than the stroke buffer, in
+  // an array of their own.
+  let directTargetId: string | undefined
+  /**
+   * What a wet brush's stroke picks up, as the brush said at pen-down; a
+   * smudge has none, and lays nothing.
+   */
+  let directWet: BrushWet | undefined
+  const directDabs = new Float32Array(MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_STRIDE)
+  let directCount = 0
   let stroking = false
   // The pen-down sample opens the path, and it arrives through the buffer like
   // every other sample: nothing is drawn from inside an event handler.
@@ -2032,8 +2046,8 @@ export function createEngine(
     opening = false
     landing = false
     stampCount = 0
-    smudgeTargetId = undefined
-    smudgeCount = 0
+    directTargetId = undefined
+    directCount = 0
     samples.clear()
     renderer?.destroy()
     renderer = undefined
@@ -4528,8 +4542,8 @@ export function createEngine(
     tiltY: number,
     time: number
   ) {
-    if (smudgeTargetId) {
-      emitSmudge(x, y, pressure, tiltX, tiltY, time)
+    if (directTargetId) {
+      emitDirect(x, y, pressure, tiltX, tiltY, time)
       return
     }
     // The tracker was opened by the pen going down, so every dab advances it:
@@ -4599,13 +4613,15 @@ export function createEngine(
   }
 
   /**
-   * Collects one smudge dab (smudge 01). Only its shape is the brush's — the
-   * tip's turn and squash here, its texture and rim through the renderer —
-   * while its size and strength are the smudge's own (smudge 02). None of the
-   * brush's dynamics reach it: a pen's pressure drives the strength alone. A
+   * Collects one dab of a direct stroke. A smudge's (smudge 01) takes only
+   * its shape from the brush — the tip's turn and squash here, its texture
+   * and rim through the renderer — while its size and strength are the
+   * smudge's own (smudge 02), and a pen's pressure drives the strength alone.
+   * A wet brush's (D41) is the brush at its set radius, laying by its flow
+   * and dragging by its pickup. None of the brush's dynamics reach either. A
    * tip of several frames gives each dab the one the brush would have drawn.
    */
-  function emitSmudge(
+  function emitDirect(
     x: number,
     y: number,
     pressure: number,
@@ -4613,23 +4629,27 @@ export function createEngine(
     tiltY: number,
     time: number
   ) {
-    if (smudgeCount === MAX_SMUDGE_DABS_PER_DRAW) flushStamps()
+    if (directCount === MAX_SMUDGE_DABS_PER_DRAW) flushStamps()
     const brush = activeBrush()
     const context = dynamics.next(x, y, pressure, tiltX, tiltY, time)
-    const offset = smudgeCount * SMUDGE_STRIDE
-    smudgeDabs[offset + SMUDGE.CENTER_X] = x
-    smudgeDabs[offset + SMUDGE.CENTER_Y] = y
-    smudgeDabs[offset + SMUDGE.RADIUS] = smudge.radius
-    smudgeDabs[offset + SMUDGE.STRENGTH] = smudgeDabStrength(
-      smudge.strength,
-      pressure,
-      strokeSensesPressure
-    )
-    smudgeDabs[offset + SMUDGE.ANGLE] = brush.shape.angle
-    smudgeDabs[offset + SMUDGE.ROUNDNESS] = brush.shape.roundness
-    smudgeDabs[offset + SMUDGE.TIP_FRAME] = nextTipFrame(brush, context)
-    smudgeCount++
+    const offset = directCount * SMUDGE_STRIDE
+    directDabs[offset + SMUDGE.CENTER_X] = x
+    directDabs[offset + SMUDGE.CENTER_Y] = y
+    const wet = directWet
+    directDabs[offset + SMUDGE.RADIUS] = wet
+      ? brush.shape.radius
+      : smudge.radius
+    directDabs[offset + SMUDGE.STRENGTH] = wet
+      ? wet.pickup
+      : smudgeDabStrength(smudge.strength, pressure, strokeSensesPressure)
+    directDabs[offset + SMUDGE.FLOW] = wet ? brush.rendering.flow : 0
+    directDabs[offset + SMUDGE.ANGLE] = brush.shape.angle
+    directDabs[offset + SMUDGE.ROUNDNESS] = brush.shape.roundness
+    directDabs[offset + SMUDGE.TIP_FRAME] = nextTipFrame(brush, context)
+    directCount++
     frameStamps++
+    // A dry stroke leaves the resampler at its last dab's pitch.
+    if (wet) resampler.setSpacing(brushSpacing(brush))
   }
 
   /**
@@ -4666,9 +4686,9 @@ export function createEngine(
   }
 
   function flushStamps() {
-    if (smudgeCount > 0) {
-      renderer?.smudge(smudgeDabs, smudgeCount)
-      smudgeCount = 0
+    if (directCount > 0) {
+      renderer?.drawDirect(directDabs, directCount)
+      directCount = 0
     }
     if (stampCount === 0) return
     renderer?.stamp(stamps, stampCount)
@@ -4979,14 +4999,15 @@ export function createEngine(
       flushStamps()
       lastStrokeEnd = { x: rawX, y: rawY }
       // The whole mark is in the buffer now, so it goes into the layer once,
-      // at the stroke's opacity (D27). A smear is in its surface already.
-      const smudged = smudgeTargetId
-      smudgeTargetId = undefined
-      const region = smudged ? renderer?.endSmudge(true) : renderer?.endStroke()
+      // at the stroke's opacity (D27). A direct stroke is in its surface
+      // already.
+      const direct = directTargetId
+      directTargetId = undefined
+      const region = direct ? renderer?.endDirect(true) : renderer?.endStroke()
       // One stroke, one step. The region the mark landed in is read back off
       // the GPU after the frame, never during one.
       if (region && doc) {
-        const target = smudged ?? paintTargetId(doc)
+        const target = direct ?? paintTargetId(doc)
         history?.recordStroke(target, region)
         contentBounds.grow(target, region)
         invalidateThumbnailsOf(target)
@@ -5510,13 +5531,20 @@ export function createEngine(
       highlight = undefined
       syncComposition()
     }
-    if (tool === "smudge") {
-      // The layer, or the mask being painted over it, is kept as it is before
+    // A wet brush draws as smudge does, straight into the layer (D41). The
+    // eraser is never wet, and a mask is painted dry.
+    const wet =
+      tool === "brush" && !(doc.paintingMask && layer.mask)
+        ? activeBrush().rendering.wet
+        : undefined
+    if (tool === "smudge" || wet) {
+      // The layer, or the mask being smeared over it, is kept as it is before
       // the first dab touches it: what a cancel puts back. One that holds
-      // nothing has nothing to smear.
+      // nothing has nothing to smear, though a wet brush lays colour on it.
       const target = paintTargetId(doc)
-      if (!renderer?.beginSmudge(target)) return
-      smudgeTargetId = target
+      if (!renderer?.beginDirect(target, wet ? ink : null)) return
+      directTargetId = target
+      directWet = wet
       strokeSensesPressure = sensesPressure
       strokeOrigin = origin
       // Opened as a brush stroke's is, for the one thing a dab takes from the
@@ -5617,11 +5645,11 @@ export function createEngine(
     stampCount = 0
     samples.clear()
     renderer?.cancelStroke()
-    if (smudgeTargetId) {
+    if (directTargetId) {
       // The dabs went straight into the surface, so the surface is put back.
-      smudgeTargetId = undefined
-      smudgeCount = 0
-      renderer?.endSmudge(false)
+      directTargetId = undefined
+      directCount = 0
+      renderer?.endDirect(false)
     }
     if (snapshot.status === "ready") render()
   }
@@ -6287,6 +6315,7 @@ export function createEngine(
             validateTipSelection(command.tipSelection)
           if (command.dynamics) validateDynamics(command.dynamics)
           if (command.scatter) validateScatter(command.scatter)
+          if (command.wet) validateBrushWet(command.wet)
           // Textures are named, not carried, so a name that resolves to
           // nothing is caught here rather than silently drawing untextured.
           if (command.tipTextureId && !textures.get(command.tipTextureId))
@@ -6359,6 +6388,11 @@ export function createEngine(
               : (command.scatter ?? undefined)
           if (scatter) next.scatter = { ...scatter }
           else delete next.scatter
+          const wet =
+            command.wet === undefined
+              ? brush.rendering.wet
+              : (command.wet ?? undefined)
+          if (wet) next.rendering.wet = { pickup: wet.pickup }
           // Spacing is fixed for the life of a resampler, so a brush that
           // changes it needs a new one. Never mid-stroke: the pen is up.
           if (tool === "brush" && brushSpacing(next) !== brushSpacing(brush))
@@ -7425,9 +7459,9 @@ export function createEngine(
             if (command.type === "undo") dropShapeDrag()
             break
           }
-          // A smear in flight is already in its surface, so undo takes back the
-          // smear rather than writing an older step underneath it.
-          if (smudgeTargetId) {
+          // A direct stroke in flight is already in its surface, so undo takes
+          // back the stroke rather than writing an older step underneath it.
+          if (directTargetId) {
             if (command.type === "undo") cancelStroke()
             break
           }

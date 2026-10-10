@@ -216,6 +216,42 @@ test("an edit paints immediately and is kept only when it is saved", async ({
   await expect(panel.getByRole("button", { name: "Revert" })).toBeDisabled()
 })
 
+test("a brush is made wet on the Rendering tab, and saved wet it is wet after a reload", async ({
+  page,
+}) => {
+  await openEditor(page)
+  const panel = editor(page)
+  await panel.getByRole("tab", { name: "Rendering" }).click()
+  const wet = panel.getByRole("switch", { name: "Wet" })
+  await expect(wet).toHaveAttribute("aria-checked", "false")
+
+  await wet.click()
+  await expect(wet).toHaveAttribute("aria-checked", "true")
+  await expect(panel.getByText("Unsaved changes")).toBeVisible()
+  // Off again is the brush that was saved: there is nothing to keep.
+  await wet.click()
+  await expect(wet).toHaveAttribute("aria-checked", "false")
+  await expect(panel.getByText("No changes")).toBeVisible()
+
+  await wet.click()
+  await panel.getByRole("button", { name: "Save brush" }).click()
+  await expect(panel.getByText("No changes")).toBeVisible()
+  // The store writes once the hand has settled, so the reload waits for it.
+  await page.waitForTimeout(1_500)
+
+  await page.reload()
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  await page.getByRole("button", { name: "Brush editor" }).click()
+  await editor(page).getByRole("tab", { name: "Rendering" }).click()
+  await expect(
+    editor(page).getByRole("switch", { name: "Wet" })
+  ).toHaveAttribute("aria-checked", "true")
+  await expect(editor(page).getByText("No changes")).toBeVisible()
+})
+
 test("the preview stroke re-renders as the brush changes", async ({ page }) => {
   await openEditor(page)
   const panel = editor(page)

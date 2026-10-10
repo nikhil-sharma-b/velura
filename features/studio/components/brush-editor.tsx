@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import type { Brush } from "@/engine/brush/brush"
+import { type Brush, DEFAULT_WET_PICKUP } from "@/engine/brush/brush"
 import {
   TIP_SELECTION_MODES,
   type TipSelectionMode,
@@ -797,6 +797,28 @@ export function BrushEditor({
         </TabsContent>
 
         <TabsContent value="rendering" className="space-y-3">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={!!brush.rendering.wet}
+            onClick={() =>
+              apply({
+                rendering: {
+                  wet: brush.rendering.wet
+                    ? null
+                    : { pickup: DEFAULT_WET_PICKUP },
+                },
+              })
+            }
+            className="flex w-full flex-col rounded-lg border border-studio-edge px-2.5 py-2 text-left transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary aria-checked:border-primary/50 aria-checked:bg-primary/5"
+          >
+            <span className="text-xs text-foreground">Wet</span>
+            <span className="text-[11px] leading-tight text-muted-foreground">
+              {brush.rendering.wet
+                ? "Lays colour and drags the paint under it along"
+                : "Lays colour over the paint under it"}
+            </span>
+          </button>
           <div className="space-y-1.5">
             <Label className="text-xs">Dabs within a stroke</Label>
             <Select

@@ -7,7 +7,8 @@ import type { PixelRect } from "../doc/tile-grid"
  * There are two. The buffered stroke (D27) draws every brush's dabs into the
  * stroke buffer and lands them on the layer once, at the stroke's opacity.
  * The direct stroke (D29) reads and writes the surface itself as it goes,
- * which is what smudge needs: a buffer of new paint holds nothing to drag.
+ * which is what smudge and wet brushes (D41) need: a buffer of new paint
+ * holds nothing to drag.
  *
  * `Opening` is what a stroke has to be told as it begins, and `dabs` are in
  * the layout its implementation names; the two differ, so the engine fills
@@ -16,8 +17,9 @@ import type { PixelRect } from "../doc/tile-grid"
 export interface StrokeRenderer<Opening> {
   /**
    * Opens a stroke, ending any still in flight. The direct stroke answers
-   * false, having opened none, on a surface that holds nothing; the buffered
-   * stroke always opens, and throws before the renderer has been sized.
+   * false, having opened none, when it lays nothing and its surface holds
+   * nothing; the buffered stroke always opens, and throws before the
+   * renderer has been sized.
    */
   begin(opening: Opening): boolean
   /** Draws `count` dabs of the stroke in flight. */

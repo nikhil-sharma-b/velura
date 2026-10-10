@@ -4,6 +4,7 @@ import type {
   BrushGrain,
   BrushRendering,
   BrushShape,
+  BrushWet,
 } from "@/engine/brush/brush"
 import {
   type BrushScatter,
@@ -47,7 +48,10 @@ export type BrushEdit = {
   }
   /** Null takes the grain away: the brush draws on a smooth surface again. */
   grain?: BrushGrain | null
-  rendering?: Partial<BrushRendering>
+  rendering?: Partial<Omit<BrushRendering, "wet">> & {
+    /** Null dries the brush: it draws through the stroke buffer again. */
+    wet?: BrushWet | null
+  }
   /** Null, or one that throws nothing, takes the section away. */
   scatter?: BrushScatter | null
   /** Null, or unit scales, takes the section away. */
@@ -80,7 +84,10 @@ export function editBrush(brush: Brush, edit: BrushEdit): Brush {
   const next: Brush = {
     ...brush,
     shape: patch(brush.shape, edit.shape as Partial<BrushShape>),
-    rendering: patch(brush.rendering, edit.rendering),
+    rendering: patch(
+      brush.rendering,
+      edit.rendering as Partial<BrushRendering>
+    ),
     dynamics: structuredClone(edit.dynamics ?? brush.dynamics),
   }
   // Absent rather than present-and-null, on both the tip and the grain: a
@@ -88,6 +95,8 @@ export function editBrush(brush: Brush, edit: BrushEdit): Brush {
   // `null` nor `undefined` is a value that model has.
   if (edit.shape && "tipTextureId" in edit.shape && !edit.shape.tipTextureId)
     delete next.shape.tipTextureId
+  if (next.rendering.wet) next.rendering.wet = { ...next.rendering.wet }
+  else delete next.rendering.wet
   const grain = edit.grain === undefined ? brush.grain : edit.grain
   if (grain) next.grain = { ...grain }
   else delete next.grain
@@ -215,6 +224,7 @@ export function brushCommand(brush: Brush): SetBrushCommand {
     grain: brush.grain ? { ...brush.grain } : null,
     color: brush.color ? { ...brush.color } : null,
     scatter: brush.scatter ? { ...brush.scatter } : null,
+    wet: brush.rendering.wet ? { ...brush.rendering.wet } : null,
     dynamics: structuredClone(brush.dynamics),
   }
 }

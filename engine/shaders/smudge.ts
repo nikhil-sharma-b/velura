@@ -1,10 +1,13 @@
 /**
- * The smudge pass (smudge 01). One quad per dab, drawn straight into the
- * layer: each fragment is mixed towards the pixel one dab's travel behind it,
- * so what was under the tip a step ago is dragged to where the tip is now.
- * Nothing is laid down — the pass only moves what the layer holds, and it
- * moves all four premultiplied channels alike, so transparency is carried as
- * paint is.
+ * The direct pass, which smudge (smudge 01) and wet brushes (D41) share. One
+ * quad per dab, drawn straight into the layer: each fragment is mixed towards
+ * the pixel one dab's travel behind it by the dab's strength, so what was
+ * under the tip a step ago is dragged to where the tip is now, and the result
+ * is mixed towards the stroke's colour by the dab's flow. Smudge is the pass
+ * at no flow: it lays nothing down and only moves what the layer holds. All
+ * four premultiplied channels are mixed alike, so transparency is carried as
+ * paint is. Both mixes are `mixPaint`, the one place that says how two
+ * paints combine.
  *
  * A pass cannot read the texture it writes, so the dab's neighbourhood is
  * copied into `carry` first and both pixels are read from there. `origin` is
@@ -13,9 +16,10 @@
  * The dab's shape is the stamp pass's: the procedural disc with its feathered
  * rim, or the brush's tip texture, turned and squashed in the vertex stage.
  *
- * A selection (smudge 03) scales the mix by its coverage of the pixel being
- * written, so nothing outside it changes and a soft edge takes its share. The
- * pixel behind is read whatever its coverage: paint outside is dragged in.
+ * A selection (smudge 03) scales both mixes by its coverage of the pixel
+ * being written, so nothing outside it changes and a soft edge takes its
+ * share. The pixel behind is read whatever its coverage: paint outside is
+ * dragged in.
  */
 export const smudgeShader = /* wgsl */ `
 const TAU = 6.283185307179586;
@@ -29,6 +33,8 @@ struct Smudge {
   useTip: f32,
   // One when a selection clips the smear, zero when nothing is selected.
   useSelection: f32,
+  // What a wet brush lays: the stroke's colour, premultiplied, linear light.
+  color: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> smudge: Smudge;
@@ -55,6 +61,8 @@ struct Instance {
   @location(6) travel: vec2<f32>,
   // The canvas pixel the carry texture's first texel was copied from.
   @location(7) origin: vec2<f32>,
+  // How much of the stroke's colour is laid, in [0, 1].
+  @location(8) flow: f32,
 }
 
 struct Varyings {
@@ -66,6 +74,14 @@ struct Varyings {
   @location(3) @interpolate(flat) tipFrame: i32,
   @location(4) @interpolate(flat) travel: vec2<f32>,
   @location(5) @interpolate(flat) origin: vec2<f32>,
+  @location(6) @interpolate(flat) flow: f32,
+}
+
+// How two paints combine: a linear mix of premultiplied colour in the working
+// space (D10), all four channels alike. Pigment mixing would replace this and
+// nothing else.
+fn mixPaint(under: vec4<f32>, over: vec4<f32>, amount: f32) -> vec4<f32> {
+  return mix(under, over, amount);
 }
 
 @vertex
@@ -97,6 +113,7 @@ fn vertexMain(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings
   out.tipFrame = i32(instance.tipFrame);
   out.travel = instance.travel;
   out.origin = instance.origin;
+  out.flow = instance.flow;
   return out;
 }
 
@@ -129,6 +146,8 @@ fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
   if (smudge.useSelection > 0.0) {
     selected = textureLoad(selectionTexture, vec2<i32>(varyings.position.xy), 0).r;
   }
-  return mix(here, behind, clamp(varyings.strength * shape * selected, 0.0, 1.0));
+  let coverage = shape * selected;
+  let dragged = mixPaint(here, behind, clamp(varyings.strength * coverage, 0.0, 1.0));
+  return mixPaint(dragged, smudge.color, clamp(varyings.flow * coverage, 0.0, 1.0));
 }
 `
