@@ -182,6 +182,96 @@ test("the rectangle tool draws a filled rectangle, and an outlined one", async (
   await expect(page.locator("canvas")).toHaveScreenshot("rectangle-tool.png")
 })
 
+test("the shape opacity goes on new shapes and strokes, and on the selected objects as one step", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  const id = await addVectorLayer(page)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setTool", tool: "rectangle" })
+    await window.engine.dispatch({ type: "setColor", hex: "#000000" })
+    await window.engine.dispatch({
+      type: "setShapeStyle",
+      stroke: true,
+      strokeWidth: 6,
+      opacity: 0.5,
+    })
+  })
+  await drag(page, origin, [20, 20], [90, 100])
+  // A vector brush stroke takes it as a shape does.
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "pressure" })
+  )
+  await drag(page, origin, [110, 60], [180, 60])
+  const drawn = await pixels(page)
+  const paper = at(drawn, 195, 5)
+  for (const [x, y] of [
+    [55, 60],
+    [145, 60],
+  ]) {
+    // Half of black over the paper: neither the one nor the other.
+    expect(at(drawn, x, y)[0]).toBeGreaterThan(40)
+    expect(at(drawn, x, y)[0]).toBeLessThan(paper[0] - 40)
+  }
+  const { svg } = await page.evaluate(() =>
+    window.engine.exportSvg({ raster: "omit" })
+  )
+  expect(svg).toContain('fill-opacity="0.5"')
+  expect(svg).toContain('stroke-opacity="0.5"')
+  expect(svg).not.toMatch(/(fill|stroke)-opacity="1"/)
+
+  // Selected, the rectangle shows its own opacity and takes a new one; a
+  // slider's run of changes is one step, and new shapes keep theirs.
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setTool", tool: "objectSelect" })
+    await window.engine.dispatch({
+      type: "selectVectorRegion",
+      region: { x: 55, y: 60 },
+    })
+  })
+  const style = () =>
+    page.evaluate(() => {
+      const { selectionStyle, shapeStyle } = window.engine.getSnapshot()
+      return [selectionStyle?.opacity, shapeStyle.opacity]
+    })
+  expect(await style()).toEqual([0.5, 0.5])
+  const selected = await pixels(page)
+  const before = await steps(page)
+  await page.evaluate(async () => {
+    for (const opacity of [0.4, 0.3, 0.2])
+      await window.engine.dispatch({ type: "setShapeStyle", opacity })
+  })
+  expect(await steps(page)).toBe(before + 1)
+  expect(await style()).toEqual([0.2, 0.5])
+  const faded = await pixels(page)
+  expect(at(faded, 55, 60)[0]).toBeGreaterThan(at(selected, 55, 60)[0] + 40)
+  // The stroke was not selected, and is as it was.
+  expect(at(faded, 145, 60)).toEqual(at(selected, 145, 60))
+  await expect(
+    page.evaluate(() =>
+      window.engine.dispatch({ type: "setShapeStyle", opacity: 1.5 })
+    )
+  ).rejects.toThrow()
+
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(at(await pixels(page), 55, 60)).toEqual(at(selected, 55, 60))
+  await page.evaluate(() => window.engine.dispatch({ type: "redo" }))
+
+  // Paint from the shapes is the pixels the shapes showed.
+  await page.evaluate(() =>
+    window.engine.dispatch({
+      type: "selectVectorRegion",
+      region: { x: 1, y: 1 },
+    })
+  )
+  const shown = await pixels(page)
+  await page.evaluate(
+    (id) => window.engine.dispatch({ type: "rasteriseLayer", id }),
+    id
+  )
+  expect(await pixels(page)).toEqual(shown)
+})
+
 test("a click with the rectangle tool, or a drag on a paint layer, draws nothing", async ({
   page,
 }) => {

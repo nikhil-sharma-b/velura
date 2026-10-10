@@ -11,6 +11,13 @@ describe("what a tool gives a new shape", () => {
     }
   })
 
+  test("a new shape is opaque until the artist says otherwise, and a line keeps the opacity", () => {
+    expect(DEFAULT_SHAPE_STYLE.opacity).toBe(1)
+    expect(
+      toolShapeStyle("line", { ...DEFAULT_SHAPE_STYLE, opacity: 0.3 }).opacity
+    ).toBe(0.3)
+  })
+
   test("a shape tool takes the style as it is", () => {
     expect(toolShapeStyle("rectangle", DEFAULT_SHAPE_STYLE)).toBe(
       DEFAULT_SHAPE_STYLE

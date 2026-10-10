@@ -24,13 +24,19 @@ export type ShapeStyle = Readonly<{
   strokeJoin: LineJoin
   fillColor: string | null
   strokeColor: string | null
+  /**
+   * How much of what is beneath the shape it covers, in [0, 1]: one setting,
+   * written to the fill and the outline together.
+   */
+  opacity: number
 }>
 
 /**
  * The style the selected objects have, as the shape options show it, or
  * null with none selected. Of several, the lowest one's speaks for them; a
  * part an object lacks — the outline of a fill-only shape — keeps
- * `fallback`'s settings for when it is turned on.
+ * `fallback`'s settings for when it is turned on. The opacity is the fill's,
+ * or the outline's of an object with no fill: the options set both as one.
  */
 export function selectionStyle(
   scene: VectorScene,
@@ -48,6 +54,7 @@ export function selectionStyle(
     strokeJoin: stroke?.join ?? fallback.strokeJoin,
     fillColor: fill?.color ?? null,
     strokeColor: stroke?.color ?? null,
+    opacity: fill?.opacity ?? stroke?.opacity ?? fallback.opacity,
   }
 }
 
