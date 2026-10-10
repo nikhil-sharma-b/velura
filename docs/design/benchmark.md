@@ -470,7 +470,40 @@ around twenty of them in a frame at this pen speed. Nothing is read back
 while the pen is down.
 
 The copy is the part that scales with the document, and it need not: only
-the region the dabs reach is ever put back, so it could be taken tile by
-tile as the stroke first touches each one. That is not built (smudge 06). It is what to
-reach for if the opening frame is felt on large documents, and it would
-matter more once the dab is larger (smudge 02).
+the region the dabs reach is ever put back, so it can be taken tile by tile
+as the stroke first touches each one. That is what smudge 06 built, below.
+
+## Smudge: only the tiles a stroke touches are kept (smudge 06)
+
+A smudge stroke no longer copies its layer at pen-down. Each 256² tile is
+copied out the first time a dab is about to write to it, into 2048² pages
+that hold 64 tiles each; a cancelled stroke copies those tiles back. The
+frame a stroke opens in pays for the tiles under one dab, whatever the
+document's size. `bun run bench/run.ts --smudge` now runs a 2048² document
+beside the 8192² one, since the claim is that the two open alike.
+
+Same machine, display and window as above, six strokes, on top of
+`b964681`, two runs:
+
+| document | tool | stroke's first frame, median / worst | all frames, median / p95 | dabs | painting readbacks |
+|---|---|---:|---:|---:|---:|
+| 2048² | Brush | 1.8 / 3.3 ms | 12.0 / 14.5 ms | 1,646 | 0 |
+| 2048² | Smudge | 2.2 / 6.3 ms | 12.5 / 15.4 ms | 1,230 | 0 |
+| 8192² | Brush | 2.8 / 38.5 ms | 13.0 / 15.1 ms | 7,308 | 0 |
+| 8192² | Smudge | 3.0 / 12.5 ms | 15.3 / 19.1 ms | 5,494 | 0 |
+| 2048², repeat | Brush | 1.8 / 2.9 ms | 12.2 / 14.0 ms | 1,642 | 0 |
+| 2048², repeat | Smudge | 2.0 / 6.3 ms | 12.9 / 15.3 ms | 1,230 | 0 |
+| 8192², repeat | Brush | 2.9 / 35.2 ms | 13.1 / 15.6 ms | 7,326 | 0 |
+| 8192², repeat | Smudge | 2.7 / 13.9 ms | 15.3 / 19.8 ms | 5,494 | 0 |
+
+The opening frame of a smudge stroke at 8192² fell from about 21.5 ms to
+about 3 ms at the median, level with the brush's on the same document. What
+is left between 2048² and 8192², about a millisecond, the brush pays too, so
+it is the document's and not the smudge's. The worst opening frame fell from
+22 ms and over to about 13 ms. Frames after the first cost what they did:
+the per-dab copy and pass were not touched.
+
+A stroke that reaches more than 64 tiles allocates another 32 MiB page as it
+goes, once per 64 tiles. Pages past the first are released when the stroke
+ends, and the first is kept for the next stroke. A stroke that covered the
+whole of an 8192² layer would hold the 512 MiB the copy always did.

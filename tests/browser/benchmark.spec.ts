@@ -129,6 +129,6 @@ test("the smudge benchmark smears the workload without reading pixels back", asy
   expect(
     result.frames.reduce((total, frame) => total + frame.stamps, 0)
   ).toBeGreaterThan(50)
-  // The layer is copied on the GPU when a stroke begins, never read back.
+  // What a cancel puts back is copied on the GPU, never read back.
   expect(result.readbacks).toBe(0)
 })
