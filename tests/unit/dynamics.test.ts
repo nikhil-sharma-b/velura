@@ -31,6 +31,7 @@ describe("dynamics graph evaluation", () => {
       roundness: 1,
       grainDepth: 1,
       scatter: 1,
+      pickup: 1,
       hue: 0,
       saturation: 0,
       lightness: 0,
@@ -164,6 +165,17 @@ describe("dynamics graph evaluation", () => {
         mix: "add",
       }
       expect(evaluateDynamics([add, add], context()).opacity).toBe(1)
+    })
+
+    test("pickup stays in [0, 1], whatever is stacked onto it", () => {
+      const add = (amount: number): Modulator => ({
+        source: "pressure",
+        target: "pickup",
+        range: [amount, amount],
+        mix: "add",
+      })
+      expect(evaluateDynamics([add(1), add(1)], context()).pickup).toBe(1)
+      expect(evaluateDynamics([add(-4)], context()).pickup).toBe(0)
     })
 
     test("a negative range cannot produce a negative radius", () => {
@@ -314,6 +326,21 @@ describe("dynamics for a device without a pressure sensor", () => {
     )
     expect(params.size).toBeCloseTo(1)
     expect(params.flow).toBeCloseTo(1)
+  })
+
+  test("a device with no sensor picks up at the brush's own setting", () => {
+    const graph: Modulator[] = [
+      { source: "pressure", target: "pickup", range: [0, 1], mix: "multiply" },
+    ]
+    expect(
+      evaluateDynamics(dynamicsForDevice(graph, false), context()).pickup
+    ).toBe(1)
+    expect(
+      evaluateDynamics(
+        dynamicsForDevice(graph, true),
+        context({ pressure: 0.25 })
+      ).pickup
+    ).toBeCloseTo(0.25)
   })
 
   test("tilt, velocity and randomness still reach the dab", () => {

@@ -4620,10 +4620,10 @@ export function createEngine(
    * smudge's own (smudge 02), and a pen's pressure drives the strength alone.
    * None of the brush's dynamics reach it. A wet brush's (D41) is the brush's
    * own dab, laying by its flow and dragging by its pickup: the dynamics
-   * graph scales its radius and flow and turns and squashes its tip as it
-   * does a dry dab's. Scatter and colour are left out, since a dab thrown off
-   * the path has no one dab behind it to drag from. A tip of several frames
-   * gives either dab the one the brush would have drawn.
+   * graph scales its radius, flow and pickup and turns and squashes its tip
+   * as it does a dry dab's. Scatter and colour are left out, since a dab
+   * thrown off the path has no one dab behind it to drag from. A tip of
+   * several frames gives either dab the one the brush would have drawn.
    */
   function emitDirect(
     x: number,
@@ -4662,7 +4662,7 @@ export function createEngine(
     )
     const radius = brush.shape.radius * params.size
     directDabs[offset + SMUDGE.RADIUS] = radius
-    directDabs[offset + SMUDGE.STRENGTH] = wet.pickup
+    directDabs[offset + SMUDGE.STRENGTH] = wet.pickup * params.pickup
     directDabs[offset + SMUDGE.FLOW] = brush.rendering.flow * params.flow
     directDabs[offset + SMUDGE.ANGLE] = brush.shape.angle + params.angle
     directDabs[offset + SMUDGE.ROUNDNESS] =
