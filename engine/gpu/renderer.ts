@@ -28,9 +28,7 @@ import type { SelectionMask } from "../doc/selection"
 import type { TiledMask } from "../doc/tiled-mask"
 import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
-import { stampShader } from "../shaders/stamp"
 import { surfaceCompositeShader } from "../shaders/surface-composite"
-import { clearRegionShader } from "../shaders/clear-region"
 import {
   clearSelectionShader,
   copySelectionShader,
@@ -42,7 +40,6 @@ import {
   type Filter,
 } from "../filters/filter"
 import { filterShader } from "../shaders/filter"
-import { smudgeShader } from "../shaders/smudge"
 import { marchingAntsShader } from "../shaders/marching-ants"
 import { placedImageShader } from "../shaders/placed-image"
 import { thumbnailShader } from "../shaders/thumbnail"
@@ -58,22 +55,11 @@ import {
   samplesNearest,
   type RasterMagnification,
 } from "../view/magnification"
-import {
-  MAX_SMUDGE_DABS_PER_DRAW,
-  SMUDGE,
-  SMUDGE_INSTANCE_STRIDE,
-  SMUDGE_STRIDE,
-} from "./smudge-dab"
-import { STAMP, STAMP_STRIDE } from "./stamp-instance"
-import { createStampLog } from "./stamp-log"
+import { createBufferedStroke, type StrokeMode } from "./buffered-stroke"
+import { createDirectStroke } from "./direct-stroke"
+import { LAYER_FORMAT, type Surface } from "./surface"
 
-/** Inverse coverage per stroke pixel (D27); the stamp and clear passes share it. */
-const COVERAGE_DEPTH_FORMAT: GPUTextureFormat = "depth16unorm"
-
-const LAYER_FORMAT: GPUTextureFormat = "rgba16float"
 const BYTES_PER_TEXEL = TILE_CHANNELS * 2
-/** A pixel's tile is its coordinate shifted down by this. */
-const TILE_SHIFT = Math.log2(TILE_SIZE)
 /**
  * mat3x3 occupies three 16-byte columns, then one vec4 of background, then the
  * four floats the present pass needs to know about the stack it is showing,
@@ -120,20 +106,11 @@ const TEXTURE_FORMAT: GPUTextureFormat = "r8unorm"
 const COMPOSITE_UNIFORM_BYTES = 96
 /** The vector shader's chunk: a mat3x3 and two vec2s (`engine/shaders/vector.ts`). */
 const VECTOR_UNIFORM_BYTES = 64
-/**
- * Dabs of one stroke the buffer can replay. A long stroke at a quarter-tip
- * spacing is a few thousand; past this the stroke still draws, but discarding
- * its tail is refused rather than allocating on a frame of drawing (D30).
- */
-export const MAX_STAMPS_PER_STROKE = 1 << 16
-/**
- * Dabs drawn in one submission. A 120 Hz frame of the fastest plausible stroke
- * is a few hundred; the ceiling exists so the instance buffer can be allocated
- * once, and the caller draws early rather than overrunning it.
- */
-export const MAX_STAMPS_PER_DRAW = 2048
-
-export type StrokeMode = "paint" | "erase"
+export {
+  MAX_STAMPS_PER_DRAW,
+  MAX_STAMPS_PER_STROKE,
+  type StrokeMode,
+} from "./buffered-stroke"
 
 /**
  * What a layer-list thumbnail shows: a layer's own pixels, a mask's coverage,
@@ -377,8 +354,8 @@ export interface Renderer {
    */
   beginSmudge(surfaceId: string): boolean
   /**
-   * Draws `count` smudge dabs (see `SMUDGE`) straight into the smudging
-   * surface, each dragging in what lay one dab's travel behind it. The first
+   * Draws `count` smudge dabs (see `SMUDGE`) straight into the surface
+   * being smudged, each dragging in what lay one dab's travel behind it. The first
    * dab of a stroke has nothing behind it and only marks where it began.
    */
   smudge(dabs: Float32Array, count: number): void
@@ -502,154 +479,36 @@ export function createRenderer(
     options.workspaceBackground ?? options.background
   )
 
-  const stampModule = device.createShaderModule({ code: stampShader })
-  /**
-   * One pipeline per accumulation mode: the difference between a marker and a
-   * pencil is pipeline state, so the shader is shared.
-   *
-   * Coverage uses inverse alpha as depth: the greatest coverage wins with
-   * its complete colour, and later dabs win ties. Buildup uses ordinary
-   * premultiplied over. Both draw every instance in one pass.
-   */
-  const buildupBlend: GPUBlendState = {
-    color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-    alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-  }
-  // Explicit, because two pipelines share one bind group: an automatic layout
-  // belongs to the pipeline that produced it and the other would reject it.
-  const stampBindGroupLayout = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      {
-        binding: 3,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float", viewDimension: "2d-array" },
-      },
-      {
-        binding: 4,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 5,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-    ],
-  })
-  const stampPipelineLayout = device.createPipelineLayout({
-    bindGroupLayouts: [stampBindGroupLayout],
-  })
-  const stampPipelineFor = (accumulation: Accumulation) =>
-    device.createRenderPipeline({
-      layout: stampPipelineLayout,
-      vertex: {
-        module: stampModule,
-        entryPoint: "vertexMain",
-        buffers: [
-          {
-            arrayStride: STAMP_STRIDE * 4,
-            stepMode: "instance",
-            attributes: [
-              {
-                shaderLocation: 7,
-                offset: STAMP.TIP_FRAME * 4,
-                format: "float32",
-              },
-              {
-                shaderLocation: 0,
-                offset: STAMP.CENTER_X * 4,
-                format: "float32x2",
-              },
-              {
-                shaderLocation: 1,
-                offset: STAMP.RADIUS * 4,
-                format: "float32",
-              },
-              {
-                shaderLocation: 2,
-                offset: STAMP.OPACITY * 4,
-                format: "float32",
-              },
-              {
-                shaderLocation: 3,
-                offset: STAMP.ANGLE * 4,
-                format: "float32",
-              },
-              {
-                shaderLocation: 4,
-                offset: STAMP.ROUNDNESS * 4,
-                format: "float32",
-              },
-              {
-                shaderLocation: 6,
-                offset: STAMP.HUE * 4,
-                format: "float32x3",
-              },
-              {
-                shaderLocation: 5,
-                offset: STAMP.GRAIN_DEPTH * 4,
-                format: "float32",
-              },
-            ],
-          },
-        ],
-      },
-      fragment: {
-        module: stampModule,
-        entryPoint: "fragmentMain",
-        targets: [
-          {
-            format: LAYER_FORMAT,
-            ...(accumulation === "buildup" ? { blend: buildupBlend } : {}),
-          },
-        ],
-      },
-      depthStencil: {
-        format: COVERAGE_DEPTH_FORMAT,
-        depthWriteEnabled: accumulation === "coverage",
-        depthCompare: accumulation === "coverage" ? "less-equal" : "always",
-      },
-      primitive: { topology: "triangle-list" },
-    })
-
-  const stampPipelines: Record<Accumulation, GPURenderPipeline> = {
-    coverage: stampPipelineFor("coverage"),
-    buildup: stampPipelineFor("buildup"),
-  }
-
-  const clearRegionModule = device.createShaderModule({
-    code: clearRegionShader,
-  })
-  const clearRegionPipeline = device.createRenderPipeline({
-    label: "clear stroke region",
-    layout: "auto",
-    vertex: { module: clearRegionModule, entryPoint: "vertexMain" },
-    fragment: {
-      module: clearRegionModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format: LAYER_FORMAT }],
+  /** The stroke every brush draws, through the stroke buffer (D27). */
+  const buffered = createBufferedStroke(device, {
+    size: () => documentSize,
+    buffer: () => stroke,
+    binding: () => stampBindGroup,
+    target: () => paintTarget,
+    land(buffer, target, opacity, region, mode) {
+      // A document surface into another, so through the artwork's space.
+      artwork.compositeSurface(
+        buffer,
+        target,
+        opacity,
+        region,
+        mode === "erase" ? erasePipeline : compositePipeline
+      )
     },
-    depthStencil: {
-      format: COVERAGE_DEPTH_FORMAT,
-      depthWriteEnabled: true,
-      depthCompare: "always",
+    showOpacity(opacity) {
+      for (const compositor of compositors)
+        compositor.writePresent(
+          STROKE_OPACITY_OFFSET,
+          new Float32Array([opacity])
+        )
     },
-    primitive: { topology: "triangle-list" },
+    showMode(mode) {
+      for (const compositor of compositors)
+        compositor.writePresent(
+          STROKE_MODE_OFFSET,
+          new Float32Array([mode === "erase" ? 1 : 0])
+        )
+    },
   })
 
   const compositeModule = device.createShaderModule({
@@ -918,8 +777,16 @@ export function createRenderer(
   // then owned by whatever brush is in the hand, so a resize must rewrite the
   // current value rather than the one this renderer was created with.
   let feather = options.feather
-  /** Whether the dab's shape is the tip texture rather than the disc. */
-  let usesTip = false
+  /**
+   * The dab's shape as the direct stroke reads it, kept in step with the tip
+   * and the feather: `usesTip` says the texture is the shape, not the disc.
+   */
+  const tipShape = {
+    texture: tipTexture,
+    sampler: tipSampler,
+    usesTip: false,
+    feather,
+  }
 
   const stampUniform = device.createBuffer({
     size: STAMP_UNIFORM_BYTES,
@@ -933,35 +800,10 @@ export function createRenderer(
     0,
     new Float32Array([1, 1, feather, 0, ...options.ink, 1, 0, 0, 0])
   )
-  const stampInstances = device.createBuffer({
-    size: MAX_STAMPS_PER_DRAW * STAMP_STRIDE * 4,
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-  })
   let stampBindGroup: GPUBindGroup | undefined
-
-  /**
-   * A linear-light surface. Layers, masks, the stroke buffer and everything a
-   * compositor flattens are all this: what differs is only when they are
-   * written, what reads them, and which space their texels are in.
-   */
-  type Surface = {
-    id: number
-    texture: GPUTexture
-    view: GPUTextureView
-    /**
-     * A document surface, one texel per document pixel: a layer, a mask, the
-     * stroke. Otherwise one a compositor drew in its own target.
-     */
-    document: boolean
-    /** Nothing has been written since it was allocated. */
-    empty: boolean
-  }
 
   /** One texture per layer that holds something; absent layers hold none. */
   const surfaces = new Map<string, Surface>()
-  let coverageDepth: GPUTexture | undefined
-  let coverageDepthView: GPUTextureView | undefined
-  let clearCoverageDepth = true
   let stroke: Surface | undefined
   let paintTarget: Surface | undefined
   let active: Surface | undefined
@@ -1041,6 +883,8 @@ export function createRenderer(
   }
   let width = 0
   let height = 0
+  /** The same two, as the strokes read them: one object, so asking allocates nothing. */
+  const documentSize = { width, height }
   // Vector layers (19): stencil-and-cover into a multisampled chunk, resolved
   // and copied into the layer. Made on first use; most documents never draw
   // a shape and should not pay for the targets.
@@ -1452,10 +1296,6 @@ export function createRenderer(
     return [a, b, 0, 0, c, d, 0, 0, e, f, 1, 0]
   }
 
-  /** Applied when the stroke is composited, and shown in flight at the same value. */
-  let strokeOpacity = 1
-  let strokeMode: StrokeMode = "paint"
-
   const SURFACE_USAGE =
     GPUTextureUsage.TEXTURE_BINDING |
     GPUTextureUsage.COPY_DST |
@@ -1681,380 +1521,13 @@ export function createRenderer(
     return region
   }
 
-  // The smudge stroke in flight (smudge 01): the surface it smears, where the
-  // tip last was, the region the dabs have reached, and the tiles kept as
-  // they were before a dab first wrote to them (smudge 06).
-  let smudging:
-    | {
-        target: Surface
-        /** Null until the first dab says where the stroke began. */
-        last: { x: number; y: number } | null
-        reached: { left: number; top: number; right: number; bottom: number }
-        /**
-         * Where each kept tile is in the backup, by its place in the grid
-         * counted along the rows; slots are handed out in the order taken.
-         */
-        kept: Map<number, number>
-      }
-    | undefined
-  /** Tiles to a side of one page of the backup. */
-  const BACKUP_PAGE_TILES = 8
-  const BACKUP_PAGE_SLOTS = BACKUP_PAGE_TILES * BACKUP_PAGE_TILES
-  /**
-   * What a cancelled smudge is put back from: the tiles its dabs wrote to,
-   * each copied out the first time one did. The stroke's size and not the
-   * document's, so the frame a stroke opens in pays for a dab's tiles alone.
-   * In pages, so more room is a new texture and never a move of what is
-   * kept; the first stays between strokes, as the carry does.
-   */
-  const backupPages: GPUTexture[] = []
-  /**
-   * What a smudge dab reads: its own neighbourhood of the surface, copied
-   * out because a pass cannot read what it writes. Dab-sized, kept between
-   * strokes, and grown when a dab needs more.
-   */
-  let carry: GPUTexture | undefined
-  /**
-   * Holds the tip's, the carry's and the selection's views, so it goes when
-   * any of them is replaced.
-   */
-  let smudgeBindGroup: GPUBindGroup | undefined
-  const smudgeParams = new Float32Array(8)
-  /** The widest neighbourhood a dab may ask for; one reaching further is skipped. */
-  const MAX_CARRY_SIZE = 2048
-  const smudgeModule = device.createShaderModule({ code: smudgeShader })
-  const smudgePipeline = device.createRenderPipeline({
-    label: "smudge",
-    layout: "auto",
-    vertex: {
-      module: smudgeModule,
-      entryPoint: "vertexMain",
-      buffers: [
-        {
-          arrayStride: SMUDGE_INSTANCE_STRIDE * 4,
-          stepMode: "instance",
-          attributes: [
-            {
-              shaderLocation: 0,
-              offset: SMUDGE.CENTER_X * 4,
-              format: "float32x2",
-            },
-            { shaderLocation: 1, offset: SMUDGE.RADIUS * 4, format: "float32" },
-            {
-              shaderLocation: 2,
-              offset: SMUDGE.STRENGTH * 4,
-              format: "float32",
-            },
-            { shaderLocation: 3, offset: SMUDGE.ANGLE * 4, format: "float32" },
-            {
-              shaderLocation: 4,
-              offset: SMUDGE.ROUNDNESS * 4,
-              format: "float32",
-            },
-            {
-              shaderLocation: 5,
-              offset: SMUDGE.TIP_FRAME * 4,
-              format: "float32",
-            },
-            {
-              shaderLocation: 6,
-              offset: SMUDGE.TRAVEL_X * 4,
-              format: "float32x2",
-            },
-            {
-              shaderLocation: 7,
-              offset: SMUDGE.ORIGIN_X * 4,
-              format: "float32x2",
-            },
-          ],
-        },
-      ],
-    },
-    fragment: {
-      module: smudgeModule,
-      entryPoint: "fragmentMain",
-      // No blending: the pass writes the mix itself.
-      targets: [{ format: LAYER_FORMAT }],
-    },
-    primitive: { topology: "triangle-list" },
+  /** The stroke that reads and writes its surface as it goes (D29). */
+  const direct = createDirectStroke(device, {
+    size: () => documentSize,
+    tip: () => tipShape,
+    selection: () => selection,
+    noSelection,
   })
-  const smudgeUniform = device.createBuffer({
-    size: smudgeParams.byteLength,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  })
-  const smudgeInstances = device.createBuffer({
-    size: MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_INSTANCE_STRIDE * 4,
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-  })
-  const carrySampler = device.createSampler({
-    magFilter: "linear",
-    minFilter: "linear",
-  })
-  // Filled per call rather than allocated per call: the dabs as they are
-  // drawn, and for each the rectangle copied out and the one drawn into.
-  const smudgeDrawn = new Float32Array(
-    MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_INSTANCE_STRIDE
-  )
-  const smudgeRects = new Int32Array(MAX_SMUDGE_DABS_PER_DRAW * 8)
-
-  /** Draws the dabs of a smudge stroke into its surface, one after another. */
-  function drawSmudge(dabs: Float32Array, count: number) {
-    const session = smudging!
-    // Nothing outside the selection's bounds is selected (smudge 03), so a
-    // dab draws only within them, and one clear of them draws nothing.
-    const bounds = selection?.bounds
-    const clipLeft = bounds ? Math.max(0, bounds.x) : 0
-    const clipTop = bounds ? Math.max(0, bounds.y) : 0
-    const clipRight = bounds ? Math.min(width, bounds.x + bounds.width) : width
-    const clipBottom = bounds
-      ? Math.min(height, bounds.y + bounds.height)
-      : height
-    let drawn = 0
-    let need = 0
-    for (let i = 0; i < count; i++) {
-      const dab = i * SMUDGE_STRIDE
-      const x = dabs[dab + SMUDGE.CENTER_X]
-      const y = dabs[dab + SMUDGE.CENTER_Y]
-      // The first dab has come from nowhere.
-      if (!session.last) {
-        session.last = { x, y }
-        continue
-      }
-      const travelX = x - session.last.x
-      const travelY = y - session.last.y
-      session.last.x = x
-      session.last.y = y
-      // A still tip drags nothing, and nor does one with no strength: a
-      // stroke at none leaves the layer, and its history, as they were.
-      if (travelX === 0 && travelY === 0) continue
-      if (!(dabs[dab + SMUDGE.STRENGTH] > 0)) continue
-      // Rotated textured quads fit inside sqrt(2) radii.
-      const reach = dabs[dab + SMUDGE.RADIUS] * Math.SQRT2
-      const left = Math.max(clipLeft, Math.floor(x - reach))
-      const top = Math.max(clipTop, Math.floor(y - reach))
-      const right = Math.min(clipRight, Math.ceil(x + reach))
-      const bottom = Math.min(clipBottom, Math.ceil(y + reach))
-      if (right <= left || bottom <= top) continue
-      // What the dab reads: the pixels it covers and the ones its travel
-      // behind them, with a texel to spare for the blend between texels.
-      const fromLeft = Math.max(
-        0,
-        Math.floor(Math.min(left, left - travelX)) - 1
-      )
-      const fromTop = Math.max(0, Math.floor(Math.min(top, top - travelY)) - 1)
-      const fromRight = Math.min(
-        width,
-        Math.ceil(Math.max(right, right - travelX)) + 1
-      )
-      const fromBottom = Math.min(
-        height,
-        Math.ceil(Math.max(bottom, bottom - travelY)) + 1
-      )
-      const span = Math.max(fromRight - fromLeft, fromBottom - fromTop)
-      if (span > MAX_CARRY_SIZE) continue
-      need = Math.max(need, span)
-      const instance = drawn * SMUDGE_INSTANCE_STRIDE
-      smudgeDrawn.set(dabs.subarray(dab, dab + SMUDGE_STRIDE), instance)
-      smudgeDrawn[instance + SMUDGE.TRAVEL_X] = travelX
-      smudgeDrawn[instance + SMUDGE.TRAVEL_Y] = travelY
-      smudgeDrawn[instance + SMUDGE.ORIGIN_X] = fromLeft
-      smudgeDrawn[instance + SMUDGE.ORIGIN_Y] = fromTop
-      const rect = drawn * 8
-      smudgeRects[rect] = fromLeft
-      smudgeRects[rect + 1] = fromTop
-      smudgeRects[rect + 2] = fromRight - fromLeft
-      smudgeRects[rect + 3] = fromBottom - fromTop
-      smudgeRects[rect + 4] = left
-      smudgeRects[rect + 5] = top
-      smudgeRects[rect + 6] = right - left
-      smudgeRects[rect + 7] = bottom - top
-      session.reached.left = Math.min(session.reached.left, left)
-      session.reached.top = Math.min(session.reached.top, top)
-      session.reached.right = Math.max(session.reached.right, right)
-      session.reached.bottom = Math.max(session.reached.bottom, bottom)
-      drawn++
-    }
-    if (drawn === 0) return
-    if (!carry || carry.width < need) {
-      carry?.destroy()
-      let size = 64
-      while (size < need) size *= 2
-      carry = device.createTexture({
-        size: { width: size, height: size },
-        format: LAYER_FORMAT,
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-      })
-      smudgeBindGroup = undefined
-    }
-    smudgeParams[0] = width
-    smudgeParams[1] = height
-    smudgeParams[2] = feather
-    smudgeParams[3] = usesTip ? 1 : 0
-    smudgeParams[4] = selection ? 1 : 0
-    device.queue.writeBuffer(smudgeUniform, 0, smudgeParams)
-    device.queue.writeBuffer(
-      smudgeInstances,
-      0,
-      smudgeDrawn,
-      0,
-      drawn * SMUDGE_INSTANCE_STRIDE
-    )
-    // Kept between frames of a stroke, which must allocate nothing (D30).
-    smudgeBindGroup ??= device.createBindGroup({
-      layout: smudgePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: smudgeUniform } },
-        { binding: 1, resource: tipSampler },
-        {
-          binding: 2,
-          resource: tipTexture.createView({ dimension: "2d-array" }),
-        },
-        { binding: 3, resource: carrySampler },
-        { binding: 4, resource: carry.createView() },
-        {
-          binding: 5,
-          resource: (selection?.texture ?? noSelection).createView(),
-        },
-      ],
-    })
-    // Each dab reads what the one before it wrote, so each is a copy and a
-    // pass of its own; one encoder holds the frame's worth in order.
-    const encoder = device.createCommandEncoder()
-    const tilesAcross = Math.ceil(width / TILE_SIZE)
-    for (let i = 0; i < drawn; i++) {
-      const rect = i * 8
-      // Before the dab writes: any tile under it that no dab has yet touched
-      // is kept as it is.
-      const lastColumn =
-        (smudgeRects[rect + 4] + smudgeRects[rect + 6] - 1) >> TILE_SHIFT
-      const lastRow =
-        (smudgeRects[rect + 5] + smudgeRects[rect + 7] - 1) >> TILE_SHIFT
-      for (let row = smudgeRects[rect + 5] >> TILE_SHIFT; row <= lastRow; row++)
-        for (
-          let column = smudgeRects[rect + 4] >> TILE_SHIFT;
-          column <= lastColumn;
-          column++
-        ) {
-          const tile = row * tilesAcross + column
-          if (session.kept.has(tile)) continue
-          const slot = session.kept.size
-          session.kept.set(tile, slot)
-          copyBackupTile(encoder, session.target, tile, slot, "keep")
-        }
-      encoder.copyTextureToTexture(
-        {
-          texture: session.target.texture,
-          origin: { x: smudgeRects[rect], y: smudgeRects[rect + 1] },
-        },
-        { texture: carry },
-        { width: smudgeRects[rect + 2], height: smudgeRects[rect + 3] }
-      )
-      const pass = encoder.beginRenderPass({
-        colorAttachments: [
-          { view: session.target.view, loadOp: "load", storeOp: "store" },
-        ],
-      })
-      pass.setPipeline(smudgePipeline)
-      pass.setBindGroup(0, smudgeBindGroup)
-      pass.setVertexBuffer(0, smudgeInstances)
-      pass.setScissorRect(
-        smudgeRects[rect + 4],
-        smudgeRects[rect + 5],
-        smudgeRects[rect + 6],
-        smudgeRects[rect + 7]
-      )
-      pass.draw(6, 1, 0, i)
-      pass.end()
-    }
-    device.queue.submit([encoder.finish()])
-  }
-
-  /**
-   * Copies one tile between a surface and its slot in the backup: out of the
-   * surface to keep it, or back into the surface to restore it. An edge tile
-   * is copied as far as the canvas goes.
-   */
-  function copyBackupTile(
-    encoder: GPUCommandEncoder,
-    surface: Surface,
-    tile: number,
-    slot: number,
-    direction: "keep" | "restore"
-  ) {
-    const page = Math.floor(slot / BACKUP_PAGE_SLOTS)
-    // The one allocation a stroke may make as it goes, once in as many tiles
-    // as a page holds: the alternative is paying for the document at pen-down.
-    while (backupPages.length <= page)
-      backupPages.push(
-        device.createTexture({
-          label: "smudge backup",
-          size: {
-            width: BACKUP_PAGE_TILES * TILE_SIZE,
-            height: BACKUP_PAGE_TILES * TILE_SIZE,
-          },
-          format: LAYER_FORMAT,
-          usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
-        })
-      )
-    const tilesAcross = Math.ceil(width / TILE_SIZE)
-    const x = (tile % tilesAcross) * TILE_SIZE
-    const y = Math.floor(tile / tilesAcross) * TILE_SIZE
-    const slotInPage = slot % BACKUP_PAGE_SLOTS
-    const inSurface = { texture: surface.texture, origin: { x, y } }
-    const inBackup = {
-      texture: backupPages[page],
-      origin: {
-        x: (slotInPage % BACKUP_PAGE_TILES) * TILE_SIZE,
-        y: Math.floor(slotInPage / BACKUP_PAGE_TILES) * TILE_SIZE,
-      },
-    }
-    encoder.copyTextureToTexture(
-      direction === "keep" ? inSurface : inBackup,
-      direction === "keep" ? inBackup : inSurface,
-      {
-        width: Math.min(TILE_SIZE, width - x),
-        height: Math.min(TILE_SIZE, height - y),
-      }
-    )
-  }
-
-  /** Gives back the pages a long stroke needed; the first is kept. */
-  function trimBackup() {
-    while (backupPages.length > 1) backupPages.pop()!.destroy()
-  }
-
-  /**
-   * Lets go of a smudge stroke whose surface is going away, so there is
-   * nothing to put back and nothing left to draw into.
-   */
-  function dropSmudge() {
-    smudging = undefined
-    trimBackup()
-  }
-
-  function endSmudge(keep: boolean): PixelRect | null {
-    if (!smudging) return null
-    const { target, reached, kept } = smudging
-    smudging = undefined
-    const region =
-      reached.right > reached.left && reached.bottom > reached.top
-        ? {
-            x: reached.left,
-            y: reached.top,
-            width: reached.right - reached.left,
-            height: reached.bottom - reached.top,
-          }
-        : null
-    if (!keep && kept.size > 0) {
-      // Only the tiles a dab wrote to: the rest never changed.
-      const encoder = device.createCommandEncoder()
-      for (const [tile, slot] of kept)
-        copyBackupTile(encoder, target, tile, slot, "restore")
-      device.queue.submit([encoder.finish()])
-    }
-    trimBackup()
-    return keep ? region : null
-  }
 
   /**
    * Draws what the selection covers of `source` into `target`, in
@@ -2102,7 +1575,7 @@ export function createRenderer(
    * Empties a surface. A clear is a load operation, which a scissor rectangle
    * does not narrow, so this is always the whole surface — it runs when a
    * cache is rebuilt, never on a frame of drawing. The stroke buffer is
-   * cleared by region instead (`clearStroke`).
+   * cleared by region instead, by the buffered stroke.
    */
   function clearSurface(surface: Surface) {
     const encoder = device.createCommandEncoder()
@@ -2393,13 +1866,13 @@ export function createRenderer(
       )
       compositeValues[0] = item.opacity
       compositeValues[1] = inFlight
-        ? strokeOpacity
+        ? buffered.opacity()
         : maskInFlight
-          ? -strokeOpacity
+          ? -buffered.opacity()
           : 0
       compositeValues[2] = maskId && surfaces.has(maskId) ? 1 : 0
       compositeValues[3] = clipBase ? 1 : 0
-      compositeValues[4] = strokeMode === "erase" ? 1 : 0
+      compositeValues[4] = buffered.mode() === "erase" ? 1 : 0
       compositeValues[6] = source.document ? 1 : 0
       compositeValues[7] = clipBase?.document ? 1 : 0
       device.queue.writeBuffer(compositeUniform, 0, compositeValues)
@@ -2862,40 +2335,10 @@ export function createRenderer(
     }
   }
 
-  // The stroke in flight. The log lets the buffer be rewound; the bounds keep
-  // clearing and compositing to the region the stroke actually covers.
-  const log = createStampLog(MAX_STAMPS_PER_STROKE)
-  let accumulation: Accumulation = "coverage"
-  // Mutated rather than replaced: an empty region is one that has not been
-  // grown yet, so the bounds start inverted.
-  const painted = { left: 0, top: 0, right: 0, bottom: 0 }
-
-  function resetPainted() {
-    painted.left = Infinity
-    painted.top = Infinity
-    painted.right = -Infinity
-    painted.bottom = -Infinity
-  }
-  resetPainted()
-
-  /** Grows the painted region to hold `count` dabs, rims included. */
-  function growPainted(instances: Float32Array, count: number) {
-    for (let i = 0; i < count; i++) {
-      const offset = i * STAMP_STRIDE
-      const x = instances[offset + STAMP.CENTER_X]
-      const y = instances[offset + STAMP.CENTER_Y]
-      const radius = instances[offset + STAMP.RADIUS]
-      painted.left = Math.min(painted.left, x - radius)
-      painted.top = Math.min(painted.top, y - radius)
-      painted.right = Math.max(painted.right, x + radius)
-      painted.bottom = Math.max(painted.bottom, y + radius)
-    }
-  }
-
   /** Rebuilt whenever a texture is replaced: a bind group holds views, not ids. */
   function refreshStampBindGroup() {
     stampBindGroup = device.createBindGroup({
-      layout: stampBindGroupLayout,
+      layout: buffered.bindingLayout,
       entries: [
         { binding: 0, resource: { buffer: stampUniform } },
         { binding: 1, resource: tipSampler },
@@ -2916,138 +2359,6 @@ export function createRenderer(
       USE_SELECTION_OFFSET,
       new Float32Array([selection ? 1 : 0])
     )
-  }
-
-  /** The present pass shows the stroke in flight at the opacity it will land at. */
-  function writeStrokeOpacity(opacity: number) {
-    strokeOpacity = opacity
-    for (const compositor of compositors)
-      compositor.writePresent(
-        STROKE_OPACITY_OFFSET,
-        new Float32Array([opacity])
-      )
-  }
-
-  function writeStrokeMode(mode: StrokeMode) {
-    strokeMode = mode
-    for (const compositor of compositors)
-      compositor.writePresent(
-        STROKE_MODE_OFFSET,
-        new Float32Array([mode === "erase" ? 1 : 0])
-      )
-  }
-
-  /** The painted region in whole pixels, clipped to the buffer. Null if empty. */
-  function paintedScissor() {
-    if (!stroke || painted.right <= painted.left) return null
-    const x = Math.max(0, Math.floor(painted.left))
-    const y = Math.max(0, Math.floor(painted.top))
-    const right = Math.min(width, Math.ceil(painted.right))
-    const bottom = Math.min(height, Math.ceil(painted.bottom))
-    if (right <= x || bottom <= y) return null
-    return { x, y, width: right - x, height: bottom - y }
-  }
-
-  // Every pixel a stamp pass could have written since the buffer was last
-  // cleared, in whole pixels: the union of the passes' scissor rectangles.
-  const strokeDirty = { left: 0, top: 0, right: 0, bottom: 0 }
-
-  function resetStrokeDirty() {
-    strokeDirty.left = Infinity
-    strokeDirty.top = Infinity
-    strokeDirty.right = -Infinity
-    strokeDirty.bottom = -Infinity
-  }
-  resetStrokeDirty()
-
-  /**
-   * Empties the stroke buffer and its coverage depth where stamps reached,
-   * rather than across the document: a stroke clears what it painted.
-   */
-  function clearStroke() {
-    if (!stroke) throw new Error("The render target has not been sized.")
-    stroke.empty = true
-    if (strokeDirty.right <= strokeDirty.left) return
-    const encoder = device.createCommandEncoder()
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        { view: stroke.view, loadOp: "load", storeOp: "store" },
-      ],
-      depthStencilAttachment: {
-        view: coverageDepthView!,
-        depthLoadOp: "load",
-        depthStoreOp: "store",
-      },
-    })
-    pass.setPipeline(clearRegionPipeline)
-    pass.setScissorRect(
-      strokeDirty.left,
-      strokeDirty.top,
-      strokeDirty.right - strokeDirty.left,
-      strokeDirty.bottom - strokeDirty.top
-    )
-    pass.draw(3)
-    pass.end()
-    device.queue.submit([encoder.finish()])
-    resetStrokeDirty()
-  }
-
-  /** Draws `count` dabs of the current stroke into the buffer. */
-  function drawStamps(instances: Float32Array, offset: number, count: number) {
-    if (!stroke || !stampBindGroup)
-      throw new Error("The render target has not been sized.")
-    device.queue.writeBuffer(
-      stampInstances,
-      0,
-      instances,
-      offset * STAMP_STRIDE,
-      count * STAMP_STRIDE
-    )
-    const encoder = device.createCommandEncoder()
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        // The buffer holds the stroke so far: dabs blend onto it.
-        { view: stroke.view, loadOp: "load", storeOp: "store" },
-      ],
-      depthStencilAttachment: {
-        view: coverageDepthView!,
-        depthClearValue: 1,
-        depthLoadOp: clearCoverageDepth ? "clear" : "load",
-        depthStoreOp: "store",
-      },
-    })
-    clearCoverageDepth = false
-    pass.setPipeline(stampPipelines[accumulation])
-    pass.setBindGroup(0, stampBindGroup)
-    pass.setVertexBuffer(0, stampInstances)
-    // Bound the pass to this batch, rather than letting a document-sized
-    // depth attachment touch tiles the pen never visited. Rotated textured
-    // quads fit inside sqrt(2) radii, even when their corners carry ink.
-    let left = width
-    let top = height
-    let right = 0
-    let bottom = 0
-    for (let i = offset; i < offset + count; i++) {
-      const index = i * STAMP_STRIDE
-      const radius = instances[index + STAMP.RADIUS] * Math.SQRT2
-      const x = instances[index + STAMP.CENTER_X]
-      const y = instances[index + STAMP.CENTER_Y]
-      left = Math.min(left, Math.max(0, Math.floor(x - radius)))
-      top = Math.min(top, Math.max(0, Math.floor(y - radius)))
-      right = Math.max(right, Math.min(width, Math.ceil(x + radius)))
-      bottom = Math.max(bottom, Math.min(height, Math.ceil(y + radius)))
-    }
-    if (right > left && bottom > top) {
-      pass.setScissorRect(left, top, right - left, bottom - top)
-      pass.draw(6, count)
-      strokeDirty.left = Math.min(strokeDirty.left, left)
-      strokeDirty.top = Math.min(strokeDirty.top, top)
-      strokeDirty.right = Math.max(strokeDirty.right, right)
-      strokeDirty.bottom = Math.max(strokeDirty.bottom, bottom)
-    }
-    pass.end()
-    device.queue.submit([encoder.finish()])
-    stroke.empty = false
   }
 
   /** The screen, through the view: what the artist sees. */
@@ -3081,24 +2392,21 @@ export function createRenderer(
   return {
     resize(nextWidth, nextHeight) {
       releaseSelection()
-      smudgeBindGroup = undefined
-      dropSmudge()
+      direct.invalidateBinding()
+      direct.drop()
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
       for (const id of [...vectorScenes.keys()]) forgetVectorScene(id)
-      coverageDepth?.destroy()
-      coverageDepth = undefined
-      coverageDepthView = undefined
       stroke?.texture.destroy()
       active = undefined
       paintTarget = undefined
       // The caches are gone with the textures they flattened, so the next plan
       // rebuilds them even if it is the same plan.
       for (const compositor of compositors) compositor.releaseTargets()
-      log.reset()
-      resetPainted()
       width = nextWidth
       height = nextHeight
+      documentSize.width = nextWidth
+      documentSize.height = nextHeight
       placeCompositors()
       // The view is the artist's and outlives the document's size; the
       // matrix both are measured against is rewritten all the same.
@@ -3108,16 +2416,6 @@ export function createRenderer(
       // storage stays document-sized until the per-layer atlases (D-6.1); its
       // clears are already bounded to what each stroke painted (§6.2).
       stroke = createSurface()
-      coverageDepth = device.createTexture({
-        size: { width, height },
-        format: COVERAGE_DEPTH_FORMAT,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT,
-      })
-      coverageDepthView = coverageDepth.createView()
-      // A new depth texture holds zeros, so the first stamp pass clears it
-      // whole; after that only the regions stamps reached are cleared.
-      clearCoverageDepth = true
-      resetStrokeDirty()
       // Only the viewport changes with a resize; the tip flag, the ink and the
       // grain settings are the brush's and outlive it.
       device.queue.writeBuffer(
@@ -3126,9 +2424,7 @@ export function createRenderer(
         new Float32Array([width, height, feather])
       )
       refreshStampBindGroup()
-      // A fresh texture is already transparent, but the previous stroke's
-      // opacity is not; both passes read it from a uniform.
-      writeStrokeOpacity(1)
+      buffered.resize()
     },
     uploadLayer(id, layer) {
       // A layer with no tiles has never held a pixel, and allocating a
@@ -3210,8 +2506,9 @@ export function createRenderer(
     },
     releaseLayer(id) {
       forgetVectorScene(id)
-      if (smudging && smudging.target === surfaces.get(id)) dropSmudge()
-      surfaces.get(id)?.texture.destroy()
+      const released = surfaces.get(id)
+      if (released) direct.drop(released)
+      released?.texture.destroy()
       const releasedSurface = surfaces.delete(id)
       let releasedCache = false
       for (const compositor of compositors)
@@ -3234,27 +2531,10 @@ export function createRenderer(
       screen.apply(plan)
     },
     beginStroke(options) {
-      if (!stroke) throw new Error("The render target has not been sized.")
-      if (
-        !Number.isFinite(options.opacity) ||
-        options.opacity < 0 ||
-        options.opacity > 1
-      )
-        throw new Error("Stroke opacity must be a finite value in [0, 1].")
-      clearStroke()
-      resetPainted()
-      log.reset()
-      accumulation = options.accumulation
-      writeStrokeOpacity(options.opacity)
-      writeStrokeMode(options.mode)
+      buffered.begin(options)
     },
     stamp(instances, count) {
-      if (count <= 0) return
-      if (count > MAX_STAMPS_PER_DRAW)
-        throw new Error("Too many dabs for one draw.")
-      log.append(instances, count)
-      growPainted(instances, count)
-      drawStamps(instances, 0, count)
+      buffered.draw(instances, count)
     },
     setTip(texture) {
       if (texture) {
@@ -3266,8 +2546,9 @@ export function createRenderer(
       }
       tipTexture.destroy()
       tipTexture = texture ? uploadTexture(texture) : createWhiteTexture()
-      usesTip = !!texture
-      smudgeBindGroup = undefined
+      tipShape.texture = tipTexture
+      tipShape.usesTip = !!texture
+      direct.invalidateBinding()
       device.queue.writeBuffer(
         stampUniform,
         USE_TIP_OFFSET,
@@ -3279,6 +2560,7 @@ export function createRenderer(
       if (!Number.isFinite(next) || next < 0)
         throw new Error("Brush feather must be a finite width of zero or more.")
       feather = next
+      tipShape.feather = next
       device.queue.writeBuffer(
         stampUniform,
         FEATHER_OFFSET,
@@ -3316,47 +2598,13 @@ export function createRenderer(
       device.queue.writeBuffer(stampUniform, 16, new Float32Array(color))
     },
     discardStamps(count) {
-      // Coverage blending forgets what a dab covered, so the tail comes off by
-      // replaying the stroke without it — which needs the whole stroke logged.
-      if (!log.replayable()) return false
-      if (count <= 0) return true
-      log.discard(count)
-      clearStroke()
-      // The surviving dabs cover no more than the discarded ones did, so the
-      // bounds stay valid; they are conservative, never wrong.
-      log.replay(MAX_STAMPS_PER_DRAW, drawStamps)
-      return true
+      return buffered.discard(count)
     },
     cancelStroke() {
-      if (!stroke) return
-      log.reset()
-      resetPainted()
-      clearStroke()
-      writeStrokeOpacity(1)
+      buffered.end(false)
     },
     endStroke() {
-      if (!stroke || !paintTarget)
-        throw new Error("There is no active layer to paint into.")
-      const region = paintedScissor()
-      log.reset()
-      resetPainted()
-      if (!region) return null
-      // The mark goes into the layer at the stroke's opacity, once (D27): a
-      // document surface into another, so through the artwork's space.
-      artwork.compositeSurface(
-        stroke,
-        paintTarget,
-        strokeOpacity,
-        region,
-        strokeMode === "erase" ? erasePipeline : compositePipeline
-      )
-      // The mark now lives in the layer's texture; the buffer must not show it
-      // a second time through the present pass.
-      clearStroke()
-      // Nothing between strokes should depend on the last stroke's opacity.
-      writeStrokeOpacity(1)
-      writeStrokeMode("paint")
-      return region
+      return buffered.end(true)
     },
     openPlacedImage(id, image) {
       this.closePlacedImage(id)
@@ -3643,7 +2891,7 @@ export function createRenderer(
         releaseSelection()
         // Dabs stop being clipped once nothing is selected.
         if (stampBindGroup) refreshStampBindGroup()
-        smudgeBindGroup = undefined
+        direct.invalidateBinding()
         return
       }
       if (!selection) {
@@ -3672,7 +2920,7 @@ export function createRenderer(
         }
         // From the next dab on, the stroke is clipped to the new texture.
         refreshStampBindGroup()
-        smudgeBindGroup = undefined
+        direct.invalidateBinding()
       }
       const canvas = { x: 0, y: 0, width, height }
       const write = (coord: TileCoord, coverage: Uint8Array) => {
@@ -3726,28 +2974,14 @@ export function createRenderer(
     endFilter,
     beginSmudge(surfaceId) {
       const target = surfaces.get(surfaceId)
-      if (!target || target.empty) return false
-      if (smudging) endSmudge(false)
-      smudging = {
-        target,
-        last: null,
-        reached: {
-          left: Infinity,
-          top: Infinity,
-          right: -Infinity,
-          bottom: -Infinity,
-        },
-        kept: new Map(),
-      }
-      return true
+      return !!target && direct.begin(target)
     },
     smudge(dabs, count) {
-      if (!smudging || count <= 0) return
-      if (count > MAX_SMUDGE_DABS_PER_DRAW)
-        throw new Error("Too many smudge dabs for one draw.")
-      drawSmudge(dabs, count)
+      direct.draw(dabs, count)
     },
-    endSmudge,
+    endSmudge(keep) {
+      return direct.end(keep)
+    },
     copySelected(sourceId, targetId) {
       if (!selection) return null
       const source = surfaces.get(sourceId)
@@ -3858,13 +3092,7 @@ export function createRenderer(
     },
     destroy() {
       releaseSelection()
-      dropSmudge()
-      for (const page of backupPages.splice(0)) page.destroy()
-      carry?.destroy()
-      carry = undefined
-      smudgeBindGroup = undefined
-      smudgeUniform.destroy()
-      smudgeInstances.destroy()
+      direct.destroy()
       vector?.textures.forEach((texture) => texture.destroy())
       vector?.uniform.destroy()
       vector = undefined
@@ -3873,9 +3101,7 @@ export function createRenderer(
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
       for (const id of [...vectorScenes.keys()]) forgetVectorScene(id)
-      coverageDepth?.destroy()
-      coverageDepth = undefined
-      coverageDepthView = undefined
+      buffered.destroy()
       stroke?.texture.destroy()
       stroke = undefined
       active = undefined
@@ -3887,7 +3113,6 @@ export function createRenderer(
       tipTexture.destroy()
       grainTexture.destroy()
       stampUniform.destroy()
-      stampInstances.destroy()
     },
   }
 }
