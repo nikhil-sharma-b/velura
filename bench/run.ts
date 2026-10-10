@@ -16,7 +16,8 @@
  * `--sweep` runs the document-size ladder instead of the two passes, and
  * `--layers` the layer-count one; `--feather` paints inside a large feathered
  * selection against the same painting with none (11); `--scatter` paints with
- * a dense scattering brush against the same painting without; `--vector` times
+ * a dense scattering brush against the same painting without; `--smudge`
+ * smudges the painting against painting it (smudge 01); `--vector` times
  * redrawing a vector layer of many paths (19); `--navigate` times panning and
  * zooming a stack whose caches each step rebuilds (sharp-zoom 01). They are
  * how the tables in
@@ -88,6 +89,9 @@ type Pass = {
   report: Report
 }
 
+/** A pass with what is kept out of the recorded summary. */
+type Measured = Pass & { frames: FrameTiming[]; strokeStarts: number[] }
+
 type BenchRun = {
   version: 1
   recordedAt: string
@@ -140,7 +144,7 @@ async function launch(extra: readonly string[]): Promise<Browser> {
 async function measure(
   pass: (typeof PASSES)[number],
   workload: WorkloadOptions
-): Promise<Pass & { frames: FrameTiming[] }> {
+): Promise<Measured> {
   const browser = await launch(pass.args)
   try {
     const page = await browser.newPage()
@@ -167,6 +171,7 @@ async function measure(
       readbacksTotal: result.readbacksTotal,
       report: summarize(result.frames, { warmupFrames: WARMUP_FRAMES }),
       frames: result.frames,
+      strokeStarts: result.strokeStarts,
     }
   } finally {
     await browser.close()
@@ -367,6 +372,45 @@ async function scatterSweep(): Promise<void> {
 }
 
 /**
+ * Smudging (smudge 01), against painting the same strokes. A smudge stroke
+ * copies its whole layer before its first dab, so a cancel can put it back,
+ * and then every dab is a copy and a pass of its own into the layer. The
+ * first is paid once per stroke and shows in the pen-to-pixel of the frame
+ * the stroke opens in; the second is paid per frame. Paced, because
+ * pen-to-pixel only means anything with one frame in flight.
+ */
+async function smudgeSweep(): Promise<void> {
+  const pass = PASSES.find((entry) => entry.name === "paced")!
+  const middle = (values: number[]) =>
+    [...values].sort((a, b) => a - b)[values.length >> 1]
+  console.log(
+    `\n  ${BENCHMARK_WORKLOAD.width}², pen-to-pixel in ms` +
+      "\n  tool      stroke's first frame (median / worst)   all frames (median / p95)   dabs     readbacks"
+  )
+  for (const smudge of [false, true]) {
+    const { report, frames, strokeStarts, readbacks } = await measure(pass, {
+      ...BENCHMARK_WORKLOAD,
+      strokes: SWEEP_STROKES,
+      smudge,
+    })
+    // The frame a stroke's pen-down was drawn in: the first, from where the
+    // stroke began, that consumed a sample.
+    const opening = strokeStarts.flatMap((start) => {
+      const frame = frames.slice(start).find((f) => f.latencyMs !== null)
+      return frame ? [frame.latencyMs!] : []
+    })
+    console.log(
+      `  ${(smudge ? "smudge" : "brush").padEnd(8)}  ` +
+        `${fixed(middle(opening)).padStart(18)} / ${fixed(Math.max(...opening)).padEnd(15)}   ` +
+        `${fixed(report.latencyMs.median).padStart(12)} / ${fixed(report.latencyMs.p95).padEnd(8)}   ` +
+        `${String(report.stamps.total).padStart(6)}   ${String(readbacks).padStart(9)}`
+    )
+    if (readbacks > 0) process.exitCode = 1
+  }
+  console.log()
+}
+
+/**
  * Redrawing a vector layer (19), on the real GPU, at a ladder of path counts:
  * the first draw of the whole scene, an edit spanning the layer (every path
  * redrawn), and an edit to one path (only its region redrawn). Re-rasterising
@@ -467,11 +511,13 @@ async function main(): Promise<void> {
         ? featherSweep
         : process.argv.includes("--scatter")
           ? scatterSweep
-          : process.argv.includes("--vector")
-            ? vectorSweep
-            : process.argv.includes("--navigate")
-              ? navigationSweep
-              : null
+          : process.argv.includes("--smudge")
+            ? smudgeSweep
+            : process.argv.includes("--vector")
+              ? vectorSweep
+              : process.argv.includes("--navigate")
+                ? navigationSweep
+                : null
   if (ladder) {
     try {
       await ladder()
@@ -481,15 +527,16 @@ async function main(): Promise<void> {
     return
   }
   try {
-    const measured = {} as Record<PassName, Pass & { frames: FrameTiming[] }>
+    const measured = {} as Record<PassName, Measured>
     for (const pass of PASSES) {
       console.log(`  running the ${pass.name} pass...`)
       measured[pass.name] = await measure(pass, workload)
     }
     const strip = ({
       frames: _frames,
+      strokeStarts: _strokeStarts,
       ...pass
-    }: Pass & { frames: FrameTiming[] }) => pass
+    }: Measured) => pass
     const passes = {
       paced: strip(measured.paced),
       unpaced: strip(measured.unpaced),

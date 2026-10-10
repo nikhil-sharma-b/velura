@@ -72,6 +72,7 @@ import {
   transformObjects,
 } from "./doc/vector-objects"
 import { eraserBrush, type EraserKind } from "./brush/eraser"
+import { SMUDGE_RADIUS, SMUDGE_SPACING, SMUDGE_STRENGTH } from "./brush/smudge"
 import {
   type Brush,
   type BrushColor,
@@ -296,6 +297,11 @@ import {
   frameContent,
   tileBox,
 } from "./view/content-bounds"
+import {
+  MAX_SMUDGE_DABS_PER_DRAW,
+  SMUDGE,
+  SMUDGE_STRIDE,
+} from "./gpu/smudge-dab"
 import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
 import { attachPointerSampler } from "./input/pointer-sampler"
 import {
@@ -483,7 +489,11 @@ export type {
   VectorStyle,
 } from "./doc/vector-scene"
 
-export type PaintTool = "brush" | "eraser"
+/**
+ * Tools that work on a paint layer's pixels. The brush and the eraser lay a
+ * mark; smudge lays nothing and smears what the layer already holds.
+ */
+export type PaintTool = "brush" | "eraser" | "smudge"
 
 /** What the eraser takes on a vector layer: pixels, or objects whole. */
 export type VectorEraserMode = "pixel" | "object"
@@ -1719,6 +1729,12 @@ export function createEngine(
   const stamps = new Float32Array(MAX_STAMPS_PER_DRAW * STAMP_STRIDE)
   let tipDab = 0
   let stampCount = 0
+  // The layer a smudge stroke in flight is smearing (smudge 01). Its dabs go
+  // straight into that layer rather than the stroke buffer, in an array of
+  // their own.
+  let smudgeLayerId: string | undefined
+  const smudgeDabs = new Float32Array(MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_STRIDE)
+  let smudgeCount = 0
   let stroking = false
   // The pen-down sample opens the path, and it arrives through the buffer like
   // every other sample: nothing is drawn from inside an event handler.
@@ -1992,6 +2008,8 @@ export function createEngine(
     opening = false
     landing = false
     stampCount = 0
+    smudgeLayerId = undefined
+    smudgeCount = 0
     samples.clear()
     renderer?.destroy()
     renderer = undefined
@@ -4474,6 +4492,10 @@ export function createEngine(
     tiltY: number,
     time: number
   ) {
+    if (smudgeLayerId) {
+      emitSmudge(x, y)
+      return
+    }
     // The tracker was opened by the pen going down, so every dab advances it:
     // the first one has not moved from that point and so has no speed yet.
     const brush = activeBrush()
@@ -4536,6 +4558,25 @@ export function createEngine(
   }
 
   /**
+   * Collects one smudge dab (smudge 01). Only its shape is the brush's — the
+   * tip's turn and squash here, its texture and rim through the renderer —
+   * while its size and strength are fixed, and no dynamics reach it.
+   */
+  function emitSmudge(x: number, y: number) {
+    if (smudgeCount === MAX_SMUDGE_DABS_PER_DRAW) flushStamps()
+    const offset = smudgeCount * SMUDGE_STRIDE
+    smudgeDabs[offset + SMUDGE.CENTER_X] = x
+    smudgeDabs[offset + SMUDGE.CENTER_Y] = y
+    smudgeDabs[offset + SMUDGE.RADIUS] = SMUDGE_RADIUS
+    smudgeDabs[offset + SMUDGE.STRENGTH] = SMUDGE_STRENGTH
+    smudgeDabs[offset + SMUDGE.ANGLE] = brush.shape.angle
+    smudgeDabs[offset + SMUDGE.ROUNDNESS] = brush.shape.roundness
+    smudgeDabs[offset + SMUDGE.TIP_FRAME] = 0
+    smudgeCount++
+    frameStamps++
+  }
+
+  /**
    * Hands the renderer the brush's surface settings: the pixels behind its
    * texture ids, and the rim falloff the procedural dab is drawn with. Called
    * when the brush changes and when a renderer is created, since a renderer
@@ -4569,6 +4610,10 @@ export function createEngine(
   }
 
   function flushStamps() {
+    if (smudgeCount > 0) {
+      renderer?.smudge(smudgeDabs, smudgeCount)
+      smudgeCount = 0
+    }
     if (stampCount === 0) return
     renderer?.stamp(stamps, stampCount)
     stampCount = 0
@@ -4878,14 +4923,17 @@ export function createEngine(
       flushStamps()
       lastStrokeEnd = { x: rawX, y: rawY }
       // The whole mark is in the buffer now, so it goes into the layer once,
-      // at the stroke's opacity (D27).
-      const region = renderer?.endStroke()
+      // at the stroke's opacity (D27). A smear is in its layer already.
+      const smudged = smudgeLayerId
+      smudgeLayerId = undefined
+      const region = smudged ? renderer?.endSmudge(true) : renderer?.endStroke()
       // One stroke, one step. The region the mark landed in is read back off
       // the GPU after the frame, never during one.
       if (region && doc) {
-        history?.recordStroke(paintTargetId(doc), region)
-        contentBounds.grow(paintTargetId(doc), region)
-        invalidateThumbnailsOf(paintTargetId(doc))
+        const target = smudged ?? paintTargetId(doc)
+        history?.recordStroke(target, region)
+        contentBounds.grow(target, region)
+        invalidateThumbnailsOf(target)
       }
     }
     flushStamps()
@@ -5401,10 +5449,25 @@ export function createEngine(
     }
     const drawnFrom = layer.kind === "vector" || layer.image
     if (layer.locked || (drawnFrom && !(doc.paintingMask && layer.mask))) return
+    // Smudge smears the layer's own paint and not, yet, a mask over it.
+    if (tool === "smudge" && doc.paintingMask) return
     // The artist is painting, so the canvas shows what they are painting on.
     if (highlight) {
       highlight = undefined
       syncComposition()
+    }
+    if (tool === "smudge") {
+      // The layer is kept as it is before the first dab touches it: what a
+      // cancel puts back. One that holds nothing has nothing to smear.
+      if (!renderer?.beginSmudge(layer.id)) return
+      smudgeLayerId = layer.id
+      strokeOrigin = origin
+      stroking = true
+      opening = true
+      fromLastPoint = shiftHeld
+      samples.push(screenX, screenY, pressure, tiltX, tiltY, time)
+      scheduleFrame()
+      return
     }
     // The opening pen state is read in document space too, so a mapping onto
     // position means the same thing at any view.
@@ -5485,6 +5548,12 @@ export function createEngine(
     stampCount = 0
     samples.clear()
     renderer?.cancelStroke()
+    if (smudgeLayerId) {
+      // The dabs went straight into the layer, so the layer is put back.
+      smudgeLayerId = undefined
+      smudgeCount = 0
+      renderer?.endSmudge(false)
+    }
     if (snapshot.status === "ready") render()
   }
 
@@ -5537,8 +5606,8 @@ export function createEngine(
     stroking = false
     landing = true
     scheduleFrame()
-    // An eraser removes ink rather than using it, so it never counts.
-    if (snapshot.tool !== "eraser")
+    // An eraser removes ink and a smudge moves it; only the brush uses it.
+    if (snapshot.tool === "brush")
       options.onStrokeCommitted?.(snapshot.color.hex)
   }
 
@@ -7278,6 +7347,12 @@ export function createEngine(
             if (command.type === "undo") dropShapeDrag()
             break
           }
+          // A smear in flight is already in its layer, so undo takes back the
+          // smear rather than writing an older step underneath it.
+          if (smudgeLayerId) {
+            if (command.type === "undo") cancelStroke()
+            break
+          }
           // Undo during a drag means the adjustment being made, not the step
           // underneath it: the picture goes back to where it was picked up
           // and the stack is left alone.
@@ -7501,7 +7576,9 @@ export function createEngine(
           dropMarquee()
           cancelVectorTransform()
           tool = command.tool
-          resampler = createStrokeResampler(brushSpacing(activeBrush()))
+          resampler = createStrokeResampler(
+            tool === "smudge" ? SMUDGE_SPACING : brushSpacing(activeBrush())
+          )
           applyBrushTextures()
           if (snapshot.status === "ready") render()
           // A stroke left selected as it was drawn is let go with the tool

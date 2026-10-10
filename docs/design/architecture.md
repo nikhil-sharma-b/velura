@@ -28,7 +28,7 @@ Velura is a professional raster painting application that runs in the browser. I
 | Live / fluid brushes (watercolor, oil) | Fluid simulation is a project in itself | Compute-shader path reserved; brush engine is already a pluggable `StrokeRenderer` |
 | Animation timeline | Multiplies document model by frame count | Document owns a layer *stack*; a frame is a stack, so the indirection is one level |
 | Selections and transforms | Geometry and UI on top of a settled engine | Tiles carry no selection state; a selection is a mask texture applied at composite time |
-| Smudge / wet mixing | Requires reading the layer while writing it | Deliberately excluded so tiles keep single-writer semantics in v1 |
+| Wet mixing (smudge that lays the current colour, paint that stays wet between strokes) | Belongs with the live brushes: it needs paint that carries state from one dab, and one stroke, to the next | Smudge is built standalone (D29, §6.2) and already reads the layer while writing it; mixing adds an ink term to that pass, and neither it nor the live brushes are needed for it to work |
 | PSD import/export | Format compatibility project; PSD is integer, our pipeline is float | `.velura` export proves the serialization boundary exists |
 | Realtime collaboration | Needs stroke transport plus per-tile merge | Strokes are already a serializable value type; per-tile rows are independently mutable |
 | Engine in a Web Worker | Adds a message protocol to every call | Engine boundary is message-shaped from day one (§7) |
@@ -71,7 +71,7 @@ Each row is a decision that was contested and settled. Rationale is preserved be
 | D26 | Input sampling | `pointerrawupdate` + `getCoalescedEvents()` | `pointermove` only; prediction in v1 | A 240 Hz pen fires ~4 samples per frame; reading only the last one turns curves into polygons. Prediction needs stroke-buffer rollback, which is designed for but not built. |
 | D27 | Stroke compositing | Separate stroke buffer, composited once; per-brush coverage-vs-buildup flag | Stamp directly into the layer | Required for correct per-stroke opacity, and makes undo one snapshot per stroke. The flag is one boolean and covers both brush families. |
 | D28 | Navigation | Pan, zoom, rotate, flip | Pan+zoom only | Rotation is an ergonomic necessity and flip is a constant working habit. All are view-matrix state, never baked into layer textures. The screen is composited through the view at its own resolution (§6.3). |
-| D29 | Eraser | `destination-out` brush; no smudge | Smudge in v1 | Smudge requires read-while-write on the same layer; it belongs with the live-brush wave. |
+| D29 | Eraser and smudge | Eraser: `destination-out` brush. Smudge: a standalone tool with its own stroke path, which copies the layer when the stroke begins and reads and writes the layer itself as it moves (§6.2) | Smudge as a property of every brush; smudge waiting for the live-brush wave | Smudge was first left out because it reads the layer while writing it, and a normal stroke never does. That turned out not to need live brushes or wet mixing: the filter preview already works copy-then-write, and smudge follows it. Tiles keep one writer, since the smear lands as one stroke's readback like any other. Wet mixing and live brushes stay deferred. |
 | D30 | Perf target | 120 fps at 8192², under 10 ms pointer-to-pixel | 60 fps at 4096²; unspecified | The number is a design forcing function: no full-stack composite per frame, no CPU readback, no allocation in the stroke path. |
 | D31 | UI layout | Full-bleed canvas, floating tool rail, collapsible right panel stack | Fresco gesture-first; Photoshop docked panels | Canvas dominance without inventing a gesture vocabulary desktop users will not discover. Reuses existing shadcn primitives. |
 | D32 | Brush editor | Full tabbed dialog (Shape / Grain / Dynamics / Rendering) | Slider popover; presets only | D23 exists to be exposed, and `components/ui/pressure-curve.tsx` already provides the curve widget. |
@@ -195,6 +195,20 @@ The **stroke buffer** is a separate tiled surface covering the stroke's bounding
 - **Buildup** (`over` accumulation): each stamp adds. Wet and dry media behavior.
 
 This is also what makes prediction (D26, deferred) implementable later: discarding mispredicted stamps means discarding from the stroke buffer, not from the layer.
+
+**Smudge (D29)** is the one tool that does not go through the stroke buffer, because a buffer of new paint holds nothing to drag. Its path shares everything up to the resampler and then differs:
+
+```
+pointerdown
+  → copy the active layer (what a cancel puts back)
+rAF tick, per dab:
+  → copy the dab's neighbourhood of the layer into a dab-sized carry texture
+  → draw the dab into the LAYER: each pixel mixed towards the one a dab's travel behind it
+pointerup
+  → push undo entry for the region the dabs reached, as for any stroke
+```
+
+A pass cannot sample the texture it renders to, which is what the carry copy is for; it is small, so the per-dab cost does not grow with the document. All four premultiplied channels are mixed alike, so transparency is dragged as paint is, and nothing of the current colour is laid down. It reads and writes the active layer alone. The compositor already reads the active layer live, so the smear shows without rebuilding a cache. A cancelled stroke copies the region back from the copy taken at the start. No pixel crosses to the CPU while the pen is down (D30).
 
 ### 6.3 Compositor
 

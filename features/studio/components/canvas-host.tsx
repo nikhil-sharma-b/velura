@@ -131,6 +131,7 @@ import {
   BrushIcon,
   EraserToolIcon,
   ShapeEraserIcon,
+  SmudgeToolIcon,
   VectorBrushToolIcon,
 } from "./brush-icon"
 import { BrushLibrary } from "./brush-library"
@@ -1049,6 +1050,9 @@ export function CanvasHost({
   const brushDimmed =
     untouchable || (onVectorLayer && !intoMask) || onPlacedPhoto
   const eraserDimmed = untouchable || onPlacedPhoto
+  // Smudge smears a paint layer's own pixels, and not yet a mask's.
+  const smudgeDimmed =
+    untouchable || onVectorLayer || onPlacedPhoto || snapshot.paintingMask
   // On a vector layer the eraser is two, as the selection pairs are: one
   // takes the pixels under its tip, the other whole shapes.
   const vectorErasing = onVectorLayer && !intoMask
@@ -2033,6 +2037,22 @@ export function CanvasHost({
                       {vectorErasing && (
                         <FamilyDots count={2} shown={shapeEraser ? 1 : 0} />
                       )}
+                    </RailAction>
+                    <RailAction
+                      label="Smudge tool"
+                      detail={WORKS_ON.paint}
+                      command="tool.smudge"
+                      variant={snapshot.tool === "smudge" ? "default" : "ghost"}
+                      size="icon"
+                      aria-pressed={snapshot.tool === "smudge"}
+                      onClick={() => {
+                        setLibraryOpen(false)
+                        setEraserOpen(false)
+                        runStudioCommand("tool.smudge", commandContext)
+                      }}
+                      className={cn("rounded-lg", smudgeDimmed && DIMMED_TOOL)}
+                    >
+                      <SmudgeToolIcon />
                     </RailAction>
                   </ToolGroup>
                   <RailDivider />

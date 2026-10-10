@@ -6,6 +6,7 @@ import {
   SprayBottleIcon,
   MarkerCircleIcon,
   EraserIcon,
+  HandPointingIcon,
   SquareIcon,
   WaveformIcon,
 } from "@phosphor-icons/react"
@@ -56,6 +57,11 @@ export function EraserToolIcon({
       />
     </span>
   )
+}
+
+/** A fingertip, which is what smears paint. */
+export function SmudgeToolIcon({ className }: { className?: string }) {
+  return <HandPointingIcon className={className} weight="fill" />
 }
 
 /** The eraser that takes whole shapes, badged with one. */

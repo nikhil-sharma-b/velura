@@ -40,6 +40,12 @@ export type RunResult = {
   readbacksTotal: number
   /** Wall-clock milliseconds the pen was down. */
   elapsedMs: number
+  /**
+   * Where in `frames` each stroke began: the first frame at or after one that
+   * consumed a sample is the frame its pen-down was drawn in, and whatever a
+   * stroke does once at its start is in that frame's pen-to-pixel.
+   */
+  strokeStarts: number[]
 }
 
 /** How wide the canvas is shown, in CSS pixels: a window onto a large document. */
@@ -362,15 +368,6 @@ export async function runBenchmark(
   }
   const scatter = workload.options.scatter
   if (scatter) await engine.dispatch({ type: "setBrush", scatter })
-  const detachThumbnails = attachThumbnails(engine)
-
-  const frames: FrameTiming[] = []
-  engine.observeFrames((frame) => frames.push(frame))
-  const readback = watchForReadback()
-  const pump = createPump()
-  let dispatched = 0
-  const started = performance.now()
-
   const dispatch = (
     type: string,
     sample: {
@@ -397,6 +394,33 @@ export async function runBenchmark(
     )
   }
 
+  if (workload.options.smudge) {
+    // Paint to smear, laid before anything is timed or counted: a frame's
+    // worth of samples at a time, so none are dropped on the way in.
+    for (const stroke of workload.strokes) {
+      dispatch("pointerdown", stroke.samples[0])
+      for (let next = 1; next < stroke.samples.length; next++) {
+        dispatch("pointerrawupdate", stroke.samples[next])
+        dispatch("pointermove", stroke.samples[next])
+        if (next % 16 === 0) await nextFrame()
+      }
+      dispatch("pointerup", stroke.samples[stroke.samples.length - 1])
+      await nextFrame()
+      await nextFrame()
+    }
+    await engine.save()
+    await engine.dispatch({ type: "setTool", tool: "smudge" })
+  }
+  const detachThumbnails = attachThumbnails(engine)
+
+  const frames: FrameTiming[] = []
+  engine.observeFrames((frame) => frames.push(frame))
+  const readback = watchForReadback()
+  const pump = createPump()
+  let dispatched = 0
+  const strokeStarts: number[] = []
+  const started = performance.now()
+
   try {
     for (const stroke of workload.strokes) {
       // History captures the previous mark after pen-up, on a later frame.
@@ -405,6 +429,7 @@ export async function runBenchmark(
       if (dispatched > 0) await engine.save()
       const [first] = stroke.samples
       readback.setPenDown(true)
+      strokeStarts.push(frames.length)
       dispatch("pointerdown", first)
       dispatched++
       // The pen's clock starts now, and every sample is dispatched when it is
@@ -459,6 +484,7 @@ export async function runBenchmark(
     readbacks: readback.count(),
     readbacksTotal: readback.total(),
     elapsedMs: performance.now() - started,
+    strokeStarts,
   }
 }
 

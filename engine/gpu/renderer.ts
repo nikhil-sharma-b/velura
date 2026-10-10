@@ -42,6 +42,7 @@ import {
   type Filter,
 } from "../filters/filter"
 import { filterShader } from "../shaders/filter"
+import { smudgeShader } from "../shaders/smudge"
 import { marchingAntsShader } from "../shaders/marching-ants"
 import { placedImageShader } from "../shaders/placed-image"
 import { thumbnailShader } from "../shaders/thumbnail"
@@ -57,6 +58,12 @@ import {
   samplesNearest,
   type RasterMagnification,
 } from "../view/magnification"
+import {
+  MAX_SMUDGE_DABS_PER_DRAW,
+  SMUDGE,
+  SMUDGE_INSTANCE_STRIDE,
+  SMUDGE_STRIDE,
+} from "./smudge-dab"
 import { STAMP, STAMP_STRIDE } from "./stamp-instance"
 import { createStampLog } from "./stamp-log"
 
@@ -360,6 +367,23 @@ export interface Renderer {
    * holds what it did before the filter began.
    */
   endFilter(keep: boolean): void
+  /**
+   * Starts a smudge stroke on one surface (smudge 01): keeps its pixels as
+   * they are, which a cancel puts back. False when the surface holds nothing,
+   * and so has nothing to smear.
+   */
+  beginSmudge(surfaceId: string): boolean
+  /**
+   * Draws `count` smudge dabs (see `SMUDGE`) straight into the smudging
+   * surface, each dragging in what lay one dab's travel behind it. The first
+   * dab of a stroke has nothing behind it and only marks where it began.
+   */
+  smudge(dabs: Float32Array, count: number): void
+  /**
+   * Ends the smudge stroke: kept, the surface holds the smear and the region
+   * it reached is returned; not kept, the surface holds what it did before.
+   */
+  endSmudge(keep: boolean): PixelRect | null
   /**
    * Draws what the selection covers of one surface into another, in
    * proportion to the coverage (11). Returns the region it wrote, or null
@@ -891,6 +915,8 @@ export function createRenderer(
   // then owned by whatever brush is in the hand, so a resize must rewrite the
   // current value rather than the one this renderer was created with.
   let feather = options.feather
+  /** Whether the dab's shape is the tip texture rather than the disc. */
+  let usesTip = false
 
   const stampUniform = device.createBuffer({
     size: STAMP_UNIFORM_BYTES,
@@ -1650,6 +1676,277 @@ export function createRenderer(
     }
     device.queue.submit([encoder.finish()])
     return region
+  }
+
+  // The smudge stroke in flight (smudge 01): the surface it smears, that
+  // surface as it was when the stroke began, where the tip last was, and the
+  // region the dabs have reached.
+  let smudging:
+    | {
+        target: Surface
+        original: Surface
+        /** Null until the first dab says where the stroke began. */
+        last: { x: number; y: number } | null
+        reached: { left: number; top: number; right: number; bottom: number }
+      }
+    | undefined
+  /**
+   * What a smudge dab reads: its own neighbourhood of the surface, copied
+   * out because a pass cannot read what it writes. Dab-sized, kept between
+   * strokes, and grown when a dab needs more.
+   */
+  let carry: GPUTexture | undefined
+  /** Holds the tip's and the carry's views, so it goes when either is replaced. */
+  let smudgeBindGroup: GPUBindGroup | undefined
+  const smudgeParams = new Float32Array(4)
+  /** The widest neighbourhood a dab may ask for; one reaching further is skipped. */
+  const MAX_CARRY_SIZE = 2048
+  const smudgeModule = device.createShaderModule({ code: smudgeShader })
+  const smudgePipeline = device.createRenderPipeline({
+    label: "smudge",
+    layout: "auto",
+    vertex: {
+      module: smudgeModule,
+      entryPoint: "vertexMain",
+      buffers: [
+        {
+          arrayStride: SMUDGE_INSTANCE_STRIDE * 4,
+          stepMode: "instance",
+          attributes: [
+            {
+              shaderLocation: 0,
+              offset: SMUDGE.CENTER_X * 4,
+              format: "float32x2",
+            },
+            { shaderLocation: 1, offset: SMUDGE.RADIUS * 4, format: "float32" },
+            {
+              shaderLocation: 2,
+              offset: SMUDGE.STRENGTH * 4,
+              format: "float32",
+            },
+            { shaderLocation: 3, offset: SMUDGE.ANGLE * 4, format: "float32" },
+            {
+              shaderLocation: 4,
+              offset: SMUDGE.ROUNDNESS * 4,
+              format: "float32",
+            },
+            {
+              shaderLocation: 5,
+              offset: SMUDGE.TIP_FRAME * 4,
+              format: "float32",
+            },
+            {
+              shaderLocation: 6,
+              offset: SMUDGE.TRAVEL_X * 4,
+              format: "float32x2",
+            },
+            {
+              shaderLocation: 7,
+              offset: SMUDGE.ORIGIN_X * 4,
+              format: "float32x2",
+            },
+          ],
+        },
+      ],
+    },
+    fragment: {
+      module: smudgeModule,
+      entryPoint: "fragmentMain",
+      // No blending: the pass writes the mix itself.
+      targets: [{ format: LAYER_FORMAT }],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  const smudgeUniform = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
+  const smudgeInstances = device.createBuffer({
+    size: MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_INSTANCE_STRIDE * 4,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  })
+  const carrySampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+  })
+  // Filled per call rather than allocated per call: the dabs as they are
+  // drawn, and for each the rectangle copied out and the one drawn into.
+  const smudgeDrawn = new Float32Array(
+    MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_INSTANCE_STRIDE
+  )
+  const smudgeRects = new Int32Array(MAX_SMUDGE_DABS_PER_DRAW * 8)
+
+  /** Draws the dabs of a smudge stroke into its surface, one after another. */
+  function drawSmudge(dabs: Float32Array, count: number) {
+    const session = smudging!
+    let drawn = 0
+    let need = 0
+    for (let i = 0; i < count; i++) {
+      const dab = i * SMUDGE_STRIDE
+      const x = dabs[dab + SMUDGE.CENTER_X]
+      const y = dabs[dab + SMUDGE.CENTER_Y]
+      // The first dab has come from nowhere.
+      if (!session.last) {
+        session.last = { x, y }
+        continue
+      }
+      const travelX = x - session.last.x
+      const travelY = y - session.last.y
+      session.last.x = x
+      session.last.y = y
+      // A still tip drags nothing.
+      if (travelX === 0 && travelY === 0) continue
+      // Rotated textured quads fit inside sqrt(2) radii.
+      const reach = dabs[dab + SMUDGE.RADIUS] * Math.SQRT2
+      const left = Math.max(0, Math.floor(x - reach))
+      const top = Math.max(0, Math.floor(y - reach))
+      const right = Math.min(width, Math.ceil(x + reach))
+      const bottom = Math.min(height, Math.ceil(y + reach))
+      if (right <= left || bottom <= top) continue
+      // What the dab reads: the pixels it covers and the ones its travel
+      // behind them, with a texel to spare for the blend between texels.
+      const fromLeft = Math.max(
+        0,
+        Math.floor(Math.min(left, left - travelX)) - 1
+      )
+      const fromTop = Math.max(0, Math.floor(Math.min(top, top - travelY)) - 1)
+      const fromRight = Math.min(
+        width,
+        Math.ceil(Math.max(right, right - travelX)) + 1
+      )
+      const fromBottom = Math.min(
+        height,
+        Math.ceil(Math.max(bottom, bottom - travelY)) + 1
+      )
+      const span = Math.max(fromRight - fromLeft, fromBottom - fromTop)
+      if (span > MAX_CARRY_SIZE) continue
+      need = Math.max(need, span)
+      const instance = drawn * SMUDGE_INSTANCE_STRIDE
+      smudgeDrawn.set(dabs.subarray(dab, dab + SMUDGE_STRIDE), instance)
+      smudgeDrawn[instance + SMUDGE.TRAVEL_X] = travelX
+      smudgeDrawn[instance + SMUDGE.TRAVEL_Y] = travelY
+      smudgeDrawn[instance + SMUDGE.ORIGIN_X] = fromLeft
+      smudgeDrawn[instance + SMUDGE.ORIGIN_Y] = fromTop
+      const rect = drawn * 8
+      smudgeRects[rect] = fromLeft
+      smudgeRects[rect + 1] = fromTop
+      smudgeRects[rect + 2] = fromRight - fromLeft
+      smudgeRects[rect + 3] = fromBottom - fromTop
+      smudgeRects[rect + 4] = left
+      smudgeRects[rect + 5] = top
+      smudgeRects[rect + 6] = right - left
+      smudgeRects[rect + 7] = bottom - top
+      session.reached.left = Math.min(session.reached.left, left)
+      session.reached.top = Math.min(session.reached.top, top)
+      session.reached.right = Math.max(session.reached.right, right)
+      session.reached.bottom = Math.max(session.reached.bottom, bottom)
+      drawn++
+    }
+    if (drawn === 0) return
+    if (!carry || carry.width < need) {
+      carry?.destroy()
+      let size = 64
+      while (size < need) size *= 2
+      carry = device.createTexture({
+        size: { width: size, height: size },
+        format: LAYER_FORMAT,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      })
+      smudgeBindGroup = undefined
+    }
+    smudgeParams[0] = width
+    smudgeParams[1] = height
+    smudgeParams[2] = feather
+    smudgeParams[3] = usesTip ? 1 : 0
+    device.queue.writeBuffer(smudgeUniform, 0, smudgeParams)
+    device.queue.writeBuffer(
+      smudgeInstances,
+      0,
+      smudgeDrawn,
+      0,
+      drawn * SMUDGE_INSTANCE_STRIDE
+    )
+    // Kept between frames of a stroke, which must allocate nothing (D30).
+    smudgeBindGroup ??= device.createBindGroup({
+      layout: smudgePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: smudgeUniform } },
+        { binding: 1, resource: tipSampler },
+        {
+          binding: 2,
+          resource: tipTexture.createView({ dimension: "2d-array" }),
+        },
+        { binding: 3, resource: carrySampler },
+        { binding: 4, resource: carry.createView() },
+      ],
+    })
+    // Each dab reads what the one before it wrote, so each is a copy and a
+    // pass of its own; one encoder holds the frame's worth in order.
+    const encoder = device.createCommandEncoder()
+    for (let i = 0; i < drawn; i++) {
+      const rect = i * 8
+      encoder.copyTextureToTexture(
+        {
+          texture: session.target.texture,
+          origin: { x: smudgeRects[rect], y: smudgeRects[rect + 1] },
+        },
+        { texture: carry },
+        { width: smudgeRects[rect + 2], height: smudgeRects[rect + 3] }
+      )
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          { view: session.target.view, loadOp: "load", storeOp: "store" },
+        ],
+      })
+      pass.setPipeline(smudgePipeline)
+      pass.setBindGroup(0, smudgeBindGroup)
+      pass.setVertexBuffer(0, smudgeInstances)
+      pass.setScissorRect(
+        smudgeRects[rect + 4],
+        smudgeRects[rect + 5],
+        smudgeRects[rect + 6],
+        smudgeRects[rect + 7]
+      )
+      pass.draw(6, 1, 0, i)
+      pass.end()
+    }
+    device.queue.submit([encoder.finish()])
+  }
+
+  /**
+   * Lets go of a smudge stroke whose surface is going away, so there is
+   * nothing to put back and nothing left to draw into.
+   */
+  function dropSmudge() {
+    smudging?.original.texture.destroy()
+    smudging = undefined
+  }
+
+  function endSmudge(keep: boolean): PixelRect | null {
+    if (!smudging) return null
+    const { target, original, reached } = smudging
+    smudging = undefined
+    const region =
+      reached.right > reached.left && reached.bottom > reached.top
+        ? {
+            x: reached.left,
+            y: reached.top,
+            width: reached.right - reached.left,
+            height: reached.bottom - reached.top,
+          }
+        : null
+    if (!keep && region) {
+      // Only where the dabs reached: the rest never changed.
+      const encoder = device.createCommandEncoder()
+      encoder.copyTextureToTexture(
+        { texture: original.texture, origin: { x: region.x, y: region.y } },
+        { texture: target.texture, origin: { x: region.x, y: region.y } },
+        { width: region.width, height: region.height }
+      )
+      device.queue.submit([encoder.finish()])
+    }
+    original.texture.destroy()
+    return keep ? region : null
   }
 
   /**
@@ -2677,6 +2974,7 @@ export function createRenderer(
   return {
     resize(nextWidth, nextHeight) {
       releaseSelection()
+      dropSmudge()
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
       for (const id of [...vectorScenes.keys()]) forgetVectorScene(id)
@@ -2804,6 +3102,7 @@ export function createRenderer(
     },
     releaseLayer(id) {
       forgetVectorScene(id)
+      if (smudging && smudging.target === surfaces.get(id)) dropSmudge()
       surfaces.get(id)?.texture.destroy()
       const releasedSurface = surfaces.delete(id)
       let releasedCache = false
@@ -2859,6 +3158,8 @@ export function createRenderer(
       }
       tipTexture.destroy()
       tipTexture = texture ? uploadTexture(texture) : createWhiteTexture()
+      usesTip = !!texture
+      smudgeBindGroup = undefined
       device.queue.writeBuffer(
         stampUniform,
         USE_TIP_OFFSET,
@@ -3313,6 +3614,32 @@ export function createRenderer(
       return drawFilter(filter)
     },
     endFilter,
+    beginSmudge(surfaceId) {
+      const target = surfaces.get(surfaceId)
+      if (!target || target.empty) return false
+      if (smudging) endSmudge(false)
+      const original = createSurface()
+      copySurface(target, original)
+      smudging = {
+        target,
+        original,
+        last: null,
+        reached: {
+          left: Infinity,
+          top: Infinity,
+          right: -Infinity,
+          bottom: -Infinity,
+        },
+      }
+      return true
+    },
+    smudge(dabs, count) {
+      if (!smudging || count <= 0) return
+      if (count > MAX_SMUDGE_DABS_PER_DRAW)
+        throw new Error("Too many smudge dabs for one draw.")
+      drawSmudge(dabs, count)
+    },
+    endSmudge,
     copySelected(sourceId, targetId) {
       if (!selection) return null
       const source = surfaces.get(sourceId)
@@ -3423,6 +3750,12 @@ export function createRenderer(
     },
     destroy() {
       releaseSelection()
+      dropSmudge()
+      carry?.destroy()
+      carry = undefined
+      smudgeBindGroup = undefined
+      smudgeUniform.destroy()
+      smudgeInstances.destroy()
       vector?.textures.forEach((texture) => texture.destroy())
       vector?.uniform.destroy()
       vector = undefined
