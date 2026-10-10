@@ -96,6 +96,7 @@ import {
   NEUTRAL_STAMP_PARAMS,
   type StampParams,
   validateDynamics,
+  type StampContext,
 } from "./brush/dynamics"
 import {
   type Accumulation,
@@ -4528,7 +4529,7 @@ export function createEngine(
     time: number
   ) {
     if (smudgeTargetId) {
-      emitSmudge(x, y, pressure)
+      emitSmudge(x, y, pressure, tiltX, tiltY, time)
       return
     }
     // The tracker was opened by the pen going down, so every dab advances it:
@@ -4573,14 +4574,7 @@ export function createEngine(
       stamps[offset + STAMP.HUE] = hue
       stamps[offset + STAMP.SATURATION] = saturation
       stamps[offset + STAMP.LIGHTNESS] = lightness
-      stamps[offset + STAMP.TIP_FRAME] = selectTipFrame(
-        brush.shape.tipSelection ?? "random",
-        (brush.shape.tipTextureId
-          ? textures.get(brush.shape.tipTextureId)?.frameCount
-          : undefined) ?? 1,
-        context,
-        tipDab++
-      )
+      stamps[offset + STAMP.TIP_FRAME] = nextTipFrame(brush, context)
       stampCount++
       frameStamps++
     }
@@ -4592,14 +4586,36 @@ export function createEngine(
     resampler.setSpacing(dabSpacing(brush, radius))
   }
 
+  /** The frame of the brush's tip the next dab of this stroke is drawn with. */
+  function nextTipFrame(brush: Brush, context: StampContext): number {
+    return selectTipFrame(
+      brush.shape.tipSelection ?? "random",
+      (brush.shape.tipTextureId
+        ? textures.get(brush.shape.tipTextureId)?.frameCount
+        : undefined) ?? 1,
+      context,
+      tipDab++
+    )
+  }
+
   /**
    * Collects one smudge dab (smudge 01). Only its shape is the brush's — the
    * tip's turn and squash here, its texture and rim through the renderer —
    * while its size and strength are the smudge's own (smudge 02). None of the
-   * brush's dynamics reach it: a pen's pressure drives the strength alone.
+   * brush's dynamics reach it: a pen's pressure drives the strength alone. A
+   * tip of several frames gives each dab the one the brush would have drawn.
    */
-  function emitSmudge(x: number, y: number, pressure: number) {
+  function emitSmudge(
+    x: number,
+    y: number,
+    pressure: number,
+    tiltX: number,
+    tiltY: number,
+    time: number
+  ) {
     if (smudgeCount === MAX_SMUDGE_DABS_PER_DRAW) flushStamps()
+    const brush = activeBrush()
+    const context = dynamics.next(x, y, pressure, tiltX, tiltY, time)
     const offset = smudgeCount * SMUDGE_STRIDE
     smudgeDabs[offset + SMUDGE.CENTER_X] = x
     smudgeDabs[offset + SMUDGE.CENTER_Y] = y
@@ -4611,7 +4627,7 @@ export function createEngine(
     )
     smudgeDabs[offset + SMUDGE.ANGLE] = brush.shape.angle
     smudgeDabs[offset + SMUDGE.ROUNDNESS] = brush.shape.roundness
-    smudgeDabs[offset + SMUDGE.TIP_FRAME] = 0
+    smudgeDabs[offset + SMUDGE.TIP_FRAME] = nextTipFrame(brush, context)
     smudgeCount++
     frameStamps++
   }
@@ -5503,6 +5519,18 @@ export function createEngine(
       smudgeTargetId = target
       strokeSensesPressure = sensesPressure
       strokeOrigin = origin
+      // Opened as a brush stroke's is, for the one thing a dab takes from the
+      // pen's state: which frame of the tip it is.
+      tipDab = 0
+      dynamics.begin(
+        toDocX(screenX, screenY),
+        toDocY(screenX, screenY),
+        pressure,
+        tiltX,
+        tiltY,
+        time,
+        ++strokeSeed
+      )
       stroking = true
       opening = true
       fromLastPoint = shiftHeld

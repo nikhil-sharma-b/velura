@@ -78,8 +78,8 @@ export type WorkloadOptions = {
   /**
    * Smudges the workload instead of painting it (smudge 01): the strokes are
    * painted once, untimed, so there is paint to smear, and then drawn again
-   * with the smudge tool along the same paths. Each smudge stroke copies its
-   * layer before its first dab, which is what this is there to weigh.
+   * with the smudge tool along the same paths. What a smudge stroke keeps for
+   * a cancel must not weigh on the frame it opens in, which this measures.
    */
   smudge?: boolean
 }

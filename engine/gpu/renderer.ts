@@ -72,6 +72,8 @@ const COVERAGE_DEPTH_FORMAT: GPUTextureFormat = "depth16unorm"
 
 const LAYER_FORMAT: GPUTextureFormat = "rgba16float"
 const BYTES_PER_TEXEL = TILE_CHANNELS * 2
+/** A pixel's tile is its coordinate shifted down by this. */
+const TILE_SHIFT = Math.log2(TILE_SIZE)
 /**
  * mat3x3 occupies three 16-byte columns, then one vec4 of background, then the
  * four floats the present pass needs to know about the stack it is showing,
@@ -368,9 +370,10 @@ export interface Renderer {
    */
   endFilter(keep: boolean): void
   /**
-   * Starts a smudge stroke on one surface (smudge 01): keeps its pixels as
-   * they are, which a cancel puts back. False when the surface holds nothing,
-   * and so has nothing to smear.
+   * Starts a smudge stroke on one surface (smudge 01). Nothing is copied
+   * yet: each tile is kept as it is when a dab first writes to it, which is
+   * what a cancel puts back. False when the surface holds nothing, and so
+   * has nothing to smear.
    */
   beginSmudge(surfaceId: string): boolean
   /**
@@ -1678,18 +1681,33 @@ export function createRenderer(
     return region
   }
 
-  // The smudge stroke in flight (smudge 01): the surface it smears, that
-  // surface as it was when the stroke began, where the tip last was, and the
-  // region the dabs have reached.
+  // The smudge stroke in flight (smudge 01): the surface it smears, where the
+  // tip last was, the region the dabs have reached, and the tiles kept as
+  // they were before a dab first wrote to them (smudge 06).
   let smudging:
     | {
         target: Surface
-        original: Surface
         /** Null until the first dab says where the stroke began. */
         last: { x: number; y: number } | null
         reached: { left: number; top: number; right: number; bottom: number }
+        /**
+         * Where each kept tile is in the backup, by its place in the grid
+         * counted along the rows; slots are handed out in the order taken.
+         */
+        kept: Map<number, number>
       }
     | undefined
+  /** Tiles to a side of one page of the backup. */
+  const BACKUP_PAGE_TILES = 8
+  const BACKUP_PAGE_SLOTS = BACKUP_PAGE_TILES * BACKUP_PAGE_TILES
+  /**
+   * What a cancelled smudge is put back from: the tiles its dabs wrote to,
+   * each copied out the first time one did. The stroke's size and not the
+   * document's, so the frame a stroke opens in pays for a dab's tiles alone.
+   * In pages, so more room is a new texture and never a move of what is
+   * kept; the first stays between strokes, as the carry does.
+   */
+  const backupPages: GPUTexture[] = []
   /**
    * What a smudge dab reads: its own neighbourhood of the surface, copied
    * out because a pass cannot read what it writes. Dab-sized, kept between
@@ -1902,8 +1920,27 @@ export function createRenderer(
     // Each dab reads what the one before it wrote, so each is a copy and a
     // pass of its own; one encoder holds the frame's worth in order.
     const encoder = device.createCommandEncoder()
+    const tilesAcross = Math.ceil(width / TILE_SIZE)
     for (let i = 0; i < drawn; i++) {
       const rect = i * 8
+      // Before the dab writes: any tile under it that no dab has yet touched
+      // is kept as it is.
+      const lastColumn =
+        (smudgeRects[rect + 4] + smudgeRects[rect + 6] - 1) >> TILE_SHIFT
+      const lastRow =
+        (smudgeRects[rect + 5] + smudgeRects[rect + 7] - 1) >> TILE_SHIFT
+      for (let row = smudgeRects[rect + 5] >> TILE_SHIFT; row <= lastRow; row++)
+        for (
+          let column = smudgeRects[rect + 4] >> TILE_SHIFT;
+          column <= lastColumn;
+          column++
+        ) {
+          const tile = row * tilesAcross + column
+          if (session.kept.has(tile)) continue
+          const slot = session.kept.size
+          session.kept.set(tile, slot)
+          copyBackupTile(encoder, session.target, tile, slot, "keep")
+        }
       encoder.copyTextureToTexture(
         {
           texture: session.target.texture,
@@ -1933,17 +1970,71 @@ export function createRenderer(
   }
 
   /**
+   * Copies one tile between a surface and its slot in the backup: out of the
+   * surface to keep it, or back into the surface to restore it. An edge tile
+   * is copied as far as the canvas goes.
+   */
+  function copyBackupTile(
+    encoder: GPUCommandEncoder,
+    surface: Surface,
+    tile: number,
+    slot: number,
+    direction: "keep" | "restore"
+  ) {
+    const page = Math.floor(slot / BACKUP_PAGE_SLOTS)
+    // The one allocation a stroke may make as it goes, once in as many tiles
+    // as a page holds: the alternative is paying for the document at pen-down.
+    while (backupPages.length <= page)
+      backupPages.push(
+        device.createTexture({
+          label: "smudge backup",
+          size: {
+            width: BACKUP_PAGE_TILES * TILE_SIZE,
+            height: BACKUP_PAGE_TILES * TILE_SIZE,
+          },
+          format: LAYER_FORMAT,
+          usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+        })
+      )
+    const tilesAcross = Math.ceil(width / TILE_SIZE)
+    const x = (tile % tilesAcross) * TILE_SIZE
+    const y = Math.floor(tile / tilesAcross) * TILE_SIZE
+    const slotInPage = slot % BACKUP_PAGE_SLOTS
+    const inSurface = { texture: surface.texture, origin: { x, y } }
+    const inBackup = {
+      texture: backupPages[page],
+      origin: {
+        x: (slotInPage % BACKUP_PAGE_TILES) * TILE_SIZE,
+        y: Math.floor(slotInPage / BACKUP_PAGE_TILES) * TILE_SIZE,
+      },
+    }
+    encoder.copyTextureToTexture(
+      direction === "keep" ? inSurface : inBackup,
+      direction === "keep" ? inBackup : inSurface,
+      {
+        width: Math.min(TILE_SIZE, width - x),
+        height: Math.min(TILE_SIZE, height - y),
+      }
+    )
+  }
+
+  /** Gives back the pages a long stroke needed; the first is kept. */
+  function trimBackup() {
+    while (backupPages.length > 1) backupPages.pop()!.destroy()
+  }
+
+  /**
    * Lets go of a smudge stroke whose surface is going away, so there is
    * nothing to put back and nothing left to draw into.
    */
   function dropSmudge() {
-    smudging?.original.texture.destroy()
     smudging = undefined
+    trimBackup()
   }
 
   function endSmudge(keep: boolean): PixelRect | null {
     if (!smudging) return null
-    const { target, original, reached } = smudging
+    const { target, reached, kept } = smudging
     smudging = undefined
     const region =
       reached.right > reached.left && reached.bottom > reached.top
@@ -1954,17 +2045,14 @@ export function createRenderer(
             height: reached.bottom - reached.top,
           }
         : null
-    if (!keep && region) {
-      // Only where the dabs reached: the rest never changed.
+    if (!keep && kept.size > 0) {
+      // Only the tiles a dab wrote to: the rest never changed.
       const encoder = device.createCommandEncoder()
-      encoder.copyTextureToTexture(
-        { texture: original.texture, origin: { x: region.x, y: region.y } },
-        { texture: target.texture, origin: { x: region.x, y: region.y } },
-        { width: region.width, height: region.height }
-      )
+      for (const [tile, slot] of kept)
+        copyBackupTile(encoder, target, tile, slot, "restore")
       device.queue.submit([encoder.finish()])
     }
-    original.texture.destroy()
+    trimBackup()
     return keep ? region : null
   }
 
@@ -3640,11 +3728,8 @@ export function createRenderer(
       const target = surfaces.get(surfaceId)
       if (!target || target.empty) return false
       if (smudging) endSmudge(false)
-      const original = createSurface()
-      copySurface(target, original)
       smudging = {
         target,
-        original,
         last: null,
         reached: {
           left: Infinity,
@@ -3652,6 +3737,7 @@ export function createRenderer(
           right: -Infinity,
           bottom: -Infinity,
         },
+        kept: new Map(),
       }
       return true
     },
@@ -3773,6 +3859,7 @@ export function createRenderer(
     destroy() {
       releaseSelection()
       dropSmudge()
+      for (const page of backupPages.splice(0)) page.destroy()
       carry?.destroy()
       carry = undefined
       smudgeBindGroup = undefined

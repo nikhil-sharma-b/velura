@@ -681,3 +681,171 @@ test("the canvas cursor shows the smudge's size while smudge is in the hand", as
   await page.keyboard.press("b")
   await expect(ring).toBeHidden()
 })
+
+test("a smudge picks the frame of a multi-frame tip as the brush would", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await paintBar(page, origin)
+  const painted = await pixels(page)
+
+  // A tip whose first frame covers nothing and whose second covers the dab:
+  // taken in turn, every other dab smears; held at the first, none does.
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "registerTexture",
+      id: "blank-then-full",
+      texture: {
+        width: 1,
+        height: 1,
+        frameCount: 2,
+        data: new Uint8Array([0, 255]),
+      },
+    })
+    await window.engine.dispatch({
+      type: "setBrush",
+      tipTextureId: "blank-then-full",
+      tipSelection: "sequential",
+    })
+  })
+  await setTool(page, "smudge")
+  await idleDrag(page, origin, 80, 160)
+
+  const smudged = await pixels(page)
+  expect(distance(rgba(smudged, 120), rgba(painted, 120))).toBeGreaterThan(0)
+})
+
+test("a cancelled smudge that crossed many tiles leaves the layer unchanged", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  // Nine tiles a side, the last of each row and column cut short by the
+  // canvas, and a stroke that sweeps nearly all of them.
+  const SIZE = 2200
+  const ROWS = [300, 900, 1500, 2100]
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.engine)
+  await page.evaluate(async (size) => {
+    window.remountEngine()
+    await window.engine.dispatch({
+      type: "resize",
+      width: size,
+      height: size,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    const state = window.engine.getSnapshot()
+    if (state.status !== "ready") throw new Error(state.error ?? state.status)
+    await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+    await window.engine.dispatch({ type: "setBrush", radius: 60 })
+    await window.engine.dispatch({ type: "setColor", hex: "#d0202a" })
+    await window.engine.dispatch({ type: "addLayer" })
+  }, SIZE)
+
+  /** Pen-down at the first point and a drag through the rest, pen still down. */
+  const press = (points: [number, number][]) =>
+    page.evaluate(async (points) => {
+      const canvas = document.querySelector("canvas")!
+      const bounds = canvas.getBoundingClientRect()
+      const send = (type: string, [x, y]: [number, number]) =>
+        canvas.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId: 1,
+            pointerType: "pen",
+            isPrimary: true,
+            bubbles: true,
+            cancelable: true,
+            buttons: 1,
+            clientX: bounds.left + x,
+            clientY: bounds.top + y,
+            pressure: 1,
+          })
+        )
+      const frame = () =>
+        new Promise((resolve) => requestAnimationFrame(resolve))
+      send("pointerdown", points[0])
+      for (let next = 1; next < points.length; next++) {
+        const [fromX, fromY] = points[next - 1]
+        const [toX, toY] = points[next]
+        for (let step = 1; step <= 16; step++) {
+          const at: [number, number] = [
+            fromX + ((toX - fromX) * step) / 16,
+            fromY + ((toY - fromY) * step) / 16,
+          ]
+          send("pointerrawupdate", at)
+          send("pointermove", at)
+          if (step % 4 === 0) await frame()
+        }
+      }
+      await frame()
+    }, points)
+  const lift = () =>
+    page.evaluate(async () => {
+      document.querySelector("canvas")!.dispatchEvent(
+        new PointerEvent("pointerup", {
+          pointerId: 1,
+          pointerType: "pen",
+          isPrimary: true,
+          bubbles: true,
+          cancelable: true,
+        })
+      )
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+    })
+  /** The whole picture as one number: it is too large to bring across. */
+  const picture = () =>
+    page.evaluate(async () => {
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve))
+      )
+      const { data } = await window.engine.readPixels()
+      let hash = 2166136261
+      for (let i = 0; i < data.length; i++)
+        hash = Math.imul(hash ^ data[i], 16777619)
+      return hash >>> 0
+    })
+
+  for (const y of ROWS) {
+    const before = await steps(page)
+    await press([
+      [500, y],
+      [1800, y],
+    ])
+    await lift()
+    await page.waitForFunction(
+      (n) => window.engine.historyUsage().steps > n,
+      before
+    )
+  }
+  const painted = await picture()
+  const before = await steps(page)
+
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setTool", tool: "smudge" })
+    await window.engine.dispatch({ type: "setSmudge", radius: 150 })
+  })
+  // Back and forth down the canvas, through the paint and out the far side.
+  await press(
+    ROWS.flatMap((y, row): [number, number][] =>
+      row % 2 === 0
+        ? [
+            [200, y],
+            [2100, y],
+          ]
+        : [
+            [2100, y],
+            [200, y],
+          ]
+    )
+  )
+  expect(await picture()).not.toBe(painted)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setTool", tool: "brush" })
+  )
+  await lift()
+
+  expect(await picture()).toBe(painted)
+  expect(await steps(page)).toBe(before)
+})

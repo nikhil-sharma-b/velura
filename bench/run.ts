@@ -373,40 +373,46 @@ async function scatterSweep(): Promise<void> {
 
 /**
  * Smudging (smudge 01), against painting the same strokes. A smudge stroke
- * copies its whole layer before its first dab, so a cancel can put it back,
- * and then every dab is a copy and a pass of its own into the layer. The
- * first is paid once per stroke and shows in the pen-to-pixel of the frame
- * the stroke opens in; the second is paid per frame. Paced, because
- * pen-to-pixel only means anything with one frame in flight.
+ * keeps what a cancel puts back, and then every dab is a copy and a pass of
+ * its own into the layer. The first shows in the pen-to-pixel of the frame
+ * the stroke opens in, and is the stroke's size and not the document's
+ * (smudge 06), which is why a small document is run beside the large one;
+ * the second is paid per frame. Paced, because pen-to-pixel only means
+ * anything with one frame in flight.
  */
+const SMUDGE_SIZES = [2048, 8192]
+
 async function smudgeSweep(): Promise<void> {
   const pass = PASSES.find((entry) => entry.name === "paced")!
   const middle = (values: number[]) =>
     [...values].sort((a, b) => a - b)[values.length >> 1]
   console.log(
-    `\n  ${BENCHMARK_WORKLOAD.width}², pen-to-pixel in ms` +
-      "\n  tool      stroke's first frame (median / worst)   all frames (median / p95)   dabs     readbacks"
+    "\n  pen-to-pixel in ms" +
+      "\n  document  tool      stroke's first frame (median / worst)   all frames (median / p95)   dabs     readbacks"
   )
-  for (const smudge of [false, true]) {
-    const { report, frames, strokeStarts, readbacks } = await measure(pass, {
-      ...BENCHMARK_WORKLOAD,
-      strokes: SWEEP_STROKES,
-      smudge,
-    })
-    // The frame a stroke's pen-down was drawn in: the first, from where the
-    // stroke began, that consumed a sample.
-    const opening = strokeStarts.flatMap((start) => {
-      const frame = frames.slice(start).find((f) => f.latencyMs !== null)
-      return frame ? [frame.latencyMs!] : []
-    })
-    console.log(
-      `  ${(smudge ? "smudge" : "brush").padEnd(8)}  ` +
-        `${fixed(middle(opening)).padStart(18)} / ${fixed(Math.max(...opening)).padEnd(15)}   ` +
-        `${fixed(report.latencyMs.median).padStart(12)} / ${fixed(report.latencyMs.p95).padEnd(8)}   ` +
-        `${String(report.stamps.total).padStart(6)}   ${String(readbacks).padStart(9)}`
-    )
-    if (readbacks > 0) process.exitCode = 1
-  }
+  for (const size of SMUDGE_SIZES)
+    for (const smudge of [false, true]) {
+      const { report, frames, strokeStarts, readbacks } = await measure(pass, {
+        ...BENCHMARK_WORKLOAD,
+        width: size,
+        height: size,
+        strokes: SWEEP_STROKES,
+        smudge,
+      })
+      // The frame a stroke's pen-down was drawn in: the first, from where the
+      // stroke began, that consumed a sample.
+      const opening = strokeStarts.flatMap((start) => {
+        const frame = frames.slice(start).find((f) => f.latencyMs !== null)
+        return frame ? [frame.latencyMs!] : []
+      })
+      console.log(
+        `  ${`${size}²`.padEnd(8)}  ${(smudge ? "smudge" : "brush").padEnd(8)}  ` +
+          `${fixed(middle(opening)).padStart(18)} / ${fixed(Math.max(...opening)).padEnd(15)}   ` +
+          `${fixed(report.latencyMs.median).padStart(12)} / ${fixed(report.latencyMs.p95).padEnd(8)}   ` +
+          `${String(report.stamps.total).padStart(6)}   ${String(readbacks).padStart(9)}`
+      )
+      if (readbacks > 0) process.exitCode = 1
+    }
   console.log()
 }
 
