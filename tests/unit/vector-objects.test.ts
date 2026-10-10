@@ -49,6 +49,7 @@ describe("selectionStyle", () => {
     strokeJoin: "miter" as const,
     fillColor: null,
     strokeColor: null,
+    opacity: 1,
   }
   const outlined: VectorScene = {
     objects: [
@@ -91,7 +92,36 @@ describe("selectionStyle", () => {
       strokeJoin: "bevel",
       fillColor: null,
       strokeColor: "#00ff00",
+      opacity: 1,
     })
+  })
+
+  test("reads the opacity off whichever paint the object has", () => {
+    const [ellipse, rect] = outlined.objects
+    const faded: VectorScene = {
+      objects: [
+        {
+          ...ellipse,
+          style: {
+            fill: { ...ellipse.style.fill!, opacity: 0.4 },
+            stroke: null,
+          },
+        },
+        {
+          ...rect,
+          style: {
+            fill: null,
+            stroke: { ...rect.style.stroke!, opacity: 0.25 },
+          },
+        },
+      ],
+    }
+    expect(selectionStyle(faded, ["ellipse"], fallback)?.opacity).toBe(0.4)
+    expect(selectionStyle(faded, ["outlined"], fallback)?.opacity).toBe(0.25)
+    // Of several, the lowest one's, as the rest of the style is.
+    expect(
+      selectionStyle(faded, ["outlined", "ellipse"], fallback)?.opacity
+    ).toBe(0.4)
   })
 
   test("of several, is the lowest selected object's", () => {

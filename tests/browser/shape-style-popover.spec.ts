@@ -134,6 +134,55 @@ test("a selected object's fill colour and outline width change from the shape op
   await expect.poll(() => screenPixel(page, cx, cy)).toEqual(paper)
 })
 
+test("the opacity slider sets a new shape's opacity, then the selected object's", async ({
+  page,
+}) => {
+  const box = await openStudio(page)
+  const layers = page.getByRole("region", { name: "Layers" })
+  await layers.getByRole("button", { name: "Add vector layer" }).click()
+  await page.getByRole("button", { name: "Rectangle tool" }).click()
+  const cx = box.x + box.width / 2
+  const cy = box.y + box.height / 2
+  const paper = await screenPixel(page, cx, cy)
+
+  // Lowered before drawing: the next shape is that see-through.
+  const trigger = page.getByRole("button", { name: /^Shape:/ })
+  await trigger.click()
+  const options = page.getByRole("dialog", { name: "Shape adjustment" })
+  const field = options.getByRole("textbox", { name: "Opacity" })
+  await expect(field).toHaveValue("100")
+  await field.fill("40")
+  await field.press("Enter")
+  await expect(field).toHaveValue("40")
+  await page.keyboard.press("Escape")
+  await page.mouse.move(cx - 80, cy - 50)
+  await page.mouse.down()
+  await page.mouse.move(cx + 80, cy + 50, { steps: 8 })
+  await page.mouse.up()
+
+  // Selected, the object shows its own opacity, and the slider moves it on
+  // the canvas as it goes.
+  await page.getByRole("button", { name: "Object selection tool" }).click()
+  await page.mouse.click(cx, cy)
+  await expect.poll(() => screenPixel(page, cx, cy)).not.toEqual(paper)
+  const drawn = await screenPixel(page, cx, cy)
+  await trigger.click()
+  await expect(options.getByText("Selected objects")).toBeVisible()
+  await expect(field).toHaveValue("40")
+  const slider = options.getByRole("slider", { name: "Opacity" })
+  await slider.focus()
+  for (let i = 0; i < 5; i++) await slider.press("ArrowRight")
+  await expect(field).toHaveValue("45")
+  await expect.poll(() => screenPixel(page, cx, cy)).not.toEqual(drawn)
+
+  // The whole run is one step to take back.
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("ControlOrMeta+z")
+  await expect.poll(() => screenPixel(page, cx, cy)).toEqual(drawn)
+  await trigger.click()
+  await expect(field).toHaveValue("40")
+})
+
 test("with a vector tool in hand the size setting is the outline width", async ({
   page,
 }) => {

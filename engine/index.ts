@@ -574,6 +574,7 @@ export const DEFAULT_SHAPE_STYLE: ShapeStyle = Object.freeze({
   strokeJoin: "miter",
   fillColor: null,
   strokeColor: null,
+  opacity: 1,
 })
 
 /** Display-encoded colour sampled from the composited canvas. */
@@ -797,6 +798,8 @@ export type EngineCommand =
       strokeJoin?: ShapeStyle["strokeJoin"]
       fillColor?: string
       strokeColor?: string
+      /** The fill's opacity and the outline's, set together, in [0, 1]. */
+      opacity?: number
     }
   /**
    * Brings an image in on a layer of its own, above the active one, and
@@ -3261,7 +3264,14 @@ export function createEngine(
     if (layer.kind !== "vector" || layer.locked) return
     cancelVectorTransform()
     const style = snapshot.shapeStyle
-    const paint = { color: color ?? snapshot.color.hex, opacity: 1 }
+    const paint = { color: color ?? snapshot.color.hex, opacity: style.opacity }
+    // One opacity for both paints when it is asked for; otherwise each keeps
+    // its own, and a paint just turned on takes the one already there.
+    const opacityOf = (o: VectorObject, part: "fill" | "stroke") =>
+      change?.opacity ??
+      o.style[part]?.opacity ??
+      o.style[part === "fill" ? "stroke" : "fill"]?.opacity ??
+      paint.opacity
     const commands: SceneCommand[] = layer.scene.objects
       .filter((o) => snapshot.vectorSelection.includes(o.id))
       .map((o) => ({
@@ -3288,6 +3298,7 @@ export function createEngine(
                             change?.fillColor ??
                             o.style.fill?.color ??
                             paint.color,
+                          opacity: opacityOf(o, "fill"),
                         }
                       : null,
                 stroke:
@@ -3300,6 +3311,7 @@ export function createEngine(
                             change?.strokeColor ??
                             o.style.stroke?.color ??
                             paint.color,
+                          opacity: opacityOf(o, "stroke"),
                           width:
                             change?.strokeWidth ??
                             o.style.stroke?.width ??
@@ -3583,7 +3595,10 @@ export function createEngine(
     )
       return null
     if (drag.tool === "polygon" && (drag.points?.length ?? 0) < 2) return null
-    const paint = { color: snapshot.color.hex, opacity: ink[3] }
+    const paint = {
+      color: snapshot.color.hex,
+      opacity: ink[3] * style.opacity,
+    }
     return {
       id: nextObjectId(scene),
       geometry:
@@ -6696,6 +6711,9 @@ export function createEngine(
             !["miter", "round", "bevel"].includes(command.strokeJoin)
           )
             throw new Error("Invalid stroke join.")
+          const opacity = command.opacity ?? snapshot.shapeStyle.opacity
+          if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1)
+            throw new Error("A shape opacity must be in [0, 1].")
           // With objects selected, the options edit them, and what the tool
           // gives a new shape is left as it was.
           if (snapshot.vectorSelection.length) {
@@ -6712,6 +6730,7 @@ export function createEngine(
               fillColor: command.fillColor ?? snapshot.shapeStyle.fillColor,
               strokeColor:
                 command.strokeColor ?? snapshot.shapeStyle.strokeColor,
+              opacity,
             }),
           })
           break

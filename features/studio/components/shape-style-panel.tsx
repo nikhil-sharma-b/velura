@@ -24,6 +24,7 @@ import { cn } from "@/lib/utils"
 
 import { ALIGN_ANCHORS } from "../lib/studio-commands"
 import { IconButton } from "./icon-button"
+import { SliderSetting } from "./slider-setting"
 
 const ALIGN_ICONS: Record<AlignAnchor, ReactNode> = {
   left: <AlignLeftIcon />,
@@ -112,6 +113,19 @@ export const ShapeStylePanel = memo(function ShapeStylePanel({
           onColor={(strokeColor) => setStyle({ strokeColor })}
         />
       </div>
+      {/* One opacity for the fill and the outline together: shading on a
+          vector layer is this, a brush and the layer's blend mode. */}
+      <SliderSetting
+        label="Opacity"
+        value={style.opacity}
+        min={0}
+        max={1}
+        step={0.01}
+        scale={100}
+        unit="%"
+        disabled={selected && !style.fill && !style.stroke}
+        onChange={(opacity) => setStyle({ opacity })}
+      />
       {/* The width is the size setting on the rail, as a brush's size is:
           the adjustment made between one stroke and the next, a click away
           rather than in here. */}
