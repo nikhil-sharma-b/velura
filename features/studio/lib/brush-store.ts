@@ -1,4 +1,5 @@
 import type { Brush } from "@/engine/brush/brush"
+import type { Smudge } from "@/engine/brush/smudge"
 import type { GrayscaleTexture } from "@/engine/brush/texture"
 
 /**
@@ -43,6 +44,11 @@ export type LastUsedBrush = Readonly<{
   brushId: string
   /** Kept apart from the brush: size is adjusted constantly and never saved. */
   radius: number
+  /**
+   * The smudge tool's own size and strength (smudge 02), remembered beside
+   * the brush. Absent where a document was last left before smudge had any.
+   */
+  smudge?: Smudge
 }>
 
 export type BrushLibraryState = Readonly<{
@@ -66,10 +72,11 @@ export type BrushStore = Readonly<{
   /** Shelves a brush in a set, at a position counted from the top. */
   move(id: string, set: string, index: number): Promise<unknown>
   saveTexture(name: string, texture: GrayscaleTexture): Promise<string>
-  /** Remembers the brush and size a document was left with. */
+  /** Remembers the brush and size a document was left with, and the smudge's. */
   recordLastUsed(
     documentId: string,
     brushId: string,
-    radius: number
+    radius: number,
+    smudge?: Smudge
   ): Promise<unknown>
 }>

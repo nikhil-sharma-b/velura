@@ -354,6 +354,177 @@ test("a locked layer is not smudged", async ({ page }) => {
 })
 
 /**
+ * Smudge's own size and strength (smudge 02), and what a pen's pressure does
+ * to the strength.
+ */
+const setSmudge = (
+  page: Page,
+  settings: { radius?: number; strength?: number }
+) =>
+  page.evaluate(
+    (settings) => window.engine.dispatch({ type: "setSmudge", ...settings }),
+    settings
+  )
+
+/**
+ * A drag along the row as one device's own events, so the same path can be
+ * drawn by a pen at a chosen pressure and by a mouse.
+ */
+async function deviceDrag(
+  page: Page,
+  pointerType: "pen" | "mouse",
+  pressure: number,
+  from: number,
+  to: number
+) {
+  await page.evaluate(
+    ([pointerType, pressure, from, to, row]) => {
+      const canvas = document.querySelector("canvas")!
+      const bounds = canvas.getBoundingClientRect()
+      const send = (type: string, x: number) =>
+        canvas.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId: 1,
+            pointerType,
+            isPrimary: true,
+            bubbles: true,
+            cancelable: true,
+            buttons: type === "pointerup" ? 0 : 1,
+            clientX: bounds.left + x,
+            clientY: bounds.top + row,
+            pressure,
+          })
+        )
+      send("pointerdown", from)
+      for (let step = 1; step <= 40; step++)
+        send("pointerrawupdate", from + ((to - from) * step) / 40)
+      send("pointerup", to)
+    },
+    [pointerType, pressure, from, to, ROW] as const
+  )
+}
+
+/** A painted bar, smudged out of its end by one device, as pixels. */
+async function smudgedBy(
+  page: Page,
+  settings: { radius?: number; strength?: number },
+  pointerType: "pen" | "mouse",
+  pressure: number
+) {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await paintBar(page, origin)
+  const painted = await pixels(page)
+  await setTool(page, "smudge")
+  await setSmudge(page, settings)
+  const before = await steps(page)
+  await deviceDrag(page, pointerType, pressure, 80, 160)
+  await page.waitForFunction(
+    (n) => window.engine.historyUsage().steps > n,
+    before
+  )
+  return { painted, smudged: await pixels(page) }
+}
+
+/** How far short of the bar's own colour a point past its end is left. */
+const short = (run: { painted: number[]; smudged: number[] }, x = 140) =>
+  distance(rgba(run.smudged, x), rgba(run.painted, 80))
+
+test("a higher strength carries paint further along the same stroke", async ({
+  page,
+}) => {
+  const low = await smudgedBy(page, { strength: 0.5 }, "mouse", 0.5)
+  const high = await smudgedBy(page, { strength: 0.95 }, "mouse", 0.5)
+  expect(short(high)).toBeLessThan(short(low))
+})
+
+test("at zero strength a stroke leaves the layer unchanged", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await paintBar(page, origin)
+  const painted = await pixels(page)
+  await setTool(page, "smudge")
+  await setSmudge(page, { strength: 0 })
+  const before = await steps(page)
+
+  await idleDrag(page, origin, 80, 160)
+  expect(await pixels(page)).toEqual(painted)
+  // Nothing moved, so there is nothing for undo to take back.
+  expect(await steps(page)).toBe(before)
+})
+
+test("a light pen stroke carries paint less far than a hard one", async ({
+  page,
+}) => {
+  const light = await smudgedBy(page, { strength: 0.95 }, "pen", 0.3)
+  const hard = await smudgedBy(page, { strength: 0.95 }, "pen", 1)
+  expect(short(hard)).toBeLessThan(short(light))
+})
+
+test("full pen pressure reaches the strength setting and no more, which is where a mouse runs", async ({
+  page,
+}) => {
+  const pen = await smudgedBy(page, { strength: 0.7 }, "pen", 1)
+  // A mouse has no sensor, so what it reports as pressure is not read.
+  const mouse = await smudgedBy(page, { strength: 0.7 }, "mouse", 0.5)
+  expect(pen.smudged).toEqual(mouse.smudged)
+  // And neither reaches what a higher setting does.
+  const higher = await smudgedBy(page, { strength: 0.95 }, "pen", 1)
+  expect(short(higher)).toBeLessThan(short(pen))
+})
+
+test("the smudge's size is its own: a larger one reaches further off the path", async ({
+  page,
+}) => {
+  // Inside the bar's height past its end, where a small dab does not reach.
+  const off = { x: 125, y: ROW - 9 }
+  const moved = (run: { painted: number[]; smudged: number[] }) =>
+    distance(rgba(run.smudged, off.x, off.y), rgba(run.painted, off.x, off.y))
+  const small = await smudgedBy(page, { radius: 4 }, "mouse", 0.5)
+  expect(moved(small)).toBe(0)
+  const large = await smudgedBy(page, { radius: 20 }, "mouse", 0.5)
+  expect(moved(large)).toBeGreaterThan(0)
+})
+
+test("smudge and brush keep their sizes apart, through a change of tool", async ({
+  page,
+}) => {
+  await openCanvas(page)
+  const sizes = () =>
+    page.evaluate(() => {
+      const { brush, smudge } = window.engine.getSnapshot()
+      return { brush: brush.shape.radius, smudge }
+    })
+  await setTool(page, "smudge")
+  await setSmudge(page, { radius: 30, strength: 0.4 })
+  expect(await sizes()).toEqual({
+    brush: 12,
+    smudge: { radius: 30, strength: 0.4 },
+  })
+
+  await setTool(page, "brush")
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setBrush", radius: 5 })
+  )
+  await setTool(page, "smudge")
+  expect(await sizes()).toEqual({
+    brush: 5,
+    smudge: { radius: 30, strength: 0.4 },
+  })
+})
+
+test("a smudge setting the tool cannot hold is refused", async ({ page }) => {
+  await openCanvas(page)
+  for (const settings of [{ strength: 1.5 }, { strength: -0.1 }, { radius: 0 }])
+    await expect(setSmudge(page, settings)).rejects.toThrow()
+  expect(await page.evaluate(() => window.engine.getSnapshot().smudge)).toEqual(
+    { radius: 16, strength: 0.9 }
+  )
+})
+
+/**
  * The tool on the real studio: where it sits in the rail, the key that picks
  * it, and what it says on a layer it cannot work on.
  */
@@ -403,4 +574,110 @@ test("on a vector layer the smudge tool stays in the hand and says the layer hol
   await page.mouse.up()
   await expect(page.getByText(/holds\s+shapes/)).toBeVisible()
   await expect(smudge).toHaveAttribute("aria-pressed", "true")
+})
+
+const quick = (page: Page, label: string) =>
+  page.getByRole("button", { name: new RegExp(`^${label}:`) })
+
+/** Types a value into the setting whose popover is opened from the rail. */
+async function setQuick(page: Page, label: string, value: string) {
+  await quick(page, label).click()
+  const field = page.getByRole("textbox", { name: label, exact: true })
+  await field.fill(value)
+  await field.press("Enter")
+  await page.keyboard.press("Escape")
+}
+
+test("with smudge in the hand the options are its size and strength, kept apart from the brush's", async ({
+  page,
+}) => {
+  await openStudio(page)
+  const brushSize = await quick(page, "Size").getAttribute("aria-label")
+  await expect(quick(page, "Opacity")).toBeVisible()
+  await expect(quick(page, "Strength")).toHaveCount(0)
+
+  await page.keyboard.press("s")
+  await expect(quick(page, "Size")).toHaveAccessibleName("Size: 32.0 px")
+  await expect(quick(page, "Strength")).toHaveAccessibleName("Strength: 90%")
+  await expect(quick(page, "Opacity")).toHaveCount(0)
+
+  await setQuick(page, "Size", "60")
+  await setQuick(page, "Strength", "45")
+  await expect(quick(page, "Size")).toHaveAccessibleName("Size: 60.0 px")
+  await expect(quick(page, "Strength")).toHaveAccessibleName("Strength: 45%")
+
+  // The brush's size is where it was, and changing it leaves the smudge's.
+  await page.keyboard.press("b")
+  await expect(quick(page, "Size")).toHaveAccessibleName(brushSize!)
+  await setQuick(page, "Size", "9")
+  await page.keyboard.press("s")
+  await expect(quick(page, "Size")).toHaveAccessibleName("Size: 60.0 px")
+  await expect(quick(page, "Strength")).toHaveAccessibleName("Strength: 45%")
+})
+
+test("the size keys change the smudge's size while it is in the hand, and not the brush's", async ({
+  page,
+}) => {
+  await openStudio(page)
+  const brushSize = await quick(page, "Size").getAttribute("aria-label")
+  await page.keyboard.press("s")
+  await page.keyboard.press("]")
+  await expect(quick(page, "Size")).not.toHaveAccessibleName("Size: 32.0 px")
+  const grown = await quick(page, "Size").getAttribute("aria-label")
+  expect(Number.parseFloat(grown!.slice("Size: ".length))).toBeGreaterThan(32)
+  await page.keyboard.press("[")
+  await expect(quick(page, "Size")).toHaveAccessibleName("Size: 32.0 px")
+
+  await page.keyboard.press("b")
+  await expect(quick(page, "Size")).toHaveAccessibleName(brushSize!)
+})
+
+test("smudge size and strength come back after a reload", async ({ page }) => {
+  await openStudio(page)
+  await page.keyboard.press("s")
+  await setQuick(page, "Size", "60")
+  await setQuick(page, "Strength", "45")
+  // Remembered once the hand has settled, as the brush's size is.
+  await expect
+    .poll(() =>
+      page.evaluate(() => localStorage.getItem("velura.brushes") ?? "")
+    )
+    .toContain('"strength":0.45')
+
+  await page.reload()
+  await openStudio(page)
+  await page.keyboard.press("s")
+  await expect(quick(page, "Size")).toHaveAccessibleName("Size: 60.0 px")
+  await expect(quick(page, "Strength")).toHaveAccessibleName("Strength: 45%")
+})
+
+test("the canvas cursor shows the smudge's size while smudge is in the hand", async ({
+  page,
+}) => {
+  const canvas = await openStudio(page)
+  const box = (await canvas.boundingBox())!
+  const at = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+  const ring = page.getByTestId("size-cursor")
+  await page.mouse.move(at.x, at.y)
+  // The brush keeps its dot.
+  await expect(ring).toBeHidden()
+
+  // Picked up by its key, the ring is there before the pointer moves.
+  await page.keyboard.press("s")
+  await expect(ring).toBeVisible()
+  const first = (await ring.boundingBox())!
+  // Round, and centred on the pointer.
+  expect(first.width).toBeCloseTo(first.height, 0)
+  expect(first.x + first.width / 2).toBeCloseTo(at.x, 0)
+  expect(first.y + first.height / 2).toBeCloseTo(at.y, 0)
+
+  // Twice the size, twice the ring.
+  await setQuick(page, "Size", "64")
+  await page.mouse.move(at.x, at.y)
+  await expect
+    .poll(async () => (await ring.boundingBox())!.width / first.width)
+    .toBeCloseTo(2, 1)
+
+  await page.keyboard.press("b")
+  await expect(ring).toBeHidden()
 })

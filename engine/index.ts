@@ -72,7 +72,13 @@ import {
   transformObjects,
 } from "./doc/vector-objects"
 import { eraserBrush, type EraserKind } from "./brush/eraser"
-import { SMUDGE_RADIUS, SMUDGE_SPACING, SMUDGE_STRENGTH } from "./brush/smudge"
+import {
+  DEFAULT_SMUDGE,
+  isSmudge,
+  smudgeDabStrength,
+  smudgeSpacing,
+  type Smudge,
+} from "./brush/smudge"
 import {
   type Brush,
   type BrushColor,
@@ -636,6 +642,11 @@ export type EngineCommand =
   | { type: "setTiltEnabled"; enabled: boolean }
   | { type: "setEraser"; kind?: EraserKind; radius?: number; opacity?: number }
   /**
+   * The smudge tool's own size and strength (smudge 02), apart from the
+   * brush's. Unnamed ones are left alone.
+   */
+  | { type: "setSmudge"; radius?: number; strength?: number }
+  /**
    * The ink, as authored sRGB hex. Hex rather than the working space because
    * that is the one colour notation the artist can also type, and the picker
    * (`features/color`) already owns the perceptual space above it — the engine
@@ -1111,6 +1122,8 @@ export type EngineSnapshot = Readonly<{
   /** The brush in the hand: serialisable data, never code (D23). */
   brush: Brush
   eraser: Brush
+  /** The smudge tool's own size and strength; its tip's shape is the brush's. */
+  smudge: Smudge
   /**
    * Every texture id a brush may name (D24): the built-ins, plus whatever has
    * been imported. The editor offers these, so a brush cannot be pointed at a
@@ -1259,6 +1272,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   }),
   brush: Object.freeze(cloneBrush(DEFAULT_BRUSH)),
   eraser: Object.freeze(eraserBrush()),
+  smudge: DEFAULT_SMUDGE,
   textures: BUILTIN_TEXTURE_IDS,
   // A host that has not started an engine has no document to describe.
   layers: Object.freeze([]),
@@ -1756,8 +1770,14 @@ export function createEngine(
   // rather than a frozen snapshot that is replaced on every publish.
   let brush = cloneBrush(DEFAULT_BRUSH)
   let eraser = eraserBrush()
+  let smudge: Smudge = DEFAULT_SMUDGE
   const activeBrush = () => (tool === "eraser" ? eraser : brush)
   let tool: Tool = "brush"
+  /** The distance between dabs for whatever is in the hand, at rest. */
+  const toolSpacing = () =>
+    tool === "smudge"
+      ? smudgeSpacing(smudge.radius)
+      : brushSpacing(activeBrush())
   let ink = [...BRUSH_COLOR] as [number, number, number, number]
   // Jitter is seeded per stroke, so a `random` mapping differs between marks
   // while any one mark stays reproducible — which is what lets a stroke be
@@ -4493,7 +4513,7 @@ export function createEngine(
     time: number
   ) {
     if (smudgeLayerId) {
-      emitSmudge(x, y)
+      emitSmudge(x, y, pressure)
       return
     }
     // The tracker was opened by the pen going down, so every dab advances it:
@@ -4560,15 +4580,20 @@ export function createEngine(
   /**
    * Collects one smudge dab (smudge 01). Only its shape is the brush's — the
    * tip's turn and squash here, its texture and rim through the renderer —
-   * while its size and strength are fixed, and no dynamics reach it.
+   * while its size and strength are the smudge's own (smudge 02). None of the
+   * brush's dynamics reach it: a pen's pressure drives the strength alone.
    */
-  function emitSmudge(x: number, y: number) {
+  function emitSmudge(x: number, y: number, pressure: number) {
     if (smudgeCount === MAX_SMUDGE_DABS_PER_DRAW) flushStamps()
     const offset = smudgeCount * SMUDGE_STRIDE
     smudgeDabs[offset + SMUDGE.CENTER_X] = x
     smudgeDabs[offset + SMUDGE.CENTER_Y] = y
-    smudgeDabs[offset + SMUDGE.RADIUS] = SMUDGE_RADIUS
-    smudgeDabs[offset + SMUDGE.STRENGTH] = SMUDGE_STRENGTH
+    smudgeDabs[offset + SMUDGE.RADIUS] = smudge.radius
+    smudgeDabs[offset + SMUDGE.STRENGTH] = smudgeDabStrength(
+      smudge.strength,
+      pressure,
+      strokeSensesPressure
+    )
     smudgeDabs[offset + SMUDGE.ANGLE] = brush.shape.angle
     smudgeDabs[offset + SMUDGE.ROUNDNESS] = brush.shape.roundness
     smudgeDabs[offset + SMUDGE.TIP_FRAME] = 0
@@ -5461,6 +5486,7 @@ export function createEngine(
       // cancel puts back. One that holds nothing has nothing to smear.
       if (!renderer?.beginSmudge(layer.id)) return
       smudgeLayerId = layer.id
+      strokeSensesPressure = sensesPressure
       strokeOrigin = origin
       stroking = true
       opening = true
@@ -7567,6 +7593,22 @@ export function createEngine(
           publish({ eraser: Object.freeze(cloneBrush(eraser)) })
           break
         }
+        case "setSmudge": {
+          const next = {
+            radius: command.radius ?? smudge.radius,
+            strength: command.strength ?? smudge.strength,
+          }
+          if (!isSmudge(next))
+            throw new Error(
+              "Smudge size must be positive and its strength in [0, 1]."
+            )
+          cancelStroke()
+          smudge = Object.freeze(next)
+          if (tool === "smudge")
+            resampler = createStrokeResampler(toolSpacing())
+          publish({ smudge })
+          break
+        }
         case "setTool":
           // A polygon clicked out far enough to be a shape is kept, not lost
           // with the tool; anything less is dropped with it.
@@ -7576,9 +7618,7 @@ export function createEngine(
           dropMarquee()
           cancelVectorTransform()
           tool = command.tool
-          resampler = createStrokeResampler(
-            tool === "smudge" ? SMUDGE_SPACING : brushSpacing(activeBrush())
-          )
+          resampler = createStrokeResampler(toolSpacing())
           applyBrushTextures()
           if (snapshot.status === "ready") render()
           // A stroke left selected as it was drawn is let go with the tool

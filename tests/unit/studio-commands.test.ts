@@ -38,6 +38,7 @@ function fakeEngine(
       tool: "brush",
       brush: { shape: { radius: 10 } },
       eraser: { shape: { radius: 10 } },
+      smudge: { radius: 16, strength: 0.9 },
       ...extra,
     }),
     dispatch: mock(async (command: EngineCommand) => void sent.push(command)),
@@ -201,6 +202,42 @@ describe("default keys", () => {
     expect(press("H", true)).toEqual(["flipView"])
     expect(press("ArrowLeft", true)).toEqual(["panView"])
     expect(press("]")).toEqual(["setBrush"])
+  })
+})
+
+describe("the size keys", () => {
+  const resized = (tool: string, key: string) => {
+    const { engine, sent } = fakeEngine([raster("a")], "a", { tool })
+    createKeybindResolver(studioCommands, () => context(engine)).keydown({
+      key,
+      shiftKey: false,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      repeat: false,
+      defaultPrevented: false,
+      target: null,
+      preventDefault: () => {},
+    })
+    return sent
+  }
+
+  test("change the smudge's own size while smudge is in the hand", () => {
+    expect(resized("smudge", "]")).toEqual([
+      { type: "setSmudge", radius: steppedRadius(16, 1)! },
+    ])
+    expect(resized("smudge", "[")).toEqual([
+      { type: "setSmudge", radius: steppedRadius(16, -1)! },
+    ])
+  })
+
+  test("change the brush's and the eraser's in theirs", () => {
+    expect(resized("brush", "]")).toEqual([
+      { type: "setBrush", radius: steppedRadius(10, 1)! },
+    ])
+    expect(resized("eraser", "[")).toEqual([
+      { type: "setEraser", radius: steppedRadius(10, -1)! },
+    ])
   })
 })
 

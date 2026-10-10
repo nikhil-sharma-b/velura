@@ -14,6 +14,7 @@ import {
   reorderBrushes,
 } from "@/convex/lib/brush"
 import type { Brush } from "@/engine/brush/brush"
+import { isSmudge, type Smudge } from "@/engine/brush/smudge"
 import type { GrayscaleTexture } from "@/engine/brush/texture"
 
 import type {
@@ -148,10 +149,17 @@ export function createLocalBrushes(storage: KeyValueStorage) {
       })
       return id
     },
-    async recordLastUsed(documentId: string, brushId: string, radius: number) {
+    async recordLastUsed(
+      documentId: string,
+      brushId: string,
+      radius: number,
+      smudge?: Smudge
+    ) {
+      // A write that names no smudge keeps the one already remembered.
+      const kept = smudge ?? lastUsedByDocument[documentId]?.smudge
       lastUsedByDocument = {
         ...lastUsedByDocument,
-        [documentId]: { brushId, radius },
+        [documentId]: { brushId, radius, ...(kept ? { smudge: kept } : {}) },
       }
       commit({ brushes: state.brushes, textures: state.textures })
     },
@@ -287,14 +295,31 @@ function readLastUsed(storage: KeyValueStorage): Record<string, LastUsedBrush> {
   const entries = Object.entries(stored as Record<string, unknown>).flatMap(
     ([documentId, value]) => {
       const last = value as Partial<LastUsedBrush>
+      const smudge = readSmudge(last?.smudge)
       return typeof last?.brushId === "string" &&
         Number.isFinite(last.radius) &&
         Number(last.radius) > 0
-        ? [[documentId, { brushId: last.brushId, radius: Number(last.radius) }]]
+        ? [
+            [
+              documentId,
+              {
+                brushId: last.brushId,
+                radius: Number(last.radius),
+                ...(smudge ? { smudge } : {}),
+              },
+            ],
+          ]
         : []
     }
   )
   return Object.fromEntries(entries) as Record<string, LastUsedBrush>
+}
+
+/** A stored smudge the engine would refuse is dropped rather than restored. */
+function readSmudge(value: unknown): Smudge | undefined {
+  return isSmudge(value)
+    ? { radius: value.radius, strength: value.strength }
+    : undefined
 }
 
 /** Wraps the browser-local brushes in the store shape the panel consumes. */

@@ -224,6 +224,9 @@ export default defineSchema({
     documentId: v.id("documents"),
     brushId: v.string(),
     radius: v.number(),
+    // The smudge tool's own size and strength (smudge 02). Absent on rows
+    // written before it had any.
+    smudge: v.optional(v.object({ radius: v.number(), strength: v.number() })),
     updatedAt: v.number(),
   }).index("by_owner_document", ["ownerId", "documentId"]),
 

@@ -141,6 +141,7 @@ import {
   lastInputWasPointer,
   returnFocusForKeysOnly,
 } from "@/lib/input-modality"
+import { SizeCursor } from "./size-cursor"
 import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
 import { ShapeStylePanel } from "./shape-style-panel"
@@ -1126,6 +1127,11 @@ export function CanvasHost({
     if (restoredFor.current === documentId) return
     restoredFor.current = documentId
     const last = library.lastUsed
+    // The smudge's own size and strength come back whatever brush does.
+    if (last?.smudge)
+      void engine
+        .dispatch({ type: "setSmudge", ...last.smudge })
+        .catch(() => {})
     // A remembered brush that has since been deleted falls back to the
     // ready-made one rather than leaving the session on the engine's default.
     const entry =
@@ -1158,6 +1164,8 @@ export function CanvasHost({
    */
   const currentBrushId = snapshot.brush.id
   const currentRadius = snapshot.brush.shape.radius
+  const smudgeRadius = snapshot.smudge.radius
+  const smudgeStrength = snapshot.smudge.strength
   useEffect(() => {
     // Never before the restore has run: writing on the way in would record
     // the default brush over the one this document was actually left with.
@@ -1165,13 +1173,24 @@ export function CanvasHost({
       return
     const timer = setTimeout(() => {
       void brushStore
-        .recordLastUsed(documentId, currentBrushId, currentRadius)
+        .recordLastUsed(documentId, currentBrushId, currentRadius, {
+          radius: smudgeRadius,
+          strength: smudgeStrength,
+        })
         .catch(() => {
           // Which brush was in the hand is a convenience, not the painting.
         })
     }, 1_000)
     return () => clearTimeout(timer)
-  }, [brushStore, documentId, library.loaded, currentBrushId, currentRadius])
+  }, [
+    brushStore,
+    documentId,
+    library.loaded,
+    currentBrushId,
+    currentRadius,
+    smudgeRadius,
+    smudgeStrength,
+  ])
 
   // The engine starts from the same brush the initial snapshot describes, so
   // the baseline needs no effect to establish: an unsaved session is measured
@@ -1179,10 +1198,21 @@ export function CanvasHost({
   const saved = savedBrush ?? INITIAL_SNAPSHOT.brush
   const activeTip =
     snapshot.tool === "eraser" ? snapshot.eraser : snapshot.brush
-  /** Half the size setting, as a brush's radius or half an outline's width. */
-  const sizeRadius = vectorWidth
-    ? shapeOptions.strokeWidth / 2
-    : activeTip.shape.radius
+  // Smudge keeps a size of its own, apart from the brush whose tip it wears.
+  const smudging = snapshot.tool === "smudge"
+  const tipRadius = smudging ? snapshot.smudge.radius : activeTip.shape.radius
+  /** Half the size setting, as a tip's radius or half an outline's width. */
+  const sizeRadius = vectorWidth ? shapeOptions.strokeWidth / 2 : tipRadius
+  /** Sets the size of whichever paint tool is in the hand. */
+  const setTipRadius = (radius: number) =>
+    void engine?.dispatch({
+      type: smudging
+        ? "setSmudge"
+        : snapshot.tool === "eraser"
+          ? "setEraser"
+          : "setBrush",
+      radius,
+    })
   const brushEdited = isBrushEdited(saved, snapshot.brush)
 
   const unavailable = snapshot.status === "unavailable"
@@ -1392,6 +1422,12 @@ export function CanvasHost({
           <EraserTrail
             canvas={canvasElement}
             active={snapshot.tool === "eraser"}
+          />
+          <SizeCursor
+            canvas={canvasElement}
+            active={smudging}
+            radius={snapshot.smudge.radius}
+            zoom={snapshot.view.zoom}
           />
           {snapshot.straightEdge && (
             <StraightEdgeOverlay
@@ -1807,7 +1843,7 @@ export function CanvasHost({
                     value={
                       vectorWidth
                         ? `${shapeOptions.strokeWidth} px`
-                        : `${(activeTip.shape.radius * 2).toFixed(1)} px`
+                        : `${(tipRadius * 2).toFixed(1)} px`
                     }
                     readout={`${Math.round(sizeRadius * 2)}`}
                     icon={
@@ -1838,50 +1874,66 @@ export function CanvasHost({
                     ) : (
                       <SliderSetting
                         label="Size"
-                        value={activeTip.shape.radius}
+                        value={tipRadius}
                         min={0.5}
                         max={200}
                         step={0.5}
                         scale={2}
                         decimals={1}
                         unit="px"
-                        onChange={(radius) =>
+                        onChange={setTipRadius}
+                      />
+                    )}
+                  </QuickSetting>
+                  {/* Smudge lays nothing down, so it has no opacity to set: in
+                  its place is how hard it drags what is already there. */}
+                  {smudging ? (
+                    <QuickSetting
+                      label="Strength"
+                      value={`${Math.round(snapshot.smudge.strength * 100)}%`}
+                      readout={`${Math.round(snapshot.smudge.strength * 100)}%`}
+                      icon={<SmudgeToolIcon />}
+                    >
+                      <SliderSetting
+                        label="Strength"
+                        value={snapshot.smudge.strength}
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        scale={100}
+                        unit="%"
+                        onChange={(strength) =>
+                          void engine?.dispatch({ type: "setSmudge", strength })
+                        }
+                      />
+                    </QuickSetting>
+                  ) : (
+                    <QuickSetting
+                      label="Opacity"
+                      value={`${Math.round(activeTip.rendering.opacity * 100)}%`}
+                      readout={`${Math.round(activeTip.rendering.opacity * 100)}%`}
+                      icon={<DropHalfIcon />}
+                    >
+                      <SliderSetting
+                        label="Opacity"
+                        value={activeTip.rendering.opacity}
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        scale={100}
+                        unit="%"
+                        onChange={(opacity) =>
                           void engine?.dispatch({
                             type:
                               snapshot.tool === "eraser"
                                 ? "setEraser"
                                 : "setBrush",
-                            radius,
+                            opacity,
                           })
                         }
                       />
-                    )}
-                  </QuickSetting>
-                  <QuickSetting
-                    label="Opacity"
-                    value={`${Math.round(activeTip.rendering.opacity * 100)}%`}
-                    readout={`${Math.round(activeTip.rendering.opacity * 100)}%`}
-                    icon={<DropHalfIcon />}
-                  >
-                    <SliderSetting
-                      label="Opacity"
-                      value={activeTip.rendering.opacity}
-                      min={0}
-                      max={1}
-                      step={0.01}
-                      scale={100}
-                      unit="%"
-                      onChange={(opacity) =>
-                        void engine?.dispatch({
-                          type:
-                            snapshot.tool === "eraser"
-                              ? "setEraser"
-                              : "setBrush",
-                          opacity,
-                        })
-                      }
-                    />
-                  </QuickSetting>
+                    </QuickSetting>
+                  )}
                   <QuickSetting
                     label="Smoothing"
                     value={`${Math.round(snapshot.stabilization * 100)}%`}

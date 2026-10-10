@@ -101,6 +101,35 @@ describe("brushes kept in this browser", () => {
     expect(reopened.lastUsed("never-opened")).toBeNull()
   })
 
+  test("remembers the smudge's size and strength beside the brush", async () => {
+    const storage = fakeStorage()
+    const store = createLocalBrushes(storage)
+    await store.recordLastUsed("doc-a", pencil.id, 12, {
+      radius: 40,
+      strength: 0.35,
+    })
+
+    const reopened = createLocalBrushes(storage)
+    expect(reopened.lastUsed("doc-a")).toEqual({
+      brushId: pencil.id,
+      radius: 12,
+      smudge: { radius: 40, strength: 0.35 },
+    })
+  })
+
+  test("a stored smudge that is not one is dropped, and the brush kept", () => {
+    const storage = fakeStorage()
+    const store = createLocalBrushes(storage)
+    void store.recordLastUsed("doc-a", pencil.id, 12, {
+      radius: -3,
+      strength: 7,
+    })
+    expect(createLocalBrushes(storage).lastUsed("doc-a")).toEqual({
+      brushId: pencil.id,
+      radius: 12,
+    })
+  })
+
   test("unreadable storage is an empty library, never a crash into the studio", () => {
     const store = createLocalBrushes(fakeStorage({ "velura.brushes": "{" }))
     expect(store.read().brushes).toEqual([])
