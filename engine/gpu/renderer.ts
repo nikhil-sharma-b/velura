@@ -1794,8 +1794,10 @@ export function createRenderer(
       const travelY = y - session.last.y
       session.last.x = x
       session.last.y = y
-      // A still tip drags nothing.
+      // A still tip drags nothing, and nor does one with no strength: a
+      // stroke at none leaves the layer, and its history, as they were.
       if (travelX === 0 && travelY === 0) continue
+      if (!(dabs[dab + SMUDGE.STRENGTH] > 0)) continue
       // Rotated textured quads fit inside sqrt(2) radii.
       const reach = dabs[dab + SMUDGE.RADIUS] * Math.SQRT2
       const left = Math.max(0, Math.floor(x - reach))

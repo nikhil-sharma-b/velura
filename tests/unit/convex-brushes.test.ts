@@ -246,4 +246,41 @@ describe("the brush a document was left with", () => {
     )
     expect(rows.length).toBe(1)
   })
+
+  test("carries the smudge's size and strength, and keeps them when a write names none", async () => {
+    const t = setup()
+    const userId = await createUser(t, "artist@example.com")
+    const artist = asUser(t, userId)
+    const documentId = await document(t, userId)
+    await artist.mutation(api.brushes.recordLastUsed, {
+      documentId,
+      brushId: pencil.id,
+      radius: 18,
+      smudge: { radius: 40, strength: 0.35 },
+    })
+    expect(await artist.query(api.brushes.lastUsed, { documentId })).toEqual({
+      brushId: pencil.id,
+      radius: 18,
+      smudge: { radius: 40, strength: 0.35 },
+    })
+    // A client from before smudge had settings names none, and takes none away.
+    await artist.mutation(api.brushes.recordLastUsed, {
+      documentId,
+      brushId: pencil.id,
+      radius: 20,
+    })
+    expect(await artist.query(api.brushes.lastUsed, { documentId })).toEqual({
+      brushId: pencil.id,
+      radius: 20,
+      smudge: { radius: 40, strength: 0.35 },
+    })
+    await expect(
+      artist.mutation(api.brushes.recordLastUsed, {
+        documentId,
+        brushId: pencil.id,
+        radius: 20,
+        smudge: { radius: 40, strength: 1.5 },
+      })
+    ).rejects.toThrow()
+  })
 })

@@ -361,14 +361,16 @@ function resize(direction: 1 | -1): Pick<StudioCommand, "run" | "available"> {
     run: ({ engine }) => {
       if (!engine) return
       const current = engine.getSnapshot()
-      const eraser = current.tool === "eraser"
-      const tip = eraser ? current.eraser : current.brush
-      const radius = steppedRadius(tip.shape.radius, direction)
+      // Whichever tool is in the hand keeps its own size.
+      const [type, from] =
+        current.tool === "smudge"
+          ? (["setSmudge", current.smudge.radius] as const)
+          : current.tool === "eraser"
+            ? (["setEraser", current.eraser.shape.radius] as const)
+            : (["setBrush", current.brush.shape.radius] as const)
+      const radius = steppedRadius(from, direction)
       if (radius === undefined) return
-      void engine.dispatch({
-        type: eraser ? "setEraser" : "setBrush",
-        radius,
-      })
+      void engine.dispatch({ type, radius })
     },
   }
 }

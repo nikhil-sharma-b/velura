@@ -108,11 +108,14 @@ export function useConvexBrushStore(): BrushStore {
           // readback usually is — travels as its own texels and nothing else.
           data: texture.data.slice().buffer as ArrayBuffer,
         }),
-      recordLastUsed: (documentId, brushId, radius) =>
+      recordLastUsed: (documentId, brushId, radius, smudge) =>
         convex.mutation(api.brushes.recordLastUsed, {
           documentId: documentId as Id<"documents">,
           brushId,
           radius,
+          ...(smudge
+            ? { smudge: { radius: smudge.radius, strength: smudge.strength } }
+            : {}),
         }),
     }),
     [convex]
