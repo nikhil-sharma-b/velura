@@ -17,6 +17,7 @@ bun run bench                  # records a run
 bun run bench/run.ts --sweep   # the document-size ladder, for diagnosis
 bun run bench/run.ts --layers  # the layer-count ladder, for the compositor
 bun run bench/run.ts --scatter # a dense scattering brush against none
+bun run bench/run.ts --smudge  # smudging the workload against painting it
 bun run bench/run.ts --vector  # redrawing a vector layer of many paths (19)
 bun run bench/run.ts --navigate # panning and zooming a stack (sharp-zoom 01)
 ```
@@ -431,3 +432,45 @@ latency is the oldest sample a frame consumes, so it is about one panel period
 (16.7 ms at 60 Hz) plus a fraction of a millisecond of GPU work. At 120 Hz the
 same arithmetic gives about 8.3 + 0.5 ms. Validating it needs a 120 Hz display;
 that run is tracked in brush-library ticket 17.
+
+## Smudge: the layer copy at stroke start (smudge 01)
+
+Smudge is the first tool that writes the layer while the pen is down, so it
+keeps a copy of the whole layer from before its first dab: what a cancelled
+stroke is put back from. That copy is new work at every pen-down, and it is
+the size of the document, not of the stroke. `bun run bench/run.ts --smudge`
+weighs it: the workload's strokes are painted once, untimed, and then drawn
+again along the same paths with the smudge tool, against the same strokes
+painted with the brush. Paced, since pen-to-pixel means nothing otherwise.
+The frame a stroke opens in is reported on its own, because that is the frame
+the copy lands in.
+
+Apple M4 (integrated), 75 Hz display, Chrome/WebGPU, 8192² document through a
+2560 × 1440 window, six strokes, on top of `0659357`:
+
+| tool | stroke's first frame, median / worst | all frames, median / p95 | dabs | painting readbacks |
+|---|---:|---:|---:|---:|
+| Brush | 2.8 / 60.5 ms | 13.0 / 16.1 ms | 7,326 | 0 |
+| Smudge | 21.7 / 60.9 ms | 15.5 / 19.6 ms | 5,467 | 0 |
+| Brush, repeat | 2.9 / 35.3 ms | 13.0 / 15.7 ms | 7,326 | 0 |
+| Smudge, repeat | 21.3 / 22.3 ms | 15.4 / 20.3 ms | 5,494 | 0 |
+
+The copy costs about 19 ms, once, on the frame a smudge stroke opens in: a
+512 MiB `rgba16float` texture allocated and filled from the layer. That is
+more than one frame at this display's rate and more than two at 120 Hz, so
+the first dab of a smudge stroke on an 8192² document shows a frame or two
+late. It is a start-up cost and not a sustained one. The worst opening frame
+moved between 22 and 61 ms from run to run for both tools alike, so it is not
+read as the copy's.
+
+After that a smudge frame costs about 2.5 ms more than a brush frame at the
+median. Every dab is a small copy and a render pass of its own, where the
+brush's dabs are instances in one draw, and the fixed four-pixel spacing puts
+around twenty of them in a frame at this pen speed. Nothing is read back
+while the pen is down.
+
+The copy is the part that scales with the document, and it need not: only
+the region the dabs reach is ever put back, so it could be taken tile by
+tile as the stroke first touches each one. That is not built (smudge 06). It is what to
+reach for if the opening frame is felt on large documents, and it would
+matter more once the dab is larger (smudge 02).

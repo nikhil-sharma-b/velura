@@ -7,3 +7,14 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+## Git Branch Naming Convention
+
+When creating feature or issue branches for milestones, follow the milestone/topic prefix convention:
+
+- Format: `<milestone-or-topic>/<feature-name>` (kebab-case)
+- Examples:
+  - `brush-library/vector-brush-model-and-library`
+  - `brush-library/svg-tips`
+  - `smudge/smears-paint`
+  - `studio/ux-polish`

@@ -110,3 +110,25 @@ test("observing frames is opt-in and detaches cleanly", async ({ page }) => {
   expect(seen.observed).toBeGreaterThan(3)
   expect(seen.afterDetach).toBe(0)
 })
+
+test("the smudge benchmark smears the workload without reading pixels back", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.runBenchmark)
+  const result = await page.evaluate(
+    (workload) => window.runBenchmark({ ...workload, smudge: true }),
+    WORKLOAD
+  )
+
+  expect(result.dispatched).toBe(result.requested)
+  // One mark per stroke, and each began on a frame that was observed.
+  expect(result.strokeStarts).toHaveLength(WORKLOAD.strokes)
+  // Smudge dabs were drawn: the tool had paint to smear and smeared it.
+  expect(
+    result.frames.reduce((total, frame) => total + frame.stamps, 0)
+  ).toBeGreaterThan(50)
+  // The layer is copied on the GPU when a stroke begins, never read back.
+  expect(result.readbacks).toBe(0)
+})

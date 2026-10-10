@@ -267,6 +267,14 @@ describe("selection commands", () => {
     return sent
   }
 
+  test("s picks the smudge tool, and shift+s keeps its own command", () => {
+    expect(press("s", {})).toEqual([{ type: "setTool", tool: "smudge" }])
+    expect(press("S", { shift: true })).not.toEqual([
+      { type: "setTool", tool: "smudge" },
+    ])
+    expect(studioCommands.get("tool.smudge")?.label).toBe("Smudge tool")
+  })
+
   test("m picks the rectangle and shift+m the ellipse", () => {
     expect(press("m", {})).toEqual([{ type: "setTool", tool: "rectSelect" }])
     expect(press("M", { shift: true })).toEqual([

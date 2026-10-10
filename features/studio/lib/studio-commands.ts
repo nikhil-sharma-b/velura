@@ -448,6 +448,14 @@ export const studioCommands = createRegistry<StudioContext>(
       ...dispatching({ type: "setTool", tool: "eraser" }),
     },
     {
+      // S, free of every other default; Shift+S is the node tool's.
+      id: "tool.smudge",
+      label: "Smudge tool",
+      category: "Tools",
+      keybinds: ["s"],
+      ...dispatching({ type: "setTool", tool: "smudge" }),
+    },
+    {
       // M, the marquee in every editor the hand learned on; Shift for the
       // ellipse, since there is no second marquee key to cycle to.
       id: "tool.rectSelect",
