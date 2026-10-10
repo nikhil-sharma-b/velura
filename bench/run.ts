@@ -382,6 +382,31 @@ async function scatterSweep(): Promise<void> {
  */
 const SMUDGE_SIZES = [2048, 8192]
 
+/** Two sizes and loads, paced latency beside unpaced throughput (D30). */
+async function wetSweep(): Promise<void> {
+  console.log(
+    "\n  document  diameter  pickup  sustained fps  p95 latency ms  readbacks"
+  )
+  for (const size of SMUDGE_SIZES)
+    for (const diameter of [64, 512])
+      for (const pickup of [0, 0.8]) {
+        const workload = {
+          ...BENCHMARK_WORKLOAD,
+          width: size,
+          height: size,
+          strokes: SWEEP_STROKES,
+          wet: { diameter, pickup },
+        }
+        const paced = await measure(PASSES[0], workload)
+        const unpaced = await measure(PASSES[1], workload)
+        const readbacks = paced.readbacks + unpaced.readbacks
+        console.log(
+          `  ${size}²  ${diameter}  ${pickup}  ${fixed(unpaced.report.frameRate.sustained)}  ${fixed(paced.report.latencyMs.p95)}  ${readbacks}`
+        )
+        if (readbacks > 0) process.exitCode = 1
+      }
+}
+
 async function smudgeSweep(): Promise<void> {
   const pass = PASSES.find((entry) => entry.name === "paced")!
   const middle = (values: number[]) =>
@@ -509,21 +534,23 @@ async function main(): Promise<void> {
     ? { ...BENCHMARK_WORKLOAD, colourDynamics: true }
     : BENCHMARK_WORKLOAD
   const stop = await serve()
-  const ladder = process.argv.includes("--sweep")
-    ? sweep
-    : process.argv.includes("--layers")
-      ? layerSweep
-      : process.argv.includes("--feather")
-        ? featherSweep
-        : process.argv.includes("--scatter")
-          ? scatterSweep
-          : process.argv.includes("--smudge")
-            ? smudgeSweep
-            : process.argv.includes("--vector")
-              ? vectorSweep
-              : process.argv.includes("--navigate")
-                ? navigationSweep
-                : null
+  const ladder = process.argv.includes("--wet")
+    ? wetSweep
+    : process.argv.includes("--sweep")
+      ? sweep
+      : process.argv.includes("--layers")
+        ? layerSweep
+        : process.argv.includes("--feather")
+          ? featherSweep
+          : process.argv.includes("--scatter")
+            ? scatterSweep
+            : process.argv.includes("--smudge")
+              ? smudgeSweep
+              : process.argv.includes("--vector")
+                ? vectorSweep
+                : process.argv.includes("--navigate")
+                  ? navigationSweep
+                  : null
   if (ladder) {
     try {
       await ladder()

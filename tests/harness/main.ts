@@ -1,3 +1,4 @@
+import { mixPaintProbe } from "./pigment-probe"
 import { openBlendProbe, type BlendProbe } from "./blend-probe"
 import {
   buildLayerStack,
@@ -83,6 +84,7 @@ type StrokeBufferProbe = {
 
 declare global {
   interface Window {
+    mixPaintProbe: typeof mixPaintProbe
     openBlendProbe: typeof openBlendProbe
     blendProbe: BlendProbe
     engine: Engine
@@ -129,6 +131,8 @@ declare global {
     encodeExportImage: typeof encodeExportImage
   }
 }
+
+window.mixPaintProbe = mixPaintProbe
 
 window.createLocalBlobStore = createLocalBlobStore
 

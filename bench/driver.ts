@@ -394,7 +394,9 @@ export async function runBenchmark(
     )
   }
 
-  if (workload.options.smudge) {
+  if (workload.options.wet)
+    await engine.dispatch({ type: "setColor", hex: "#0000ff" })
+  if (workload.options.smudge || workload.options.wet) {
     // Paint to smear, laid before anything is timed or counted: a frame's
     // worth of samples at a time, so none are dropped on the way in.
     for (const stroke of workload.strokes) {
@@ -409,7 +411,16 @@ export async function runBenchmark(
       await nextFrame()
     }
     await engine.save()
-    await engine.dispatch({ type: "setTool", tool: "smudge" })
+    if (workload.options.wet) {
+      await engine.dispatch({ type: "setColor", hex: "#ffff00" })
+      await engine.dispatch({
+        type: "setBrush",
+        radius: workload.options.wet.diameter / 2,
+        spacing: 0.125,
+        flow: 0.3,
+        wet: { pickup: workload.options.wet.pickup },
+      })
+    } else await engine.dispatch({ type: "setTool", tool: "smudge" })
   }
   const detachThumbnails = attachThumbnails(engine)
 

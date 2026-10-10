@@ -1,4 +1,5 @@
 import { grainShader } from "./grain"
+import { pigmentShader } from "./pigment"
 
 /**
  * Shared direct-dab mapping and paint mixing (D29, D41). Smudge reads the
@@ -8,6 +9,7 @@ import { grainShader } from "./grain"
  */
 export const smudgeShader = /* wgsl */ `
 ${grainShader}
+${pigmentShader}
 
 const TAU = 6.283185307179586;
 
@@ -74,13 +76,6 @@ struct Varyings {
   @location(7) canvas: vec2<f32>,
   @location(8) @interpolate(flat) grainDepth: f32,
   @location(9) @interpolate(flat) center: vec2<f32>,
-}
-
-// How two paints combine: a linear mix of premultiplied colour in the working
-// space (D10), all four channels alike. Pigment mixing would replace this and
-// nothing else.
-fn mixPaint(under: vec4<f32>, over: vec4<f32>, amount: f32) -> vec4<f32> {
-  return mix(under, over, amount);
 }
 
 fn dabVertex(instance: Instance, index: u32) -> Varyings {
