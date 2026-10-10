@@ -17,7 +17,9 @@
  * `--layers` the layer-count one; `--feather` paints inside a large feathered
  * selection against the same painting with none (11); `--scatter` paints with
  * a dense scattering brush against the same painting without; `--smudge`
- * smudges the painting against painting it (smudge 01); `--vector` times
+ * smudges the painting against painting it (smudge 01); `--wet` paints over
+ * it with wet brushes against the same brushes dry (live brushes 10);
+ * `--vector` times
  * redrawing a vector layer of many paths (19); `--navigate` times panning and
  * zooming a stack whose caches each step rebuilds (sharp-zoom 01). They are
  * how the tables in
@@ -86,6 +88,8 @@ type Pass = {
   pen: { dispatched: number; requested: number; elapsedMs: number }
   readbacks: number
   readbacksTotal: number
+  /** Textures and buffers created while the pen was down. */
+  allocations: number
   report: Report
 }
 
@@ -169,6 +173,7 @@ async function measure(
       },
       readbacks: result.readbacks,
       readbacksTotal: result.readbacksTotal,
+      allocations: result.allocations,
       report: summarize(result.frames, { warmupFrames: WARMUP_FRAMES }),
       frames: result.frames,
       strokeStarts: result.strokeStarts,
@@ -382,54 +387,37 @@ async function scatterSweep(): Promise<void> {
  */
 const SMUDGE_SIZES = [2048, 8192]
 
-/** Two sizes and loads, paced latency beside unpaced throughput (D30). */
-async function wetSweep(): Promise<void> {
-  console.log(
-    "\n  document  diameter  pickup  sustained fps  p95 latency ms  readbacks"
-  )
-  for (const size of SMUDGE_SIZES)
-    for (const diameter of [64, 512])
-      for (const pickup of [0, 0.8]) {
-        const workload = {
-          ...BENCHMARK_WORKLOAD,
-          width: size,
-          height: size,
-          strokes: SWEEP_STROKES,
-          wet: { diameter, pickup },
-        }
-        const paced = await measure(PASSES[0], workload)
-        const unpaced = await measure(PASSES[1], workload)
-        const readbacks = paced.readbacks + unpaced.readbacks
-        console.log(
-          `  ${size}²  ${diameter}  ${pickup}  ${fixed(unpaced.report.frameRate.sustained)}  ${fixed(paced.report.latencyMs.p95)}  ${readbacks}`
-        )
-        if (readbacks > 0) process.exitCode = 1
-      }
+const middle = (values: number[]) =>
+  [...values].sort((a, b) => a - b)[values.length >> 1]
+
+/**
+ * Pen-to-pixel of the frame each stroke's pen-down was drawn in: the first,
+ * from where the stroke began, that consumed a sample.
+ */
+function openingFrames({ frames, strokeStarts }: Measured): number[] {
+  return strokeStarts.flatMap((start) => {
+    const frame = frames.slice(start).find((f) => f.latencyMs !== null)
+    return frame ? [frame.latencyMs!] : []
+  })
 }
 
 async function smudgeSweep(): Promise<void> {
   const pass = PASSES.find((entry) => entry.name === "paced")!
-  const middle = (values: number[]) =>
-    [...values].sort((a, b) => a - b)[values.length >> 1]
   console.log(
     "\n  pen-to-pixel in ms" +
       "\n  document  tool      stroke's first frame (median / worst)   all frames (median / p95)   dabs     readbacks"
   )
   for (const size of SMUDGE_SIZES)
     for (const smudge of [false, true]) {
-      const { report, frames, strokeStarts, readbacks } = await measure(pass, {
+      const measured = await measure(pass, {
         ...BENCHMARK_WORKLOAD,
         width: size,
         height: size,
         strokes: SWEEP_STROKES,
         smudge,
       })
-      // The frame a stroke's pen-down was drawn in: the first, from where the
-      // stroke began, that consumed a sample.
-      const opening = strokeStarts.flatMap((start) => {
-        const frame = frames.slice(start).find((f) => f.latencyMs !== null)
-        return frame ? [frame.latencyMs!] : []
-      })
+      const { report, readbacks } = measured
+      const opening = openingFrames(measured)
       console.log(
         `  ${`${size}²`.padEnd(8)}  ${(smudge ? "smudge" : "brush").padEnd(8)}  ` +
           `${fixed(middle(opening)).padStart(18)} / ${fixed(Math.max(...opening)).padEnd(15)}   ` +
@@ -438,6 +426,66 @@ async function smudgeSweep(): Promise<void> {
       )
       if (readbacks > 0) process.exitCode = 1
     }
+  console.log()
+}
+
+const WET_DIAMETERS = [64, 512]
+const HEAVY_PICKUP = 0.8
+/**
+ * The closest dabs a brush can be given: an imported preset's spacing goes
+ * down to this, half what the editor's slider does. It is under the wet
+ * spacing floor at both sizes, so this row is the floor itself, measured.
+ */
+const DENSEST_SPACING = 0.01
+const WET_PAINTS = [
+  { name: "dry", pickup: 0, dry: true },
+  { name: "wet", pickup: 0 },
+  { name: "wet, pickup", pickup: HEAVY_PICKUP },
+  { name: "wet, densest", pickup: HEAVY_PICKUP, spacing: DENSEST_SPACING },
+]
+
+/**
+ * Wet brushes (live brushes 10, 11), against the same brushes dry. A wet dab
+ * is a copy of its neighbourhood and a draw of its own, and a second draw
+ * into the reservoir when it picks up, where a dry brush's dabs are instances
+ * in one draw; so a frame can afford only so many, and the wet spacing floor
+ * is what keeps to that. Each brush is run dry, wet with no pickup, wet with
+ * heavy pickup, and wet at the closest spacing a brush can ask for, on a
+ * small document and a large one, since nothing a wet stroke does may grow
+ * with the document. Both passes, as a recorded run makes: the frame's cost
+ * unpaced, pen-to-pixel paced.
+ */
+async function wetSweep(): Promise<void> {
+  const paced = PASSES.find((entry) => entry.name === "paced")!
+  const unpaced = PASSES.find((entry) => entry.name === "unpaced")!
+  console.log(
+    "\n                                    unpaced                    paced: pen-to-pixel in ms" +
+      "\n  document  brush   paint         ms/frame   sustained fps   stroke's first frame (median / worst)   all frames (median / p95)   dabs    readbacks   allocations"
+  )
+  for (const size of SMUDGE_SIZES)
+    for (const diameter of WET_DIAMETERS)
+      for (const { name, ...paint } of WET_PAINTS) {
+        const workload = {
+          ...BENCHMARK_WORKLOAD,
+          width: size,
+          height: size,
+          strokes: SWEEP_STROKES,
+          wet: { diameter, ...paint },
+        }
+        const free = await measure(unpaced, workload)
+        const held = await measure(paced, workload)
+        const opening = openingFrames(held)
+        const readbacks = free.readbacks + held.readbacks
+        const allocations = Math.max(free.allocations, held.allocations)
+        console.log(
+          `  ${`${size}²`.padEnd(8)}  ${`${diameter} px`.padEnd(6)}  ${name.padEnd(12)}  ` +
+            `${fixed(free.report.frameIntervalMs.mean, 3).padStart(9)}   ${fixed(free.report.frameRate.sustained).padStart(13)}   ` +
+            `${fixed(middle(opening)).padStart(18)} / ${fixed(Math.max(...opening)).padEnd(15)}   ` +
+            `${fixed(held.report.latencyMs.median).padStart(12)} / ${fixed(held.report.latencyMs.p95).padEnd(8)}   ` +
+            `${String(held.report.stamps.total).padStart(6)}   ${String(readbacks).padStart(9)}   ${String(allocations).padStart(11)}`
+        )
+        if (readbacks > 0) process.exitCode = 1
+      }
   console.log()
 }
 
@@ -534,18 +582,18 @@ async function main(): Promise<void> {
     ? { ...BENCHMARK_WORKLOAD, colourDynamics: true }
     : BENCHMARK_WORKLOAD
   const stop = await serve()
-  const ladder = process.argv.includes("--wet")
-    ? wetSweep
-    : process.argv.includes("--sweep")
-      ? sweep
-      : process.argv.includes("--layers")
-        ? layerSweep
-        : process.argv.includes("--feather")
-          ? featherSweep
-          : process.argv.includes("--scatter")
-            ? scatterSweep
-            : process.argv.includes("--smudge")
-              ? smudgeSweep
+  const ladder = process.argv.includes("--sweep")
+    ? sweep
+    : process.argv.includes("--layers")
+      ? layerSweep
+      : process.argv.includes("--feather")
+        ? featherSweep
+        : process.argv.includes("--scatter")
+          ? scatterSweep
+          : process.argv.includes("--smudge")
+            ? smudgeSweep
+            : process.argv.includes("--wet")
+              ? wetSweep
               : process.argv.includes("--vector")
                 ? vectorSweep
                 : process.argv.includes("--navigate")

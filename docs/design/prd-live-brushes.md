@@ -112,7 +112,7 @@ type BrushRendering = {
 
 **Which brush features reach a wet dab.** Size, angle and roundness dynamics; flow dynamics; the new pickup target; tip textures and tip sets with their frame selection; grain, applied to the laid colour only and not to the paint being dragged. Scatter and colour jitter do not: a scattered dab has no single dab behind it to drag from, and both are ticketed as follow-ups. A wet brush with scatter or colour set draws as if they were absent.
 
-**Dab spacing.** A wet brush uses its own spacing setting, floored at one pixel as smudge is, since a dab needs a whole pixel behind it to drag.
+**Dab spacing.** A wet brush uses its own spacing setting, held at a floor: four pixels or a sixteenth of the dab's radius, whichever is more, a blender included. The floor was one pixel, as smudge's is, until the D30 measurement raised it (live brushes 10, `docs/design/benchmark.md`).
 
 **Mixing uses pigment reflectance** in the P3 working space (D10), with linear premultiplied alpha so transparency only thins paint. Follow-up 11 replaces the isolated mix function for wet brushes and smudge with an always-on synthetic Kubelka–Munk approximation; see [model and provenance](pigment-mixing.md).
 

@@ -83,6 +83,24 @@ describe("createWorkload", () => {
         scatter: { amount: 2, count: 0, axes: "both" },
       })
     ).toThrow()
+    const wet = { diameter: 64, pickup: 0.8 }
+    expect(() =>
+      createWorkload({ ...options, wet: { ...wet, diameter: 0 } })
+    ).toThrow()
+    expect(() =>
+      createWorkload({ ...options, wet: { ...wet, pickup: 1.5 } })
+    ).toThrow()
+    expect(() =>
+      createWorkload({ ...options, wet: { ...wet, spacing: 0 } })
+    ).toThrow()
+    expect(() => createWorkload({ ...options, wet, smudge: true })).toThrow()
+  })
+
+  test("painting the workload wet changes the brush and not the strokes", () => {
+    const wet = { diameter: 512, pickup: 0.8, spacing: 0.01 }
+    const workload = createWorkload({ ...options, wet })
+    expect(workload.strokes).toEqual(createWorkload(options).strokes)
+    expect(workload.options.wet).toEqual(wet)
   })
 })
 

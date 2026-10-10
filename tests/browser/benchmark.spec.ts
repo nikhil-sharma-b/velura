@@ -132,3 +132,27 @@ test("the smudge benchmark smears the workload without reading pixels back", asy
   // What a cancel puts back is copied on the GPU, never read back.
   expect(result.readbacks).toBe(0)
 })
+
+test("the wet benchmark paints over the workload without reading back or allocating per dab", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.runBenchmark)
+  const result = await page.evaluate(
+    (workload) =>
+      window.runBenchmark({ ...workload, wet: { diameter: 64, pickup: 0.8 } }),
+    WORKLOAD
+  )
+
+  expect(result.dispatched).toBe(result.requested)
+  expect(result.strokeStarts).toHaveLength(WORKLOAD.strokes)
+  // Wet dabs were drawn, each a copy and a pass of its own.
+  const dabs = result.frames.reduce((total, frame) => total + frame.stamps, 0)
+  expect(dabs).toBeGreaterThan(50)
+  expect(result.readbacks).toBe(0)
+  // What a wet stroke may allocate with the pen down is the page its cancel
+  // tiles are kept in, and a 512-square canvas is four tiles: one page, once,
+  // however many dabs and strokes follow.
+  expect(result.allocations).toBe(1)
+})
