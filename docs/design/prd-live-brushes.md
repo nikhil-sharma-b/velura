@@ -139,6 +139,8 @@ A good test here checks what the artist would see or what a stored brush means, 
 - **Engine facade, in the browser.** Draw a stroke through the engine's public commands and read pixels back, as `smudge.spec.ts`, `smudge-in-selection.spec.ts` and `smudge-on-mask.spec.ts` do. This covers: colour carried from one region into another; colour laid on an empty layer; flow zero laying nothing; pickup zero matching a plain covering stroke; only the active layer changing; selection clipping with paint dragged in from outside; mask painting; undo, redo and cancel; reload. The reservoir is tested the same way: a stroke that crosses red then blue leaves red in the blue further along than a stroke without it would.
 - **Pure layer, unit tests.** Brush validation and defaults for `wet`, the `pickup` dynamics target, the Krita mapping table against a small committed colour-smudge fixture, and local and Convex brush storage round-trips. Prior art: `smudge.test.ts`, `krita-preset.test.ts`, `local-brushes.test.ts`, `convex-brushes.test.ts`.
 
+Follow-up 11 adds an explicitly approved GPU mix probe for alpha and unpresented P3 values, alongside the engine facade checks; see [pigment mixing](pigment-mixing.md). The reservoir remains untested as an internal texture.
+
 Supporting checks:
 
 - **Seam extraction** adds no tests. It is done when the existing stroke, stroke-buffer, smudge and scatter specs and their golden images pass unchanged.
@@ -152,7 +154,6 @@ Supporting checks:
 - **Wetness and drying:** recent paint mixing while old paint does not, whether per session or saved with the document.
 - **Paint thickness, impasto and lighting.**
 - Ticketed as follow-ups, not built here:
-  - Pigment mixing shipped in follow-up 11 (subtractive colour, blue and yellow giving green).
   - A brush that stays dirty between strokes, with a clean-brush toggle.
   - Scatter on wet brushes.
   - Colour jitter on wet brushes.

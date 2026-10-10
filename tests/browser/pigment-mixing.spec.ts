@@ -9,7 +9,9 @@ async function mix(page: Page, a: number[], b: number[], t = 0.5) {
 }
 
 test.beforeEach(async ({ page }) => {
-  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.goto(
+    process.env.VELURA_TEST_HARNESS ?? "http://127.0.0.1:3101/tests/harness/"
+  )
   await page.waitForFunction(() => !!window.mixPaintProbe)
 })
 

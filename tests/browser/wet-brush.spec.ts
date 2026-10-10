@@ -23,7 +23,9 @@ const PICKUP = 0.5
 type Origin = { x: number; y: number }
 
 async function openCanvas(page: Page, documentId?: string): Promise<Origin> {
-  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.goto(
+    process.env.VELURA_TEST_HARNESS ?? "http://127.0.0.1:3101/tests/harness/"
+  )
   await page.waitForFunction(() => !!window.engine)
   await page.evaluate(
     async ([width, height, documentId, colour]) => {
