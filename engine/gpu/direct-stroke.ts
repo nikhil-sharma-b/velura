@@ -65,9 +65,8 @@ const MAX_CARRY_SIZE = 2048
 
 /**
  * The stroke that reads and writes its surface as it goes (D29, smudge 01):
- * each dab is mixed towards the pixel one dab's travel behind it, so what was
- * under the tip a step ago is dragged to where the tip is now. A wet brush's
- * dab is then mixed towards the stroke's colour (D41); smudge's is not.
+ * smudge mixes towards the pixel one dab behind. Wet brushes exchange paint
+ * with a stroke-local reservoir held in tip coordinates (D41).
  */
 export function createDirectStroke(
   device: GPUDevice,
@@ -112,9 +111,9 @@ export function createDirectStroke(
    * any of them is replaced.
    */
   let bindGroup: GPUBindGroup | undefined
-  const params = new Float32Array(12)
+  const params = new Float32Array(8)
   const shaderModule = device.createShaderModule({ code: smudgeShader })
-  const pipeline = device.createRenderPipeline({
+  const pipelineDescriptor: GPURenderPipelineDescriptor = {
     label: "smudge",
     layout: "auto",
     vertex: {
@@ -169,7 +168,63 @@ export function createDirectStroke(
       targets: [{ format: LAYER_FORMAT }],
     },
     primitive: { topology: "triangle-list" },
+  }
+  const pipeline = device.createRenderPipeline(pipelineDescriptor)
+  const reservoirPipeline = device.createRenderPipeline({
+    ...pipelineDescriptor,
+    label: "brush reservoir pickup",
+    vertex: {
+      ...pipelineDescriptor.vertex,
+      module: shaderModule,
+      entryPoint: "reservoirVertex",
+    },
+    fragment: {
+      ...pipelineDescriptor.fragment!,
+      module: shaderModule,
+      entryPoint: "reservoirFragment",
+    },
   })
+  // Maximum direct-tip capacity, allocated once. Only a first-dab-sized
+  // square is used; its coordinates stay fixed through geometry dynamics.
+  const reservoirSize = MAX_CARRY_SIZE
+  const reservoirs = [0, 1].map(() =>
+    device.createTexture({
+      label: "brush reservoir",
+      size: [reservoirSize, reservoirSize],
+      format: LAYER_FORMAT,
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    })
+  )
+  const reservoirViews = reservoirs.map((texture) => texture.createView())
+  let reservoirExtent = 0
+  let reservoirIndex = 0
+  let reservoirBindings: { layer: GPUBindGroup; pickup: GPUBindGroup }[] = []
+  function clearReservoir(color: LinearColor = [0, 0, 0, 0]) {
+    const encoder = device.createCommandEncoder()
+    for (const view of reservoirViews) {
+      encoder
+        .beginRenderPass({
+          colorAttachments: [
+            {
+              view,
+              loadOp: "clear",
+              storeOp: "store",
+              clearValue: {
+                r: color[0],
+                g: color[1],
+                b: color[2],
+                a: color[3],
+              },
+            },
+          ],
+        })
+        .end()
+    }
+    device.queue.submit([encoder.finish()])
+    reservoirExtent = 0
+    reservoirIndex = 0
+  }
   const uniform = device.createBuffer({
     size: params.byteLength,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -194,8 +249,7 @@ export function createDirectStroke(
     const stroke = session!
     const { width, height } = context.size()
     const selection = context.selection()
-    // Nothing outside the selection's bounds is selected (smudge 03), so a
-    // dab draws only within them, and one clear of them draws nothing.
+    // Selection bounds clip writes; reservoir pickup still reads the whole tip.
     const bounds = selection?.bounds
     const clipLeft = bounds ? Math.max(0, bounds.x) : 0
     const clipTop = bounds ? Math.max(0, bounds.y) : 0
@@ -216,36 +270,45 @@ export function createDirectStroke(
       stroke.last.x = x
       stroke.last.y = y
       const flow = stroke.lays ? dabs[dab + SMUDGE.FLOW] : 0
-      // A still tip drags nothing, and nor does one with no strength or with
-      // nothing under it; a dab that lays nothing either is not drawn, so a
-      // stroke of them leaves the layer, and its history, as they were.
+      // Smudge needs travel and existing paint. Wet pickup may update the
+      // reservoir even with no flow, without changing the layer or history.
       const drags =
+        !stroke.lays &&
         (travelX !== 0 || travelY !== 0) &&
         dabs[dab + SMUDGE.STRENGTH] > 0 &&
         !stroke.target.empty
-      if (!drags && !(flow > 0)) continue
+      const picksUp = stroke.lays && dabs[dab + SMUDGE.STRENGTH] > 0
+      if (!drags && !(flow > 0) && !picksUp) continue
       // Rotated textured quads fit inside sqrt(2) radii.
       const reach = dabs[dab + SMUDGE.RADIUS] * Math.SQRT2
       const left = Math.max(clipLeft, Math.floor(x - reach))
       const top = Math.max(clipTop, Math.floor(y - reach))
       const right = Math.min(clipRight, Math.ceil(x + reach))
       const bottom = Math.min(clipBottom, Math.ceil(y + reach))
-      if (right <= left || bottom <= top) continue
-      // What the dab reads: the pixels it covers and the ones its travel
-      // behind them, with a texel to spare for the blend between texels.
+      const writes = right > left && bottom > top && (drags || flow > 0)
+      if (!writes && !picksUp) continue
+      // Wet pickup reads the full tip, including outside selections. Smudge
+      // also needs the pixels one travel behind. A texel borders the blend.
       const fromLeft = Math.max(
         0,
-        Math.floor(Math.min(left, left - travelX)) - 1
+        Math.floor(stroke.lays ? x - reach : Math.min(left, left - travelX)) - 1
       )
-      const fromTop = Math.max(0, Math.floor(Math.min(top, top - travelY)) - 1)
+      const fromTop = Math.max(
+        0,
+        Math.floor(stroke.lays ? y - reach : Math.min(top, top - travelY)) - 1
+      )
       const fromRight = Math.min(
         width,
-        Math.ceil(Math.max(right, right - travelX)) + 1
+        Math.ceil(stroke.lays ? x + reach : Math.max(right, right - travelX)) +
+          1
       )
       const fromBottom = Math.min(
         height,
-        Math.ceil(Math.max(bottom, bottom - travelY)) + 1
+        Math.ceil(
+          stroke.lays ? y + reach : Math.max(bottom, bottom - travelY)
+        ) + 1
       )
+      if (fromRight <= fromLeft || fromBottom <= fromTop) continue
       const span = Math.max(fromRight - fromLeft, fromBottom - fromTop)
       if (span > MAX_CARRY_SIZE) continue
       need = Math.max(need, span)
@@ -263,13 +326,15 @@ export function createDirectStroke(
       rects[rect + 3] = fromBottom - fromTop
       rects[rect + 4] = left
       rects[rect + 5] = top
-      rects[rect + 6] = right - left
-      rects[rect + 7] = bottom - top
-      stroke.reached.left = Math.min(stroke.reached.left, left)
-      stroke.reached.top = Math.min(stroke.reached.top, top)
-      stroke.reached.right = Math.max(stroke.reached.right, right)
-      stroke.reached.bottom = Math.max(stroke.reached.bottom, bottom)
-      stroke.target.empty = false
+      rects[rect + 6] = writes ? right - left : 0
+      rects[rect + 7] = writes ? bottom - top : 0
+      if (writes) {
+        stroke.reached.left = Math.min(stroke.reached.left, left)
+        stroke.reached.top = Math.min(stroke.reached.top, top)
+        stroke.reached.right = Math.max(stroke.reached.right, right)
+        stroke.reached.bottom = Math.max(stroke.reached.bottom, bottom)
+        stroke.target.empty = false
+      }
       drawn++
     }
     if (drawn === 0) return
@@ -283,6 +348,7 @@ export function createDirectStroke(
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       })
       bindGroup = undefined
+      reservoirBindings = []
     }
     const tip = context.tip()
     params[0] = width
@@ -290,6 +356,14 @@ export function createDirectStroke(
     params[2] = tip.feather
     params[3] = tip.usesTip ? 1 : 0
     params[4] = selection ? 1 : 0
+    params[5] = stroke.lays ? 1 : 0
+    if (stroke.lays && reservoirExtent === 0) {
+      reservoirExtent = Math.min(
+        reservoirSize,
+        Math.max(64, Math.ceil(drawnDabs[SMUDGE.RADIUS] * 2))
+      )
+    }
+    params[6] = reservoirExtent / reservoirSize
     device.queue.writeBuffer(uniform, 0, params)
     device.queue.writeBuffer(
       instances,
@@ -299,9 +373,8 @@ export function createDirectStroke(
       drawn * SMUDGE_INSTANCE_STRIDE
     )
     // Kept between frames of a stroke, which must allocate nothing (D30).
-    bindGroup ??= device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
+    if (!bindGroup || reservoirBindings.length === 0) {
+      const entries: GPUBindGroupEntry[] = [
         { binding: 0, resource: { buffer: uniform } },
         { binding: 1, resource: tip.sampler },
         {
@@ -314,8 +387,19 @@ export function createDirectStroke(
           binding: 5,
           resource: (selection?.texture ?? context.noSelection).createView(),
         },
-      ],
-    })
+      ]
+      reservoirBindings = reservoirViews.map((resource) => ({
+        layer: device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [...entries, { binding: 6, resource }],
+        }),
+        pickup: device.createBindGroup({
+          layout: reservoirPipeline.getBindGroupLayout(0),
+          entries: [...entries.slice(0, 5), { binding: 6, resource }],
+        }),
+      }))
+      bindGroup = reservoirBindings[0].layer
+    }
     // Each dab reads what the one before it wrote, so each is a copy and a
     // pass of its own; one encoder holds the frame's worth in order.
     const encoder = device.createCommandEncoder()
@@ -324,20 +408,22 @@ export function createDirectStroke(
       const rect = i * 8
       // Before the dab writes: any tile under it that no dab has yet touched
       // is kept as it is.
-      const lastColumn = (rects[rect + 4] + rects[rect + 6] - 1) >> TILE_SHIFT
-      const lastRow = (rects[rect + 5] + rects[rect + 7] - 1) >> TILE_SHIFT
-      for (let row = rects[rect + 5] >> TILE_SHIFT; row <= lastRow; row++)
-        for (
-          let column = rects[rect + 4] >> TILE_SHIFT;
-          column <= lastColumn;
-          column++
-        ) {
-          const tile = row * tilesAcross + column
-          if (stroke.kept.has(tile)) continue
-          const slot = stroke.kept.size
-          stroke.kept.set(tile, slot)
-          copyBackupTile(encoder, stroke.target, tile, slot, "keep")
-        }
+      if (rects[rect + 6] > 0 && rects[rect + 7] > 0) {
+        const lastColumn = (rects[rect + 4] + rects[rect + 6] - 1) >> TILE_SHIFT
+        const lastRow = (rects[rect + 5] + rects[rect + 7] - 1) >> TILE_SHIFT
+        for (let row = rects[rect + 5] >> TILE_SHIFT; row <= lastRow; row++)
+          for (
+            let column = rects[rect + 4] >> TILE_SHIFT;
+            column <= lastColumn;
+            column++
+          ) {
+            const tile = row * tilesAcross + column
+            if (stroke.kept.has(tile)) continue
+            const slot = stroke.kept.size
+            stroke.kept.set(tile, slot)
+            copyBackupTile(encoder, stroke.target, tile, slot, "keep")
+          }
+      }
       encoder.copyTextureToTexture(
         {
           texture: stroke.target.texture,
@@ -346,22 +432,49 @@ export function createDirectStroke(
         { texture: carry },
         { width: rects[rect + 2], height: rects[rect + 3] }
       )
-      const pass = encoder.beginRenderPass({
-        colorAttachments: [
-          { view: stroke.target.view, loadOp: "load", storeOp: "store" },
-        ],
-      })
-      pass.setPipeline(pipeline)
-      pass.setBindGroup(0, bindGroup)
-      pass.setVertexBuffer(0, instances)
-      pass.setScissorRect(
-        rects[rect + 4],
-        rects[rect + 5],
-        rects[rect + 6],
-        rects[rect + 7]
-      )
-      pass.draw(6, 1, 0, i)
-      pass.end()
+      if (rects[rect + 6] > 0 && rects[rect + 7] > 0) {
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [
+            { view: stroke.target.view, loadOp: "load", storeOp: "store" },
+          ],
+        })
+        pass.setPipeline(pipeline)
+        pass.setBindGroup(
+          0,
+          stroke.lays ? reservoirBindings[reservoirIndex].layer : bindGroup
+        )
+        pass.setVertexBuffer(0, instances)
+        pass.setScissorRect(
+          rects[rect + 4],
+          rects[rect + 5],
+          rects[rect + 6],
+          rects[rect + 7]
+        )
+        pass.draw(6, 1, 0, i)
+        pass.end()
+      }
+      if (
+        stroke.lays &&
+        drawnDabs[i * SMUDGE_INSTANCE_STRIDE + SMUDGE.STRENGTH] > 0
+      ) {
+        const next = 1 - reservoirIndex
+        const pickup = encoder.beginRenderPass({
+          colorAttachments: [
+            {
+              view: reservoirViews[next],
+              loadOp: "load",
+              storeOp: "store",
+            },
+          ],
+        })
+        pickup.setViewport(0, 0, reservoirExtent, reservoirExtent, 0, 1)
+        pickup.setPipeline(reservoirPipeline)
+        pickup.setBindGroup(0, reservoirBindings[reservoirIndex].pickup)
+        pickup.setVertexBuffer(0, instances)
+        pickup.draw(6, 1, 0, i)
+        pickup.end()
+        reservoirIndex = next
+      }
     }
     device.queue.submit([encoder.finish()])
   }
@@ -423,8 +536,9 @@ export function createDirectStroke(
 
   function end(keep: boolean): PixelRect | null {
     if (!session) return null
-    const { target, reached, kept, wasEmpty } = session
+    const { target, reached, kept, wasEmpty, lays } = session
     session = undefined
+    if (lays) clearReservoir()
     const region =
       reached.right > reached.left && reached.bottom > reached.top
         ? {
@@ -455,8 +569,7 @@ export function createDirectStroke(
     begin({ target, lay }) {
       if (target.empty && !lay) return false
       if (session) end(false)
-      if (lay) params.set(lay, 8)
-      else params.fill(0, 8)
+      if (lay) clearReservoir(lay)
       session = {
         target,
         lays: !!lay,
@@ -473,8 +586,8 @@ export function createDirectStroke(
       return true
     },
     /**
-     * Dabs are laid out as `SMUDGE` says. The first of a stroke has nothing
-     * behind it: it marks where the stroke began, and drags nothing.
+     * Dabs are laid out as `SMUDGE` says. The first smudge dab has nothing
+     * behind it; the first wet dab exchanges paint with the clean load.
      */
     draw(dabs, count) {
       if (!session || count <= 0) return
@@ -485,15 +598,18 @@ export function createDirectStroke(
     end,
     invalidateBinding() {
       bindGroup = undefined
+      reservoirBindings = []
     },
     drop(surface) {
       if (surface && session?.target !== surface) return
+      if (session?.lays) clearReservoir()
       session = undefined
       trimBackup()
     },
     destroy() {
       session = undefined
       for (const page of backupPages.splice(0)) page.destroy()
+      for (const texture of reservoirs) texture.destroy()
       carry?.destroy()
       carry = undefined
       bindGroup = undefined

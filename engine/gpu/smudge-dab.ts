@@ -1,8 +1,7 @@
 /**
  * The layout of one dab of the direct stroke (smudge 01, D41), shared by the
  * engine that fills the array, the renderer that draws it and the shader's
- * locations: a smudge dab, or a wet brush's, which is a smudge dab that also
- * lays colour. The engine writes the first eight floats; the renderer adds
+ * locations: a smudge dab, or a wet brush's reservoir exchange. The engine writes the first eight floats; the renderer adds
  * the last four, which only it can know: how far the tip came since the dab
  * before, and where the pixels it reads were copied from.
  */
@@ -11,8 +10,8 @@ export const SMUDGE = {
   CENTER_Y: 1,
   RADIUS: 2,
   /**
-   * How much of the pixel behind replaces the one under the tip, in [0, 1]:
-   * smudge's strength, a wet brush's pickup.
+   * Smudge's pixel-behind mix, or how much ground paint a wet brush picks
+   * into its reservoir, in [0, 1].
    */
   STRENGTH: 3,
   /** Rotation of the tip, as a turn clockwise. */
@@ -20,7 +19,7 @@ export const SMUDGE = {
   /** Width of the tip against its length, in (0, 1]. */
   ROUNDNESS: 5,
   TIP_FRAME: 6,
-  /** How much of the stroke's colour the dab lays, in [0, 1]. Smudge's is 0. */
+  /** How much reservoir paint the dab lays, in [0, 1]. Smudge's is 0. */
   FLOW: 7,
   TRAVEL_X: 8,
   TRAVEL_Y: 9,

@@ -356,9 +356,8 @@ export interface Renderer {
   beginDirect(surfaceId: string, lay: LinearColor | null): boolean
   /**
    * Draws `count` dabs (see `SMUDGE`) straight into the surface of the
-   * direct stroke, each dragging in what lay one dab's travel behind it and
-   * laying the stroke's colour by its flow. The first dab of a stroke has
-   * nothing behind it to drag.
+   * direct stroke. Smudge drags the pixel one dab behind; a wet brush lays
+   * reservoir paint by flow and picks ground paint into it by pickup.
    */
   drawDirect(dabs: Float32Array, count: number): void
   /**
