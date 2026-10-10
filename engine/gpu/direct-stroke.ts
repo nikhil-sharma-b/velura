@@ -25,6 +25,14 @@ export type DirectStrokeContext = {
     usesTip: boolean
     feather: number
   }
+  /** The paper a wet brush's laid colour is bitten by, and how hard. */
+  grain(): {
+    texture: GPUTexture
+    sampler: GPUSampler
+    scale: number
+    depth: number
+    movement: number
+  }
   /** The selection's coverage and bounds, while there is one. */
   selection(): { texture: GPUTexture; bounds: PixelRect } | undefined
   /** Bound for the selection while nothing is selected; the shader skips it. */
@@ -47,7 +55,10 @@ export type DirectOpening = {
  * it holds on to between dabs.
  */
 export interface DirectStroke extends StrokeRenderer<DirectOpening> {
-  /** The tip or the selection was replaced: the views held of them are stale. */
+  /**
+   * The tip, the grain or the selection was replaced: the views held of them
+   * are stale.
+   */
   invalidateBinding(): void
   /**
    * Lets go of the stroke in flight without putting anything back, because
@@ -108,8 +119,8 @@ export function createDirectStroke(
    */
   let carry: GPUTexture | undefined
   /**
-   * Holds the tip's, the carry's and the selection's views, so it goes when
-   * any of them is replaced.
+   * Holds the tip's, the carry's, the selection's and the grain's views, so
+   * it goes when any of them is replaced.
    */
   let bindGroup: GPUBindGroup | undefined
   const params = new Float32Array(12)
@@ -158,6 +169,11 @@ export function createDirectStroke(
               format: "float32x2",
             },
             { shaderLocation: 8, offset: SMUDGE.FLOW * 4, format: "float32" },
+            {
+              shaderLocation: 9,
+              offset: SMUDGE.GRAIN_DEPTH * 4,
+              format: "float32",
+            },
           ],
         },
       ],
@@ -290,6 +306,10 @@ export function createDirectStroke(
     params[2] = tip.feather
     params[3] = tip.usesTip ? 1 : 0
     params[4] = selection ? 1 : 0
+    const grain = context.grain()
+    params[5] = grain.scale
+    params[6] = grain.depth
+    params[7] = grain.movement
     device.queue.writeBuffer(uniform, 0, params)
     device.queue.writeBuffer(
       instances,
@@ -314,6 +334,8 @@ export function createDirectStroke(
           binding: 5,
           resource: (selection?.texture ?? context.noSelection).createView(),
         },
+        { binding: 6, resource: grain.sampler },
+        { binding: 7, resource: grain.texture.createView() },
       ],
     })
     // Each dab reads what the one before it wrote, so each is a copy and a
