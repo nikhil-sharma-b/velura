@@ -348,7 +348,7 @@ export interface Renderer {
   endFilter(keep: boolean): void
   /**
    * Starts a direct stroke on one surface (smudge 01, D41): a wet brush's,
-   * which lays `lay`, or with null a smudge. Nothing is copied yet: each
+   * which lays `lay`, or with null a smudge or a blender, which lay nothing. Nothing is copied yet: each
    * tile is kept as it is when a dab first writes to it, which is what a
    * cancel puts back. False for a smudge when the surface holds nothing,
    * and so has nothing to smear.
@@ -356,8 +356,9 @@ export interface Renderer {
   beginDirect(surfaceId: string, lay: LinearColor | null): boolean
   /**
    * Draws `count` dabs (see `SMUDGE`) straight into the surface of the
-   * direct stroke. Smudge drags the pixel one dab behind; a wet brush lays
-   * reservoir paint by flow and picks ground paint into it by pickup.
+   * direct stroke. Smudge and a blender drag the pixel one dab behind; a wet
+   * brush that lays does so from its reservoir by flow, and picks ground
+   * paint into it by pickup.
    */
   drawDirect(dabs: Float32Array, count: number): void
   /**

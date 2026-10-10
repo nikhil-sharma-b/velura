@@ -102,6 +102,17 @@ export function validateBrushWet(wet: BrushWet): void {
     throw new Error("Brush pickup must be in [0, 1].")
 }
 
+/**
+ * Whether a brush is a blender: wet, with no flow of its own (D41). The
+ * graph scales flow and cannot raise it off zero, so such a brush never lays
+ * and nothing it carried on its bristles could reach the layer. It drags
+ * from the pixel behind, as smudge does, in place of trading with a
+ * reservoir.
+ */
+export function isBlender(brush: Brush): boolean {
+  return !!brush.rendering.wet && brush.rendering.flow === 0
+}
+
 /** Amplitudes scaling the graph's colour offsets. Absent means unit scales.
  * Hue is in turns; saturation and lightness are fractions of their HSL range.
  * Random-source mappings provide seeded per-dab jitter, just like size jitter.

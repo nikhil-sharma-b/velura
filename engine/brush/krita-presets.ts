@@ -1,5 +1,7 @@
 import type { Brush } from "./brush"
-import data from "./krita-presets.json"
+// The attribute is what lets Node load this module as written, which the
+// browser specs that import the presets do.
+import data from "./krita-presets.json" with { type: "json" }
 
 /**
  * The brushes ported from Krita's default bundle (brush library 05), in the

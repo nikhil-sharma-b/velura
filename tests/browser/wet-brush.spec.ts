@@ -243,7 +243,36 @@ test("at high pickup and low flow a wet brush mostly blends", async ({
     )
 })
 
-test("at no flow a wet brush changes neither paint nor history", async ({
+test("at no flow a wet brush lays nothing and drags as smudge does", async ({
+  page,
+}) => {
+  /** A drag out of the bar, by a wet brush that lays nothing or by smudge. */
+  async function draggedBy(tool: "brush" | "smudge") {
+    const origin = await openCanvas(page)
+    await addLayer(page)
+    await paintBar(page, origin)
+    const painted = await pixels(page)
+    await setColour(page, BLUE)
+    if (tool === "brush") await setWet(page, { pickup: PICKUP }, 0)
+    else
+      await page.evaluate(
+        (strength) =>
+          window.engine.dispatch({ type: "setSmudge", radius: 12, strength }),
+        PICKUP
+      )
+    await setTool(page, tool)
+    await stroke(page, origin, 80, 160)
+    return { painted, dragged: await pixels(page) }
+  }
+  // A brush with no flow has no colour to trade, so it has no reservoir: it
+  // is a blender, and reads the pixel behind as smudge does.
+  const wet = await draggedBy("brush")
+  const smudged = await draggedBy("smudge")
+  expect(wet.dragged).not.toEqual(wet.painted)
+  expect(wet.dragged).toEqual(smudged.dragged)
+})
+
+test("a wet dab whose flow the graph takes to zero changes neither paint nor history", async ({
   page,
 }) => {
   const origin = await openCanvas(page)
@@ -251,7 +280,17 @@ test("at no flow a wet brush changes neither paint nor history", async ({
   await paintBar(page, origin)
   const painted = await pixels(page)
   const before = await steps(page)
-  await setWet(page, { pickup: PICKUP }, 0)
+  // A brush with flow of its own keeps its reservoir: with every dab's flow
+  // scaled away it loads its bristles and gives nothing back.
+  await setWet(page, { pickup: PICKUP }, 1)
+  await page.evaluate(() =>
+    window.engine.dispatch({
+      type: "setBrush",
+      dynamics: [
+        { source: "velocity", target: "flow", range: [0, 0], mix: "multiply" },
+      ],
+    })
+  )
   await idleDrag(page, origin, 80, 160)
   expect(await pixels(page)).toEqual(painted)
   expect(await steps(page)).toBe(before)

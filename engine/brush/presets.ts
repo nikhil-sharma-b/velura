@@ -1,10 +1,10 @@
 import type { Brush } from "./brush"
 import type { Modulator } from "./dynamics"
-import { KRITA_BRUSHES } from "./krita-presets"
+import { type BuiltinBrushSet, KRITA_BRUSHES } from "./krita-presets"
 import { CHARCOAL_TIP, GRAPHITE_TIP, PAPER_GRAIN } from "./texture"
 
 /**
- * The brushes every install opens with (25): enough media to start painting
+ * The dry brushes every install opens with (25): enough media to start painting
  * without configuring anything.
  *
  * Each one is a `Brush` and nothing else — the same data an artist's own
@@ -155,6 +155,123 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
   },
 ])
 
+/** A bristle tip from the bundled Krita resources: a loaded head of hairs. */
+const OIL_BRISTLE_TIP = "krita:oil-bristle"
+/** Hairs that have parted into clumps, as a brush short of paint does. */
+const DRY_BRISTLE_TIP = "krita:bristles-grouped"
+/** Woven canvas, from the same bundle. */
+const CANVAS_GRAIN = "krita:01-canvas"
+
+/**
+ * The wet brushes every install opens with (live brushes 08): enough to paint
+ * wet without building a brush first.
+ *
+ * Each is the same `Brush` data as the dry ones, with `rendering.wet` set, so
+ * it lays its colour by `flow` and drags what is under it by `pickup` (D41).
+ * The stroke opacity and accumulation they carry are what the brush goes back
+ * to if wet is turned off in the editor. None scatters or jitters its colour:
+ * neither reaches a wet dab yet.
+ *
+ * Pickup is small where the brush is meant to cover. The bristles are loaded
+ * once, at pen-down, and every dab trades some of that load for what is under
+ * it, so a brush that picked up a tenth per dab would be painting with the
+ * canvas's colour within a few diameters.
+ */
+export const WET_BRUSHES: readonly Brush[] = Object.freeze([
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}oil-round`,
+    name: "Oil round",
+    shape: { radius: 14, feather: 4, roundness: 1, angle: 0, spacing: 0.08 },
+    // A loaded brush: it covers, and softens what it crosses on the way.
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0.8,
+      wet: { pickup: 0.05 },
+    },
+    dynamics: [
+      // A light touch blends and a hard press covers.
+      scaledBy("pressure", "flow", 0.25, 1),
+      scaledBy("pressure", "size", 0.6, 1),
+    ],
+  },
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}oil-flat`,
+    name: "Oil flat",
+    shape: {
+      radius: 18,
+      feather: 0,
+      roundness: 1,
+      angle: 0,
+      spacing: 0.06,
+      tipTextureId: OIL_BRISTLE_TIP,
+    },
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0.7,
+      wet: { pickup: 0.04 },
+    },
+    dynamics: [
+      // Turned with the stroke, the hairs always trail the way it is pulled,
+      // and their streaks run along it.
+      offsetBy("direction", "angle", 0, 1),
+      scaledBy("pressure", "flow", 0.35, 1),
+    ],
+  },
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}blender`,
+    name: "Blender",
+    shape: { radius: 16, feather: 6, roundness: 1, angle: 0, spacing: 0.08 },
+    // Flow zero: it lays nothing, and only moves what is already there.
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0,
+      wet: { pickup: 0.8 },
+    },
+    dynamics: [
+      // Force is how far the paint is dragged, never how much is added.
+      scaledBy("pressure", "pickup", 0.3, 1),
+      scaledBy("pressure", "size", 0.7, 1),
+    ],
+  },
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}dry-bristle`,
+    name: "Dry bristle",
+    shape: {
+      radius: 16,
+      feather: 0,
+      roundness: 1,
+      angle: 0,
+      spacing: 0.06,
+      tipTextureId: DRY_BRISTLE_TIP,
+    },
+    grain: { textureId: CANVAS_GRAIN, scale: 0.6, depth: 0.4, movement: 0 },
+    // Nearly out of paint: it gives up its load early, and what it leaves
+    // after that is mostly what it found.
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0.35,
+      wet: { pickup: 0.2 },
+    },
+    dynamics: [
+      // The hairs trail behind the hand, so their streaks run with the stroke.
+      offsetBy("direction", "angle", 0, 1),
+      scaledBy("pressure", "flow", 0.3, 1),
+      // Pressed, the bristles reach into the weave.
+      scaledBy("pressure", "grainDepth", 1, 0.5),
+    ],
+  },
+])
+
+/** The wet brushes as the library shelves them, after the dry built-ins. */
+export const WET_BRUSH_SET: BuiltinBrushSet = Object.freeze({
+  name: "Wet",
+  brushes: WET_BRUSHES,
+})
+
 /**
  * What a session with no remembered brush opens in the hand: a fine pencil
  * that responds to pressure and tilt, which is the least surprising thing to
@@ -162,7 +279,11 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
  */
 export const DEFAULT_LIBRARY_BRUSH_ID = `${BUILTIN_BRUSH_PREFIX}pencil`
 
-const ALL_BUILTIN_BRUSHES = [...BUILTIN_BRUSHES, ...KRITA_BRUSHES]
+const ALL_BUILTIN_BRUSHES = [
+  ...BUILTIN_BRUSHES,
+  ...WET_BRUSHES,
+  ...KRITA_BRUSHES,
+]
 
 export function builtinBrush(id: string): Brush | undefined {
   return ALL_BUILTIN_BRUSHES.find((brush) => brush.id === id)
