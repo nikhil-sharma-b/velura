@@ -1690,6 +1690,7 @@ export function createEngine(
   let committedSinceOpen = false
   /** Settles once every stored tile is back on the GPU, background ones too. */
   let fullyLoaded: Promise<void> = Promise.resolve()
+  let loadBackgroundTiles: (() => Promise<void>) | undefined
   let disposed = false
 
   // The stroke path. Every buffer here is allocated once, at construction:
@@ -4800,6 +4801,7 @@ export function createEngine(
     if (!target || !past || !document || !store) return true
     cloudBehind = false
     fullyLoaded = Promise.resolve()
+    loadBackgroundTiles = undefined
     // A line from the last point means one in this document.
     lastStrokeEnd = null
     pendingTiles.clear()
@@ -4968,7 +4970,7 @@ export function createEngine(
     publish(describeLayers(document))
     if (background.length > 0) {
       publish({ loading: true })
-      fullyLoaded = (async () => {
+      loadBackgroundTiles = async () => {
         for (const { surface, tiles } of background) {
           for (let index = 0; index < tiles.length; index += BACKGROUND_BATCH) {
             if (disposed) return
@@ -4992,7 +4994,7 @@ export function createEngine(
           flushScheduler?.touch()
           publishSyncStatus()
         }
-      })()
+      }
     } else seedLoadedTiles()
 
     return true
@@ -6009,6 +6011,11 @@ export function createEngine(
       // The host may have resized the canvas while validation was pending.
       render()
       publish({ status: "ready" })
+      // Validation may outlast the entire background tail. Start that tail
+      // only after the canvas is usable, so loading never delays readiness.
+      const loadRemaining = loadBackgroundTiles
+      loadBackgroundTiles = undefined
+      fullyLoaded = loadRemaining?.() ?? Promise.resolve()
       if (cloudBehind && restored)
         void fullyLoaded.then(() => {
           if (!disposed && device === acquired) flushScheduler?.flushNow()

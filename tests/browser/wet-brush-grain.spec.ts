@@ -18,7 +18,6 @@ const ROW = 60
 const RADIUS = 12
 const RED = "#d0202a"
 const BLUE = "#1040e0"
-const PICKUP = 0.5
 /** One tile of the paper, in its own pixels: half peak, half valley. */
 const TILE = 16
 /** Stripes along the stroke, so dragging moves paint along them, not across. */
@@ -181,7 +180,7 @@ async function drawn(
   page: Page,
   kind: "wet" | "dry",
   grain: BrushGrain | null,
-  pickup = PICKUP
+  pickup = 0
 ) {
   const origin = await openCanvas(page)
   const empty = await pixels(page)
@@ -213,8 +212,8 @@ test("a wet brush with grain lays paint the paper has bitten", async ({
 })
 
 for (const [name, grain, pickup] of [
-  ["at its own size", grainOf(ROWS), PICKUP],
-  ["at twice its size", grainOf(ROWS, { scale: 2 }), PICKUP],
+  ["at its own size", grainOf(ROWS), 0],
+  ["at twice its size", grainOf(ROWS, { scale: 2 }), 0],
   // Across the stroke a drag would carry paint into the valleys, so these
   // two only lay.
   ["fixed to the canvas", grainOf(COLUMNS), 0],
@@ -280,7 +279,7 @@ test("grain movement carries the paper along with a wet stroke", async ({
     expect(laid(carried, x)).toBeGreaterThan(200)
 })
 
-test("with flow zero a brush with grain leaves dragged paint unbitten", async ({
+test("with flow zero grain leaves pickup invisible on the layer", async ({
   page,
 }) => {
   /** A dry bar, dragged out by a wet brush that lays nothing. */
@@ -295,32 +294,64 @@ test("with flow zero a brush with grain leaves dragged paint unbitten", async ({
       flow: 0,
       wet: { pickup: 0.9 },
     })
-    await stroke(page, origin, 80, 170)
+    await page.mouse.move(origin.x + 80, origin.y + ROW)
+    await page.mouse.down()
+    await page.mouse.move(origin.x + 170, origin.y + ROW, { steps: 30 })
+    await page.mouse.up()
+    await frames(page)
     return { painted, image: await pixels(page) }
   }
   const plain = await dragged(null)
   const withGrain = await dragged(grainOf(ROWS))
-  expect(plain.image).not.toEqual(plain.painted)
+  expect(plain.image).toEqual(plain.painted)
   expect(withGrain.image).toEqual(plain.image)
 })
 
-test("blending over a bitten passage does not bite it a second time", async ({
+test("grain does not bite the paint picked into the reservoir", async ({
   page,
 }) => {
-  // The paper in columns, so a stroke along the row drags across it: paint
-  // carried off a peak lands whole in the valley beside it.
-  const origin = await openCanvas(page)
-  const empty = await pixels(page)
-  const grain = grainOf(COLUMNS)
-  await dispatch(page, { type: "setBrush", grain, flow: 1, wet: { pickup: 0 } })
-  await stroke(page, origin, 40, 200)
-  const laid = await pixels(page)
-  expect(change(laid, empty, 108)).toBe(0)
-
-  await dispatch(page, { type: "setBrush", flow: 0, wet: { pickup: 0.9 } })
-  await stroke(page, origin, 60, 180)
-  const blended = await pixels(page)
-  expect(change(blended, empty, 108)).toBeGreaterThan(60)
+  async function carried(pickupGrain: BrushGrain | null) {
+    const origin = await openCanvas(page)
+    await dispatch(page, { type: "setBrush", grain: grainOf(COLUMNS), flow: 1 })
+    await stroke(page, origin, 40, 100)
+    const painted = await pixels(page)
+    await dispatch(page, { type: "setColor", hex: BLUE })
+    await dispatch(page, {
+      type: "setBrush",
+      grain: pickupGrain,
+      flow: 0,
+      wet: { pickup: 1 },
+    })
+    await page.mouse.move(origin.x + 70, origin.y + ROW)
+    await page.mouse.down()
+    await frames(page)
+    // The picked load is then laid with no further pickup or paper bite.
+    await dispatch(page, {
+      type: "setBrush",
+      grain: null,
+      flow: 1,
+      dynamics: [
+        {
+          source: "velocity",
+          target: "pickup",
+          range: [0, 0],
+          mix: "multiply",
+        },
+      ],
+    })
+    await page.mouse.move(origin.x + 180, origin.y + ROW, { steps: 30 })
+    await page.mouse.up()
+    return { painted, image: await pixels(page) }
+  }
+  const plain = await carried(null)
+  const withGrain = await carried(grainOf(COLUMNS))
+  expect(withGrain.image).toEqual(plain.image)
+  expect(change(plain.image, plain.painted, 175)).toBeGreaterThan(200)
+  const picked = plain.image.slice(
+    (ROW * WIDTH + 175) * 4,
+    (ROW * WIDTH + 175) * 4 + 4
+  )
+  expect(picked).toEqual([208, 32, 42, 255])
 })
 
 test("the grain-depth dynamics target changes the bite along a wet stroke", async ({

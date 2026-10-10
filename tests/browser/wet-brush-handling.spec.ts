@@ -225,7 +225,7 @@ async function drawn(
   await openCanvas(page)
   const empty = await pixels(page)
   await dispatch(page, { type: "setBrush", ...brush })
-  if (kind === "wet") await setWet(page)
+  if (kind === "wet") await setWet(page, undefined, 0)
   await penStroke(page, samples, pointerType)
   return { empty, image: await pixels(page) }
 }
@@ -393,8 +393,9 @@ async function draggedOverBars(
   for (const bar of BARS) await stroke(page, origin, bar.from, bar.to)
   const painted = await pixels(page)
   await dispatch(page, { type: "setBrush", dynamics })
-  // No flow, so nothing is laid and every change is paint dragged.
-  await setWet(page, 0, 0.9)
+  await dispatch(page, { type: "setColor", hex: BLUE })
+  // A small flow reveals what pickup retained on the bristles.
+  await setWet(page, 0.1, 0.9)
   await penStroke(page, samples, pointerType)
   return { painted, image: await pixels(page) }
 }
@@ -405,19 +406,12 @@ test("pressing harder drags more paint along a wet stroke's length", async ({
   const samples = run(20, 230, [0.05, 1])
   const mapped = await draggedOverBars(page, PICKUP_BY_PRESSURE, samples)
   const plain = await draggedOverBars(page, [], samples)
-  const dragged = (drawn: typeof mapped, x: number) =>
-    change(drawn.image, drawn.painted, x)
-  // Lightly over the first bar, hard over the second: far more of the
-  // second is dragged away, where a brush whose pickup is its setting drags
-  // them alike.
-  expect(dragged(mapped, MIDDLE[0])).toBeGreaterThan(0)
-  expect(dragged(mapped, MIDDLE[0])).toBeLessThan(
-    dragged(mapped, MIDDLE[1]) / 4
+  // Light pressure preserves more of the initial blue load over the first red bar.
+  const blue = (image: number[], x: number) => image[(ROW * WIDTH + x) * 4 + 2]
+  expect(blue(mapped.image, MIDDLE[0])).toBeGreaterThan(
+    blue(plain.image, MIDDLE[0]) + 10
   )
-  expect(dragged(mapped, MIDDLE[0])).toBeLessThan(dragged(plain, MIDDLE[0]) / 4)
-  expect(
-    Math.abs(dragged(plain, MIDDLE[0]) - dragged(plain, MIDDLE[1]))
-  ).toBeLessThan(dragged(plain, MIDDLE[1]) / 4)
+  expect(mapped.image).not.toEqual(plain.image)
 })
 
 test("a device with no force sensor runs a wet brush's pickup at its setting", async ({
@@ -435,9 +429,7 @@ test("a device with no force sensor runs a wet brush's pickup at its setting", a
   expect(change(plain.image, plain.painted, MIDDLE[1])).toBeGreaterThan(0)
   // A pen that says how lightly it is pressed is listened to.
   const pen = await draggedOverBars(page, PICKUP_BY_PRESSURE, samples)
-  expect(change(pen.image, pen.painted, MIDDLE[1])).toBeLessThan(
-    change(plain.image, plain.painted, MIDDLE[1]) / 4
-  )
+  expect(pen.image).not.toEqual(plain.image)
 })
 
 /**
@@ -486,7 +478,7 @@ for (const tipSelection of [
         tipSelection,
         spacing: 1,
       })
-      if (kind === "wet") await setWet(page)
+      if (kind === "wet") await setWet(page, undefined, 0)
       await penStroke(page, VEE)
       const image = await pixels(page)
       return Array.from({ length: WIDTH * HEIGHT }, (_, i) =>
@@ -523,14 +515,13 @@ async function openPainted(page: Page, flow: number) {
 test("a wet stroke across the selection's edge changes nothing outside it, and carries outside paint in", async ({
   page,
 }) => {
-  // A brush that lays nothing, from the bar into the box.
-  const { origin, painted } = await openPainted(page, 0)
+  // A lightly loaded brush from the bar into the box.
+  const { origin, painted } = await openPainted(page, 0.1)
   await select(page)
   await stroke(page, origin, 80, 160)
   const mixed = await pixels(page)
   expect(pick(mixed, outBox)).toEqual(pick(painted, outBox))
-  // The box held no paint and the brush laid none: what is in it now was
-  // read from outside.
+  // The red in the box was picked up outside the selection.
   expect(change(mixed, painted, 130)).toBeGreaterThan(0)
   const [r, g, b] = mixed.slice((ROW * WIDTH + 130) * 4)
   const [r0, g0, b0] = painted.slice((ROW * WIDTH + 130) * 4)
@@ -542,6 +533,7 @@ test("a wet stroke lays its colour inside the selection and not outside it", asy
   page,
 }) => {
   const { origin, painted } = await openPainted(page, 0.5)
+  await setWet(page, 1, 0)
   await select(page)
   await stroke(page, origin, 80, 160)
   const mixed = await pixels(page)
@@ -707,4 +699,75 @@ test("a wet brush with scatter and colour jitter set draws as if they were absen
   expect(thrown.image).not.toEqual(thrown.empty)
   expect(thrown.image).toEqual(plain.image)
   expect(errors).toEqual([])
+})
+
+test("textured bristles retain separate colours as size, angle and roundness change", async ({
+  page,
+}) => {
+  await openCanvas(page)
+  await dispatch(page, { type: "setBrush", radius: 20, feather: 0 })
+  await penStroke(page, run(30, 100, 1, 40))
+  await dispatch(page, { type: "setColor", hex: BLUE })
+  await penStroke(page, run(30, 100, 1, 80))
+  await dispatch(page, {
+    type: "registerTexture",
+    id: "two-bristles",
+    texture: {
+      width: 3,
+      height: 1,
+      data: new Uint8Array([255, 0, 255]),
+    },
+  })
+  await dispatch(page, {
+    type: "setBrush",
+    radius: 30,
+    spacing: 0.125,
+    tipTextureId: "two-bristles",
+    wet: { pickup: 1 },
+    flow: 1,
+    dynamics: [
+      { source: "pressure", target: "pickup", range: [1, 0], mix: "multiply" },
+      { source: "pressure", target: "flow", range: [0, 1], mix: "multiply" },
+      { source: "pressure", target: "size", range: [0.67, 1], mix: "multiply" },
+      { source: "pressure", target: "angle", range: [0.125, 0.25], mix: "add" },
+      {
+        source: "pressure",
+        target: "roundness",
+        range: [0.4, 0.8],
+        mix: "multiply",
+      },
+    ],
+  })
+  const send = async (type: string, x: number, pressure: number) =>
+    page.evaluate(
+      ({ type, x, pressure }) => {
+        const canvas = document.querySelector("canvas")!
+        const box = canvas.getBoundingClientRect()
+        canvas.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId: 1,
+            pointerType: "pen",
+            isPrimary: true,
+            bubbles: true,
+            buttons: type === "pointerup" ? 0 : 1,
+            clientX: box.left + x,
+            clientY: box.top + 60,
+            pressure,
+          })
+        )
+      },
+      { type, x, pressure }
+    )
+  await send("pointerdown", 70, 0.01)
+  await frames(page)
+  await send("pointerrawupdate", 70, 1)
+  await frames(page)
+  for (let x = 72; x <= 180; x += 2) await send("pointerrawupdate", x, 1)
+  await send("pointerup", 180, 0)
+  await frames(page)
+  const image = await pixels(page)
+  const at = (y: number) =>
+    image.slice((y * WIDTH + 165) * 4, (y * WIDTH + 165) * 4 + 4)
+  expect(at(40)[0]).toBeGreaterThan(at(40)[2] + 60)
+  expect(at(80)[2]).toBeGreaterThan(at(80)[0] + 60)
 })

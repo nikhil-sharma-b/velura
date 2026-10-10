@@ -258,6 +258,13 @@ test("the canvas is usable, and the centre resolves, before every tile has loade
   // could if that instant were shorter than one round trip to the page.
   await page.evaluate(
     ([width, height, id]) => {
+      // Slow validation must not let background loading finish before readiness.
+      const popErrorScope = GPUDevice.prototype.popErrorScope
+      GPUDevice.prototype.popErrorScope = async function () {
+        const error = await popErrorScope.call(this)
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        return error
+      }
       window.sawReadyWhileLoading = false
       window.remountEngine({ persistence: { documentId: id as string } })
       window.engine.subscribe(() => {

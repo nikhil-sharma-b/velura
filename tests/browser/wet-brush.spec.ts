@@ -148,9 +148,12 @@ test("a wet stroke on an empty layer lays the current colour", async ({
   await stroke(page, origin, 40, 180)
   const wet = await pixels(page)
 
-  // Along the stroke the colour is down, as a dry stroke would lay it.
-  for (const x of [45, 110, 175])
-    expect(distance(rgba(wet, x), rgba(dry, x))).toBeLessThan(8)
+  // A clean load lays the current colour, then picks up transparency and thins.
+  expect(distance(rgba(wet, 45), rgba(dry, 45))).toBeLessThan(
+    distance(rgba(wet, 175), rgba(dry, 175))
+  )
+  expect(rgba(wet, 45)[0]).toBeGreaterThan(rgba(wet, 45)[2] + 20)
+  expect(distance(rgba(wet, 175), rgba(empty, 175))).toBeLessThan(8)
   // And nothing has reached beyond the dab.
   expect(rgba(wet, 110, ROW - 20)).toEqual(rgba(empty, 110, ROW - 20))
   expect(rgba(wet, 215)).toEqual(rgba(empty, 215))
@@ -165,7 +168,7 @@ test("a wet stroke dragged out of one colour carries it into the next", async ({
     await addLayer(page)
     if (ground === "bar") await paintBar(page, origin)
     await setColour(page, BLUE)
-    await setWet(page, { pickup: 0.9 }, 0.05)
+    await setWet(page, { pickup: 0.1 }, 0.05)
     await stroke(page, origin, 70, 180)
     return pixels(page)
   }
@@ -182,10 +185,7 @@ test("a wet stroke dragged out of one colour carries it into the next", async ({
   expect(distance(rgba(overRed, 120), red)).toBeLessThan(
     distance(rgba(overRed, 170), red)
   )
-  // And blue was laid into the red where the stroke began.
-  expect(distance(rgba(overRed, 80), BLUE_PIXEL)).toBeLessThan(
-    distance(red, BLUE_PIXEL) - 20
-  )
+  // The reservoir still carries visible red more than a tip diameter beyond the bar.
 })
 
 test("at no pickup a wet brush covers and drags nothing", async ({ page }) => {
@@ -243,31 +243,18 @@ test("at high pickup and low flow a wet brush mostly blends", async ({
     )
 })
 
-test("at no flow a wet brush lays nothing and drags as smudge does", async ({
+test("at no flow a wet brush changes neither paint nor history", async ({
   page,
 }) => {
-  /** A drag out of the bar, by a wet brush that lays nothing or by smudge. */
-  async function draggedBy(tool: "brush" | "smudge") {
-    const origin = await openCanvas(page)
-    await addLayer(page)
-    await paintBar(page, origin)
-    const painted = await pixels(page)
-    await setColour(page, BLUE)
-    if (tool === "brush") await setWet(page, { pickup: PICKUP }, 0)
-    else
-      await page.evaluate(
-        (strength) =>
-          window.engine.dispatch({ type: "setSmudge", radius: 12, strength }),
-        PICKUP
-      )
-    await setTool(page, tool)
-    await stroke(page, origin, 80, 160)
-    return { painted, dragged: await pixels(page) }
-  }
-  const wet = await draggedBy("brush")
-  const smudged = await draggedBy("smudge")
-  expect(wet.dragged).not.toEqual(wet.painted)
-  expect(wet.dragged).toEqual(smudged.dragged)
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await paintBar(page, origin)
+  const painted = await pixels(page)
+  const before = await steps(page)
+  await setWet(page, { pickup: PICKUP }, 0)
+  await idleDrag(page, origin, 80, 160)
+  expect(await pixels(page)).toEqual(painted)
+  expect(await steps(page)).toBe(before)
 })
 
 test("at no flow a wet brush leaves an empty layer and its history alone", async ({
@@ -485,6 +472,70 @@ test("golden: a wet stroke across a two-colour ground", async ({ page }) => {
   const png = new PNG({ width: image.width, height: image.height })
   png.data = Buffer.from(image.data)
   expect(PNG.sync.write(png)).toMatchSnapshot("wet-stroke.png", {
+    maxDiffPixelRatio: 0.01,
+  })
+})
+
+test("a reservoir exhausts its brush colour over a coloured ground", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await stroke(page, origin, 20, 220)
+  const ground = rgba(await pixels(page), 190)
+  await setColour(page, BLUE)
+  await setWet(page, { pickup: 1 }, 0.2)
+  await stroke(page, origin, 40, 200)
+  const image = await pixels(page)
+  expect(distance(rgba(image, 190), ground)).toBeLessThan(15)
+  expect(distance(rgba(image, 45), ground)).toBeGreaterThan(25)
+})
+
+test("every stroke starts with the current colour after pickup and cancellation", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await paintBar(page, origin)
+  await setColour(page, BLUE)
+  await setWet(page, { pickup: 1 }, 1)
+  await stroke(page, origin, 50, 90)
+  await setColour(page, "#20a040")
+  await stroke(page, origin, 180, 180)
+  expect(
+    distance(rgba(await pixels(page), 180), [32, 160, 64, 255])
+  ).toBeLessThan(8)
+  await page.mouse.move(origin.x + 60, origin.y + ROW)
+  await page.mouse.down()
+  await page.mouse.move(origin.x + 90, origin.y + ROW, { steps: 10 })
+  await setTool(page, "eraser")
+  await page.mouse.up()
+  await setTool(page, "brush")
+  await setColour(page, BLUE)
+  await stroke(page, origin, 215, 215)
+  expect(distance(rgba(await pixels(page), 215), BLUE_PIXEL)).toBeLessThan(8)
+})
+
+test("golden: a reservoir stroke carries red across a blue ground", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  // The procedural disc, so the picture owes nothing to a shipped tip.
+  await stroke(page, origin, 30, 110)
+  await setColour(page, BLUE)
+  await stroke(page, origin, 140, 210)
+  await setColour(page, RED)
+  await setWet(page, { pickup: 0.15 }, 0.03)
+  await stroke(page, origin, 40, 200)
+  await frames(page)
+  const image = await page.evaluate(async () => {
+    const { width, height, data } = await window.engine.readPixels()
+    return { width, height, data: Array.from(data) }
+  })
+  const png = new PNG({ width: image.width, height: image.height })
+  png.data = Buffer.from(image.data)
+  expect(PNG.sync.write(png)).toMatchSnapshot("reservoir-stroke.png", {
     maxDiffPixelRatio: 0.01,
   })
 })

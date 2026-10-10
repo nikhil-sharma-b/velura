@@ -1,32 +1,10 @@
 import { grainShader } from "./grain"
 
 /**
- * The direct pass, which smudge (smudge 01) and wet brushes (D41) share. One
- * quad per dab, drawn straight into the layer: each fragment is mixed towards
- * the pixel one dab's travel behind it by the dab's strength, so what was
- * under the tip a step ago is dragged to where the tip is now, and the result
- * is mixed towards the stroke's colour by the dab's flow. Smudge is the pass
- * at no flow: it lays nothing down and only moves what the layer holds. All
- * four premultiplied channels are mixed alike, so transparency is carried as
- * paint is. Both mixes are `mixPaint`, the one place that says how two
- * paints combine.
- *
- * A pass cannot read the texture it writes, so the dab's neighbourhood is
- * copied into `carry` first and both pixels are read from there. `origin` is
- * where that copy was taken from, in document pixels.
- *
- * Grain (live brushes 06) bites the colour a dab lays and nothing else: the
- * paper scales the second mix, as `grainShader` reads it for the stamp pass,
- * and the first is left whole, so paint dragged over a textured passage is
- * not cut by the paper a second time.
- *
- * The dab's shape is the stamp pass's: the procedural disc with its feathered
- * rim, or the brush's tip texture, turned and squashed in the vertex stage.
- *
- * A selection (smudge 03) scales both mixes by its coverage of the pixel
- * being written, so nothing outside it changes and a soft edge takes its
- * share. The pixel behind is read whatever its coverage: paint outside is
- * dragged in.
+ * Shared direct-dab mapping and paint mixing (D29, D41). Smudge reads the
+ * pixel one dab's travel behind; wet brushes lay tip-space reservoir paint
+ * and update that reservoir from the copied pre-dab neighbourhood. Selection
+ * coverage gates deposition only. All paint is premultiplied linear RGBA.
  */
 export const smudgeShader = /* wgsl */ `
 ${grainShader}
@@ -42,14 +20,11 @@ struct Smudge {
   useTip: f32,
   // One when a selection clips the smear, zero when nothing is selected.
   useSelection: f32,
-  // Size of one tile of the grain texture, as a multiple of its own pixels.
+  wet: f32,
+  reservoirScale: f32,
   grainScale: f32,
-  // How strongly the paper bites, before the per-dab depth scales it.
   grainDepth: f32,
-  // How much the grain travels with the dab, in [0, 1].
   grainMovement: f32,
-  // What a wet brush lays: the stroke's colour, premultiplied, linear light.
-  color: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> smudge: Smudge;
@@ -63,11 +38,13 @@ struct Smudge {
 @group(0) @binding(6) var grainSampler: sampler;
 @group(0) @binding(7) var grainTexture: texture_2d<f32>;
 
+@group(0) @binding(8) var reservoir: texture_2d<f32>;
+
 struct Instance {
   // Dab centre in canvas pixels.
   @location(0) center: vec2<f32>,
   @location(1) radius: f32,
-  // How much of the pixel behind replaces the one here, in [0, 1].
+  // Smudge strength or wet reservoir pickup, in [0, 1].
   @location(2) strength: f32,
   // Rotation of the tip, as a turn clockwise.
   @location(3) angle: f32,
@@ -78,7 +55,7 @@ struct Instance {
   @location(6) travel: vec2<f32>,
   // The canvas pixel the carry texture's first texel was copied from.
   @location(7) origin: vec2<f32>,
-  // How much of the stroke's colour is laid, in [0, 1].
+  // How much reservoir paint is laid, in [0, 1].
   @location(8) flow: f32,
   // How strongly the canvas grain bites what this dab lays, in [0, 1].
   @location(9) grainDepth: f32,
@@ -94,8 +71,9 @@ struct Varyings {
   @location(4) @interpolate(flat) travel: vec2<f32>,
   @location(5) @interpolate(flat) origin: vec2<f32>,
   @location(6) @interpolate(flat) flow: f32,
-  @location(7) @interpolate(flat) grainDepth: f32,
-  @location(8) @interpolate(flat) center: vec2<f32>,
+  @location(7) canvas: vec2<f32>,
+  @location(8) @interpolate(flat) grainDepth: f32,
+  @location(9) @interpolate(flat) center: vec2<f32>,
 }
 
 // How two paints combine: a linear mix of premultiplied colour in the working
@@ -105,8 +83,7 @@ fn mixPaint(under: vec4<f32>, over: vec4<f32>, amount: f32) -> vec4<f32> {
   return mix(under, over, amount);
 }
 
-@vertex
-fn vertexMain(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings {
+fn dabVertex(instance: Instance, index: u32) -> Varyings {
   let corner = vec2<f32>(
     f32(index == 1u || index == 2u || index == 4u),
     f32(index == 2u || index == 4u || index == 5u)
@@ -128,6 +105,7 @@ fn vertexMain(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings
     0.0,
     1.0
   );
+  out.canvas = pixel;
   out.local = local;
   out.radius = instance.radius;
   out.strength = instance.strength;
@@ -140,8 +118,12 @@ fn vertexMain(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings
   return out;
 }
 
-@fragment
-fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
+@vertex
+fn vertexMain(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings {
+  return dabVertex(instance, index);
+}
+
+fn tipCoverage(varyings: Varyings) -> f32 {
   let distance = length(varyings.local);
   let edge = max(0.0, 1.0 - smudge.feather / max(varyings.radius, 1.0));
   // A hard tip must not call smoothstep with identical endpoints.
@@ -150,16 +132,12 @@ fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
     disc = 1.0 - smoothstep(edge, 1.0, distance);
   }
   let tip = textureSample(tipTexture, tipSampler, varyings.local * 0.5 + 0.5, varyings.tipFrame).r;
-  let shape = mix(disc, tip, smudge.useTip);
-  let bite = grainBite(
-    grainTexture,
-    grainSampler,
-    varyings.position.xy,
-    varyings.center,
-    smudge.grainScale,
-    smudge.grainMovement,
-    smudge.grainDepth * varyings.grainDepth
-  );
+  return mix(disc, tip, smudge.useTip);
+}
+
+@fragment
+fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
+  let shape = tipCoverage(varyings);
 
   let here = textureLoad(carry, vec2<i32>(varyings.position.xy - varyings.origin), 0);
   // Between texels, since a dab's travel is rarely a whole pixel: without
@@ -179,8 +157,36 @@ fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
     selected = textureLoad(selectionTexture, vec2<i32>(varyings.position.xy), 0).r;
   }
   let coverage = shape * selected;
+  if (smudge.wet > 0.0) {
+    let paint = textureSampleLevel(reservoir, carrySampler, (varyings.local * 0.5 + 0.5) * smudge.reservoirScale, 0.0);
+    let bite = grainBite(grainTexture, grainSampler, varyings.position.xy,
+      varyings.center, smudge.grainScale, smudge.grainMovement,
+      smudge.grainDepth * varyings.grainDepth);
+    return mixPaint(here, paint, clamp(varyings.flow * coverage * bite, 0.0, 1.0));
+  }
   let dragged = mixPaint(here, behind, clamp(varyings.strength * coverage, 0.0, 1.0));
-  // The paper bites what is laid, never what is dragged.
-  return mixPaint(dragged, smudge.color, clamp(varyings.flow * coverage * bite, 0.0, 1.0));
+  return dragged;
+}
+
+// Geometry changes where each bristle samples, never the stored paint.
+@vertex
+fn reservoirVertex(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings {
+  var out = dabVertex(instance, index);
+  out.position = vec4<f32>(out.local.x, -out.local.y, 0.0, 1.0);
+  return out;
+}
+
+@fragment
+fn reservoirFragment(varyings: Varyings) -> @location(0) vec4<f32> {
+  let shape = tipCoverage(varyings);
+  let uv = (varyings.local * 0.5 + 0.5) * smudge.reservoirScale;
+  let paint = textureSampleLevel(reservoir, carrySampler, uv, 0.0);
+  let pixel = varyings.canvas;
+  var ground = vec4<f32>(0.0);
+  if (all(pixel >= vec2<f32>(0.0)) && all(pixel < smudge.viewport)) {
+    ground = textureSampleLevel(carry, carrySampler,
+      (pixel - varyings.origin) / vec2<f32>(textureDimensions(carry)), 0.0);
+  }
+  return mixPaint(paint, ground, clamp(varyings.strength * shape, 0.0, 1.0));
 }
 `

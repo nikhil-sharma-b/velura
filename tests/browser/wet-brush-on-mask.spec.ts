@@ -112,7 +112,7 @@ async function maskLeft(page: Page, origin: Origin) {
     return id
   })
   await stroke(page, origin, HIDDEN.from, HIDDEN.to)
-  await dispatch(page, { type: "setBrush", wet: { pickup: 0.95 }, flow: 0 })
+  await dispatch(page, { type: "setBrush", wet: { pickup: 0.2 }, flow: 0.1 })
   return id
 }
 
@@ -155,7 +155,7 @@ test("a wet brush lays the dry brush's mask paint value", async ({ page }) => {
   await dispatch(page, { type: "undo" })
   expect(await pixels(page)).toEqual(masked)
   await dispatch(page, { type: "setColor", hex: "#1040e0" })
-  await dispatch(page, { type: "setBrush", wet: { pickup: 0.95 }, flow: 1 })
+  await dispatch(page, { type: "setBrush", wet: { pickup: 0 }, flow: 1 })
   await stroke(page, origin, 140, 180)
   const wet = await pixels(page)
   for (const x of [145, 160, 175])
