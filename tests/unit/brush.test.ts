@@ -4,6 +4,7 @@ import {
   brushSpacing,
   cloneBrush,
   DEFAULT_BRUSH,
+  wetDabSpacing,
 } from "../../engine/brush/brush"
 import { validateDynamics } from "../../engine/brush/dynamics"
 
@@ -79,6 +80,17 @@ describe("brush definition", () => {
     expect(brushSpacing(wet)).toBe(1)
     const broad = { ...wet, shape: { ...wet.shape, radius: 20 } }
     expect(brushSpacing(broad)).toBeCloseTo(4, 6)
+  })
+
+  test("a wet brush's spacing follows the dab as dynamics size it", () => {
+    const wet = {
+      ...PENCIL,
+      shape: { ...PENCIL.shape, radius: 20 },
+      rendering: { ...PENCIL.rendering, wet: { pickup: 0.5 } },
+    }
+    expect(wetDabSpacing(wet, 10)).toBeCloseTo(2, 6)
+    // And is held at a pixel once the dab is too small for its own.
+    expect(wetDabSpacing(wet, 2)).toBe(1)
   })
 
   test("a clone shares nothing with the brush it came from", () => {
