@@ -578,3 +578,45 @@ test("golden: a reservoir stroke carries red across a blue ground", async ({
     maxDiffPixelRatio: 0.01,
   })
 })
+
+for (const tool of ["brush", "smudge"] as const)
+  test(`${tool}: blue and yellow pass through green`, async ({ page }) => {
+    const origin = await openCanvas(page)
+    await addLayer(page)
+    await setColour(page, "#ffff00")
+    await stroke(page, origin, 110, 210)
+    await setColour(page, "#0000ff")
+    await stroke(page, origin, 30, 90)
+    if (tool === "brush") await setWet(page, { pickup: 0.15 }, 0.3)
+    else {
+      await page.evaluate(() =>
+        window.engine.dispatch({ type: "setSmudge", radius: 12, strength: 0.5 })
+      )
+      await setTool(page, "smudge")
+    }
+    await stroke(page, origin, 70, 190)
+    const image = await pixels(page)
+    // A visible green transition, rather than the grey of a light mix.
+    const green = Array.from({ length: 90 }, (_, i) =>
+      rgba(image, 100 + i)
+    ).filter(([r, g, b]) => g > r + 25 && g > b + 25 && g > 60)
+    expect(green.length).toBeGreaterThan(3)
+    const png = new PNG({ width: WIDTH, height: HEIGHT })
+    png.data = Buffer.from(image)
+    expect(PNG.sync.write(png)).toMatchSnapshot(
+      `${tool}-pigment-transition.png`,
+      {
+        maxDiffPixelRatio: 0.01,
+      }
+    )
+  })
+
+test("mixing the same paint preserves its colour", async ({ page }) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await stroke(page, origin, 20, 220)
+  const before = rgba(await pixels(page), 100)
+  await setWet(page, { pickup: 0.5 }, 0.5)
+  await stroke(page, origin, 40, 180)
+  expect(distance(rgba(await pixels(page), 100), before)).toBeLessThan(3)
+})

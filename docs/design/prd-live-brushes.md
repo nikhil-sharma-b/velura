@@ -114,7 +114,7 @@ type BrushRendering = {
 
 **Dab spacing.** A wet brush uses its own spacing setting, floored at one pixel as smudge is, since a dab needs a whole pixel behind it to drag.
 
-**Mixing is a linear premultiplied mix** in the working space (D10), all four channels alike, so transparency is carried as paint is. The mix is one shader function, isolated so pigment mixing (blue and yellow giving green) can replace it later without touching the pass.
+**Mixing uses pigment reflectance** in the P3 working space (D10), with linear premultiplied alpha so transparency only thins paint. Follow-up 11 replaces the isolated mix function for wet brushes and smudge with an always-on synthetic Kubelka–Munk approximation; see [model and provenance](pigment-mixing.md).
 
 **What is read and written.** The active layer alone, or its mask while the mask is being painted. On a mask the laid value is the mask's paint value, as for a dry brush. A selection limits what is written and not what is read. Vector layers refuse a wet brush with the existing notice. The eraser is never wet, whatever the brush says.
 
@@ -152,7 +152,7 @@ Supporting checks:
 - **Wetness and drying:** recent paint mixing while old paint does not, whether per session or saved with the document.
 - **Paint thickness, impasto and lighting.**
 - Ticketed as follow-ups, not built here:
-  - Pigment mixing (subtractive colour, blue and yellow giving green).
+  - Pigment mixing shipped in follow-up 11 (subtractive colour, blue and yellow giving green).
   - A brush that stays dirty between strokes, with a clean-brush toggle.
   - Scatter on wet brushes.
   - Colour jitter on wet brushes.

@@ -82,6 +82,8 @@ export type WorkloadOptions = {
    * a cancel must not weigh on the frame it opens in, which this measures.
    */
   smudge?: boolean
+  /** Wet sweep: diameter in document pixels and reservoir pickup. */
+  wet?: { diameter: number; pickup: number }
 }
 
 /**
