@@ -90,6 +90,7 @@ import {
   dabSpacing,
   wetDabSpacing,
   cloneBrush,
+  isBlender,
   DEFAULT_BRUSH,
 } from "./brush/brush"
 import {
@@ -5566,7 +5567,10 @@ export function createEngine(
       // the first dab touches it: what a cancel puts back. One that holds
       // nothing has nothing to smear, though a wet brush lays colour on it.
       const target = paintTargetId(doc)
-      if (!renderer?.beginDirect(target, wet ? ink : null)) return
+      // A blender never lays, so it opens as smudge does and drags from the
+      // pixel behind, with the brush's own size, pickup and dynamics.
+      const lays = wet && !isBlender(activeBrush())
+      if (!renderer?.beginDirect(target, lays ? ink : null)) return
       directTargetId = target
       directWet = wet
       strokeSensesPressure = sensesPressure

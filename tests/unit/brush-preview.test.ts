@@ -105,6 +105,31 @@ describe("the brush editor's preview stroke", () => {
     for (const dab of wet.dabs) expect(dab.opacity).toBeCloseTo(0.5, 6)
   })
 
+  test("a wet brush that lays nothing previews by its pickup, as the graph moves it", () => {
+    const blender = brush({
+      rendering: { ...DEFAULT_BRUSH.rendering, flow: 0, wet: { pickup: 0.8 } },
+      dynamics: [
+        {
+          source: "pressure",
+          target: "pickup",
+          range: [0, 1],
+          mix: "multiply",
+        },
+      ],
+    })
+    const preview = previewStroke(blender, BOX)
+    const opacities = preview.dabs.map((dab) => dab.opacity)
+    // Nothing at the press, the whole pickup through the body of the stroke.
+    expect(opacities[0]).toBeCloseTo(0, 6)
+    expect(Math.max(...opacities)).toBeCloseTo(0.8, 6)
+    // Dry, flow zero is still a brush that draws nothing.
+    const dry = previewStroke(
+      brush({ rendering: { ...DEFAULT_BRUSH.rendering, flow: 0 } }),
+      BOX
+    )
+    for (const dab of dry.dabs) expect(dab.opacity).toBe(0)
+  })
+
   test("a wet brush previews without its scatter or colour jitter, as it draws", () => {
     const jittery = brush({
       scatter: { amount: 2, count: 3, axes: "both" },

@@ -279,7 +279,7 @@ test("grain movement carries the paper along with a wet stroke", async ({
     expect(laid(carried, x)).toBeGreaterThan(200)
 })
 
-test("with flow zero grain leaves pickup invisible on the layer", async ({
+test("grain does not bite the paint a wet brush with no flow drags", async ({
   page,
 }) => {
   /** A dry bar, dragged out by a wet brush that lays nothing. */
@@ -294,16 +294,13 @@ test("with flow zero grain leaves pickup invisible on the layer", async ({
       flow: 0,
       wet: { pickup: 0.9 },
     })
-    await page.mouse.move(origin.x + 80, origin.y + ROW)
-    await page.mouse.down()
-    await page.mouse.move(origin.x + 170, origin.y + ROW, { steps: 30 })
-    await page.mouse.up()
-    await frames(page)
+    await stroke(page, origin, 80, 170)
     return { painted, image: await pixels(page) }
   }
   const plain = await dragged(null)
   const withGrain = await dragged(grainOf(ROWS))
-  expect(plain.image).toEqual(plain.painted)
+  // The bar is dragged out past its end, and the paper has no say in it.
+  expect(change(plain.image, plain.painted, 125)).toBeGreaterThan(0)
   expect(withGrain.image).toEqual(plain.image)
 })
 
@@ -316,10 +313,11 @@ test("grain does not bite the paint picked into the reservoir", async ({
     await stroke(page, origin, 40, 100)
     const painted = await pixels(page)
     await dispatch(page, { type: "setColor", hex: BLUE })
+    // A flow too small to see: a brush with none at all has no reservoir.
     await dispatch(page, {
       type: "setBrush",
       grain: pickupGrain,
-      flow: 0,
+      flow: 1e-6,
       wet: { pickup: 1 },
     })
     await page.mouse.move(origin.x + 70, origin.y + ROW)

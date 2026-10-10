@@ -16,8 +16,8 @@ import { Input } from "@/components/ui/input"
 import type { Brush } from "@/engine/brush/brush"
 
 import {
-  BUILTIN_SET,
   BUILTIN_SET_NAMES,
+  FOLDED_SET_NAMES,
   type BrushSet,
   brushShelf,
   duplicateOf,
@@ -90,11 +90,7 @@ export function BrushLibrary({
    */
   const [folded, setFolded] = useState<ReadonlySet<string>>(
     () =>
-      new Set(
-        BUILTIN_SET_NAMES.filter((name) => name !== BUILTIN_SET).map((name) =>
-          setKey({ name, builtin: true })
-        )
-      )
+      new Set(FOLDED_SET_NAMES.map((name) => setKey({ name, builtin: true })))
   )
   const searching = query.trim() !== ""
   const credits = useRef<HTMLDetailsElement>(null)

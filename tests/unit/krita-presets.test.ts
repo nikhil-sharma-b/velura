@@ -69,9 +69,9 @@ describe("the shelf", () => {
     expect(DEFAULT_LIBRARY_BRUSH_ID).toBe("builtin:pencil")
   })
 
-  test("shelves the Krita sets after them, undeletable", () => {
+  test("shelves the Krita sets after the wet brushes, undeletable", () => {
     const shelf = brushShelf([])
-    expect(shelf.slice(1).map((set) => set.name)).toEqual(
+    expect(shelf.slice(2).map((set) => set.name)).toEqual(
       KRITA_BRUSH_SETS.map((set) => set.name)
     )
     for (const set of shelf) {

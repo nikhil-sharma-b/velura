@@ -1,4 +1,4 @@
-import { type Brush, brushSpacing } from "@/engine/brush/brush"
+import { type Brush, brushSpacing, isBlender } from "@/engine/brush/brush"
 import {
   evaluateDynamics,
   NEUTRAL_STAMP_CONTEXT,
@@ -26,7 +26,8 @@ import { createScatterPlacer, MAX_SCATTER_COUNT } from "@/engine/brush/scatter"
  *
  * It shows size, flow, opacity, angle, roundness, scatter, per-dab colour and
  * the paper's bite. A wet brush is shown laying its colour; what it drags
- * needs paint under it, which this box does not have.
+ * needs paint under it, which this box does not have. One that lays nothing
+ * is drawn by its pickup, so a blender is still a stroke on the shelf.
  */
 
 export type PreviewDab = {
@@ -170,6 +171,9 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
   // take, whatever the brush still holds for when it is dry again. Nor is a
   // wet dab scattered or its colour moved, so the preview leaves both out.
   const wet = !!brush.rendering.wet
+  // A blender lays nothing, and a stroke of nothing says nothing about it. It
+  // is shown by what it would drag instead: its pickup, as the graph moves it.
+  const blender = isBlender(brush) ? brush.rendering.wet : undefined
   const params: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   const context: StampContext = { ...NEUTRAL_STAMP_CONTEXT }
   const dabs: PreviewDab[] = []
@@ -188,7 +192,9 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
     evaluateDynamics(brush.dynamics, context, params)
     const dab = {
       radius: Math.min(radius * params.size, cap),
-      opacity: brush.rendering.flow * params.flow,
+      opacity: blender
+        ? blender.pickup * params.pickup
+        : brush.rendering.flow * params.flow,
       angle: brush.shape.angle + params.angle,
       roundness: brush.shape.roundness * params.roundness,
       hue: wet ? 0 : params.hue * (brush.color?.hue ?? 1),
