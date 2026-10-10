@@ -1743,10 +1743,10 @@ export function createEngine(
   const stamps = new Float32Array(MAX_STAMPS_PER_DRAW * STAMP_STRIDE)
   let tipDab = 0
   let stampCount = 0
-  // The layer a smudge stroke in flight is smearing (smudge 01). Its dabs go
-  // straight into that layer rather than the stroke buffer, in an array of
-  // their own.
-  let smudgeLayerId: string | undefined
+  // What a smudge stroke in flight is smearing (smudge 01): the layer, or the
+  // mask being painted over it (smudge 04). Its dabs go straight into that
+  // surface rather than the stroke buffer, in an array of their own.
+  let smudgeTargetId: string | undefined
   const smudgeDabs = new Float32Array(MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_STRIDE)
   let smudgeCount = 0
   let stroking = false
@@ -2028,7 +2028,7 @@ export function createEngine(
     opening = false
     landing = false
     stampCount = 0
-    smudgeLayerId = undefined
+    smudgeTargetId = undefined
     smudgeCount = 0
     samples.clear()
     renderer?.destroy()
@@ -4512,7 +4512,7 @@ export function createEngine(
     tiltY: number,
     time: number
   ) {
-    if (smudgeLayerId) {
+    if (smudgeTargetId) {
       emitSmudge(x, y, pressure)
       return
     }
@@ -4948,9 +4948,9 @@ export function createEngine(
       flushStamps()
       lastStrokeEnd = { x: rawX, y: rawY }
       // The whole mark is in the buffer now, so it goes into the layer once,
-      // at the stroke's opacity (D27). A smear is in its layer already.
-      const smudged = smudgeLayerId
-      smudgeLayerId = undefined
+      // at the stroke's opacity (D27). A smear is in its surface already.
+      const smudged = smudgeTargetId
+      smudgeTargetId = undefined
       const region = smudged ? renderer?.endSmudge(true) : renderer?.endStroke()
       // One stroke, one step. The region the mark landed in is read back off
       // the GPU after the frame, never during one.
@@ -5474,18 +5474,18 @@ export function createEngine(
     }
     const drawnFrom = layer.kind === "vector" || layer.image
     if (layer.locked || (drawnFrom && !(doc.paintingMask && layer.mask))) return
-    // Smudge smears the layer's own paint and not, yet, a mask over it.
-    if (tool === "smudge" && doc.paintingMask) return
     // The artist is painting, so the canvas shows what they are painting on.
     if (highlight) {
       highlight = undefined
       syncComposition()
     }
     if (tool === "smudge") {
-      // The layer is kept as it is before the first dab touches it: what a
-      // cancel puts back. One that holds nothing has nothing to smear.
-      if (!renderer?.beginSmudge(layer.id)) return
-      smudgeLayerId = layer.id
+      // The layer, or the mask being painted over it, is kept as it is before
+      // the first dab touches it: what a cancel puts back. One that holds
+      // nothing has nothing to smear.
+      const target = paintTargetId(doc)
+      if (!renderer?.beginSmudge(target)) return
+      smudgeTargetId = target
       strokeSensesPressure = sensesPressure
       strokeOrigin = origin
       stroking = true
@@ -5574,9 +5574,9 @@ export function createEngine(
     stampCount = 0
     samples.clear()
     renderer?.cancelStroke()
-    if (smudgeLayerId) {
-      // The dabs went straight into the layer, so the layer is put back.
-      smudgeLayerId = undefined
+    if (smudgeTargetId) {
+      // The dabs went straight into the surface, so the surface is put back.
+      smudgeTargetId = undefined
       smudgeCount = 0
       renderer?.endSmudge(false)
     }
@@ -7373,9 +7373,9 @@ export function createEngine(
             if (command.type === "undo") dropShapeDrag()
             break
           }
-          // A smear in flight is already in its layer, so undo takes back the
+          // A smear in flight is already in its surface, so undo takes back the
           // smear rather than writing an older step underneath it.
-          if (smudgeLayerId) {
+          if (smudgeTargetId) {
             if (command.type === "undo") cancelStroke()
             break
           }
