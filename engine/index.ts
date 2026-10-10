@@ -1757,7 +1757,7 @@ export function createEngine(
   let tipDab = 0
   let stampCount = 0
   // What a direct stroke in flight is drawn into: a smudge's (smudge 01) or
-  // a wet brush's (D41) layer, or the mask a smudge is smearing (smudge 04).
+  // a wet brush's (D41) layer, or the mask either is painting.
   // Its dabs go straight into that surface rather than the stroke buffer, in
   // an array of their own.
   let directTargetId: string | undefined
@@ -5552,11 +5552,9 @@ export function createEngine(
       syncComposition()
     }
     // A wet brush draws as smudge does, straight into the layer (D41). The
-    // eraser is never wet, and a mask is painted dry.
-    const wet =
-      tool === "brush" && !(doc.paintingMask && layer.mask)
-        ? activeBrush().rendering.wet
-        : undefined
+    // eraser is never wet. A mask carries coverage in alpha, so the same
+    // pass lays the paint value and drags what it hides and shows.
+    const wet = tool === "brush" ? activeBrush().rendering.wet : undefined
     if (tool === "smudge" || wet) {
       // The layer, or the mask being smeared over it, is kept as it is before
       // the first dab touches it: what a cancel puts back. One that holds
