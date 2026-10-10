@@ -4,7 +4,7 @@ import { useTheme } from "next-themes"
 import { useEffect, useRef } from "react"
 
 import type { Brush } from "@/engine/brush/brush"
-import { GRAIN_CUT } from "@/engine/shaders/stamp"
+import { GRAIN_CUT } from "@/engine/shaders/grain"
 
 import { adjustHsl, previewStroke } from "../lib/brush-preview"
 

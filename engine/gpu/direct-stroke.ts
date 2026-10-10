@@ -25,6 +25,14 @@ export type DirectStrokeContext = {
     usesTip: boolean
     feather: number
   }
+  /** The paper a wet brush's laid colour is bitten by, and how hard. */
+  grain(): {
+    texture: GPUTexture
+    sampler: GPUSampler
+    scale: number
+    depth: number
+    movement: number
+  }
   /** The selection's coverage and bounds, while there is one. */
   selection(): { texture: GPUTexture; bounds: PixelRect } | undefined
   /** Bound for the selection while nothing is selected; the shader skips it. */
@@ -47,7 +55,10 @@ export type DirectOpening = {
  * it holds on to between dabs.
  */
 export interface DirectStroke extends StrokeRenderer<DirectOpening> {
-  /** The tip or the selection was replaced: the views held of them are stale. */
+  /**
+   * The tip, the grain or the selection was replaced: the views held of them
+   * are stale.
+   */
   invalidateBinding(): void
   /**
    * Lets go of the stroke in flight without putting anything back, because
@@ -107,11 +118,11 @@ export function createDirectStroke(
    */
   let carry: GPUTexture | undefined
   /**
-   * Holds the tip's, the carry's and the selection's views, so it goes when
-   * any of them is replaced.
+   * Holds the tip's, the carry's, the selection's and the grain's views, so
+   * it goes when any of them is replaced.
    */
   let bindGroup: GPUBindGroup | undefined
-  const params = new Float32Array(8)
+  const params = new Float32Array(12)
   const shaderModule = device.createShaderModule({ code: smudgeShader })
   const pipelineDescriptor: GPURenderPipelineDescriptor = {
     label: "smudge",
@@ -157,6 +168,11 @@ export function createDirectStroke(
               format: "float32x2",
             },
             { shaderLocation: 8, offset: SMUDGE.FLOW * 4, format: "float32" },
+            {
+              shaderLocation: 9,
+              offset: SMUDGE.GRAIN_DEPTH * 4,
+              format: "float32",
+            },
           ],
         },
       ],
@@ -364,6 +380,10 @@ export function createDirectStroke(
       )
     }
     params[6] = reservoirExtent / reservoirSize
+    const grain = context.grain()
+    params[7] = grain.scale
+    params[8] = grain.depth
+    params[9] = grain.movement
     device.queue.writeBuffer(uniform, 0, params)
     device.queue.writeBuffer(
       instances,
@@ -388,14 +408,18 @@ export function createDirectStroke(
           resource: (selection?.texture ?? context.noSelection).createView(),
         },
       ]
+      entries.push(
+        { binding: 6, resource: grain.sampler },
+        { binding: 7, resource: grain.texture.createView() }
+      )
       reservoirBindings = reservoirViews.map((resource) => ({
         layer: device.createBindGroup({
           layout: pipeline.getBindGroupLayout(0),
-          entries: [...entries, { binding: 6, resource }],
+          entries: [...entries, { binding: 8, resource }],
         }),
         pickup: device.createBindGroup({
           layout: reservoirPipeline.getBindGroupLayout(0),
-          entries: [...entries.slice(0, 5), { binding: 6, resource }],
+          entries: [...entries.slice(0, 5), { binding: 8, resource }],
         }),
       }))
       bindGroup = reservoirBindings[0].layer

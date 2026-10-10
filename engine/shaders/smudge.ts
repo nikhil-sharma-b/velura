@@ -1,3 +1,5 @@
+import { grainShader } from "./grain"
+
 /**
  * Shared direct-dab mapping and paint mixing (D29, D41). Smudge reads the
  * pixel one dab's travel behind; wet brushes lay tip-space reservoir paint
@@ -5,6 +7,8 @@
  * coverage gates deposition only. All paint is premultiplied linear RGBA.
  */
 export const smudgeShader = /* wgsl */ `
+${grainShader}
+
 const TAU = 6.283185307179586;
 
 struct Smudge {
@@ -18,6 +22,9 @@ struct Smudge {
   useSelection: f32,
   wet: f32,
   reservoirScale: f32,
+  grainScale: f32,
+  grainDepth: f32,
+  grainMovement: f32,
 }
 
 @group(0) @binding(0) var<uniform> smudge: Smudge;
@@ -28,8 +35,10 @@ struct Smudge {
 // The selection's coverage, one texel per document pixel. Read only when
 // \`useSelection\` says there is one; a placeholder is bound otherwise.
 @group(0) @binding(5) var selectionTexture: texture_2d<f32>;
+@group(0) @binding(6) var grainSampler: sampler;
+@group(0) @binding(7) var grainTexture: texture_2d<f32>;
 
-@group(0) @binding(6) var reservoir: texture_2d<f32>;
+@group(0) @binding(8) var reservoir: texture_2d<f32>;
 
 struct Instance {
   // Dab centre in canvas pixels.
@@ -48,6 +57,8 @@ struct Instance {
   @location(7) origin: vec2<f32>,
   // How much reservoir paint is laid, in [0, 1].
   @location(8) flow: f32,
+  // How strongly the canvas grain bites what this dab lays, in [0, 1].
+  @location(9) grainDepth: f32,
 }
 
 struct Varyings {
@@ -61,6 +72,8 @@ struct Varyings {
   @location(5) @interpolate(flat) origin: vec2<f32>,
   @location(6) @interpolate(flat) flow: f32,
   @location(7) canvas: vec2<f32>,
+  @location(8) @interpolate(flat) grainDepth: f32,
+  @location(9) @interpolate(flat) center: vec2<f32>,
 }
 
 // How two paints combine: a linear mix of premultiplied colour in the working
@@ -100,6 +113,8 @@ fn dabVertex(instance: Instance, index: u32) -> Varyings {
   out.travel = instance.travel;
   out.origin = instance.origin;
   out.flow = instance.flow;
+  out.grainDepth = instance.grainDepth;
+  out.center = instance.center;
   return out;
 }
 
@@ -144,7 +159,10 @@ fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
   let coverage = shape * selected;
   if (smudge.wet > 0.0) {
     let paint = textureSampleLevel(reservoir, carrySampler, (varyings.local * 0.5 + 0.5) * smudge.reservoirScale, 0.0);
-    return mixPaint(here, paint, clamp(varyings.flow * coverage, 0.0, 1.0));
+    let bite = grainBite(grainTexture, grainSampler, varyings.position.xy,
+      varyings.center, smudge.grainScale, smudge.grainMovement,
+      smudge.grainDepth * varyings.grainDepth);
+    return mixPaint(here, paint, clamp(varyings.flow * coverage * bite, 0.0, 1.0));
   }
   let dragged = mixPaint(here, behind, clamp(varyings.strength * coverage, 0.0, 1.0));
   return dragged;
