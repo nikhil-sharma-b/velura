@@ -54,6 +54,75 @@ function option(name: string, value: number, sensorXml: string) {
 const translate = (xml: string, tip?: (id: string) => KritaTip | undefined) =>
   translateKritaPreset(parseKritaPreset(xml), { tip })
 
+const colourSmudgeXml = await Bun.file(
+  new URL("../fixtures/krita-colour-smudge.xml", import.meta.url)
+).text()
+
+test("a colour-smudge preset maps its rates to a valid wet brush", () => {
+  const { brush, dropped } = translate(colourSmudgeXml)
+  expect(brush.rendering.wet).toEqual({ pickup: 0.6 })
+  expect(brush.rendering.flow).toBe(0.3)
+  expect(brush.dynamics).toEqual([])
+  expect(normaliseBrushDefinition(brush)).toEqual(brush)
+  expect(dropped).toEqual([
+    "smudge radius option",
+    "smearing/dulling mode switch",
+    "overlay mode",
+  ])
+})
+
+test("colour-smudge sensors scale each rate once and retain their curves", () => {
+  const preset = parseKritaPreset(colourSmudgeXml)
+  const params = new Map(preset.params)
+  params.set("SmudgeRateUseCurve", "true")
+  params.set("SmudgeRateSensor", sensor("pressure", "0,0;0.5,0.25;1,1;"))
+  params.set("ColorRateUseCurve", "true")
+  params.set("ColorRateSensor", sensor("speed", "0,1;1,0;"))
+  const { brush } = translateKritaPreset({ ...preset, params })
+  expect(brush.rendering.wet).toEqual({ pickup: 0.6 })
+  expect(brush.rendering.flow).toBe(0.3)
+  expect(brush.dynamics).toEqual([
+    {
+      source: "pressure",
+      target: "pickup",
+      mix: "multiply",
+      range: [0, 1],
+      curve: [
+        { x: 0, y: 0 },
+        { x: 0.5, y: 0.25 },
+        { x: 1, y: 1 },
+      ],
+    },
+    {
+      source: "velocity",
+      target: "flow",
+      mix: "multiply",
+      range: [0, 1],
+      curve: [
+        { x: 0, y: 1 },
+        { x: 1, y: 0 },
+      ],
+    },
+  ])
+  expect(normaliseBrushDefinition(brush)).toEqual(brush)
+})
+
+for (const [label, setting, value] of [
+  ["disabled", "PressureColorRate", "false"],
+  ["zero", "ColorRateValue", "0"],
+] as const)
+  test(`a ${label} colour rate imports as a blender`, () => {
+    const preset = parseKritaPreset(colourSmudgeXml)
+    const params = new Map(preset.params)
+    params.set(setting, value)
+    params.set("ColorRateUseCurve", "true")
+    params.set("ColorRateSensor", sensor("pressure"))
+    const { brush } = translateKritaPreset({ ...preset, params })
+    expect(brush.rendering.wet).toEqual({ pickup: 0.6 })
+    expect(brush.rendering.flow).toBe(0)
+    expect(brush.dynamics).toEqual([])
+  })
+
 describe("parsing a Krita preset", () => {
   test("reads the name, engine and both param spellings", () => {
     const parsed = parseKritaPreset(
@@ -501,10 +570,10 @@ describe("the draft", () => {
     expect(brush.name).toBe("Test Brush")
   })
 
-  test("only the paintbrush engine translates", () => {
+  test("other Krita engines are refused", () => {
     expect(() =>
-      translate(`<Preset name="x" paintopid="colorsmudge"></Preset>`)
-    ).toThrow(/colorsmudge/)
+      translate(`<Preset name="x" paintopid="spraybrush"></Preset>`)
+    ).toThrow(/spraybrush/)
   })
 })
 

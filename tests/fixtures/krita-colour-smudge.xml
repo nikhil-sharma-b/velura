@@ -1,0 +1,14 @@
+<!-- Synthetic Krita colour-smudge preset, with serialized option names from
+     KDE/krita plugins/paintops/colorsmudge. Procedural tip, no external assets. -->
+<Preset name="b)_Wet_Mixer" paintopid="colorsmudge">
+ <param name="brush_definition"><![CDATA[<Brush type="auto_brush" spacing="0.125"><MaskGenerator diameter="24" ratio="1" hfade="0.8" vfade="0.8" type="circle"/></Brush>]]></param>
+ <param name="SmudgeRateValue">0.6</param>
+ <param name="SmudgeRateUseCurve">false</param>
+ <param name="PressureColorRate">true</param>
+ <param name="ColorRateValue">0.3</param>
+ <param name="ColorRateUseCurve">false</param>
+ <param name="PressureSmudgeRadius">true</param>
+ <param name="SmudgeRadiusValue">0.4</param>
+ <param name="SmudgeRateMode">1</param>
+ <param name="MergedPaint">true</param>
+</Preset>

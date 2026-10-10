@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs"
 import { expect, test, type Page } from "@playwright/test"
+import { PNG } from "pngjs"
 
 /**
  * Importing brushes from Krita and GIMP (brush library 07), and the editor's
@@ -134,6 +136,99 @@ test("a Krita preset is imported, reports what it lost, and paints", async ({
   await paintsAMark(page)
 })
 
+test("a colour-smudge preset imports as wet, reports dropped settings, and mixes paint", async ({
+  page,
+}) => {
+  await openLibrary(page)
+  await paintsAMark(page)
+  const canvas = page.locator("canvas").first()
+  await page.getByRole("button", { name: /^Choose brush:/ }).click()
+  const xml = readFileSync(
+    new URL("../fixtures/krita-colour-smudge.xml", import.meta.url),
+    "utf8"
+  )
+  const params = xml.match(/<param[\s\S]*?<\/param>/g)!
+  await importFiles(page, [
+    { name: "wet-mixer.kpp", buffer: kpp("colorsmudge", ...params) },
+  ])
+  const report = page.getByRole("region", { name: "Import report" })
+  for (const option of [
+    "smudge radius option",
+    "smearing/dulling mode switch",
+    "overlay mode",
+  ])
+    await expect(report.getByText(option, { exact: true })).toBeVisible()
+  await page.keyboard.press("Escape")
+  await page.getByRole("button", { name: "Brush editor", exact: true }).click()
+  const editor = page.getByRole("region", { name: "Brush editor", exact: true })
+  await editor.getByRole("tab", { name: "Rendering" }).click()
+  await expect(editor.getByRole("switch", { name: /Wet/ })).toBeChecked()
+  await expect(editor.getByRole("slider", { name: "Pickup" })).toHaveAttribute(
+    "aria-valuenow",
+    "0.6"
+  )
+  await expect(
+    editor.getByRole("slider", { name: "Flow (colour laid)", exact: true })
+  ).toHaveAttribute("aria-valuenow", "0.3")
+  await page.getByRole("button", { name: "Brush editor", exact: true }).click()
+  // White laid across the earlier black stroke must carry some of its paint.
+  await page.getByRole("button", { name: "Colour", exact: true }).click()
+  const hex = page.getByRole("textbox", { name: "Hex colour" })
+  await hex.fill("#ffffff")
+  await hex.press("Enter")
+  await page.getByRole("button", { name: "Colour", exact: true }).click()
+  const box = (await canvas.boundingBox())!
+  const y = box.y + box.height / 2
+  // The canvas fills the viewport; compare paint pixels away from its rails.
+  const paintPixels = async () => {
+    const image = PNG.sync.read(await canvas.screenshot())
+    const rows: Buffer[] = []
+    for (
+      let row = Math.floor(image.height / 2) - 40;
+      row < image.height / 2 + 60;
+      row++
+    )
+      rows.push(
+        image.data.subarray(
+          (row * image.width + 70) * 4,
+          (row * image.width + 320) * 4
+        )
+      )
+    return Buffer.concat(rows)
+  }
+  const ground = await paintPixels()
+  const draw = async () => {
+    await page.mouse.move(box.x + 90, y)
+    await page.mouse.down()
+    await page.mouse.move(box.x + 280, y + 30, { steps: 25 })
+    await page.mouse.up()
+    await page.mouse.move(0, 0)
+  }
+  await draw()
+  await expect(async () =>
+    expect((await paintPixels()).equals(ground)).toBe(false)
+  ).toPass()
+  const mixed = await paintPixels()
+  await page.getByRole("button", { name: "Undo", exact: true }).click()
+  await expect(async () =>
+    expect((await paintPixels()).equals(ground)).toBe(true)
+  ).toPass()
+  await page.getByRole("button", { name: "Brush editor", exact: true }).click()
+  await editor.getByRole("tab", { name: "Rendering" }).click()
+  await editor.getByRole("slider", { name: "Pickup" }).focus()
+  await editor.getByRole("slider", { name: "Pickup" }).press("Home")
+  await expect(editor.getByRole("slider", { name: "Pickup" })).toHaveAttribute(
+    "aria-valuenow",
+    "0"
+  )
+  await page.getByRole("button", { name: "Brush editor", exact: true }).click()
+  await draw()
+  // The same colour, flow and path leave different paint with pickup off.
+  await expect(async () =>
+    expect((await paintPixels()).equals(mixed)).toBe(false)
+  ).toPass()
+})
+
 test("a GIMP image hose is imported as a tip set and paints", async ({
   page,
 }) => {
@@ -151,8 +246,8 @@ test("a GIMP image hose is imported as a tip set and paints", async ({
   await paintsAMark(page)
 
   // The editor shows the imported tip set, picking a frame at random.
-  await page.getByRole("button", { name: "Brush editor" }).click()
-  const editor = page.getByRole("region", { name: "Brush editor" })
+  await page.getByRole("button", { name: "Brush editor", exact: true }).click()
+  const editor = page.getByRole("region", { name: "Brush editor", exact: true })
   await expect(editor.getByRole("combobox", { name: "Tip" })).toHaveText(
     /Pebbles/i
   )
@@ -165,10 +260,10 @@ test("a preset for another Krita engine is refused with the reason", async ({
   page,
 }) => {
   await openLibrary(page)
-  await importFiles(page, [{ name: "smudge.kpp", buffer: kpp("colorsmudge") }])
+  await importFiles(page, [{ name: "smudge.kpp", buffer: kpp("spraybrush") }])
   await expect(
     page.getByText(
-      "smudge.kpp: Only Krita's pixel brush engine can be imported, not colorsmudge."
+      "smudge.kpp: Only Krita's pixel brush and colour-smudge engines can be imported, not spraybrush."
     )
   ).toBeVisible()
 })
@@ -179,8 +274,8 @@ async function openEditor(page: Page) {
     "data-engine-status",
     "ready"
   )
-  await page.getByRole("button", { name: "Brush editor" }).click()
-  return page.getByRole("region", { name: "Brush editor" })
+  await page.getByRole("button", { name: "Brush editor", exact: true }).click()
+  return page.getByRole("region", { name: "Brush editor", exact: true })
 }
 
 test("scatter and colour are edited with a live preview", async ({ page }) => {

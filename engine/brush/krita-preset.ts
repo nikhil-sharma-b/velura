@@ -14,14 +14,13 @@ import { gimpTipSelection } from "./tip-sets"
  * 05).
  *
  * A `.kpp` is a PNG — the preset's thumbnail — with the preset itself as XML
- * in a `tEXt` or `zTXt` chunk keyed `preset`. Only the `paintbrush` engine is
- * read: it is the one whose model is a dab stamped along a path, which is
- * Velura's. Everything here is written from the files themselves, not from
- * Krita's code, and is plain TypeScript with no Node or DOM dependency, so the
+ * in a `tEXt` or `zTXt` chunk keyed `preset`. The `paintbrush` and
+ * `colorsmudge` engines are read as dry and wet brushes respectively. The
+ * translator is plain TypeScript with no Node or DOM dependency, so the
  * curation script and the user-facing import (07) run the same translation.
  *
  * A translation is a draft, not a port. What Velura has no place for — masked
- * brushes, mirroring, sharpness, smudging, sensors it has no source for — is
+ * brushes, mirroring, sharpness, sensors it has no source for — is
  * dropped and named in the report, so a curator or an importing artist knows
  * what the brush lost on the way.
  */
@@ -463,9 +462,10 @@ export function translateKritaPreset(
   preset: KritaPreset,
   options: KritaTranslateOptions = {}
 ): KritaTranslation {
-  if (preset.engine !== "paintbrush")
+  const colourSmudge = preset.engine === "colorsmudge"
+  if (preset.engine !== "paintbrush" && !colourSmudge)
     throw new Error(
-      `Only Krita's pixel brush engine can be imported, not ${preset.engine || "an unknown one"}.`
+      `Only Krita's pixel brush and colour-smudge engines can be imported, not ${preset.engine || "an unknown one"}.`
     )
   const p = preset.params
   const dropped: string[] = []
@@ -534,8 +534,12 @@ export function translateKritaPreset(
     )
   }
 
+  if (colourSmudge) translateColourSmudge(p, brush, dropped)
+
   for (const [option, label] of UNSUPPORTED_OPTIONS)
-    if (flag(p.get(`Pressure${option}`))) dropped.push(label)
+    if (colourSmudge && (option === "SmudgeRate" || option === "ColorRate"))
+      continue
+    else if (flag(p.get(`Pressure${option}`))) dropped.push(label)
 
   const grain = translateTexture(p, brush, dropped)
   if (grain && options.grain && !options.grain(grain.textureId))
@@ -556,6 +560,40 @@ export function translateKritaPreset(
     dropped.push(`blending mode ${composite}`)
 
   return { brush, dropped }
+}
+
+/** Rate strengths live on the brush; sensor ranges scale them exactly once. */
+function translateColourSmudge(
+  p: ReadonlyMap<string, string>,
+  brush: Brush,
+  dropped: string[]
+): void {
+  const pickup = round(clamp(number(p.get("SmudgeRateValue"), 1)))
+  const flow =
+    p.get("PressureColorRate") === "false"
+      ? 0
+      : round(clamp(number(p.get("ColorRateValue"), 1)))
+  brush.rendering.wet = { pickup }
+  brush.rendering.flow = round(brush.rendering.flow * flow)
+  for (const [option, target, value] of [
+    ["SmudgeRate", "pickup", pickup],
+    ["ColorRate", "flow", flow],
+  ] as const) {
+    if (value === 0 || p.get(`${option}UseCurve`) === "false") continue
+    brush.dynamics.push(
+      ...optionModulators(
+        option,
+        { target, mix: "multiply", range: scale },
+        p.get(`${option}Sensor`),
+        1,
+        p.get(`${option}curveMode`),
+        dropped
+      )
+    )
+  }
+  if (flag(p.get("PressureSmudgeRadius"))) dropped.push("smudge radius option")
+  if (p.has("SmudgeRateMode")) dropped.push("smearing/dulling mode switch")
+  if (flag(p.get("MergedPaint"))) dropped.push("overlay mode")
 }
 
 function translateTexture(

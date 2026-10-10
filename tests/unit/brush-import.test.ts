@@ -135,7 +135,7 @@ describe("importing a .kpp", () => {
     const { deps } = fakes()
     const outcome = await importBrushFiles(
       [
-        file("smudge.kpp", kpp("colorsmudge")),
+        file("smudge.kpp", kpp("spraybrush")),
         file("dots.gbr", gbr("Dots", 4, 4)),
       ],
       deps
@@ -144,7 +144,7 @@ describe("importing a .kpp", () => {
       {
         file: "smudge.kpp",
         reason:
-          "Only Krita's pixel brush engine can be imported, not colorsmudge.",
+          "Only Krita's pixel brush and colour-smudge engines can be imported, not spraybrush.",
       },
     ])
     expect(outcome.imported.map((entry) => entry.brush.name)).toEqual(["Dots"])
