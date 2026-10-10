@@ -163,13 +163,19 @@ export function dabSpacing(brush: Brush, radius: number): number {
 }
 
 /**
- * Distance between dabs in canvas pixels, for a brush at rest. A wet brush's
- * is never under a pixel, where a dab would have no whole pixel behind it to
- * drag.
+ * Distance between a wet brush's dabs in canvas pixels, for a dab of the
+ * given radius. Never under a pixel, where a dab would have no whole pixel
+ * behind it to drag.
  */
+export function wetDabSpacing(brush: Brush, radius: number): number {
+  return Math.max(1, dabSpacing(brush, radius))
+}
+
+/** Distance between dabs in canvas pixels, for a brush at rest. */
 export function brushSpacing(brush: Brush): number {
-  const spacing = dabSpacing(brush, brush.shape.radius)
-  return brush.rendering.wet ? Math.max(1, spacing) : spacing
+  return brush.rendering.wet
+    ? wetDabSpacing(brush, brush.shape.radius)
+    : dabSpacing(brush, brush.shape.radius)
 }
 
 /** A brush is plain data, so a copy is a deep clone and nothing else. */

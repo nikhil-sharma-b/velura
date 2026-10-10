@@ -88,6 +88,7 @@ import {
   validateBrushWet,
   brushSpacing,
   dabSpacing,
+  wetDabSpacing,
   cloneBrush,
   DEFAULT_BRUSH,
 } from "./brush/brush"
@@ -4617,9 +4618,12 @@ export function createEngine(
    * its shape from the brush — the tip's turn and squash here, its texture
    * and rim through the renderer — while its size and strength are the
    * smudge's own (smudge 02), and a pen's pressure drives the strength alone.
-   * A wet brush's (D41) is the brush at its set radius, laying by its flow
-   * and dragging by its pickup. None of the brush's dynamics reach either. A
-   * tip of several frames gives each dab the one the brush would have drawn.
+   * None of the brush's dynamics reach it. A wet brush's (D41) is the brush's
+   * own dab, laying by its flow and dragging by its pickup: the dynamics
+   * graph scales its radius and flow and turns and squashes its tip as it
+   * does a dry dab's. Scatter and colour are left out, since a dab thrown off
+   * the path has no one dab behind it to drag from. A tip of several frames
+   * gives either dab the one the brush would have drawn.
    */
   function emitDirect(
     x: number,
@@ -4636,20 +4640,36 @@ export function createEngine(
     directDabs[offset + SMUDGE.CENTER_X] = x
     directDabs[offset + SMUDGE.CENTER_Y] = y
     const wet = directWet
-    directDabs[offset + SMUDGE.RADIUS] = wet
-      ? brush.shape.radius
-      : smudge.radius
-    directDabs[offset + SMUDGE.STRENGTH] = wet
-      ? wet.pickup
-      : smudgeDabStrength(smudge.strength, pressure, strokeSensesPressure)
-    directDabs[offset + SMUDGE.FLOW] = wet ? brush.rendering.flow : 0
-    directDabs[offset + SMUDGE.ANGLE] = brush.shape.angle
-    directDabs[offset + SMUDGE.ROUNDNESS] = brush.shape.roundness
     directDabs[offset + SMUDGE.TIP_FRAME] = nextTipFrame(brush, context)
     directCount++
     frameStamps++
-    // A dry stroke leaves the resampler at its last dab's pitch.
-    if (wet) resampler.setSpacing(brushSpacing(brush))
+    if (!wet) {
+      directDabs[offset + SMUDGE.RADIUS] = smudge.radius
+      directDabs[offset + SMUDGE.STRENGTH] = smudgeDabStrength(
+        smudge.strength,
+        pressure,
+        strokeSensesPressure
+      )
+      directDabs[offset + SMUDGE.FLOW] = 0
+      directDabs[offset + SMUDGE.ANGLE] = brush.shape.angle
+      directDabs[offset + SMUDGE.ROUNDNESS] = brush.shape.roundness
+      return
+    }
+    evaluateDynamics(
+      dynamicsForDevice(brush.dynamics, strokeSensesPressure),
+      context,
+      params
+    )
+    const radius = brush.shape.radius * params.size
+    directDabs[offset + SMUDGE.RADIUS] = radius
+    directDabs[offset + SMUDGE.STRENGTH] = wet.pickup
+    directDabs[offset + SMUDGE.FLOW] = brush.rendering.flow * params.flow
+    directDabs[offset + SMUDGE.ANGLE] = brush.shape.angle + params.angle
+    directDabs[offset + SMUDGE.ROUNDNESS] =
+      brush.shape.roundness * params.roundness
+    // What follows this dab, measured against the dab actually drawn, as a
+    // dry stroke's is; a dry stroke leaves the resampler at its last pitch.
+    resampler.setSpacing(wetDabSpacing(brush, radius))
   }
 
   /**
