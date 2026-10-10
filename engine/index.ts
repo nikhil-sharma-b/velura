@@ -5971,6 +5971,11 @@ export function createEngine(
           {
             begin: beginStroke,
             end: endStroke,
+            // Read by the dabs still to be drawn; the stroke's own opacity
+            // was settled as the pen went down.
+            pressureSensed: () => {
+              strokeSensesPressure = true
+            },
             modifiers: (shift, alt, ctrl) => {
               shiftHeld = shift
               altHeld = alt
