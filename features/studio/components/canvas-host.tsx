@@ -1051,9 +1051,9 @@ export function CanvasHost({
   const brushDimmed =
     untouchable || (onVectorLayer && !intoMask) || onPlacedPhoto
   const eraserDimmed = untouchable || onPlacedPhoto
-  // Smudge smears a paint layer's own pixels, and not yet a mask's.
-  const smudgeDimmed =
-    untouchable || onVectorLayer || onPlacedPhoto || snapshot.paintingMask
+  // Smudge smears a paint layer's own pixels, or any layer's mask: where
+  // the brush can paint.
+  const smudgeDimmed = brushDimmed
   // On a vector layer the eraser is two, as the selection pairs are: one
   // takes the pixels under its tip, the other whole shapes.
   const vectorErasing = onVectorLayer && !intoMask
