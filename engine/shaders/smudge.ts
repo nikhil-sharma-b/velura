@@ -12,6 +12,10 @@
  *
  * The dab's shape is the stamp pass's: the procedural disc with its feathered
  * rim, or the brush's tip texture, turned and squashed in the vertex stage.
+ *
+ * A selection (smudge 03) scales the mix by its coverage of the pixel being
+ * written, so nothing outside it changes and a soft edge takes its share. The
+ * pixel behind is read whatever its coverage: paint outside is dragged in.
  */
 export const smudgeShader = /* wgsl */ `
 const TAU = 6.283185307179586;
@@ -23,6 +27,8 @@ struct Smudge {
   feather: f32,
   // One when the tip texture is the dab's shape, zero for the procedural disc.
   useTip: f32,
+  // One when a selection clips the smear, zero when nothing is selected.
+  useSelection: f32,
 }
 
 @group(0) @binding(0) var<uniform> smudge: Smudge;
@@ -30,6 +36,9 @@ struct Smudge {
 @group(0) @binding(2) var tipTexture: texture_2d_array<f32>;
 @group(0) @binding(3) var carrySampler: sampler;
 @group(0) @binding(4) var carry: texture_2d<f32>;
+// The selection's coverage, one texel per document pixel. Read only when
+// \`useSelection\` says there is one; a placeholder is bound otherwise.
+@group(0) @binding(5) var selectionTexture: texture_2d<f32>;
 
 struct Instance {
   // Dab centre in canvas pixels.
@@ -116,6 +125,10 @@ fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
   if (source.x < 0.0 || source.y < 0.0 || source.x > smudge.viewport.x || source.y > smudge.viewport.y) {
     behind = vec4<f32>(0.0);
   }
-  return mix(here, behind, clamp(varyings.strength * shape, 0.0, 1.0));
+  var selected = 1.0;
+  if (smudge.useSelection > 0.0) {
+    selected = textureLoad(selectionTexture, vec2<i32>(varyings.position.xy), 0).r;
+  }
+  return mix(here, behind, clamp(varyings.strength * shape * selected, 0.0, 1.0));
 }
 `

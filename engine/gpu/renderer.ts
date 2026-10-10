@@ -1696,9 +1696,12 @@ export function createRenderer(
    * strokes, and grown when a dab needs more.
    */
   let carry: GPUTexture | undefined
-  /** Holds the tip's and the carry's views, so it goes when either is replaced. */
+  /**
+   * Holds the tip's, the carry's and the selection's views, so it goes when
+   * any of them is replaced.
+   */
   let smudgeBindGroup: GPUBindGroup | undefined
-  const smudgeParams = new Float32Array(4)
+  const smudgeParams = new Float32Array(8)
   /** The widest neighbourhood a dab may ask for; one reaching further is skipped. */
   const MAX_CARRY_SIZE = 2048
   const smudgeModule = device.createShaderModule({ code: smudgeShader })
@@ -1758,7 +1761,7 @@ export function createRenderer(
     primitive: { topology: "triangle-list" },
   })
   const smudgeUniform = device.createBuffer({
-    size: 16,
+    size: smudgeParams.byteLength,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
   const smudgeInstances = device.createBuffer({
@@ -1779,6 +1782,15 @@ export function createRenderer(
   /** Draws the dabs of a smudge stroke into its surface, one after another. */
   function drawSmudge(dabs: Float32Array, count: number) {
     const session = smudging!
+    // Nothing outside the selection's bounds is selected (smudge 03), so a
+    // dab draws only within them, and one clear of them draws nothing.
+    const bounds = selection?.bounds
+    const clipLeft = bounds ? Math.max(0, bounds.x) : 0
+    const clipTop = bounds ? Math.max(0, bounds.y) : 0
+    const clipRight = bounds ? Math.min(width, bounds.x + bounds.width) : width
+    const clipBottom = bounds
+      ? Math.min(height, bounds.y + bounds.height)
+      : height
     let drawn = 0
     let need = 0
     for (let i = 0; i < count; i++) {
@@ -1800,10 +1812,10 @@ export function createRenderer(
       if (!(dabs[dab + SMUDGE.STRENGTH] > 0)) continue
       // Rotated textured quads fit inside sqrt(2) radii.
       const reach = dabs[dab + SMUDGE.RADIUS] * Math.SQRT2
-      const left = Math.max(0, Math.floor(x - reach))
-      const top = Math.max(0, Math.floor(y - reach))
-      const right = Math.min(width, Math.ceil(x + reach))
-      const bottom = Math.min(height, Math.ceil(y + reach))
+      const left = Math.max(clipLeft, Math.floor(x - reach))
+      const top = Math.max(clipTop, Math.floor(y - reach))
+      const right = Math.min(clipRight, Math.ceil(x + reach))
+      const bottom = Math.min(clipBottom, Math.ceil(y + reach))
       if (right <= left || bottom <= top) continue
       // What the dab reads: the pixels it covers and the ones its travel
       // behind them, with a texel to spare for the blend between texels.
@@ -1860,6 +1872,7 @@ export function createRenderer(
     smudgeParams[1] = height
     smudgeParams[2] = feather
     smudgeParams[3] = usesTip ? 1 : 0
+    smudgeParams[4] = selection ? 1 : 0
     device.queue.writeBuffer(smudgeUniform, 0, smudgeParams)
     device.queue.writeBuffer(
       smudgeInstances,
@@ -1880,6 +1893,10 @@ export function createRenderer(
         },
         { binding: 3, resource: carrySampler },
         { binding: 4, resource: carry.createView() },
+        {
+          binding: 5,
+          resource: (selection?.texture ?? noSelection).createView(),
+        },
       ],
     })
     // Each dab reads what the one before it wrote, so each is a copy and a
@@ -2976,6 +2993,7 @@ export function createRenderer(
   return {
     resize(nextWidth, nextHeight) {
       releaseSelection()
+      smudgeBindGroup = undefined
       dropSmudge()
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
@@ -3537,6 +3555,7 @@ export function createRenderer(
         releaseSelection()
         // Dabs stop being clipped once nothing is selected.
         if (stampBindGroup) refreshStampBindGroup()
+        smudgeBindGroup = undefined
         return
       }
       if (!selection) {
@@ -3565,6 +3584,7 @@ export function createRenderer(
         }
         // From the next dab on, the stroke is clipped to the new texture.
         refreshStampBindGroup()
+        smudgeBindGroup = undefined
       }
       const canvas = { x: 0, y: 0, width, height }
       const write = (coord: TileCoord, coverage: Uint8Array) => {
