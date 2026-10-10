@@ -1,5 +1,6 @@
 import type { Curve } from "../brush/curve"
 import { tiltFromAltitude } from "../brush/stamp-context"
+import { createForceSensorWatch } from "./force-sensor"
 import { DEFAULT_PRESSURE_CURVE, shapePressure } from "./pressure-curve"
 import type { SampleBuffer } from "./sample-buffer"
 import { isViewPanButton } from "./view-gestures"
@@ -24,7 +25,9 @@ export interface StrokeHandlers {
    * on the page's own clock, which is the only way anything downstream can
    * say how old a sample is now. `sensesPressure` says whether the device
    * has a force sensor at all, decided per stroke so that a tablet plugged in
-   * mid-session is honoured from its first mark.
+   * mid-session is honoured from its first mark. A pen that lands exactly on
+   * the browser's stand-in opens as one without, and `pressureSensed` follows
+   * if it turns out to have one.
    */
   begin(
     x: number,
@@ -38,6 +41,11 @@ export interface StrokeHandlers {
   ): void
   /** The pen lifted or the stroke was cancelled. */
   end(): void
+  /**
+   * A stroke that opened as one from a device with no force sensor has shown
+   * a pressure that moves, so it is read as measured from here on.
+   */
+  pressureSensed?(): void
   /** Samples the canvas instead of opening a stroke while Alt/Option is held. */
   sample?(x: number, y: number): void
   /**
@@ -103,11 +111,15 @@ export function attachPointerSampler(
   const canvasX = (event: PointerEvent) => (event.clientX - originX) * scaleX
   const canvasY = (event: PointerEvent) => (event.clientY - originY) * scaleY
 
+  // Only a pen is trusted to measure force, and only one whose pressure has
+  // left the browser's stand-in: see `createForceSensorWatch`.
+  const forceSensor = createForceSensorWatch()
+
   /**
    * Force, or a full press from a device that cannot report one. Whether
-   * there is a sensor is a fact about the device, so it is decided here and
-   * once — a pen that genuinely reports zero as it lands must keep its zero,
-   * or the taper a pressure mapping draws is inverted at both ends.
+   * there is a sensor is a fact about the device, so it is decided here, for
+   * every tool — a pen that genuinely reports zero as it lands must keep its
+   * zero, or the taper a pressure mapping draws is inverted at both ends.
    *
    * A device that reports force has the artist's response curve applied to it
    * here, at the one place a raw reading enters the pipeline, so that nothing
@@ -116,12 +128,8 @@ export function attachPointerSampler(
    * stand-in for a missing sensor, not a press, and shaping it would let a
    * curve the artist drew for their pen quietly thin every mouse stroke.
    */
-  // Only a pen is trusted to measure force: a mouse or trackpad has no sensor,
-  // and a finger on glass reports a constant stand-in (0.5 by the spec's own
-  // default) that would pin every pressure mapping partway up its range.
-  const sensesPressure = (event: PointerEvent) => event.pointerType === "pen"
-  const canvasPressure = (event: PointerEvent) =>
-    !sensesPressure(event)
+  const canvasPressure = (event: PointerEvent, sensesPressure: boolean) =>
+    !sensesPressure
       ? 1
       : shapePressure(
           options.pressureCurve?.() ?? DEFAULT_PRESSURE_CURVE,
@@ -148,12 +156,24 @@ export function attachPointerSampler(
     return tiltFromAltitude(event.altitudeAngle, event.azimuthAngle ?? 0)
   }
 
-  function record(event: PointerEvent) {
+  // Whether the stroke in hand is being read as measured force.
+  let strokeSensesPressure = false
+
+  /**
+   * `lifting` is the sample the pen leaves on: every device reports zero
+   * there, so it says nothing about a sensor, and a pen without one keeps
+   * its full press to the end.
+   */
+  function record(event: PointerEvent, lifting = false) {
+    if (!lifting && !strokeSensesPressure && forceSensor.read(event.pressure)) {
+      strokeSensesPressure = true
+      handlers.pressureSensed?.()
+    }
     const [tiltX, tiltY] = canvasTilt(event)
     buffer.push(
       canvasX(event),
       canvasY(event),
-      canvasPressure(event),
+      canvasPressure(event, strokeSensesPressure),
       tiltX,
       tiltY,
       event.timeStamp - strokeStart
@@ -190,16 +210,17 @@ export function attachPointerSampler(
     buffer.clear()
     handlers.modifiers?.(event.shiftKey, event.altKey, event.ctrlKey)
     strokeStart = event.timeStamp
+    strokeSensesPressure = forceSensor.begin(event.pointerType, event.pressure)
     const [tiltX, tiltY] = canvasTilt(event)
     handlers.begin(
       canvasX(event),
       canvasY(event),
-      canvasPressure(event),
+      canvasPressure(event, strokeSensesPressure),
       tiltX,
       tiltY,
       0,
       event.timeStamp,
-      sensesPressure(event)
+      strokeSensesPressure
     )
   }
 
@@ -218,7 +239,7 @@ export function attachPointerSampler(
   function onPointerFinish(event: PointerEvent) {
     if (event.pointerId !== activePointer) return
     activePointer = null
-    if (event.type !== "pointercancel") record(event)
+    if (event.type !== "pointercancel") record(event, true)
     handlers.end()
   }
 

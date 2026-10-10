@@ -375,10 +375,11 @@ async function deviceDrag(
   pointerType: "pen" | "mouse",
   pressure: number,
   from: number,
-  to: number
+  to: number,
+  liftPressure = pressure
 ) {
   await page.evaluate(
-    ([pointerType, pressure, from, to, row]) => {
+    ([pointerType, pressure, from, to, row, liftPressure]) => {
       const canvas = document.querySelector("canvas")!
       const bounds = canvas.getBoundingClientRect()
       const send = (type: string, x: number) =>
@@ -392,7 +393,7 @@ async function deviceDrag(
             buttons: type === "pointerup" ? 0 : 1,
             clientX: bounds.left + x,
             clientY: bounds.top + row,
-            pressure,
+            pressure: type === "pointerup" ? liftPressure : pressure,
           })
         )
       send("pointerdown", from)
@@ -400,7 +401,7 @@ async function deviceDrag(
         send("pointerrawupdate", from + ((to - from) * step) / 40)
       send("pointerup", to)
     },
-    [pointerType, pressure, from, to, ROW] as const
+    [pointerType, pressure, from, to, ROW, liftPressure] as const
   )
 }
 
@@ -409,7 +410,8 @@ async function smudgedBy(
   page: Page,
   settings: { radius?: number; strength?: number },
   pointerType: "pen" | "mouse",
-  pressure: number
+  pressure: number,
+  liftPressure = pressure
 ) {
   const origin = await openCanvas(page)
   await addLayer(page)
@@ -418,7 +420,7 @@ async function smudgedBy(
   await setTool(page, "smudge")
   await setSmudge(page, settings)
   const before = await steps(page)
-  await deviceDrag(page, pointerType, pressure, 80, 160)
+  await deviceDrag(page, pointerType, pressure, 80, 160, liftPressure)
   await page.waitForFunction(
     (n) => window.engine.historyUsage().steps > n,
     before
@@ -473,6 +475,25 @@ test("full pen pressure reaches the strength setting and no more, which is where
   // And neither reaches what a higher setting does.
   const higher = await smudgedBy(page, { strength: 0.95 }, "pen", 1)
   expect(short(higher)).toBeLessThan(short(pen))
+})
+
+test("a pen that reports no pressure smudges at the strength setting, as a mouse does", async ({
+  page,
+}) => {
+  // A pen with no force sensor: the browser fills in 0.5 while it is down
+  // (smudge 07), which is not half a press. It lifts on zero, as every
+  // device does, and that is not a reading either.
+  const sensorless = await smudgedBy(page, { strength: 0.7 }, "pen", 0.5, 0)
+  const mouse = await smudgedBy(page, { strength: 0.7 }, "mouse", 0.5)
+  expect(sensorless.smudged).toEqual(mouse.smudged)
+})
+
+test("a pen held at a steady pressure away from the stand-in still softens the smudge", async ({
+  page,
+}) => {
+  const steady = await smudgedBy(page, { strength: 0.7 }, "pen", 0.4)
+  const mouse = await smudgedBy(page, { strength: 0.7 }, "mouse", 0.5)
+  expect(short(mouse)).toBeLessThan(short(steady))
 })
 
 test("the smudge's size is its own: a larger one reaches further off the path", async ({

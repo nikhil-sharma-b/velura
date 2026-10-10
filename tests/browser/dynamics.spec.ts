@@ -49,20 +49,25 @@ async function openCanvas(page: Page, dynamics: Modulator[], radius = RADIUS) {
 }
 
 /**
- * Plays a pen gesture into the canvas. `delay` is the wait between samples: it
+ * Plays a pen gesture into the canvas, or the same gesture from a mouse. `delay` is the wait between samples: it
  * is what makes a stroke slow or fast, since a constructed event's timestamp
  * is the moment it is made and cannot be dictated.
  */
-async function pen(page: Page, samples: Sample[], delay = 0) {
+async function pen(
+  page: Page,
+  samples: Sample[],
+  delay = 0,
+  pointerType: "pen" | "mouse" = "pen"
+) {
   await page.evaluate(
-    async ([points, wait]) => {
+    async ([points, wait, pointerType]) => {
       const canvas = document.querySelector("canvas")!
       const bounds = canvas.getBoundingClientRect()
       const send = (type: string, sample: Sample) =>
         canvas.dispatchEvent(
           new PointerEvent(type, {
             pointerId: 1,
-            pointerType: "pen",
+            pointerType,
             isPrimary: true,
             bubbles: true,
             cancelable: true,
@@ -82,7 +87,7 @@ async function pen(page: Page, samples: Sample[], delay = 0) {
       }
       send("pointerup", list[list.length - 1])
     },
-    [samples, delay] as const
+    [samples, delay, pointerType] as const
   )
 }
 
@@ -158,6 +163,47 @@ test("pressing harder widens the stroke", async ({ page }) => {
   const middle = thickness(image, 120)
   expect(middle).toBeGreaterThan(light)
   expect(middle).toBeLessThan(heavy)
+})
+
+const SIZE_FOLLOWS_PRESSURE: Modulator[] = [
+  { source: "pressure", target: "size", range: [0.2, 1], mix: "multiply" },
+]
+
+test("a pen that reports no pressure draws a pressure-sized brush at its full size, as a mouse does", async ({
+  page,
+}) => {
+  // A pen with no force sensor (smudge 07): the browser reports 0.5 for it
+  // for as long as it is down, which is not a press of any strength.
+  await openCanvas(page, SIZE_FOLLOWS_PRESSURE)
+  await pen(page, run(20, 220, 5, { pressure: 0.5 }))
+  const sensorless = await painted(page)
+  expect(thickness(sensorless, 120)).toBeGreaterThanOrEqual(RADIUS * 2 - 2)
+
+  await openCanvas(page, SIZE_FOLLOWS_PRESSURE)
+  await pen(page, run(20, 220, 5, { pressure: 0.5 }), 0, "mouse")
+  expect((await painted(page)).data).toEqual(sensorless.data)
+})
+
+test("a pen held at a steady pressure away from the stand-in is still read as a press", async ({
+  page,
+}) => {
+  await openCanvas(page, SIZE_FOLLOWS_PRESSURE)
+  await pen(page, run(20, 220, 5, { pressure: 0.4 }))
+  const steady = thickness(await painted(page), 120)
+  expect(steady).toBeGreaterThan(0)
+  expect(steady).toBeLessThan(RADIUS * 2 - 2)
+})
+
+test("a pen that lands on the stand-in and then moves off it is read as a press from there on", async ({
+  page,
+}) => {
+  await openCanvas(page, SIZE_FOLLOWS_PRESSURE)
+  await pen(page, [
+    { x: 20, y: Y, pressure: 0.5 },
+    ...run(25, 220, 5, { pressure: 0.3 }),
+  ])
+  const image = await painted(page)
+  expect(thickness(image, 120)).toBeLessThan(RADIUS * 2 - 2)
 })
 
 test("pressing harder deepens the tone", async ({ page }) => {
