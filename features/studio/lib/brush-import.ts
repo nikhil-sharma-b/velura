@@ -125,7 +125,7 @@ async function importPreset(
   const preset = parseKritaPreset(await readKpp(file.bytes))
   const tipFile = kritaTipFile(preset)
   const companion = tipFile ? tips.get(baseName(tipFile)) : undefined
-  if (preset.engine !== "paintbrush")
+  if (preset.engine !== "paintbrush" && preset.engine !== "colorsmudge")
     // The translator's refusal, before any tip is read and can fail first.
     translateKritaPreset(preset)
   // A tip that will not read leaves the brush round, as a missing one does.

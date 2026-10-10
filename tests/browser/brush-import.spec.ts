@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { expect, test, type Page } from "@playwright/test"
 
 /**
@@ -134,6 +135,81 @@ test("a Krita preset is imported, reports what it lost, and paints", async ({
   await paintsAMark(page)
 })
 
+test("a colour-smudge preset imports as wet, reports dropped settings, and mixes paint", async ({
+  page,
+}) => {
+  await openLibrary(page)
+  await paintsAMark(page)
+  const canvas = page.locator("canvas").first()
+  await page.getByRole("button", { name: /^Choose brush:/ }).click()
+  const xml = readFileSync(
+    new URL("../fixtures/krita-colour-smudge.xml", import.meta.url),
+    "utf8"
+  )
+  const params = xml.match(/<param[\s\S]*?<\/param>/g)!
+  await importFiles(page, [
+    { name: "wet-mixer.kpp", buffer: kpp("colorsmudge", ...params) },
+  ])
+  const report = page.getByRole("region", { name: "Import report" })
+  for (const option of [
+    "smudge radius option",
+    "smearing/dulling mode switch",
+    "overlay mode",
+  ])
+    await expect(report.getByText(option, { exact: true })).toBeVisible()
+  await page.keyboard.press("Escape")
+  await page.getByRole("button", { name: "Brush editor" }).click()
+  const editor = page.getByRole("region", { name: "Brush editor" })
+  await editor.getByRole("tab", { name: "Rendering" }).click()
+  await expect(editor.getByRole("switch", { name: /Wet/ })).toBeChecked()
+  await expect(editor.getByRole("slider", { name: "Pickup" })).toHaveAttribute(
+    "aria-valuenow",
+    "0.6"
+  )
+  await expect(
+    editor.getByRole("slider", { name: "Flow (colour laid)", exact: true })
+  ).toHaveAttribute("aria-valuenow", "0.3")
+  await page.keyboard.press("Escape")
+  // White laid across the earlier black stroke must carry some of its paint.
+  await page.getByRole("button", { name: "Colour", exact: true }).click()
+  const hex = page.getByRole("textbox", { name: "Hex colour" })
+  await hex.fill("#ffffff")
+  await hex.press("Enter")
+  await page.keyboard.press("Escape")
+  const box = (await canvas.boundingBox())!
+  const y = box.y + box.height / 2
+  const ground = await canvas.screenshot()
+  const draw = async () => {
+    await page.mouse.move(box.x + 90, y)
+    await page.mouse.down()
+    await page.mouse.move(box.x + 280, y + 30, { steps: 25 })
+    await page.mouse.up()
+  }
+  await draw()
+  await expect(async () =>
+    expect(await canvas.screenshot()).not.toEqual(ground)
+  ).toPass()
+  const mixed = await canvas.screenshot()
+  await page.getByRole("button", { name: "Undo", exact: true }).click()
+  await expect(async () =>
+    expect((await canvas.screenshot()).equals(ground)).toBe(true)
+  ).toPass()
+  await page.getByRole("button", { name: "Brush editor" }).click()
+  await editor.getByRole("tab", { name: "Rendering" }).click()
+  await editor.getByRole("slider", { name: "Pickup" }).focus()
+  await editor.getByRole("slider", { name: "Pickup" }).press("Home")
+  await expect(editor.getByRole("slider", { name: "Pickup" })).toHaveAttribute(
+    "aria-valuenow",
+    "0"
+  )
+  await page.keyboard.press("Escape")
+  await draw()
+  // The same colour, flow and path leave different paint with pickup off.
+  await expect(async () =>
+    expect(await canvas.screenshot()).not.toEqual(mixed)
+  ).toPass()
+})
+
 test("a GIMP image hose is imported as a tip set and paints", async ({
   page,
 }) => {
@@ -165,10 +241,10 @@ test("a preset for another Krita engine is refused with the reason", async ({
   page,
 }) => {
   await openLibrary(page)
-  await importFiles(page, [{ name: "smudge.kpp", buffer: kpp("colorsmudge") }])
+  await importFiles(page, [{ name: "smudge.kpp", buffer: kpp("spraybrush") }])
   await expect(
     page.getByText(
-      "smudge.kpp: Only Krita's pixel brush engine can be imported, not colorsmudge."
+      "smudge.kpp: Only Krita's pixel brush and colour-smudge engines can be imported, not spraybrush."
     )
   ).toBeVisible()
 })
