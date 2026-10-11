@@ -379,19 +379,21 @@ async function scatterSweep(): Promise<void> {
 
 /**
  * Smudging (smudge 01), against painting the same strokes. A smudge stroke
- * keeps what a cancel puts back, and then every dab is a copy and a pass of
- * its own into the layer. The first shows in the pen-to-pixel of the frame
- * the stroke opens in, and is the stroke's size and not the document's
- * (smudge 06), which is why a small document is run beside the large one;
- * the second is paid per frame. Paced, because pen-to-pixel only means
- * anything with one frame in flight.
+ * keeps what a cancel puts back, and then its dabs are drawn a run at a time:
+ * two copies and a pass for the run (live brushes 22), where each dab was
+ * once a copy and a pass of its own. The first shows in the pen-to-pixel of
+ * the frame the stroke opens in, and is the stroke's size and not the
+ * document's (smudge 06), which is why a small document is run beside the
+ * large one; the second is paid per frame. Paced, because pen-to-pixel only
+ * means anything with one frame in flight.
  */
 const SMUDGE_SIZES = [2048, 8192]
 /**
  * Smudge at its default size, and at a size small enough that its spacing,
  * a quarter of its radius, is a pixel (live brushes 19): the most dabs a
  * smudge lays in a frame, which the wet spacing floor would not let a wet
- * brush lay and which smudge, keeping its spacing, does.
+ * brush lay and which smudge, keeping its spacing, does. It holds the frame
+ * because the dabs of a frame share a pass (live brushes 22).
  */
 const SMUDGE_TOOLS = [
   { name: "brush", smudge: false },
@@ -417,7 +419,7 @@ async function smudgeSweep(): Promise<void> {
   const pass = PASSES.find((entry) => entry.name === "paced")!
   console.log(
     "\n  pen-to-pixel in ms" +
-      "\n  document  tool          stroke's first frame (median / worst)   all frames (median / p95)   dabs     readbacks"
+      "\n  document  tool          stroke's first frame (median / worst)   all frames (median / p95)   dabs     readbacks   allocations"
   )
   for (const size of SMUDGE_SIZES)
     for (const { name, ...tool } of SMUDGE_TOOLS) {
@@ -428,13 +430,13 @@ async function smudgeSweep(): Promise<void> {
         strokes: SWEEP_STROKES,
         ...tool,
       })
-      const { report, readbacks } = measured
+      const { report, readbacks, allocations } = measured
       const opening = openingFrames(measured)
       console.log(
         `  ${`${size}²`.padEnd(8)}  ${name.padEnd(12)}  ` +
           `${fixed(middle(opening)).padStart(18)} / ${fixed(Math.max(...opening)).padEnd(15)}   ` +
           `${fixed(report.latencyMs.median).padStart(12)} / ${fixed(report.latencyMs.p95).padEnd(8)}   ` +
-          `${String(report.stamps.total).padStart(6)}   ${String(readbacks).padStart(9)}`
+          `${String(report.stamps.total).padStart(6)}   ${String(readbacks).padStart(9)}   ${String(allocations).padStart(11)}`
       )
       if (readbacks > 0) process.exitCode = 1
     }
