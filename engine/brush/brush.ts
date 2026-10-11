@@ -201,11 +201,25 @@ export function wetSpacingFloor(radius: number): number {
 }
 
 /**
- * Distance between a wet brush's dabs in canvas pixels, for a dab of the
- * given radius: the brush's own spacing, held at the floor D30 sets.
+ * The scatter a brush's dabs are thrown by, dry or wet (live brushes 12):
+ * its own, unless it is a blender. A blender drags from the dab behind it, and a
+ * thrown dab has none, so a blender keeps to the path.
+ */
+export function thrownScatter(brush: Brush): BrushScatter | undefined {
+  return isBlender(brush) ? undefined : brush.scatter
+}
+
+/**
+ * Distance between a wet brush's spacing steps in canvas pixels, for a dab
+ * of the given radius: the brush's own spacing, held at the floor D30 sets.
+ * Scatter lays `count` dabs a step, each a copy and a draw of its own, so
+ * the floor is that many times wider and a frame holds the dabs it did.
  */
 export function wetDabSpacing(brush: Brush, radius: number): number {
-  return Math.max(wetSpacingFloor(radius), dabSpacing(brush, radius))
+  return Math.max(
+    wetSpacingFloor(radius) * (thrownScatter(brush)?.count ?? 1),
+    dabSpacing(brush, radius)
+  )
 }
 
 /** Distance between dabs in canvas pixels, for a brush at rest. */

@@ -130,7 +130,8 @@ describe("the brush editor's preview stroke", () => {
     for (const dab of dry.dabs) expect(dab.opacity).toBe(0)
   })
 
-  test("a wet brush previews without its scatter or colour jitter, as it draws", () => {
+  test("a wet brush previews with its scatter and without its colour jitter, as it draws", () => {
+    const wetRendering = { ...DEFAULT_BRUSH.rendering, wet: { pickup: 0.5 } }
     const jittery = brush({
       scatter: { amount: 2, count: 3, axes: "both" },
       dynamics: [
@@ -138,18 +139,40 @@ describe("the brush editor's preview stroke", () => {
         { source: "random", target: "lightness", range: [-1, 1], mix: "add" },
       ],
     })
-    const dry = previewStroke(jittery, BOX)
-    expect(dry.tinted).toBe(true)
-    const wet = previewStroke(
-      { ...jittery, rendering: { ...jittery.rendering, wet: { pickup: 0.5 } } },
-      BOX
-    )
-    const plain = previewStroke(
-      brush({ rendering: { ...jittery.rendering, wet: { pickup: 0.5 } } }),
-      BOX
-    )
+    expect(previewStroke(jittery, BOX).tinted).toBe(true)
+    const wet = previewStroke({ ...jittery, rendering: wetRendering }, BOX)
     expect(wet.tinted).toBe(false)
-    expect(wet.dabs).toEqual(plain.dabs)
+    // Thrown off the path, three to a step, where the same brush with its
+    // dabs stacked keeps them on it (live brushes 12).
+    const stacked = previewStroke(
+      {
+        ...jittery,
+        rendering: wetRendering,
+        scatter: { amount: 0, count: 3, axes: "both" },
+      },
+      BOX
+    )
+    expect(wet.dabs.length).toBe(stacked.dabs.length)
+    expect(wet.dabs.length % 3).toBe(0)
+    expect(
+      wet.dabs.some(
+        (dab, i) =>
+          Math.hypot(dab.x - stacked.dabs[i].x, dab.y - stacked.dabs[i].y) > 1
+      )
+    ).toBe(true)
+  })
+
+  test("a blender previews without its scatter, as it draws", () => {
+    const rendering = {
+      ...DEFAULT_BRUSH.rendering,
+      flow: 0,
+      wet: { pickup: 0.5 },
+    }
+    const thrown = previewStroke(
+      brush({ rendering, scatter: { amount: 2, count: 3, axes: "both" } }),
+      BOX
+    )
+    expect(thrown.dabs).toEqual(previewStroke(brush({ rendering }), BOX).dabs)
   })
 
   test("is the same stroke every time, so a redraw does not reshuffle it", () => {

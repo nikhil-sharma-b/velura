@@ -93,6 +93,12 @@ describe("createWorkload", () => {
     expect(() =>
       createWorkload({ ...options, wet: { ...wet, spacing: 0 } })
     ).toThrow()
+    expect(() =>
+      createWorkload({
+        ...options,
+        wet: { ...wet, scatter: { amount: 2, count: 17, axes: "both" } },
+      })
+    ).toThrow()
     expect(() => createWorkload({ ...options, wet, smudge: true })).toThrow()
   })
 

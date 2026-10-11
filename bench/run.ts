@@ -443,6 +443,9 @@ const WET_PAINTS = [
   { name: "wet, pickup", pickup: HEAVY_PICKUP },
   { name: "wet, all layers", pickup: HEAVY_PICKUP, sampleAllLayers: true },
   { name: "wet, densest", pickup: HEAVY_PICKUP, spacing: DENSEST_SPACING },
+  // The most dabs a spacing step can be made to lay (live brushes 12).
+  { name: "dry, scatter", pickup: 0, dry: true, scatter: DENSE_SCATTER },
+  { name: "wet, scatter", pickup: HEAVY_PICKUP, scatter: DENSE_SCATTER },
 ]
 
 /**
@@ -451,8 +454,9 @@ const WET_PAINTS = [
  * into the reservoir when it picks up, where a dry brush's dabs are instances
  * in one draw; so a frame can afford only so many, and the wet spacing floor
  * is what keeps to that. Each brush is run dry, wet with no pickup, wet with
- * heavy pickup, and wet at the closest spacing a brush can ask for, on a
- * small document and a large one, since nothing a wet stroke does may grow
+ * heavy pickup, wet at the closest spacing a brush can ask for, and dry and
+ * wet with the densest scatter a brush can ask for, on a small document and
+ * a large one, since nothing a wet stroke does may grow
  * with the document. Both passes, as a recorded run makes: the frame's cost
  * unpaced, pen-to-pixel paced.
  */
