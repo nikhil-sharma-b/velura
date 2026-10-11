@@ -352,6 +352,9 @@ test("a wet brush taken to no flow is named as the blender it has become", async
   // A dry brush with no flow is only a brush that lays nothing.
   await typed.fill("0")
   await typed.press("Enter")
+  await expect(
+    panel.getByRole("slider", { name: "Flow", exact: true })
+  ).toHaveAttribute("aria-valuenow", "0")
   await expect(blender).toHaveCount(0)
 
   // Wet, the same flow is a different brush, and the editor says which.
@@ -366,8 +369,11 @@ test("a wet brush taken to no flow is named as the blender it has become", async
   await expect(blender).toHaveCount(0)
   await expect(wet).toContainText("Lays colour and drags")
 
-  await laid.fill("0")
-  await laid.press("Enter")
+  // The slider reaches the same zero the typed field does.
+  const flow = panel.getByRole("slider", { name: "Flow (colour laid)" })
+  await flow.focus()
+  await flow.press("ArrowLeft")
+  await expect(flow).toHaveAttribute("aria-valuenow", "0")
   await expect(blender).toBeVisible()
 })
 
