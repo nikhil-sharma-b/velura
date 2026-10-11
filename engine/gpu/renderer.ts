@@ -56,7 +56,8 @@ import {
   type RasterMagnification,
 } from "../view/magnification"
 import { createBufferedStroke, type StrokeMode } from "./buffered-stroke"
-import { createDirectStroke } from "./direct-stroke"
+import { createDirectStroke, type FrozenArtwork } from "./direct-stroke"
+import { createFreezeLedger, FREEZE_CHUNK } from "./freeze-ledger"
 import { LAYER_FORMAT, type Surface } from "./surface"
 
 const BYTES_PER_TEXEL = TILE_CHANNELS * 2
@@ -104,6 +105,12 @@ const TEXTURE_FORMAT: GPUTextureFormat = "r8unorm"
  * (`engine/shaders/composite-space.wgsl`).
  */
 const COMPOSITE_UNIFORM_BYTES = 96
+/**
+ * Pages of frozen artwork kept from one stroke to the next (live brushes
+ * 21), 8 MiB each: what a 512 px stroke across an 8192² document reaches.
+ * A stroke that reaches further allocates as it goes and gives them back.
+ */
+const FROZEN_PAGES_KEPT = 16
 /** The vector shader's chunk: a mat3x3 and two vec2s (`engine/shaders/vector.ts`). */
 const VECTOR_UNIFORM_BYTES = 64
 export {
@@ -1632,7 +1639,17 @@ export function createRenderer(
    * layers are drawn into it from their scenes wherever it is not the
    * document texel for texel (sharp-zoom 02); without, from their pixels.
    */
-  function createCompositor({ geometry }: { geometry: boolean }) {
+  function createCompositor({
+    geometry,
+    windowed = false,
+  }: {
+    geometry: boolean
+    /**
+     * The target is a window onto the document, texel for texel, a whole
+     * number of pixels in: document surfaces are fetched and not resampled.
+     */
+    windowed?: boolean
+  }) {
     let space: Space = { width: 0, height: 0, toDoc: IDENTITY_MATRIX }
     /** Whether document surfaces are resampled into this target. */
     let resampling = false
@@ -1671,6 +1688,8 @@ export function createRenderer(
     let activeItem: CompositeItem | undefined
     let blendScratch: Surface | undefined
     let frame: Surface | undefined
+    /** What `flatten` draws into. */
+    let flat: Surface | undefined
     let complexOutput: Surface | undefined
     let complexStages: CompositePlan["stages"]
     let stageBelow: (Surface | undefined)[] = []
@@ -1700,15 +1719,14 @@ export function createRenderer(
      */
     function writeSpace() {
       const [a, b, c, d, e, f] = space.toDoc
-      const resample =
-        a !== 1 ||
-        b !== 0 ||
-        c !== 0 ||
-        d !== 1 ||
-        e !== 0 ||
-        f !== 0 ||
-        space.width !== width ||
-        space.height !== height
+      const turned = a !== 1 || b !== 0 || c !== 0 || d !== 1
+      const resample = windowed
+        ? turned || !Number.isInteger(e) || !Number.isInteger(f)
+        : turned ||
+          e !== 0 ||
+          f !== 0 ||
+          space.width !== width ||
+          space.height !== height
       resampling = resample
       compositeValues[5] = resample ? 1 : 0
       // Target pixels per document pixel, whatever the turn or flip.
@@ -1751,7 +1769,9 @@ export function createRenderer(
       above?.texture.destroy()
       blendScratch?.texture.destroy()
       frame?.texture.destroy()
+      flat?.texture.destroy()
       for (const surface of stageFrames) surface.texture.destroy()
+      flat = undefined
       below = undefined
       above = undefined
       blendScratch = undefined
@@ -2303,41 +2323,17 @@ export function createRenderer(
 
     return {
       presentUniform,
-      snapshot(target: Surface) {
+      /**
+       * Flattens items into this compositor's own target, from the layers
+       * as they stand, and answers it. Kept between calls and drawn over by
+       * the next.
+       */
+      flatten(items: readonly CompositeItem[]): Surface {
         validGroupCaches.clear()
-        if (!plan?.active) {
-          clearSurface(target)
-          return
-        }
-        let current = plan.active
-        let items: CompositeItem[] = []
-        for (const stage of plan.stages ?? [
-          { below: plan.below, above: plan.above, container: null },
-        ]) {
-          items = [...stage.below, current, ...stage.above]
-          if (stage.container) current = { ...stage.container, children: items }
-        }
-        const visible = items.filter((item) => {
-          const surface = item.opacity > 0 ? itemSurface(item) : undefined
-          return surface && !surface.empty
-        })
-        const single = visible.length === 1 ? visible[0] : undefined
-        const source = single ? itemSurface(single) : undefined
-        if (
-          source &&
-          single &&
-          single.opacity === 1 &&
-          single.blend === "normal" &&
-          !single.maskId &&
-          !single.clip
-        ) {
-          // The artwork space is document-sized: one unmodified surface can
-          // be frozen by a blit, without shading every document pixel.
-          copySurface(source, target)
-        } else {
-          clearSurface(target)
-          renderItems(items, target)
-        }
+        flat ??= createTarget()
+        if (!flat.empty) clearSurface(flat)
+        renderItems(items, flat)
+        return flat
       },
       compositeSurface,
       groupThumbnailSurface,
@@ -2426,8 +2422,20 @@ export function createRenderer(
    * thumbnail is flattened in. It keeps nothing between uses.
    */
   const artwork = createCompositor({ geometry: false })
-  let pickupSnapshot: Surface | undefined
-  const compositors = [screen, artwork]
+  /**
+   * A chunk of the document at a time, for the artwork a stroke samples
+   * (live brushes 21). Its targets are a chunk's size and kept between
+   * strokes, so freezing one allocates nothing once the first has.
+   */
+  const pickup = createCompositor({ geometry: false, windowed: true })
+  /**
+   * Pages of frozen artwork, a chunk each, waiting for a stroke to fill
+   * them: a stroke takes what it reaches from here and gives back up to
+   * `FROZEN_PAGES_KEPT`, so what is held is the size of the strokes and
+   * not of the document.
+   */
+  const frozenPages: GPUTexture[] = []
+  const compositors = [screen, artwork, pickup]
   /** The window the screen compositor fills, once one has been given. */
   let viewport: { width: number; height: number } | undefined
   /** Screen pixels to document pixels. */
@@ -2443,6 +2451,129 @@ export function createRenderer(
     artwork.setSpace({ width, height, toDoc: IDENTITY_MATRIX })
   }
 
+  /**
+   * The visible stack as it exports, bottom to top, with the active layer in
+   * its place and each group around it holding its children.
+   */
+  function visibleStack(): CompositeItem[] {
+    if (!plan?.active) return []
+    let current = plan.active
+    let items: CompositeItem[] = []
+    for (const stage of plan.stages ?? [
+      { below: plan.below, above: plan.above, container: null },
+    ]) {
+      items = [...stage.below, current, ...stage.above]
+      if (stage.container) current = { ...stage.container, children: items }
+    }
+    return items
+  }
+
+  /** Whether an item has a pixel to show: a layer's own, or any child's. */
+  function hasPixels(item: CompositeItem): boolean {
+    if (item.kind === "group") return (item.children ?? []).some(hasPixels)
+    const surface = surfaces.get(item.id)
+    return !!surface && !surface.empty
+  }
+
+  /**
+   * The visible artwork as it stands, for a stroke to sample (live brushes
+   * 15), frozen a chunk at a time as the stroke first reads there (21).
+   * Only the stroke's own layer changes under it, and a dab reads at least
+   * where it writes, so each chunk is still the picture at pen-down when it
+   * is flattened. The stack is the one in force as the stroke opens.
+   */
+  function freezeArtwork(): FrozenArtwork {
+    const items = visibleStack()
+    const visible = items.filter((item) => item.opacity > 0 && hasPixels(item))
+    const only = visible.length === 1 ? visible[0] : undefined
+    // One unmodified layer is its own picture: a copy, with nothing shaded.
+    const copied =
+      only &&
+      only.kind !== "group" &&
+      only.opacity === 1 &&
+      only.blend === "normal" &&
+      !only.maskId &&
+      !only.clip
+        ? only.id
+        : undefined
+    const ledger = createFreezeLedger(width, height)
+    const across = Math.ceil(width / FREEZE_CHUNK)
+    /** The page each chunk reached is in, by its place along the rows. */
+    const pages = new Map<number, GPUTexture>()
+    return {
+      empty: visible.length === 0,
+      reach(left, top, right, bottom) {
+        for (const chunk of ledger.take(left, top, right, bottom)) {
+          const page =
+            frozenPages.pop() ??
+            device.createTexture({
+              label: "frozen artwork",
+              size: { width: FREEZE_CHUNK, height: FREEZE_CHUNK },
+              format: LAYER_FORMAT,
+              usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+            })
+          pages.set(
+            (chunk.y / FREEZE_CHUNK) * across + chunk.x / FREEZE_CHUNK,
+            page
+          )
+          let from = copied ? surfaces.get(copied) : undefined
+          let origin = { x: chunk.x, y: chunk.y }
+          if (!from) {
+            pickup.setSpace({
+              width: FREEZE_CHUNK,
+              height: FREEZE_CHUNK,
+              toDoc: [1, 0, 0, 1, chunk.x, chunk.y],
+            })
+            from = pickup.flatten(items)
+            origin = { x: 0, y: 0 }
+          }
+          const encoder = device.createCommandEncoder()
+          encoder.copyTextureToTexture(
+            { texture: from.texture, origin },
+            { texture: page },
+            { width: chunk.width, height: chunk.height }
+          )
+          device.queue.submit([encoder.finish()])
+        }
+      },
+      copy(encoder, left, top, wide, high, to) {
+        const right = left + wide
+        const bottom = top + high
+        const lastColumn = Math.floor((right - 1) / FREEZE_CHUNK)
+        const lastRow = Math.floor((bottom - 1) / FREEZE_CHUNK)
+        for (let row = Math.floor(top / FREEZE_CHUNK); row <= lastRow; row++)
+          for (
+            let column = Math.floor(left / FREEZE_CHUNK);
+            column <= lastColumn;
+            column++
+          ) {
+            const x = Math.max(left, column * FREEZE_CHUNK)
+            const y = Math.max(top, row * FREEZE_CHUNK)
+            encoder.copyTextureToTexture(
+              {
+                texture: pages.get(row * across + column)!,
+                origin: {
+                  x: x - column * FREEZE_CHUNK,
+                  y: y - row * FREEZE_CHUNK,
+                },
+              },
+              { texture: to, origin: { x: x - left, y: y - top } },
+              {
+                width: Math.min(right, (column + 1) * FREEZE_CHUNK) - x,
+                height: Math.min(bottom, (row + 1) * FREEZE_CHUNK) - y,
+              }
+            )
+          }
+      },
+      release() {
+        for (const page of pages.values())
+          if (frozenPages.length < FROZEN_PAGES_KEPT) frozenPages.push(page)
+          else page.destroy()
+        pages.clear()
+      },
+    }
+  }
+
   /** Pixels some cache was flattened from have changed. */
   function invalidateCaches() {
     for (const compositor of compositors) compositor.invalidate()
@@ -2451,10 +2582,9 @@ export function createRenderer(
   return {
     resize(nextWidth, nextHeight) {
       releaseSelection()
-      pickupSnapshot?.texture.destroy()
-      pickupSnapshot = undefined
       direct.invalidateBinding()
       direct.drop()
+      for (const page of frozenPages.splice(0)) page.destroy()
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
       for (const id of [...vectorScenes.keys()]) forgetVectorScene(id)
@@ -3052,13 +3182,8 @@ export function createRenderer(
           ? ensureSurface(surfaceId)
           : surfaces.get(surfaceId)
       if (!target) return false
-      let source: Surface | undefined
-      if (sampleAllLayers) {
-        pickupSnapshot ??= createSurface()
-        artwork.snapshot(pickupSnapshot)
-        artwork.releaseTargets()
-        source = pickupSnapshot
-      }
+      let source: FrozenArtwork | undefined
+      if (sampleAllLayers) source = freezeArtwork()
       return direct.begin({ target, lay, retain, source })
     },
     drawDirect(dabs, count) {
@@ -3178,7 +3303,7 @@ export function createRenderer(
     destroy() {
       releaseSelection()
       direct.destroy()
-      pickupSnapshot?.texture.destroy()
+      for (const page of frozenPages.splice(0)) page.destroy()
       vector?.textures.forEach((texture) => texture.destroy())
       vector?.uniform.destroy()
       vector = undefined

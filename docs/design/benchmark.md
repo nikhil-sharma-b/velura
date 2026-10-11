@@ -1009,6 +1009,86 @@ Measured on 11 October 2026 on Apple M4 with `bun run bench/run.ts --wet`, at `5
 
 Sampling sustains **434–454 fps at 8192²**, above D30's 120 fps throughput target, with zero painting readbacks. Steady-stroke median/p95 latency is close to active-layer pickup: 14.0/16.6 ms against 13.9/16.4 ms at 64 px; 13.4/16.1 ms against 13.2/15.6 ms at 512 px.
 
-**The opening frame is not held.** Freezing the whole artwork raises its median to 16.4–16.6 ms (worst 40.8–42.1 ms), against 2.9–3.5 ms for active-layer pickup. A single full-opacity normal surface can be copied directly, but later strokes also contain the new active paint and need full composition. Avoiding that document-sized freeze is follow-up 21 in the local live-brushes tracker. These measurements do not establish the under-10-ms pointer-to-pixel target; the existing 120 Hz display validation is also still required. The throughput pass must not be read as full D30 acceptance.
+**The opening frame is not held.** Freezing the whole artwork raises its median to 16.4–16.6 ms (worst 40.8–42.1 ms), against 2.9–3.5 ms for active-layer pickup. A single full-opacity normal surface can be copied directly, but later strokes also contain the new active paint and need full composition. Avoiding that document-sized freeze is follow-up 21 in the local live-brushes tracker. (Done since: see "Sampled artwork frozen where the stroke reads (live brushes 21)" below.) These measurements do not establish the under-10-ms pointer-to-pixel target; the existing 120 Hz display validation is also still required. The throughput pass must not be read as full D30 acceptance.
 
 The frozen RGBA16F artwork costs 512 MiB at 8192², reused between strokes; an additional 32 MiB bounded destination carry is allocated with the renderer. The all-layer row allocates one extra texture on its first stroke, then only the existing cancel-backup pages. Hidden layers, group opacity, masks, blend modes and clipping use the artwork compositor, and no display background is baked into pickup.
+
+## Sampled artwork frozen where the stroke reads (live brushes 21)
+
+Measured on 12 October 2026 on Apple M4 with `bun run bench/run.ts --wet`, twice, on the working tree over `0b26302`. The display is still 75 Hz. The "wet, all layers" row is the one of ticket 15: a ground, an empty layer above it, sampling on.
+
+The picture a stroke samples is no longer frozen whole at pen-down. It is flattened a 1024 px chunk at a time, each the first time a dab reads there, into pages of that size (architecture §6.2). The source is the same one, the artwork as it stood at pen-down, since a chunk is always flattened before the stroke has written in it.
+
+| document | brush | paint | mean frame | sustained fps | first frame median / worst | latency median / p95 | dabs | painting readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 64 px | dry | 0.520 ms | 1250.0 | 1.7 / 8.7 ms | 12.1 / 14.5 ms | 615 | 0 | 0 |
+| 2048² | 64 px | wet | 0.527 ms | 1250.0 | 1.8 / 19.9 ms | 12.3 / 14.7 ms | 617 | 0 | 1 |
+| 2048² | 64 px | wet, pickup | 0.528 ms | 1250.0 | 2.0 / 20.5 ms | 12.9 / 15.7 ms | 615 | 0 | 1 |
+| 2048² | 64 px | wet, all layers | 0.550 ms | 1250.0 | 2.3 / 23.6 ms | 12.9 / 15.9 ms | 617 | 0 | 6 |
+| 2048² | 64 px | wet, densest | 0.541 ms | 1250.0 | 2.0 / 19.3 ms | 13.6 / 16.7 ms | 1230 | 0 | 1 |
+| 2048² | 64 px | dry, scatter | 0.526 ms | 1428.6 | 1.6 / 7.1 ms | 12.2 / 14.2 ms | 9872 | 0 | 0 |
+| 2048² | 64 px | wet, scatter | 0.564 ms | 1000.0 | 3.9 / 22.4 ms | 13.5 / 16.3 ms | 1280 | 0 | 1 |
+| 2048² | 512 px | dry | 0.542 ms | 1111.1 | 1.6 / 5.5 ms | 12.2 / 14.4 ms | 80 | 0 | 0 |
+| 2048² | 512 px | wet | 0.557 ms | 1000.0 | 1.9 / 11.9 ms | 12.1 / 14.9 ms | 80 | 0 | 1 |
+| 2048² | 512 px | wet, pickup | 0.569 ms | 1000.0 | 2.1 / 11.1 ms | 12.3 / 14.6 ms | 80 | 0 | 1 |
+| 2048² | 512 px | wet, all layers | 0.588 ms | 1111.1 | 3.0 / 18.6 ms | 12.5 / 14.9 ms | 80 | 0 | 6 |
+| 2048² | 512 px | wet, densest | 0.585 ms | 1250.0 | 2.0 / 10.8 ms | 12.7 / 16.2 ms | 311 | 0 | 1 |
+| 2048² | 512 px | dry, scatter | 0.634 ms | 1000.0 | 3.7 / 5.8 ms | 12.3 / 14.8 ms | 1280 | 0 | 0 |
+| 2048² | 512 px | wet, scatter | 1.015 ms | 909.1 | 4.6 / 13.4 ms | 12.5 / 16.1 ms | 352 | 0 | 1 |
+| 8192² | 64 px | dry | 1.227 ms | 476.2 | 2.6 / 15.8 ms | 13.1 / 15.2 ms | 2742 | 0 | 0 |
+| 8192² | 64 px | wet | 1.275 ms | 476.2 | 2.8 / 19.8 ms | 13.9 / 16.9 ms | 2751 | 0 | 1 |
+| 8192² | 64 px | wet, pickup | 1.286 ms | 476.2 | 2.8 / 22.7 ms | 13.9 / 16.5 ms | 2742 | 0 | 1 |
+| 8192² | 64 px | wet, all layers | 1.319 ms | 454.5 | 3.5 / 37.9 ms | 13.9 / 16.9 ms | 2744 | 0 | 13 |
+| 8192² | 64 px | wet, densest | 1.360 ms | 476.2 | 2.8 / 23.6 ms | 15.1 / 18.5 ms | 5481 | 0 | 1 |
+| 8192² | 64 px | dry, scatter | 1.264 ms | 476.2 | 2.4 / 17.3 ms | 12.9 / 15.1 ms | 43904 | 0 | 0 |
+| 8192² | 64 px | wet, scatter | 1.503 ms | 400.0 | 5.2 / 24.0 ms | 15.2 / 18.7 ms | 5568 | 0 | 2 |
+| 8192² | 512 px | dry | 1.251 ms | 476.2 | 2.4 / 10.6 ms | 13.1 / 15.1 ms | 348 | 0 | 0 |
+| 8192² | 512 px | wet | 1.307 ms | 454.5 | 2.8 / 14.8 ms | 13.1 / 15.4 ms | 348 | 0 | 3 |
+| 8192² | 512 px | wet, pickup | 1.383 ms | 454.5 | 2.9 / 17.5 ms | 13.3 / 15.7 ms | 348 | 0 | 3 |
+| 8192² | 512 px | wet, all layers | 1.360 ms | 434.8 | 5.7 / 36.6 ms | 13.5 / 15.8 ms | 348 | 0 | 21 |
+| 8192² | 512 px | wet, densest | 1.673 ms | 434.8 | 2.8 / 14.1 ms | 14.3 / 17.3 ms | 1375 | 0 | 3 |
+| 8192² | 512 px | dry, scatter | 1.495 ms | 476.2 | 2.9 / 12.9 ms | 13.3 / 15.6 ms | 5568 | 0 | 0 |
+| 8192² | 512 px | wet, scatter | 3.692 ms | 270.3 | 20.8 / 23.6 ms | 14.4 / 22.2 ms | 1424 | 0 | 9 |
+
+The repeat:
+
+| document | brush | paint | mean frame | sustained fps | first frame median / worst | latency median / p95 | dabs | painting readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 64 px | dry | 0.517 ms | 1250.0 | 1.6 / 7.0 ms | 12.3 / 14.2 ms | 615 | 0 | 0 |
+| 2048² | 64 px | wet | 0.520 ms | 1250.0 | 1.8 / 18.6 ms | 12.9 / 15.8 ms | 617 | 0 | 1 |
+| 2048² | 64 px | wet, pickup | 0.522 ms | 1250.0 | 1.9 / 18.8 ms | 12.3 / 15.2 ms | 617 | 0 | 1 |
+| 2048² | 64 px | wet, all layers | 0.542 ms | 1250.0 | 2.2 / 22.6 ms | 13.1 / 16.4 ms | 617 | 0 | 6 |
+| 2048² | 64 px | wet, densest | 0.530 ms | 1250.0 | 1.9 / 17.2 ms | 13.4 / 17.4 ms | 1230 | 0 | 1 |
+| 2048² | 64 px | dry, scatter | 0.524 ms | 1250.0 | 1.8 / 7.8 ms | 12.2 / 15.0 ms | 9872 | 0 | 0 |
+| 2048² | 64 px | wet, scatter | 0.568 ms | 1000.0 | 5.0 / 23.1 ms | 13.3 / 17.1 ms | 1280 | 0 | 1 |
+| 2048² | 512 px | dry | 0.541 ms | 1000.0 | 1.6 / 6.6 ms | 12.1 / 15.1 ms | 80 | 0 | 0 |
+| 2048² | 512 px | wet | 0.558 ms | 1000.0 | 1.9 / 11.0 ms | 12.3 / 15.0 ms | 80 | 0 | 1 |
+| 2048² | 512 px | wet, pickup | 0.570 ms | 1000.0 | 1.9 / 10.9 ms | 12.1 / 15.0 ms | 80 | 0 | 1 |
+| 2048² | 512 px | wet, all layers | 0.586 ms | 1000.0 | 2.9 / 18.4 ms | 12.2 / 14.7 ms | 80 | 0 | 6 |
+| 2048² | 512 px | wet, densest | 0.585 ms | 1250.0 | 1.9 / 9.9 ms | 12.8 / 15.9 ms | 311 | 0 | 1 |
+| 2048² | 512 px | dry, scatter | 0.634 ms | 1111.1 | 3.4 / 7.3 ms | 12.2 / 15.3 ms | 1280 | 0 | 0 |
+| 2048² | 512 px | wet, scatter | 1.000 ms | 909.1 | 4.7 / 12.4 ms | 12.7 / 17.0 ms | 352 | 0 | 1 |
+| 8192² | 64 px | dry | 1.225 ms | 476.2 | 2.6 / 15.8 ms | 13.1 / 16.2 ms | 2751 | 0 | 0 |
+| 8192² | 64 px | wet | 1.275 ms | 476.2 | 2.7 / 20.1 ms | 13.9 / 17.3 ms | 2744 | 0 | 1 |
+| 8192² | 64 px | wet, pickup | 1.285 ms | 500.0 | 2.8 / 15.8 ms | 13.8 / 17.3 ms | 2749 | 0 | 1 |
+| 8192² | 64 px | wet, all layers | 1.304 ms | 454.5 | 3.4 / 37.3 ms | 14.1 / 17.5 ms | 2744 | 0 | 13 |
+| 8192² | 64 px | wet, densest | 1.365 ms | 476.2 | 3.1 / 26.0 ms | 15.2 / 19.1 ms | 5481 | 0 | 1 |
+| 8192² | 64 px | dry, scatter | 1.265 ms | 476.2 | 2.7 / 16.6 ms | 13.1 / 16.1 ms | 44048 | 0 | 0 |
+| 8192² | 64 px | wet, scatter | 1.501 ms | 400.0 | 5.4 / 25.9 ms | 15.7 / 19.3 ms | 5552 | 0 | 2 |
+| 8192² | 512 px | dry | 1.252 ms | 476.2 | 2.4 / 13.0 ms | 13.2 / 16.0 ms | 348 | 0 | 0 |
+| 8192² | 512 px | wet | 1.308 ms | 454.5 | 2.7 / 16.5 ms | 13.2 / 16.1 ms | 348 | 0 | 3 |
+| 8192² | 512 px | wet, pickup | 1.384 ms | 454.5 | 4.2 / 14.8 ms | 13.3 / 16.0 ms | 348 | 0 | 3 |
+| 8192² | 512 px | wet, all layers | 1.353 ms | 454.5 | 5.5 / 32.8 ms | 13.5 / 16.2 ms | 348 | 0 | 21 |
+| 8192² | 512 px | wet, densest | 1.668 ms | 434.8 | 3.3 / 15.1 ms | 14.4 / 17.8 ms | 1376 | 0 | 3 |
+| 8192² | 512 px | dry, scatter | 1.499 ms | 476.2 | 2.8 / 15.4 ms | 13.3 / 16.0 ms | 5568 | 0 | 0 |
+| 8192² | 512 px | wet, scatter | 3.687 ms | 250.0 | 19.5 / 22.7 ms | 14.5 / 22.5 ms | 1424 | 0 | 9 |
+
+**The opening frame is held at the median.** On 8192² a stroke sampling all layers opens in 3.4–3.5 ms at 64 px and 5.5–5.7 ms at 512 px, against 16.6 and 16.4 ms before, and 2.7–4.2 ms for active-layer pickup beside it. On 2048² it is 2.2–3.0 ms. The 512 px brush pays more than the 64 px one because its first dab reaches up to four chunks, each a clear, a pass per visible layer over a megapixel and an 8 MiB copy; a 64 px dab reaches one. Neither is a cost of the document's size: the same brushes on 2048² open within the same few milliseconds.
+
+**The worst opening frame is not level with the other rows.** It is 32.8–37.9 ms on 8192² against 14.8–22.7 ms for the wet rows beside it (40.8–42.1 ms before). It is one stroke in six, the first to sample: on 2048² the same row's worst is 18.4–23.6 ms against 10.9–20.5 ms. What that stroke does that the others do not was not separated here; it is the stroke that allocates the first pages and the window compositor's targets. Follow-up 26 owns it.
+
+Throughput and steady frames are where they were: 434.8–454.5 fps at 8192², median/p95 latency 13.9–14.1 / 16.9–17.5 ms at 64 px and 13.5 / 15.8–16.2 ms at 512 px, with zero painting readbacks. The other rows are within their run-to-run spread of the tables above; the "wet, scatter" 512 px row at 8192² still opens in 19.5–20.8 ms, which is ticket 24's.
+
+**Memory.** The 512 MiB document-sized snapshot is gone. A page is 8 MiB; the allocations column counts them, and the cancel pages, as the stroke first needs them: 13 for the 64 px row at 8192² and 21 for the 512 px row across six strokes, 6 on 2048², where there are four chunks. Up to sixteen pages (128 MiB) are kept between strokes.
+
+These rows do not establish the under-10-ms pointer-to-pixel target: a 75 Hz panel paces the median to about one 13.3 ms period whatever the engine does. The 120 Hz run is follow-up 25.

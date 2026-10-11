@@ -14,7 +14,8 @@ struct Composite {
   // One for destination-out erasing, zero for ordinary painting.
   strokeMode: f32,
   // Whether document surfaces must be resampled: zero while the target is
-  // the document itself, which is then a fetch and loses nothing.
+  // the document itself, or a window onto it a whole number of pixels in,
+  // which is then a fetch and loses nothing.
   resample: f32,
   // Whether the source, and the clip base, are document surfaces rather than
   // ones drawn in this target.
@@ -32,7 +33,11 @@ struct Composite {
  */
 fn readDocument(surface: texture_2d<f32>, position: vec2<f32>) -> vec4<f32> {
   if (composite.resample < 0.5) {
-    return textureLoad(surface, vec2<i32>(position), 0);
+    let texel = vec2<i32>(position) + vec2<i32>(composite.toDoc[2].xy);
+    if (any(texel < vec2<i32>(0)) || any(texel >= vec2<i32>(composite.docSize))) {
+      return vec4<f32>(0.0);
+    }
+    return textureLoad(surface, texel, 0);
   }
   let point = (composite.toDoc * vec3<f32>(position, 1.0)).xy;
   if (any(point < vec2<f32>(0.0)) || any(point >= composite.docSize)) {
