@@ -30,7 +30,9 @@ type Command = Parameters<typeof window.engine.dispatch>[0]
 
 /** A fresh engine with an empty layer in hand and a dry red brush. */
 async function openCanvas(page: Page): Promise<Origin> {
-  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.goto(
+    process.env.VELURA_TEST_HARNESS ?? "http://127.0.0.1:3101/tests/harness/"
+  )
   await page.waitForFunction(() => !!window.engine)
   await page.evaluate(
     async ([width, height, radius, colour]) => {

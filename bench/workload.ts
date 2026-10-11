@@ -99,6 +99,7 @@ export type WorkloadOptions = {
     pickup: number
     spacing?: number
     dry?: boolean
+    sampleAllLayers?: boolean
     scatter?: BrushScatter
   }
 }

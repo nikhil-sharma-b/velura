@@ -663,6 +663,7 @@ export type EngineCommand =
   | { type: "setColor"; hex: string }
   | { type: "cleanBrush" }
   | { type: "setCleanBrushAfterStroke"; enabled: boolean }
+  | { type: "setSampleAllLayers"; enabled: boolean }
   /**
    * The brush. Every field is optional and unnamed ones are left alone, so a
    * control that owns one property need not know the rest of the brush.
@@ -1138,6 +1139,7 @@ export type EngineSnapshot = Readonly<{
   color: EngineColor
   /** The brush in the hand: serialisable data, never code (D23). */
   brush: Brush
+  sampleAllLayers: boolean
   cleanBrushAfterStroke: boolean
   brushDirty: boolean
   eraser: Brush
@@ -1290,6 +1292,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
     hex: "#242526",
   }),
   brush: Object.freeze(cloneBrush(DEFAULT_BRUSH)),
+  sampleAllLayers: false,
   cleanBrushAfterStroke: true,
   brushDirty: false,
   eraser: Object.freeze(eraserBrush()),
@@ -5624,7 +5627,8 @@ export function createEngine(
         !renderer?.beginDirect(
           target,
           lays ? ink : null,
-          !snapshot.cleanBrushAfterStroke
+          !snapshot.cleanBrushAfterStroke,
+          snapshot.sampleAllLayers && !doc.paintingMask
         )
       )
         return
@@ -7826,6 +7830,10 @@ export function createEngine(
         case "cleanBrush":
           cancelStroke()
           cleanBrush()
+          break
+        case "setSampleAllLayers":
+          cancelStroke()
+          publish({ sampleAllLayers: command.enabled })
           break
         case "setCleanBrushAfterStroke":
           cancelStroke()

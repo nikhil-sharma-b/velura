@@ -51,6 +51,8 @@ export type DirectOpening = {
   lay: LinearColor | null
   /** Keep the picked-up load after this stroke, instead of cleaning it. */
   retain?: boolean
+  /** Frozen visible artwork at pen-down; destination always stays live. */
+  source?: Surface
 }
 
 /**
@@ -96,6 +98,7 @@ export function createDirectStroke(
   let session:
     | {
         target: Surface
+        source?: Surface
         /** Whether the stroke lays colour: a wet brush's, and not smudge's. */
         lays: boolean
         /** The clean load, until the first dab supplies its colour offsets. */
@@ -135,10 +138,17 @@ export function createDirectStroke(
     format: LAYER_FORMAT,
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   })
+  const destinationCarry = device.createTexture({
+    label: "direct destination carry",
+    size: { width: MAX_CARRY_SIZE, height: MAX_CARRY_SIZE },
+    format: LAYER_FORMAT,
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  })
   /**
    * Holds the tip's, the carry's, the selection's and the grain's views, so
    * it goes when the tip, the selection or the grain is replaced.
    */
+  let samplesArtwork = false
   let bindGroup: GPUBindGroup | undefined
   const params = new Float32Array(12)
   const shaderModule = device.createShaderModule({ code: smudgeShader })
@@ -372,7 +382,7 @@ export function createDirectStroke(
         !stroke.lays &&
         (travelX !== 0 || travelY !== 0) &&
         dabs[dab + SMUDGE.STRENGTH] > 0 &&
-        !stroke.target.empty
+        !(stroke.source ?? stroke.target).empty
       const picksUp = stroke.lays && dabs[dab + SMUDGE.STRENGTH] > 0
       if (!drags && !(flow > 0) && !picksUp) continue
       // Rotated textured quads fit inside sqrt(2) radii.
@@ -476,7 +486,14 @@ export function createDirectStroke(
       reservoirBindings = reservoirViews.map((resource) => ({
         layer: device.createBindGroup({
           layout: pipeline.getBindGroupLayout(0),
-          entries: [...entries, { binding: 8, resource }],
+          entries: [
+            ...entries,
+            { binding: 8, resource },
+            {
+              binding: 9,
+              resource: (stroke.source ? destinationCarry : carry).createView(),
+            },
+          ],
         }),
         pickup: device.createBindGroup({
           layout: reservoirPipeline.getBindGroupLayout(0),
@@ -511,12 +528,21 @@ export function createDirectStroke(
       }
       encoder.copyTextureToTexture(
         {
-          texture: stroke.target.texture,
+          texture: (stroke.source ?? stroke.target).texture,
           origin: { x: rects[rect], y: rects[rect + 1] },
         },
         { texture: carry },
         { width: rects[rect + 2], height: rects[rect + 3] }
       )
+      if (stroke.source)
+        encoder.copyTextureToTexture(
+          {
+            texture: stroke.target.texture,
+            origin: { x: rects[rect], y: rects[rect + 1] },
+          },
+          { texture: destinationCarry },
+          { width: rects[rect + 2], height: rects[rect + 3] }
+        )
       if (rects[rect + 6] > 0 && rects[rect + 7] > 0) {
         const pass = encoder.beginRenderPass({
           colorAttachments: [
@@ -672,12 +698,17 @@ export function createDirectStroke(
   return {
     /**
      * Nothing is copied yet: each tile is kept as it is when a dab first
-     * writes to it. A surface that holds nothing has nothing to smear, so
-     * only a stroke that lays colour opens on one.
+     * writes to it. A stroke can open on an empty destination when it lays
+     * colour or has visible artwork to sample.
      */
-    begin({ target, lay, retain = false }) {
-      if (target.empty && !lay) return false
+    begin({ target, lay, retain = false, source }) {
+      if (target.empty && !lay && (!source || source.empty)) return false
       if (session) end(false)
+      if (!!source !== samplesArtwork) {
+        bindGroup = undefined
+        reservoirBindings = []
+        samplesArtwork = !!source
+      }
       const beforeDirty = dirty
       const beforeExtent = reservoirExtent
       if (lay) {
@@ -694,6 +725,7 @@ export function createDirectStroke(
       }
       session = {
         target,
+        source,
         lays: !!lay,
         load: !retain || !beforeDirty ? lay : null,
         retain,
@@ -742,6 +774,7 @@ export function createDirectStroke(
       for (const texture of reservoirs) texture.destroy()
       reservoirBackup.destroy()
       carry.destroy()
+      destinationCarry.destroy()
       bindGroup = undefined
       uniform.destroy()
       instances.destroy()

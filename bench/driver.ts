@@ -454,6 +454,10 @@ export async function runBenchmark(
     }
     await engine.save()
     if (wet) {
+      if (wet.sampleAllLayers) {
+        await engine.dispatch({ type: "addLayer" })
+        await engine.dispatch({ type: "setSampleAllLayers", enabled: true })
+      }
       await engine.dispatch({ type: "setColor", hex: "#ffff00" })
       // After the ground, which is laid solid whatever is painted over it.
       if (wet.scatter)

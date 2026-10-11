@@ -441,6 +441,7 @@ const WET_PAINTS = [
   { name: "dry", pickup: 0, dry: true },
   { name: "wet", pickup: 0 },
   { name: "wet, pickup", pickup: HEAVY_PICKUP },
+  { name: "wet, all layers", pickup: HEAVY_PICKUP, sampleAllLayers: true },
   { name: "wet, densest", pickup: HEAVY_PICKUP, spacing: DENSEST_SPACING },
   // The most dabs a spacing step can be made to lay (live brushes 12).
   { name: "dry, scatter", pickup: 0, dry: true, scatter: DENSE_SCATTER },

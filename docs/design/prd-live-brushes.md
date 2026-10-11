@@ -157,7 +157,7 @@ Supporting checks:
   - A brush that stays dirty between strokes, with a clean-brush toggle (implemented in follow-up 14).
   - Scatter on wet brushes.
   - Colour jitter on wet brushes: completed in follow-up 13 as a jittered clean load per stroke.
-  - Sample all layers (picking up from the composited picture).
+  - Sample all layers is implemented as an off-by-default shared wet-brush/Smudge setting. Pickup reads the visible artwork frozen at pen-down; deposition writes only the live active layer. Mask painting retains its coverage-only source.
 - Wet vector brushes.
 - A wet eraser.
 - Changes to the Smudge tool's behaviour or settings.

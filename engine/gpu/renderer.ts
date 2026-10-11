@@ -350,13 +350,14 @@ export interface Renderer {
    * Starts a direct stroke on one surface (smudge 01, D41): a wet brush's,
    * which lays `lay`, or with null a smudge or a blender, which lay nothing. Nothing is copied yet: each
    * tile is kept as it is when a dab first writes to it, which is what a
-   * cancel puts back. False for a smudge when the surface holds nothing,
-   * and so has nothing to smear.
+   * cancel puts back. Sampling all layers freezes visible artwork before
+   * any dab writes. False for a smudge when its pickup source holds nothing.
    */
   beginDirect(
     surfaceId: string,
     lay: LinearColor | null,
-    retain?: boolean
+    retain?: boolean,
+    sampleAllLayers?: boolean
   ): boolean
   cleanBrush(): void
   brushDirty(): boolean
@@ -2302,6 +2303,42 @@ export function createRenderer(
 
     return {
       presentUniform,
+      snapshot(target: Surface) {
+        validGroupCaches.clear()
+        if (!plan?.active) {
+          clearSurface(target)
+          return
+        }
+        let current = plan.active
+        let items: CompositeItem[] = []
+        for (const stage of plan.stages ?? [
+          { below: plan.below, above: plan.above, container: null },
+        ]) {
+          items = [...stage.below, current, ...stage.above]
+          if (stage.container) current = { ...stage.container, children: items }
+        }
+        const visible = items.filter((item) => {
+          const surface = item.opacity > 0 ? itemSurface(item) : undefined
+          return surface && !surface.empty
+        })
+        const single = visible.length === 1 ? visible[0] : undefined
+        const source = single ? itemSurface(single) : undefined
+        if (
+          source &&
+          single &&
+          single.opacity === 1 &&
+          single.blend === "normal" &&
+          !single.maskId &&
+          !single.clip
+        ) {
+          // The artwork space is document-sized: one unmodified surface can
+          // be frozen by a blit, without shading every document pixel.
+          copySurface(source, target)
+        } else {
+          clearSurface(target)
+          renderItems(items, target)
+        }
+      },
       compositeSurface,
       groupThumbnailSurface,
       apply,
@@ -2389,6 +2426,7 @@ export function createRenderer(
    * thumbnail is flattened in. It keeps nothing between uses.
    */
   const artwork = createCompositor({ geometry: false })
+  let pickupSnapshot: Surface | undefined
   const compositors = [screen, artwork]
   /** The window the screen compositor fills, once one has been given. */
   let viewport: { width: number; height: number } | undefined
@@ -2413,6 +2451,8 @@ export function createRenderer(
   return {
     resize(nextWidth, nextHeight) {
       releaseSelection()
+      pickupSnapshot?.texture.destroy()
+      pickupSnapshot = undefined
       direct.invalidateBinding()
       direct.drop()
       for (const surface of surfaces.values()) surface.texture.destroy()
@@ -3004,11 +3044,22 @@ export function createRenderer(
     endFilter,
     cleanBrush: () => direct.cleanBrush(),
     brushDirty: () => direct.brushDirty(),
-    beginDirect(surfaceId, lay, retain) {
+    beginDirect(surfaceId, lay, retain, sampleAllLayers = false) {
       // A wet brush may be the first thing to paint on its layer. The paint
       // target has its surface already, so nothing is allocated at pen-down.
-      const target = lay ? ensureSurface(surfaceId) : surfaces.get(surfaceId)
-      return !!target && direct.begin({ target, lay, retain })
+      const target =
+        lay || sampleAllLayers
+          ? ensureSurface(surfaceId)
+          : surfaces.get(surfaceId)
+      if (!target) return false
+      let source: Surface | undefined
+      if (sampleAllLayers) {
+        pickupSnapshot ??= createSurface()
+        artwork.snapshot(pickupSnapshot)
+        artwork.releaseTargets()
+        source = pickupSnapshot
+      }
+      return direct.begin({ target, lay, retain, source })
     },
     drawDirect(dabs, count) {
       direct.draw(dabs, count)
@@ -3127,6 +3178,7 @@ export function createRenderer(
     destroy() {
       releaseSelection()
       direct.destroy()
+      pickupSnapshot?.texture.destroy()
       vector?.textures.forEach((texture) => texture.destroy())
       vector?.uniform.destroy()
       vector = undefined
