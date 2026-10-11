@@ -313,32 +313,40 @@ test("grain does not bite the paint picked into the reservoir", async ({
     await stroke(page, origin, 40, 100)
     const painted = await pixels(page)
     await dispatch(page, { type: "setColor", hex: BLUE })
-    // A flow too small to see: a brush with none at all has no reservoir.
+    // Pressure changes exchange within the stroke. Editing the brush itself
+    // cleans its load (live brushes 14), so this uses the existing dynamics
+    // seam to isolate pickup from deposition without changing brushes.
     await dispatch(page, {
       type: "setBrush",
       grain: pickupGrain,
-      flow: 1e-6,
-      wet: { pickup: 1 },
-    })
-    await page.mouse.move(origin.x + 70, origin.y + ROW)
-    await page.mouse.down()
-    await frames(page)
-    // The picked load is then laid with no further pickup or paper bite.
-    await dispatch(page, {
-      type: "setBrush",
-      grain: null,
       flow: 1,
+      wet: { pickup: 1 },
       dynamics: [
+        { source: "pressure", target: "flow", range: [-1, 1], mix: "replace" },
         {
-          source: "velocity",
+          source: "pressure",
           target: "pickup",
-          range: [0, 0],
-          mix: "multiply",
+          range: [4, -6],
+          mix: "replace",
+        },
+        {
+          source: "pressure",
+          target: "grainDepth",
+          range: [4, -6],
+          mix: "replace",
         },
       ],
     })
-    await page.mouse.move(origin.x + 180, origin.y + ROW, { steps: 30 })
-    await page.mouse.up()
+    // At a light touch: pickup one, flow zero and full grain depth. Pressing
+    // fully then lays the picked load with no further pickup or paper bite.
+    // The ranges clamp well before deposition starts, so interpolated pressure
+    // and curve rounding cannot let grain bite a transition dab.
+    const samples: Sample[] = [
+      { x: 70, y: ROW, pressure: 0.01 },
+      { x: 70, y: ROW, pressure: 1 },
+    ]
+    for (let x = 72; x <= 180; x += 2) samples.push({ x, y: ROW, pressure: 1 })
+    await penStroke(page, samples)
     return { painted, image: await pixels(page) }
   }
   const plain = await carried(null)

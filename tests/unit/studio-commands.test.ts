@@ -835,3 +835,9 @@ describe("filter commands", () => {
     expect(sent).toEqual([{ type: "setTool", tool: "polygonLasso" }])
   })
 })
+
+test("the clean brush command asks the engine to discard its load", () => {
+  const { engine, sent } = fakeEngine([raster("a")], "a", { brushDirty: true })
+  runStudioCommand("brush.clean", context(engine))
+  expect(sent).toEqual([{ type: "cleanBrush" }])
+})

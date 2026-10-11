@@ -353,7 +353,13 @@ export interface Renderer {
    * cancel puts back. False for a smudge when the surface holds nothing,
    * and so has nothing to smear.
    */
-  beginDirect(surfaceId: string, lay: LinearColor | null): boolean
+  beginDirect(
+    surfaceId: string,
+    lay: LinearColor | null,
+    retain?: boolean
+  ): boolean
+  cleanBrush(): void
+  brushDirty(): boolean
   /**
    * Draws `count` dabs (see `SMUDGE`) straight into the surface of the
    * direct stroke. Smudge and a blender drag the pixel one dab behind; a wet
@@ -2996,11 +3002,13 @@ export function createRenderer(
       return drawFilter(filter)
     },
     endFilter,
-    beginDirect(surfaceId, lay) {
+    cleanBrush: () => direct.cleanBrush(),
+    brushDirty: () => direct.brushDirty(),
+    beginDirect(surfaceId, lay, retain) {
       // A wet brush may be the first thing to paint on its layer. The paint
       // target has its surface already, so nothing is allocated at pen-down.
       const target = lay ? ensureSurface(surfaceId) : surfaces.get(surfaceId)
-      return !!target && direct.begin({ target, lay })
+      return !!target && direct.begin({ target, lay, retain })
     },
     drawDirect(dabs, count) {
       direct.draw(dabs, count)
