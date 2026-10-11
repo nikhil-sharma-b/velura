@@ -1166,3 +1166,122 @@ those direct dabs cheaper is live brushes 22. All rows have zero painting
 readbacks and one cancel-page allocation across the run. The existing
 120 Hz display validation is still required; these timings do not establish
 under-10-ms pointer-to-pixel latency.
+
+## A run of dragging dabs shares a pass (live brushes 22)
+
+Spacing could not buy a small smudge its frame (live brushes 19), so the dab
+is cheaper. A dab that drags was a copy of its neighbourhood and a render
+pass of its own, because a render pass cannot read what it writes, and the
+pass is what cost. A compute pass can read one texture and write another
+afresh at every dispatch. So consecutive dabs that read within one 256 px
+square are now a run: the region is copied out of the layer once, each dab
+is a dispatch that reads the region as the dab before left it and writes it
+on, and what the last wrote is copied back. Two copies and one pass, however
+many dabs. A dab whose own neighbourhood is over 256 px, which is a radius
+past about 80 px, is drawn as before, and so is every dab of a wet brush
+that lays paint.
+
+`bun run bench/run.ts --smudge`, which now also counts the textures and
+buffers created while the pen is down. Apple M4 (integrated), 75 Hz display,
+Chrome/WebGPU, 2560 × 1440 window, six strokes, 2026-10-12, on top of
+`af3c4da`. Before, on the same day and machine:
+
+| document | tool | stroke's first frame, median / worst | all frames, median / p95 | dabs | painting readbacks |
+|---|---|---:|---:|---:|---:|
+| 2048² | Brush | 1.8 / 4.9 ms | 12.5 / 15.7 ms | 1,650 | 0 |
+| 2048² | Smudge | 2.2 / 26.8 ms | 13.1 / 16.4 ms | 1,220 | 0 |
+| 2048² | Smudge, 4 px | 2.1 / 41.3 ms | 15.5 / 21.8 ms | 4,886 | 0 |
+| 8192² | Brush | 3.5 / 281.0 ms | 13.5 / 16.5 ms | 7,045 | 0 |
+| 8192² | Smudge | 4.5 / 26.8 ms | 16.0 / 20.6 ms | 5,494 | 0 |
+| 8192² | Smudge, 4 px | 3.3 / 14.6 ms | 24.6 / 77.1 ms | 21,990 | 0 |
+
+After, two runs:
+
+| document | tool | stroke's first frame, median / worst | all frames, median / p95 | dabs | painting readbacks | allocations |
+|---|---|---:|---:|---:|---:|---:|
+| 2048² | Brush | 1.7 / 32.5 ms | 12.0 / 15.1 ms | 1,634 | 0 | 0 |
+| 2048² | Smudge | 2.1 / 18.8 ms | 12.3 / 15.8 ms | 1,223 | 0 | 1 |
+| 2048² | Smudge, 4 px | 2.2 / 21.4 ms | 12.2 / 15.5 ms | 4,886 | 0 | 1 |
+| 8192² | Brush | 3.0 / 226.1 ms | 13.6 / 16.4 ms | 7,102 | 0 | 0 |
+| 8192² | Smudge | 3.6 / 15.3 ms | 13.4 / 16.8 ms | 5,494 | 0 | 1 |
+| 8192² | Smudge, 4 px | 3.9 / 19.4 ms | 13.2 / 16.3 ms | 21,972 | 0 | 1 |
+| 2048², repeat | Brush | 1.6 / 2.8 ms | 12.4 / 15.2 ms | 1,650 | 0 | 0 |
+| 2048², repeat | Smudge | 2.1 / 7.0 ms | 12.1 / 15.1 ms | 1,226 | 0 | 1 |
+| 2048², repeat | Smudge, 4 px | 2.1 / 7.4 ms | 12.2 / 15.4 ms | 4,911 | 0 | 1 |
+| 8192², repeat | Brush | 2.7 / 16.2 ms | 12.9 / 15.9 ms | 7,314 | 0 | 0 |
+| 8192², repeat | Smudge | 3.0 / 18.4 ms | 13.3 / 16.0 ms | 5,494 | 0 | 1 |
+| 8192², repeat | Smudge, 4 px | 3.3 / 14.8 ms | 13.4 / 16.7 ms | 21,972 | 0 | 1 |
+
+**The small smudge holds.** At 8192² the 4 px row is 13.2–13.4 / 16.3–16.7 ms
+against 21.0 / 42.0 ms as live brushes 19 recorded it and 24.6 / 77.1 ms
+before this change on the day: level with smudge at its default size
+(13.3–13.4 / 16.0–16.8 ms), with four times the dabs. Both are now level
+with the dry brush on the same document, where smudge at its default size
+sat about 2.5 ms over it: a smudge frame is the panel's period, as a brush
+frame is.
+
+**The opening frame** is where it was at the median. The worst is the first
+stroke of six in every row, before and after, and reads anywhere from 7 to
+41 ms for smudge on either build; a dispatch run when the renderer is made,
+to pay for the pipeline's first use ahead of the first stroke, moved it by
+nothing and was not kept.
+
+**Readback and allocation.** Nothing is read back. The one allocation in a
+run is the page the stroke's cancel tiles are kept in (smudge 06), the first
+stroke's, since each row is a fresh renderer: none per dab or per run. The
+two run textures (256², a mebibyte between them) and the buffer the dabs of
+a call are described in (128 KiB) are allocated with the renderer.
+
+**The smear.** The compute pass does the render pass's arithmetic, with one
+difference: where a pixel lies in the dab is worked out from the pixel
+instead of interpolated across the dab's quad. On the suite's software
+rasteriser a bar and a stripe were smudged along a path of four legs at
+radii of 2, 4, 8, 16 and 40 px, before and after, and the pictures compared
+as presented, in 8 bits:
+
+| radius | channels that differ, of 115,200 | largest difference, of 255 |
+|---:|---:|---:|
+| 2 px | 342 | 3 |
+| 4 px | 709 | 3 |
+| 8 px | 1,474 | 5 |
+| 16 px | 2,800 | 8 |
+| 40 px | 1,223 | 2 |
+
+Nearly all are one level. The few larger, 2 to 8 levels, sit in small
+clusters along the smear; what sets those pixels apart was not separated.
+That the interpolation is the whole of it was checked: with the render
+pass given the same worked-out position, the two paths agree in every
+channel of every picture. So it is not pixel for pixel against what shipped;
+it is inside what the browser specs hold a smear to, which all pass
+unchanged. Those specs are not golden images, and smudge has none, so this
+is a weaker bar than the ticket set; and it is every smudge under about
+80 px that moved, the default 16 px included, not the small ones alone. A
+larger dab is still drawn by the render pass, so a large smudge and a small
+one now differ by that rounding, and a dab that grows past the limit in
+mid-stroke changes from one to the other. Giving the render pass the same
+worked-out position would close that, and would move every wet brush's
+pixels by the same rounding; it was not done here (live brushes 27).
+
+**Blenders.** A blender's dabs drag as smudge's do and go the same way.
+Live brushes 23, above, gave a small blender smudge's spacing and recorded
+it missing the frame for it. `bun run bench/run.ts --blender` with both
+changes in, same machine and day, one run; sizes are radii, and the
+"before" column is 23's table:
+
+| document | radius | paint | latency median / p95, before | after | dabs | painting readbacks | allocations |
+|---|---:|---|---:|---:|---:|---:|---:|
+| 2048² | 2 px | blender | 16.3 / 21.5 ms | 12.3 / 14.5 ms | 4,898 | 0 | 1 |
+| 2048² | 4 px | blender | 16.1 / 20.7 ms | 12.5 / 14.7 ms | 4,898 | 0 | 1 |
+| 2048² | 8 px | blender | 14.1 / 17.5 ms | 12.0 / 14.2 ms | 2,451 | 0 | 1 |
+| 2048² | 16 px | blender | 13.1 / 15.9 ms | 12.2 / 14.3 ms | 1,226 | 0 | 1 |
+| 8192² | 2 px | blender | 23.6 / 72.1 ms | 13.2 / 15.6 ms | 21,972 | 0 | 1 |
+| 8192² | 4 px | blender | 23.5 / 65.4 ms | 13.3 / 15.8 ms | 22,008 | 0 | 1 |
+| 8192² | 8 px | blender | 18.9 / 24.9 ms | 13.3 / 15.3 ms | 11,005 | 0 | 1 |
+| 8192² | 16 px | blender | 16.0 / 20.2 ms | 13.2 / 15.6 ms | 5,503 | 0 | 3 |
+
+A small blender holds the frame at every size, with four times the dabs of
+the reservoir brush beside it, which reads 14.8 / 18.1–18.6 ms on 8192² and
+13.2–13.6 / 16.0–16.6 ms on 2048² in the same run: a blender is now the
+cheaper of the two, since the reservoir brush's dabs are still a copy and
+one or two passes each. The three allocations in the last row are cancel
+pages, as six 16 px strokes across the large document reach more tiles.

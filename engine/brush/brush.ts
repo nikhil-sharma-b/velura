@@ -195,7 +195,7 @@ const WET_SPACING_FLOOR_RATIO = 1 / 16
 /**
  * The closest the dabs of a wet brush may be, in canvas pixels, for a dab of
  * the given radius. Small blenders need closer overlap to avoid a comb;
- * `wetDabSpacing` chooses that pitch and pays its frame cost.
+ * `wetDabSpacing` chooses that pitch.
  */
 export function wetSpacingFloor(radius: number): number {
   return Math.max(WET_SPACING_FLOOR, radius * WET_SPACING_FLOOR_RATIO)
@@ -224,7 +224,8 @@ export function wetDabSpacing(brush: Brush, radius: number): number {
   )
   // A blender hands on the pixel behind: uneven overlap leaves a comb.
   // Cap its pitch at smudge's, even when a preset requests wider spacing
-  // (live brushes 23). Small blenders pay for those dabs in the frame.
+  // (live brushes 23). Those dabs share a pass, a run at a time, so the
+  // frame holds them (live brushes 22).
   return isBlender(brush) ? Math.min(spacing, smudgeSpacing(radius)) : spacing
 }
 

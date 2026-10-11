@@ -28,8 +28,9 @@ export const DEFAULT_SMUDGE: Smudge = Object.freeze({
  * share of what the last one brought. Never under a pixel, where a dab would
  * have no whole pixel behind it to drag. Not held at the wet spacing floor
  * (live brushes 19): past about a third of a radius the dabs no longer
- * overlap evenly and the smear comes out as a comb, so a small smudge pays
- * for its dabs in the frame instead (`docs/design/benchmark.md`).
+ * overlap evenly and the smear comes out as a comb. A small smudge's dabs
+ * are close, and are drawn a run to a pass so the frame can hold them (live
+ * brushes 22, `docs/design/benchmark.md`).
  */
 export function smudgeSpacing(radius: number): number {
   return Math.max(1, radius / 4)
