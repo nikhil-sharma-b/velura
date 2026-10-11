@@ -874,6 +874,100 @@ is close to the rest of the table. This is the cancel backup's cost and not
 scatter's, a dry brush pays nothing like it, and it is ticketed as live
 brushes 20 and not fixed here.
 
+## A wide-thrown wet brush's opening frame: pages kept, and not held (live brushes 20)
+
+Apple M4 (integrated, 16 GiB), 75 Hz display, Chrome/WebGPU, 2560 × 1440
+window, six strokes, 2026-10-11, on top of `94f43cd`. The row live brushes 12
+left open, 8192², 512 px, wet with heavy pickup, count 16 thrown four radii,
+measured again before anything was changed, five runs:
+
+| | stroke's first frame, median | all frames, median / p95 | allocations |
+|---|---:|---:|---:|
+| as live brushes 12 left it | 21.5 to 23.4 ms | 14.2 to 14.5 / 22.8 to 23.5 ms | 22 |
+
+The 192 ms that section recorded did not come back on this machine on this
+day: the opening frame is 22 ms. It is still a miss, against 3 ms for the
+same brush unscattered, and the rest of this section is about that 22 ms.
+
+**Cancel pages are now kept between strokes, up to four.** A stroke gave
+back every page but the first as it ended, and the next made them again with
+the pen down. Keeping them takes the allocations of this row from 22 to 9
+and those of the unscattered 512 px rows from 7 to 3, and takes about 2 ms
+off this row's opening frame (20.7 to 21.0 ms over four runs) and about 4 ms
+with no pickup (11.5 to 12.5 ms down to 7.5 to 7.8 ms). It is not what the
+opening frame is made of. Four pages are 256 tiles, a full step of sixteen
+512 px dabs; the cost is up to 96 MiB more held between strokes (see the
+architecture document). With that:
+
+| document | brush | paint | ms/frame, unpaced | sustained fps | stroke's first frame, median / worst | all frames, median / p95 | dabs | readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 512 px | Wet, scatter | 0.979 | 909.1 | 4.2 / 12.7 ms | 12.3 / 17.1 ms | 352 | 0 | 1 |
+| 8192² | 64 px | Wet, scatter | 1.496 | 416.7 | 5.3 / 25.8 ms | 15.5 / 21.0 ms | 5,552 | 0 | 2 |
+| 8192² | 512 px | Dry | 1.246 | 500.0 | 2.4 / 11.4 ms | 13.0 / 16.2 ms | 348 | 0 | 0 |
+| 8192² | 512 px | Wet | 1.288 | 454.5 | 3.0 / 16.8 ms | 13.2 / 16.2 ms | 348 | 0 | 3 |
+| 8192² | 512 px | Wet, pickup | 1.359 | 476.2 | 3.0 / 16.5 ms | 13.4 / 16.0 ms | 348 | 0 | 3 |
+| 8192² | 512 px | Wet, all layers | 1.357 | 454.5 | 19.7 / 82.2 ms | 13.2 / 16.2 ms | 345 | 0 | 4 |
+| 8192² | 512 px | Wet, densest | 1.649 | 434.8 | 2.9 / 17.2 ms | 14.2 / 17.5 ms | 1,375 | 0 | 3 |
+| 8192² | 512 px | Dry, scatter | 1.476 | 500.0 | 3.2 / 13.7 ms | 13.3 / 16.1 ms | 5,568 | 0 | 0 |
+| 8192² | 512 px | Wet, scatter | 3.646 | 263.2 | 20.1 / 21.1 ms | 14.1 / 22.3 ms | 1,424 | 0 | 9 |
+
+**The row still misses**: 20.1 ms to open and a p95 of 22.3 ms, where the
+other 512 px wet rows open in 3 ms and hold 16 to 17.5 ms. The bar is not
+dropped and the miss is recorded as a miss (live brushes 24).
+
+**What pickup costs.** Not the dab, and not fresh tiles. Varying one thing
+at a time on that row, single runs, with every page kept so allocation is
+out of the picture; the first column is what was changed, in the build or in
+the bench, and none of it is shipped:
+
+| changed | ms/frame, unpaced | stroke's first frame, median | all frames, median / p95 |
+|---|---:|---:|---:|
+| nothing | 3.69 | 20.9 ms | 14.5 / 22.5 ms |
+| no pickup | 1.77 | 7.8 ms | 13.7 / 20.0 ms |
+| pickup pass not drawn | 1.77 | 8.3 ms | 13.8 / 19.9 ms |
+| pickup drawn, the dab lays a flat colour and not its load | 1.78 | 10.7 ms | 13.8 / 20.7 ms |
+| pickup drawn, the load left as it was | 1.78 | 10.0 ms | 13.8 / 21.4 ms |
+| pigment mix replaced by a linear one | 3.37 | 18.8 ms | 14.2 / 20.9 ms |
+| reservoir square held to 128 px | 3.74 | 19.4 ms | 14.3 / 21.5 ms |
+| pickup pass scissored to its square | 3.74 | 20.7 ms | 14.6 / 22.6 ms |
+| dab's box one radius, not √2 radii | 3.62 | 21.0 ms | 14.4 / 22.2 ms |
+| thrown one radius | 1.97 | 10.1 ms | 13.9 / 21.7 ms |
+| stacked on the path | 1.37 | 9.0 ms | 13.8 / 19.6 ms |
+| 640 × 360 window | 0.97 | 20.9 ms | 12.9 / 22.8 ms |
+
+The pass that picks up is cheap: drawn in full and made to leave the load
+alone, the row is as it is with no pickup. What costs is that the load stops
+being one flat colour. A dab thrown wide lands across the ground's edge, the
+bare canvas and the stroke's own earlier dabs, the load takes that patchwork
+up, and every dab after it lays the patchwork down; laying a flat colour
+instead, with pickup still running, takes the cost away. The pigment mix,
+the size of the reservoir square, the area of the dab's copy and the present
+pass are each not it.
+
+Nor is it the sixteen dabs of the opening step. With the first draw of each
+stroke skipped the frame still opened in 14.9 ms, and with a wet stroke's
+scattered dabs laid one to a frame (tried, and not kept: a tap would lay one
+dab where the same brush dry lays sixteen) a stroke opening on one dab took
+16.7 ms and the p95 was 19.6 ms. The reservoir's clears at pen-down are not
+it (filled as a tip-sized square instead: 20.7 ms), nor is the rest between
+strokes (0, 120 and 1500 ms: the same), and the main thread does not stall
+in the 60 ms after pen-down.
+
+Two things were found that are part of it and not all of it. History keeps
+each stroke's changed tiles and compresses the older ones, and tiles that
+are not flat are slow to compress: with that compression off the opening
+frame was 14.6 to 19.6 ms paced, and with no history recorded at all it was
+15.4 to 16.6 ms, so about 5 ms of the 20 is the stroke before, still being
+put away. And the unpaced ms/frame of this row is not the frame's cost: the
+mean is over every interval, the pause between strokes included, and
+history's settling is in that pause (3.68 ms with history's compression on,
+2.07 ms with it off).
+
+It is the stroke and not the layer: the unscattered rows painted over a
+ground this brush had already covered opened in 3.2 ms dry and 3.7 ms wet
+with pickup. What the remaining 10 ms of a thrown, picking-up stroke's
+first frame is was not found.
+
 ## Sample all layers (live brushes 15)
 
 Measured on 11 October 2026 on Apple M4 with `bun run bench/run.ts --wet`, at `596d4c7`. The added row first paints its ground, adds an empty layer above it, enables sampling and runs the same wet workload. Other rows retain the active-layer source. Browser regressions ran concurrently with the early 2048² rows; the 8192² rows ran after them. The display remains 75 Hz.

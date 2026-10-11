@@ -156,3 +156,37 @@ test("the wet benchmark paints over the workload without reading back or allocat
   // however many dabs and strokes follow.
   expect(result.allocations).toBe(1)
 })
+
+test("a wet stroke thrown wide keeps its cancel pages for the stroke after it", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.runBenchmark)
+  const result = await page.evaluate(
+    (workload) =>
+      window.runBenchmark({
+        ...workload,
+        // Eighty-one tiles, which is two pages of cancel tiles and no more.
+        width: 2304,
+        height: 2304,
+        strokes: 3,
+        wet: {
+          diameter: 512,
+          pickup: 0.8,
+          // Thrown across the canvas, so every stroke reaches past one page.
+          scatter: { amount: 8, count: 4, axes: "both" },
+        },
+      }),
+    WORKLOAD
+  )
+
+  expect(result.dispatched).toBe(result.requested)
+  expect(result.readbacks).toBe(0)
+  // The second page is made once, by the first stroke to outgrow the first,
+  // and is there for the strokes that follow (live brushes 20): two pages at
+  // the most, where every stroke making its own again would be more. A page
+  // made as a stroke's tail lands, the pen already up, is not counted.
+  expect(result.allocations).toBeGreaterThanOrEqual(1)
+  expect(result.allocations).toBeLessThanOrEqual(2)
+})

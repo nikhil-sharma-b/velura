@@ -80,6 +80,13 @@ export interface DirectStroke extends StrokeRenderer<DirectOpening> {
 /** Tiles to a side of one page of the backup. */
 const BACKUP_PAGE_TILES = 8
 const BACKUP_PAGE_SLOTS = BACKUP_PAGE_TILES * BACKUP_PAGE_TILES
+/**
+ * Pages kept from one stroke to the next (live brushes 20): 256 tiles, which
+ * is what one spacing step of the densest scatter reaches with a 512 px dab
+ * thrown wide. A stroke that needs no more than the stroke before it then
+ * allocates nothing, the frame it opens in least of all.
+ */
+const BACKUP_PAGES_KEPT = 4
 /** The widest neighbourhood a dab may ask for; one reaching further is skipped. */
 const MAX_CARRY_SIZE = 2048
 
@@ -123,7 +130,7 @@ export function createDirectStroke(
    * each copied out the first time one did. The stroke's size and not the
    * document's, so the frame a stroke opens in pays for a dab's tiles alone.
    * In pages, so more room is a new texture and never a move of what is
-   * kept; the first stays between strokes.
+   * kept; up to `BACKUP_PAGES_KEPT` stay between strokes.
    */
   const backupPages: GPUTexture[] = []
   /**
@@ -641,9 +648,9 @@ export function createDirectStroke(
     )
   }
 
-  /** Gives back the pages a long stroke needed; the first is kept. */
-  function trimBackup() {
-    while (backupPages.length > 1) backupPages.pop()!.destroy()
+  /** Gives back the pages a long stroke needed, past those kept. */
+  function trimBackup(kept = BACKUP_PAGES_KEPT) {
+    while (backupPages.length > kept) backupPages.pop()!.destroy()
   }
 
   function end(keep: boolean): PixelRect | null {
@@ -765,7 +772,8 @@ export function createDirectStroke(
       if (session) end(false)
       if (!surface) clearReservoir()
       session = undefined
-      trimBackup()
+      // A surface going away is no stroke to follow: only the first stays.
+      trimBackup(1)
     },
     destroy() {
       session = undefined
