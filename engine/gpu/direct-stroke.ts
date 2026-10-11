@@ -48,6 +48,7 @@ export type DirectOpening = {
    * smudge, which lays nothing whatever flow its dabs name.
    */
   lay: LinearColor | null
+  /** Keep the picked-up load after this stroke, instead of cleaning it. */
   retain?: boolean
 }
 
@@ -56,16 +57,18 @@ export type DirectOpening = {
  * it holds on to between dabs.
  */
 export interface DirectStroke extends StrokeRenderer<DirectOpening> {
+  /** Discard the brush load so the next wet stroke starts with its ink. */
+  cleanBrush(): void
+  /** Whether the brush has picked up paint, including transparency. */
+  brushDirty(): boolean
   /**
    * The tip, the grain or the selection was replaced: the views held of them
    * are stale.
    */
-  cleanBrush(): void
-  brushDirty(): boolean
   invalidateBinding(): void
   /**
-   * Lets go of the stroke in flight without putting anything back, because
-   * its surface is going away. Given a surface, only a stroke on that one.
+   * Cancels a stroke whose surface is going away, restoring its brush load.
+   * Without a surface, drops the document and cleans the brush too.
    */
   drop(surface?: Surface): void
   destroy(): void

@@ -762,3 +762,43 @@ test("reload discards the dirty brush and restores automatic cleaning", async ({
     }))
   ).toEqual({ dirty: false, clean: true })
 })
+
+test("switching to a mask cancels the stroke before cleaning its old load", async ({
+  page,
+}) => {
+  const origin = await dirtyBrush(page)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "addMask",
+      id: window.engine.getSnapshot().activeLayerId,
+    })
+  })
+  await page.mouse.move(origin.x + 150, origin.y + ROW)
+  await page.mouse.down()
+  await page.mouse.move(origin.x + 190, origin.y + ROW, { steps: 15 })
+  await frames(page)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "selectMask",
+      id: window.engine.getSnapshot().activeLayerId,
+    })
+    await window.engine.dispatch({ type: "setTool", tool: "eraser" })
+  })
+  await page.mouse.up()
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().brushDirty)
+  ).toBe(false)
+})
+
+test("importing a document clears the load and its dirty indicator", async ({
+  page,
+}) => {
+  await dirtyBrush(page)
+  await page.evaluate(async () => {
+    const bytes = await window.engine.exportDocument()
+    await window.engine.importDocument(bytes)
+  })
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().brushDirty)
+  ).toBe(false)
+})

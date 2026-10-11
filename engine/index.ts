@@ -2147,7 +2147,12 @@ export function createEngine(
     resetSelection()
     uploadLayers()
     syncComposition()
-    publish({ width: size.width, height: size.height, ...describeLayers(doc) })
+    publish({
+      width: size.width,
+      height: size.height,
+      brushDirty: false,
+      ...describeLayers(doc),
+    })
   }
 
   function resize() {
@@ -4261,7 +4266,10 @@ export function createEngine(
    * the frame that shows it is drawn.
    */
   function applyLayerChange() {
-    if (doc && snapshot.paintingMask !== doc.paintingMask) cleanBrush()
+    if (doc && snapshot.paintingMask !== doc.paintingMask) {
+      cancelStroke()
+      cleanBrush()
+    }
     const document = requireDocument()
     if (shapeDrag) {
       const target = findNodeIn(document.layers, shapeDrag.layerId)
@@ -6105,17 +6113,18 @@ export function createEngine(
     }
   }
 
+  /** Discards the session's picked-up paint without changing document pixels. */
+  function cleanBrush() {
+    renderer?.cleanBrush()
+    publish({ brushDirty: false })
+  }
+
   /**
    * The one place the ink changes, whether it came from the picker or from the
    * eyedropper. Painting is premultiplied linear light; the snapshot carries
    * the display-encoded value instead, because that is what a swatch has to
    * paint and what a hex field has to say.
    */
-  function cleanBrush() {
-    renderer?.cleanBrush()
-    publish({ brushDirty: false })
-  }
-
   function setInk(
     working: readonly [number, number, number],
     alpha = 1,
@@ -8086,6 +8095,7 @@ export function createEngine(
       publish({
         width: imported.manifest.width,
         height: imported.manifest.height,
+        brushDirty: false,
         view,
         ...describeLayers(doc),
       })
