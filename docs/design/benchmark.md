@@ -1290,6 +1290,23 @@ cheaper of the two, since the reservoir brush's dabs are still a copy and
 one or two passes each. The three allocations in the last row are cancel
 pages, as six 16 px strokes across the large document reach more tiles.
 
+**Validation on current dev.** On 2026-10-12, the committed implementation
+was reapplied over `19d3285`, including live brushes 23's closer blender
+spacing. The same Apple M4 smudge sweep, without browser-test load, measured:
+
+| document | tool | stroke's first frame, median / worst | all frames, median / p95 | dabs | painting readbacks | allocations |
+|---|---|---:|---:|---:|---:|---:|
+| 2048² | Brush | 2.0 / 13.8 ms | 12.7 / 15.0 ms | 1,658 | 0 | 0 |
+| 2048² | Smudge | 2.1 / 20.8 ms | 12.4 / 14.9 ms | 1,223 | 0 | 1 |
+| 2048² | Smudge, 4 px | 2.1 / 10.2 ms | 12.7 / 15.3 ms | 4,898 | 0 | 1 |
+| 8192² | Brush | 3.4 / 256.4 ms | 13.9 / 16.6 ms | 7,066 | 0 | 0 |
+| 8192² | Smudge | 3.5 / 17.5 ms | 13.8 / 16.6 ms | 5,498 | 0 | 1 |
+| 8192² | Smudge, 4 px | 3.5 / 14.6 ms | 13.8 / 16.2 ms | 21,990 | 0 | 1 |
+
+The 4 px row remains level with the default-size smudge. This validation
+preceded moving the unchanged compute shader body into a `.wgsl` file to
+follow D34; the arithmetic and workgroup size remain the same.
+
 ## A stroke after a pause opened late: cold textures (live brushes 24)
 
 Apple M4 (integrated, 16 GiB), 75 Hz display, Chrome/WebGPU, 2560 × 1440
