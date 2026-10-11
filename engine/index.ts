@@ -6172,7 +6172,11 @@ export function createEngine(
      */
     encoded?: readonly [number, number, number]
   ) {
-    cancelStroke()
+    // Cleaning the load under a wet stroke in flight would change the paint
+    // it is laying, so that stroke is taken back. Any other stroke keeps
+    // going: an eyedropper's read can land after the next stroke has begun,
+    // and a dry stroke has nothing on its bristles to lose.
+    if (directTargetId && directWet) cancelStroke()
     cleanBrush()
     // Every colour arriving here is display-referred and therefore in gamut,
     // but the primaries matrices are published rounded to seven decimals, so
