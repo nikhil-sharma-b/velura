@@ -22,7 +22,11 @@ const PICKUP = 0.5
 
 type Origin = { x: number; y: number }
 
-async function openCanvas(page: Page, documentId?: string): Promise<Origin> {
+async function openCanvas(
+  page: Page,
+  documentId?: string,
+  width = WIDTH
+): Promise<Origin> {
   await page.goto(
     process.env.VELURA_TEST_HARNESS ?? "http://127.0.0.1:3101/tests/harness/"
   )
@@ -52,7 +56,7 @@ async function openCanvas(page: Page, documentId?: string): Promise<Origin> {
       })
       await window.engine.dispatch({ type: "setColor", hex: colour })
     },
-    [WIDTH, HEIGHT, documentId, RED] as const
+    [width, HEIGHT, documentId, RED] as const
   )
   const box = (await page.locator("canvas").boundingBox())!
   return { x: box.x, y: box.y }
@@ -935,6 +939,55 @@ for (const tool of ["brush", "smudge"] as const) {
     expect(pigment[0]).toBeGreaterThan(pigment[2])
   })
 }
+
+test("sampled artwork is frozen chunk by chunk as the stroke reaches it", async ({
+  page,
+}) => {
+  // Wider than one chunk of the frozen picture (live brushes 21), which is
+  // 1024 px: the stroke opens in the first, where there is nothing, and
+  // crosses into the second, where the ground is.
+  const wide = 1200
+  const at = (image: number[], x: number) =>
+    image.slice((ROW * wide + x) * 4, (ROW * wide + x) * 4 + 4)
+  await page.setViewportSize({ width: wide + 200, height: 400 })
+  const origin = await openCanvas(page, undefined, wide)
+  // A second painted layer, far from the stroke: with two to flatten the
+  // chunks are composited through their window and not copied from one.
+  const farId = await addLayer(page)
+  await stroke(page, origin, 100, 140)
+  const groundId = await addLayer(page)
+  await stroke(page, origin, 1030, 1100)
+  const ground = await pixels(page)
+  const targetId = await addLayer(page)
+  await setColour(page, BLUE)
+  await setWet(page, { pickup: 0.8 })
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setSampleAllLayers", enabled: true })
+  )
+  const setVisible = (id: string, visible: boolean) =>
+    page.evaluate(
+      ([id, visible]) =>
+        window.engine.dispatch({ type: "setLayer", id, visible }),
+      [id, visible] as const
+    )
+  await stroke(page, origin, 990, 1080)
+  await setVisible(targetId, false)
+  expect(await pixels(page)).toEqual(ground)
+  await setVisible(targetId, true)
+  await setVisible(groundId, false)
+  const carried = await pixels(page)
+  const pigment = at(carried, 1066)
+  expect(pigment[0]).toBeGreaterThan(pigment[2])
+  // With every painted layer hidden the same stroke, on a new layer, finds
+  // nothing to pick up: no chunk is read as the stroke before left it.
+  await setVisible(targetId, false)
+  await setVisible(farId, false)
+  await addLayer(page)
+  await stroke(page, origin, 990, 1080)
+  const alone = await pixels(page)
+  const unfed = at(alone, 1066)
+  expect(unfed[0]).toBeLessThanOrEqual(unfed[2])
+})
 
 for (const stack of [
   "hidden",

@@ -40,6 +40,31 @@ export type DirectStrokeContext = {
   noSelection: GPUTexture
 }
 
+/**
+ * Visible artwork as it stood at pen-down, frozen where the stroke reads
+ * (live brushes 21) and held nowhere else.
+ */
+export type FrozenArtwork = {
+  /** Whether the picture held nothing as the stroke opened. */
+  empty: boolean
+  /**
+   * Freezes whatever of a rectangle is not yet. Called for a dab's whole
+   * neighbourhood before the dab is drawn, and before any drawn with it.
+   */
+  reach(left: number, top: number, right: number, bottom: number): void
+  /** Copies a rectangle already reached into the corner of a texture. */
+  copy(
+    encoder: GPUCommandEncoder,
+    left: number,
+    top: number,
+    width: number,
+    height: number,
+    to: GPUTexture
+  ): void
+  /** The stroke is over: what was frozen for it is let go. */
+  release(): void
+}
+
 /** What the direct stroke is told as it opens. */
 export type DirectOpening = {
   /** The surface the stroke reads and writes. */
@@ -52,7 +77,7 @@ export type DirectOpening = {
   /** Keep the picked-up load after this stroke, instead of cleaning it. */
   retain?: boolean
   /** Frozen visible artwork at pen-down; destination always stays live. */
-  source?: Surface
+  source?: FrozenArtwork
 }
 
 /**
@@ -105,7 +130,7 @@ export function createDirectStroke(
   let session:
     | {
         target: Surface
-        source?: Surface
+        source?: FrozenArtwork
         /** Whether the stroke lays colour: a wet brush's, and not smudge's. */
         lays: boolean
         /** The clean load, until the first dab supplies its colour offsets. */
@@ -424,6 +449,8 @@ export function createDirectStroke(
       if (fromRight <= fromLeft || fromBottom <= fromTop) continue
       const span = Math.max(fromRight - fromLeft, fromBottom - fromTop)
       if (span > MAX_CARRY_SIZE) continue
+      // Submitted ahead of this frame's dabs, so none has written there yet.
+      stroke.source?.reach(fromLeft, fromTop, fromRight, fromBottom)
       const instance = drawn * SMUDGE_INSTANCE_STRIDE
       drawnDabs.set(dabs.subarray(dab, dab + SMUDGE_STRIDE), instance)
       drawnDabs[instance + SMUDGE.FLOW] = flow
@@ -533,23 +560,22 @@ export function createDirectStroke(
             copyBackupTile(encoder, stroke.target, tile, slot, "keep")
           }
       }
+      stroke.source?.copy(
+        encoder,
+        rects[rect],
+        rects[rect + 1],
+        rects[rect + 2],
+        rects[rect + 3],
+        carry
+      )
       encoder.copyTextureToTexture(
         {
-          texture: (stroke.source ?? stroke.target).texture,
+          texture: stroke.target.texture,
           origin: { x: rects[rect], y: rects[rect + 1] },
         },
-        { texture: carry },
+        { texture: stroke.source ? destinationCarry : carry },
         { width: rects[rect + 2], height: rects[rect + 3] }
       )
-      if (stroke.source)
-        encoder.copyTextureToTexture(
-          {
-            texture: stroke.target.texture,
-            origin: { x: rects[rect], y: rects[rect + 1] },
-          },
-          { texture: destinationCarry },
-          { width: rects[rect + 2], height: rects[rect + 3] }
-        )
       if (rects[rect + 6] > 0 && rects[rect + 7] > 0) {
         const pass = encoder.beginRenderPass({
           colorAttachments: [
@@ -657,6 +683,7 @@ export function createDirectStroke(
     if (!session) return null
     const {
       target,
+      source,
       reached,
       kept,
       wasEmpty,
@@ -666,6 +693,7 @@ export function createDirectStroke(
       beforeExtent,
     } = session
     session = undefined
+    source?.release()
     if (lays) {
       if (!keep && beforeDirty) {
         const encoder = device.createCommandEncoder()
@@ -709,7 +737,10 @@ export function createDirectStroke(
      * colour or has visible artwork to sample.
      */
     begin({ target, lay, retain = false, source }) {
-      if (target.empty && !lay && (!source || source.empty)) return false
+      if (target.empty && !lay && (!source || source.empty)) {
+        source?.release()
+        return false
+      }
       if (session) end(false)
       if (!!source !== samplesArtwork) {
         bindGroup = undefined
@@ -777,6 +808,7 @@ export function createDirectStroke(
       trimBackup(1)
     },
     destroy() {
+      session?.source?.release()
       session = undefined
       for (const page of backupPages.splice(0)) page.destroy()
       loadUniform.destroy()
