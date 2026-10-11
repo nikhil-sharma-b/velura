@@ -876,3 +876,196 @@ test("colour jitter does not refill or recolour a retained dirty load", async ({
   await stroke(page, origin, 180, 180)
   expect(distance(rgba(await pixels(page), 180), retained)).toBeGreaterThan(30)
 })
+
+for (const tool of ["brush", "smudge"] as const) {
+  test(`${tool} samples visible artwork onto an empty layer without changing the ground`, async ({
+    page,
+  }) => {
+    const origin = await openCanvas(page)
+    const groundId = await addLayer(page)
+    await paintBar(page, origin)
+    const ground = await pixels(page)
+    const targetId = await addLayer(page)
+    expect(
+      await page.evaluate(() => window.engine.getSnapshot().sampleAllLayers)
+    ).toBe(false)
+    await setColour(page, BLUE)
+    if (tool === "brush") await setWet(page, { pickup: 0.8 })
+    else {
+      await setTool(page, "smudge")
+      await page.evaluate(() =>
+        window.engine.dispatch({ type: "setSmudge", radius: 12, strength: 1 })
+      )
+    }
+    await page.evaluate(() =>
+      window.engine.dispatch({ type: "setSampleAllLayers", enabled: true })
+    )
+    await stroke(page, origin, 60, 150)
+    const painted = await pixels(page)
+    await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+    expect(await pixels(page)).toEqual(ground)
+    await page.evaluate(() => window.engine.dispatch({ type: "redo" }))
+    expect(await pixels(page)).toEqual(painted)
+    if (tool === "brush")
+      expect(distance(rgba(painted, 108), rgba(ground, 108))).toBeGreaterThan(
+        10
+      )
+    await page.evaluate(
+      (id) => window.engine.dispatch({ type: "setLayer", id, visible: false }),
+      targetId
+    )
+    expect(await pixels(page)).toEqual(ground)
+    await page.evaluate(
+      async ([groundId, targetId]) => {
+        await window.engine.dispatch({
+          type: "setLayer",
+          id: groundId,
+          visible: false,
+        })
+        await window.engine.dispatch({
+          type: "setLayer",
+          id: targetId,
+          visible: true,
+        })
+      },
+      [groundId, targetId]
+    )
+    const isolated = await pixels(page)
+    const pigment = rgba(isolated, 90)
+    expect(pigment[0]).toBeGreaterThan(pigment[2])
+  })
+}
+
+for (const stack of [
+  "hidden",
+  "opacity",
+  "mask",
+  "group",
+  "above",
+  "multiply",
+] as const) {
+  test(`sample all layers respects ${stack} in the pickup picture`, async ({
+    page,
+  }) => {
+    const origin = await openCanvas(page)
+    if (stack === "multiply") {
+      await addLayer(page)
+      await setColour(page, BLUE)
+      await paintBar(page, origin)
+      await setColour(page, RED)
+    }
+    const groundId = await addLayer(page)
+    await paintBar(page, origin)
+    let rootId = groundId
+    await page.evaluate(
+      async ({ stack, groundId }) => {
+        if (stack === "hidden")
+          await window.engine.dispatch({
+            type: "setLayer",
+            id: groundId,
+            visible: false,
+          })
+        if (stack === "opacity")
+          await window.engine.dispatch({
+            type: "setLayer",
+            id: groundId,
+            opacity: 0.4,
+          })
+        if (stack === "mask") {
+          await window.engine.dispatch({ type: "addMask", id: groundId })
+          await window.engine.dispatch({ type: "selectMask", id: groundId })
+          await window.engine.dispatch({ type: "setColor", hex: "#000000" })
+        }
+        if (stack === "group") {
+          await window.engine.dispatch({ type: "addGroup", ids: [groundId] })
+          const group = window.engine
+            .getSnapshot()
+            .layers.find((layer) => layer.kind === "group")!
+          await window.engine.dispatch({
+            type: "setLayer",
+            id: group.id,
+            opacity: 0.4,
+          })
+        }
+        if (stack === "multiply")
+          await window.engine.dispatch({
+            type: "setLayer",
+            id: groundId,
+            blend: "multiply",
+            opacity: 0.4,
+          })
+      },
+      { stack, groundId }
+    )
+    if (stack === "mask") {
+      await stroke(page, origin, 40, 100)
+      await page.evaluate(
+        (id) => window.engine.dispatch({ type: "selectLayer", id }),
+        groundId
+      )
+    }
+    if (stack === "group")
+      rootId = await page.evaluate(
+        () =>
+          window.engine
+            .getSnapshot()
+            .layers.find((layer) => layer.kind === "group")!.id
+      )
+    const reference = await pixels(page)
+    const targetId = await addLayer(page)
+    if (stack === "group")
+      await page.evaluate(
+        (id) =>
+          window.engine.dispatch({
+            type: "moveLayer",
+            id,
+            parentId: null,
+            index: 2,
+          }),
+        targetId
+      )
+    if (stack === "above")
+      await page.evaluate(
+        async ({ groundId, targetId }) => {
+          await window.engine.dispatch({
+            type: "moveLayer",
+            id: groundId,
+            index: 2,
+          })
+          await window.engine.dispatch({ type: "selectLayer", id: targetId })
+        },
+        { groundId, targetId }
+      )
+    await page.evaluate(async () => {
+      await window.engine.dispatch({ type: "setTool", tool: "smudge" })
+      await window.engine.dispatch({
+        type: "setSmudge",
+        radius: 12,
+        strength: 1,
+      })
+      await window.engine.dispatch({
+        type: "setSampleAllLayers",
+        enabled: true,
+      })
+    })
+    if (stack === "hidden") await idleDrag(page, origin, 60, 90)
+    else await stroke(page, origin, 60, 90)
+    await page.evaluate(
+      (id) => window.engine.dispatch({ type: "setLayer", id, visible: false }),
+      rootId
+    )
+    if (stack === "multiply")
+      await page.evaluate(async (targetId) => {
+        for (const layer of window.engine.getSnapshot().layers) {
+          if (layer.id !== targetId)
+            await window.engine.dispatch({
+              type: "setLayer",
+              id: layer.id,
+              visible: false,
+            })
+        }
+      }, targetId)
+    const isolated = await pixels(page)
+    expect(distance(rgba(isolated, 80), rgba(reference, 80))).toBeLessThan(8)
+  })
+}

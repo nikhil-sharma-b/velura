@@ -91,7 +91,13 @@ export type WorkloadOptions = {
    * diameter; absent, an eighth. `dry` paints with the same brush not wet,
    * whose dabs share one draw: what the wet one is weighed against.
    */
-  wet?: { diameter: number; pickup: number; spacing?: number; dry?: boolean }
+  wet?: {
+    diameter: number
+    pickup: number
+    spacing?: number
+    dry?: boolean
+    sampleAllLayers?: boolean
+  }
 }
 
 /**

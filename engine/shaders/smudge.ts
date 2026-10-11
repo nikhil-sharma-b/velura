@@ -41,6 +41,7 @@ struct Smudge {
 @group(0) @binding(7) var grainTexture: texture_2d<f32>;
 
 @group(0) @binding(8) var reservoir: texture_2d<f32>;
+@group(0) @binding(9) var destination: texture_2d<f32>;
 
 struct Instance {
   // Dab centre in canvas pixels.
@@ -134,7 +135,7 @@ fn tipCoverage(varyings: Varyings) -> f32 {
 fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
   let shape = tipCoverage(varyings);
 
-  let here = textureLoad(carry, vec2<i32>(varyings.position.xy - varyings.origin), 0);
+  let here = textureLoad(destination, vec2<i32>(varyings.position.xy - varyings.origin), 0);
   // Between texels, since a dab's travel is rarely a whole pixel: without
   // the blend a slow drag would round to no travel and smear nothing.
   let source = varyings.position.xy - varyings.travel;

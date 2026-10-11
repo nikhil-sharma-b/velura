@@ -1870,6 +1870,39 @@ export function CanvasHost({
                         </div>
                       </QuickSetting>
                     )}
+                  {!intoMask &&
+                    (smudging ||
+                      (snapshot.tool === "brush" &&
+                        snapshot.brush.rendering.wet)) && (
+                      <QuickSetting
+                        label="Sample"
+                        value={
+                          snapshot.sampleAllLayers
+                            ? "All layers"
+                            : "Active layer"
+                        }
+                        readout={
+                          snapshot.sampleAllLayers
+                            ? "All layers"
+                            : "Active layer"
+                        }
+                        icon={<DropHalfIcon />}
+                      >
+                        <label className="flex items-center gap-2 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={snapshot.sampleAllLayers}
+                            onChange={(event) =>
+                              void engine?.dispatch({
+                                type: "setSampleAllLayers",
+                                enabled: event.target.checked,
+                              })
+                            }
+                          />
+                          Sample all layers
+                        </label>
+                      </QuickSetting>
+                    )}
                   {/* Size and opacity are the two a hand reaches for mid-piece, so
                 they stay on the canvas: the editor is for shaping a brush,
                 not for the adjustment made between one stroke and the next. */}
