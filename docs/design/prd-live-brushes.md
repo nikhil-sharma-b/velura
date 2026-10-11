@@ -112,7 +112,7 @@ type BrushRendering = {
 
 **Which brush features reach a wet dab.** Size, angle and roundness dynamics; flow dynamics; the new pickup target; tip textures and tip sets with their frame selection; grain, applied to the laid colour only and not to the paint being dragged. Scatter did not until the reservoir gave a thrown dab something to trade with (follow-up 12): scattered dabs now share the one reservoir in the order drawn, and only a blender, which has none, still keeps to the path. Colour jitter (follow-up 13) now tints the clean reservoir once per stroke, at the first dab; later sensor values do not recolour it, and picked-up paint is never jittered (architecture §6.2).
 
-**Dab spacing.** A wet brush uses its own spacing setting, held at a floor: four pixels or a sixteenth of the dab's radius, whichever is more, a blender included. The floor was one pixel, as smudge's is, until the D30 measurement raised it (live brushes 10, `docs/design/benchmark.md`).
+**Dab spacing.** A wet brush uses its own spacing setting, held at a floor: four pixels or a sixteenth of the dab's radius, whichever is more, a blender included. The floor was one pixel, as smudge's is, until the D30 measurement raised it (live brushes 10, `docs/design/benchmark.md`). Smudge was measured against the floor and kept its own spacing, since a small smudge held to four pixels leaves a comb (live brushes 19).
 
 **Mixing uses pigment reflectance** in the P3 working space (D10), with linear premultiplied alpha so transparency only thins paint. Follow-up 11 replaces the isolated mix function for wet brushes and smudge with an always-on synthetic Kubelka–Munk approximation; see [model and provenance](pigment-mixing.md).
 

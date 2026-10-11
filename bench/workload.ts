@@ -83,6 +83,12 @@ export type WorkloadOptions = {
    */
   smudge?: boolean
   /**
+   * The smudge tool's radius in canvas pixels (live brushes 19): a small one
+   * lays its dabs closest, so that is where the dabs in a frame are most.
+   * Absent, the tool's default.
+   */
+  smudgeRadius?: number
+  /**
    * Paints the workload a second time over itself with a wet brush
    * `diameter` pixels across (live brushes 10, 11): the strokes are painted
    * once, untimed, so there is paint underneath, and then drawn again along
@@ -243,6 +249,11 @@ export function createWorkload(options: WorkloadOptions): Workload {
       throw new Error("A workload's pickup must be in [0, 1].")
     if (options.smudge)
       throw new Error("A workload is smudged or painted wet, not both.")
+  }
+  if (options.smudgeRadius !== undefined) {
+    positive(options.smudgeRadius, "smudge radius")
+    if (!options.smudge)
+      throw new Error("A workload's smudge radius needs a smudged workload.")
   }
   const random = createRandom(options.seed)
   const strokes: BenchStroke[] = []

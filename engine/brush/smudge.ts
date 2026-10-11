@@ -26,7 +26,10 @@ export const DEFAULT_SMUDGE: Smudge = Object.freeze({
  * Distance between dabs in canvas pixels, a quarter of the dab's radius. With
  * the strength, this sets how far paint is carried: each dab hands on that
  * share of what the last one brought. Never under a pixel, where a dab would
- * have no whole pixel behind it to drag.
+ * have no whole pixel behind it to drag. Not held at the wet spacing floor
+ * (live brushes 19): past about a third of a radius the dabs no longer
+ * overlap evenly and the smear comes out as a comb, so a small smudge pays
+ * for its dabs in the frame instead (`docs/design/benchmark.md`).
  */
 export function smudgeSpacing(radius: number): number {
   return Math.max(1, radius / 4)

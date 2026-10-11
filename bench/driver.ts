@@ -467,7 +467,14 @@ export async function runBenchmark(
           type: "setBrush",
           wet: { pickup: wet.pickup },
         })
-    } else await engine.dispatch({ type: "setTool", tool: "smudge" })
+    } else {
+      await engine.dispatch({ type: "setTool", tool: "smudge" })
+      if (workload.options.smudgeRadius !== undefined)
+        await engine.dispatch({
+          type: "setSmudge",
+          radius: workload.options.smudgeRadius,
+        })
+    }
   }
   const detachThumbnails = attachThumbnails(engine)
 

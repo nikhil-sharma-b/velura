@@ -100,6 +100,10 @@ describe("createWorkload", () => {
       })
     ).toThrow()
     expect(() => createWorkload({ ...options, wet, smudge: true })).toThrow()
+    expect(() =>
+      createWorkload({ ...options, smudge: true, smudgeRadius: 0 })
+    ).toThrow()
+    expect(() => createWorkload({ ...options, smudgeRadius: 4 })).toThrow()
   })
 
   test("painting the workload wet changes the brush and not the strokes", () => {
