@@ -110,7 +110,7 @@ type BrushRendering = {
 
 **What a wet brush does not have.** A wet stroke writes the layer directly, so the things the stroke buffer provides cannot apply: stroke opacity, the coverage/buildup accumulation mode, and blend modes. A wet brush always mixes normally. The values stay on the brush, unread, so turning wet off restores them.
 
-**Which brush features reach a wet dab.** Size, angle and roundness dynamics; flow dynamics; the new pickup target; tip textures and tip sets with their frame selection; grain, applied to the laid colour only and not to the paint being dragged. Scatter and colour jitter do not: a scattered dab has no single dab behind it to drag from, and both are ticketed as follow-ups. A wet brush with scatter or colour set draws as if they were absent.
+**Which brush features reach a wet dab.** Size, angle and roundness dynamics; flow dynamics; the new pickup target; tip textures and tip sets with their frame selection; grain, applied to the laid colour only and not to the paint being dragged. Scatter remains a follow-up: a scattered dab has no single dab behind it to drag from. Colour jitter (follow-up 13) now tints the clean reservoir once per stroke, at the first dab; later sensor values do not recolour it, and picked-up paint is never jittered (architecture §6.2). A wet brush with scatter draws as if scatter were absent.
 
 **Dab spacing.** A wet brush uses its own spacing setting, held at a floor: four pixels or a sixteenth of the dab's radius, whichever is more, a blender included. The floor was one pixel, as smudge's is, until the D30 measurement raised it (live brushes 10, `docs/design/benchmark.md`).
 
@@ -156,7 +156,7 @@ Supporting checks:
 - Ticketed as follow-ups, not built here:
   - A brush that stays dirty between strokes, with a clean-brush toggle (implemented in follow-up 14).
   - Scatter on wet brushes.
-  - Colour jitter on wet brushes.
+  - Colour jitter on wet brushes: completed in follow-up 13 as a jittered clean load per stroke.
   - Sample all layers (picking up from the composited picture).
 - Wet vector brushes.
 - A wet eraser.

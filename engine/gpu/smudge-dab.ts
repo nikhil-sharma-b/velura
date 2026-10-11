@@ -2,7 +2,7 @@
  * The layout of one dab of the direct stroke (smudge 01, D41), shared by the
  * engine that fills the array, the renderer that draws it and the shader's
  * locations: a smudge dab, or a wet brush's reservoir exchange. The engine
- * writes the first nine floats; the renderer adds
+ * writes the first twelve floats; the renderer adds
  * the last four, which only it can know: how far the tip came since the dab
  * before, and where the pixels it reads were copied from.
  */
@@ -27,17 +27,21 @@ export const SMUDGE = {
    * as a scale on the brush's own depth. Nothing dragged is bitten.
    */
   GRAIN_DEPTH: 8,
-  TRAVEL_X: 9,
-  TRAVEL_Y: 10,
-  ORIGIN_X: 11,
-  ORIGIN_Y: 12,
+  /** Colour offsets tint the clean load once, at the first wet dab. */
+  HUE: 9,
+  SATURATION: 10,
+  LIGHTNESS: 11,
+  TRAVEL_X: 12,
+  TRAVEL_Y: 13,
+  ORIGIN_X: 14,
+  ORIGIN_Y: 15,
 } as const
 
 /** Floats per dab as the engine hands them over. */
-export const SMUDGE_STRIDE = 9
+export const SMUDGE_STRIDE = 12
 
 /** Floats per dab as the renderer draws them. */
-export const SMUDGE_INSTANCE_STRIDE = 13
+export const SMUDGE_INSTANCE_STRIDE = 16
 
 /** The most dabs one `drawDirect` call may carry. */
 export const MAX_SMUDGE_DABS_PER_DRAW = 512

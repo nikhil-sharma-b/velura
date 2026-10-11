@@ -1,5 +1,6 @@
 import { type PixelRect, TILE_SIZE } from "../doc/tile-grid"
 import type { LinearColor } from "../doc/tiled-layer"
+import { brushLoadShader } from "../shaders/brush-load"
 import { smudgeShader } from "../shaders/smudge"
 import {
   MAX_SMUDGE_DABS_PER_DRAW,
@@ -97,6 +98,8 @@ export function createDirectStroke(
         target: Surface
         /** Whether the stroke lays colour: a wet brush's, and not smudge's. */
         lays: boolean
+        /** The clean load, until the first dab supplies its colour offsets. */
+        load: LinearColor | null
         retain: boolean
         beforeDirty: boolean
         beforeExtent: number
@@ -241,6 +244,50 @@ export function createDirectStroke(
   let reservoirExtent = 0
   let reservoirIndex = 0
   let reservoirBindings: { layer: GPUBindGroup; pickup: GPUBindGroup }[] = []
+  const loadModule = device.createShaderModule({ code: brushLoadShader })
+  const loadPipeline = device.createRenderPipeline({
+    label: "wet brush colour load",
+    layout: "auto",
+    vertex: { module: loadModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: loadModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format: LAYER_FORMAT }],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  const loadParams = new Float32Array(8)
+  const loadUniform = device.createBuffer({
+    size: loadParams.byteLength,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
+  const loadBinding = device.createBindGroup({
+    layout: loadPipeline.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: { buffer: loadUniform } }],
+  })
+
+  function tintLoad(color: LinearColor, dabs: Float32Array) {
+    loadParams.set(color)
+    loadParams[4] = dabs[SMUDGE.HUE]
+    loadParams[5] = dabs[SMUDGE.SATURATION]
+    loadParams[6] = dabs[SMUDGE.LIGHTNESS]
+    if (loadParams[4] === 0 && loadParams[5] === 0 && loadParams[6] === 0)
+      return
+    device.queue.writeBuffer(loadUniform, 0, loadParams)
+    const encoder = device.createCommandEncoder()
+    for (const view of reservoirViews) {
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{ view, loadOp: "clear", storeOp: "store" }],
+      })
+      pass.setViewport(0, 0, reservoirExtent, reservoirExtent, 0, 1)
+      pass.setPipeline(loadPipeline)
+      pass.setBindGroup(0, loadBinding)
+      pass.draw(3)
+      pass.end()
+    }
+    device.queue.submit([encoder.finish()])
+  }
+
   function clearReservoir(color: LinearColor = [0, 0, 0, 0]) {
     const encoder = device.createCommandEncoder()
     for (const view of reservoirViews) {
@@ -289,6 +336,14 @@ export function createDirectStroke(
   /** Draws the dabs of the stroke into its surface, one after another. */
   function drawDabs(dabs: Float32Array, count: number) {
     const stroke = session!
+    if (stroke.load) {
+      reservoirExtent = Math.min(
+        reservoirSize,
+        Math.max(64, Math.ceil(dabs[SMUDGE.RADIUS] * 2))
+      )
+      tintLoad(stroke.load, dabs)
+      stroke.load = null
+    }
     const { width, height } = context.size()
     const selection = context.selection()
     // Selection bounds clip writes; reservoir pickup still reads the whole tip.
@@ -385,12 +440,6 @@ export function createDirectStroke(
     params[3] = tip.usesTip ? 1 : 0
     params[4] = selection ? 1 : 0
     params[5] = stroke.lays ? 1 : 0
-    if (stroke.lays && reservoirExtent === 0) {
-      reservoirExtent = Math.min(
-        reservoirSize,
-        Math.max(64, Math.ceil(drawnDabs[SMUDGE.RADIUS] * 2))
-      )
-    }
     params[6] = reservoirExtent / reservoirSize
     const grain = context.grain()
     params[7] = grain.scale
@@ -646,6 +695,7 @@ export function createDirectStroke(
       session = {
         target,
         lays: !!lay,
+        load: !retain || !beforeDirty ? lay : null,
         retain,
         beforeDirty,
         beforeExtent,
@@ -688,6 +738,7 @@ export function createDirectStroke(
     destroy() {
       session = undefined
       for (const page of backupPages.splice(0)) page.destroy()
+      loadUniform.destroy()
       for (const texture of reservoirs) texture.destroy()
       reservoirBackup.destroy()
       carry.destroy()
