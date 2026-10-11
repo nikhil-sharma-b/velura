@@ -3,6 +3,14 @@ import type { LinearColor } from "../doc/tiled-layer"
 import { brushLoadShader } from "../shaders/brush-load"
 import { smudgeShader } from "../shaders/smudge"
 import {
+  RUN_DAB,
+  RUN_DAB_BYTES,
+  RUN_DAB_FLOATS,
+  RUN_WORKGROUP,
+  smudgeRunShader,
+} from "../shaders/smudge-run"
+import { DAB_RECT, DAB_RECT_STRIDE, dabRunEnd } from "./dab-run"
+import {
   MAX_SMUDGE_DABS_PER_DRAW,
   SMUDGE,
   SMUDGE_INSTANCE_STRIDE,
@@ -114,11 +122,18 @@ const BACKUP_PAGE_SLOTS = BACKUP_PAGE_TILES * BACKUP_PAGE_TILES
 const BACKUP_PAGES_KEPT = 4
 /** The widest neighbourhood a dab may ask for; one reaching further is skipped. */
 const MAX_CARRY_SIZE = 2048
+/**
+ * The widest region a run of dragging dabs may share (live brushes 22). A
+ * frame's worth of small dabs fits; a dab too large to is drawn on its own,
+ * and by then a frame holds few.
+ */
+const RUN_SIZE = 256
 
 /**
  * The stroke that reads and writes its surface as it goes (D29, smudge 01):
- * smudge mixes towards the pixel one dab behind. Wet brushes exchange paint
- * with a reservoir held in tip coordinates (D41), optionally kept between strokes.
+ * smudge mixes towards the pixel one dab behind, a run of dabs to a compute
+ * pass (live brushes 22). Wet brushes exchange paint with a reservoir held in
+ * tip coordinates (D41), optionally kept between strokes.
  */
 export function createDirectStroke(
   device: GPUDevice,
@@ -176,6 +191,70 @@ export function createDirectStroke(
     format: LAYER_FORMAT,
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   })
+  /**
+   * What a run of dragging dabs is worked in (live brushes 22): its region
+   * of the surface, read from one and written to the other dab by dab.
+   */
+  const runTextures = [0, 1].map(() =>
+    device.createTexture({
+      label: "smudge run",
+      size: { width: RUN_SIZE, height: RUN_SIZE },
+      format: LAYER_FORMAT,
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.STORAGE_BINDING |
+        GPUTextureUsage.COPY_SRC |
+        GPUTextureUsage.COPY_DST,
+    })
+  )
+  // A block per dab, picked by a dynamic offset: filled per call, not
+  // allocated per call.
+  const runParams = new Float32Array(MAX_SMUDGE_DABS_PER_DRAW * RUN_DAB_FLOATS)
+  const runUniform = device.createBuffer({
+    size: runParams.byteLength,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
+  const runOffsets = Uint32Array.from(
+    { length: MAX_SMUDGE_DABS_PER_DRAW },
+    (_, dab) => dab * RUN_DAB_FLOATS * 4
+  )
+  const runRegion = new Int32Array(4)
+  // Written by hand: a dynamic offset is not something a layout is given
+  // from the shader.
+  const runLayout = device.createBindGroupLayout({
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { hasDynamicOffset: true, minBindingSize: RUN_DAB_BYTES },
+      },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: {} },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { viewDimension: "2d-array" },
+      },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, sampler: {} },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: {} },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, texture: {} },
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, texture: {} },
+      {
+        binding: 7,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { format: LAYER_FORMAT },
+      },
+    ],
+  })
+  const runPipeline = device.createComputePipeline({
+    label: "smudge run",
+    layout: device.createPipelineLayout({ bindGroupLayouts: [runLayout] }),
+    compute: {
+      module: device.createShaderModule({ code: smudgeRunShader }),
+      entryPoint: "runMain",
+    },
+  })
+  /** By which of the two textures a dab reads. */
+  let runBindings: GPUBindGroup[] = []
   /**
    * Holds the tip's, the carry's, the selection's and the grain's views, so
    * it goes when the tip, the selection or the grain is replaced.
@@ -373,7 +452,7 @@ export function createDirectStroke(
   const drawnDabs = new Float32Array(
     MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_INSTANCE_STRIDE
   )
-  const rects = new Int32Array(MAX_SMUDGE_DABS_PER_DRAW * 8)
+  const rects = new Int32Array(MAX_SMUDGE_DABS_PER_DRAW * DAB_RECT_STRIDE)
 
   /** Draws the dabs of the stroke into its surface, one after another. */
   function drawDabs(dabs: Float32Array, count: number) {
@@ -458,15 +537,15 @@ export function createDirectStroke(
       drawnDabs[instance + SMUDGE.TRAVEL_Y] = travelY
       drawnDabs[instance + SMUDGE.ORIGIN_X] = fromLeft
       drawnDabs[instance + SMUDGE.ORIGIN_Y] = fromTop
-      const rect = drawn * 8
-      rects[rect] = fromLeft
-      rects[rect + 1] = fromTop
-      rects[rect + 2] = fromRight - fromLeft
-      rects[rect + 3] = fromBottom - fromTop
-      rects[rect + 4] = left
-      rects[rect + 5] = top
-      rects[rect + 6] = writes ? right - left : 0
-      rects[rect + 7] = writes ? bottom - top : 0
+      const rect = drawn * DAB_RECT_STRIDE
+      rects[rect + DAB_RECT.READ_LEFT] = fromLeft
+      rects[rect + DAB_RECT.READ_TOP] = fromTop
+      rects[rect + DAB_RECT.READ_WIDTH] = fromRight - fromLeft
+      rects[rect + DAB_RECT.READ_HEIGHT] = fromBottom - fromTop
+      rects[rect + DAB_RECT.WRITE_LEFT] = left
+      rects[rect + DAB_RECT.WRITE_TOP] = top
+      rects[rect + DAB_RECT.WRITE_WIDTH] = writes ? right - left : 0
+      rects[rect + DAB_RECT.WRITE_HEIGHT] = writes ? bottom - top : 0
       if (writes) {
         stroke.reached.left = Math.min(stroke.reached.left, left)
         stroke.reached.top = Math.min(stroke.reached.top, top)
@@ -535,48 +614,72 @@ export function createDirectStroke(
         }),
       }))
       bindGroup = reservoirBindings[0].layer
+      runBindings = runTextures.map((texture, reads) =>
+        device.createBindGroup({
+          layout: runLayout,
+          entries: [
+            {
+              binding: 0,
+              resource: { buffer: runUniform, size: RUN_DAB_BYTES },
+            },
+            entries[1],
+            entries[2],
+            entries[3],
+            { binding: 4, resource: texture.createView() },
+            {
+              binding: 5,
+              resource: (stroke.source ? carry : texture).createView(),
+            },
+            { binding: 6, resource: entries[5].resource },
+            { binding: 7, resource: runTextures[1 - reads].createView() },
+          ],
+        })
+      )
     }
-    // Each dab reads what the one before it wrote, so each is a copy and a
-    // pass of its own; one encoder holds the frame's worth in order.
+    // Each dab reads what the one before it wrote. Dabs that drag share a
+    // pass a run at a time; any other is a copy and a pass of its own. One
+    // encoder holds the frame's worth in order.
     const encoder = device.createCommandEncoder()
-    const tilesAcross = Math.ceil(width / TILE_SIZE)
+    let anyRun = false
     for (let i = 0; i < drawn; i++) {
-      const rect = i * 8
-      // Before the dab writes: any tile under it that no dab has yet touched
-      // is kept as it is.
-      if (rects[rect + 6] > 0 && rects[rect + 7] > 0) {
-        const lastColumn = (rects[rect + 4] + rects[rect + 6] - 1) >> TILE_SHIFT
-        const lastRow = (rects[rect + 5] + rects[rect + 7] - 1) >> TILE_SHIFT
-        for (let row = rects[rect + 5] >> TILE_SHIFT; row <= lastRow; row++)
-          for (
-            let column = rects[rect + 4] >> TILE_SHIFT;
-            column <= lastColumn;
-            column++
-          ) {
-            const tile = row * tilesAcross + column
-            if (stroke.kept.has(tile)) continue
-            const slot = stroke.kept.size
-            stroke.kept.set(tile, slot)
-            copyBackupTile(encoder, stroke.target, tile, slot, "keep")
-          }
+      const runEnd = stroke.lays
+        ? i
+        : dabRunEnd(rects, i, drawn, RUN_SIZE, runRegion)
+      if (runEnd > i) {
+        drawRun(encoder, i, runEnd)
+        anyRun = true
+        // The loop steps on from the run's last dab.
+        i = runEnd - 1
+        continue
       }
+      const rect = i * DAB_RECT_STRIDE
+      keepTiles(encoder, i)
       stroke.source?.copy(
         encoder,
-        rects[rect],
-        rects[rect + 1],
-        rects[rect + 2],
-        rects[rect + 3],
+        rects[rect + DAB_RECT.READ_LEFT],
+        rects[rect + DAB_RECT.READ_TOP],
+        rects[rect + DAB_RECT.READ_WIDTH],
+        rects[rect + DAB_RECT.READ_HEIGHT],
         carry
       )
       encoder.copyTextureToTexture(
         {
           texture: stroke.target.texture,
-          origin: { x: rects[rect], y: rects[rect + 1] },
+          origin: {
+            x: rects[rect + DAB_RECT.READ_LEFT],
+            y: rects[rect + DAB_RECT.READ_TOP],
+          },
         },
         { texture: stroke.source ? destinationCarry : carry },
-        { width: rects[rect + 2], height: rects[rect + 3] }
+        {
+          width: rects[rect + DAB_RECT.READ_WIDTH],
+          height: rects[rect + DAB_RECT.READ_HEIGHT],
+        }
       )
-      if (rects[rect + 6] > 0 && rects[rect + 7] > 0) {
+      if (
+        rects[rect + DAB_RECT.WRITE_WIDTH] > 0 &&
+        rects[rect + DAB_RECT.WRITE_HEIGHT] > 0
+      ) {
         const pass = encoder.beginRenderPass({
           colorAttachments: [
             { view: stroke.target.view, loadOp: "load", storeOp: "store" },
@@ -589,10 +692,10 @@ export function createDirectStroke(
         )
         pass.setVertexBuffer(0, instances)
         pass.setScissorRect(
-          rects[rect + 4],
-          rects[rect + 5],
-          rects[rect + 6],
-          rects[rect + 7]
+          rects[rect + DAB_RECT.WRITE_LEFT],
+          rects[rect + DAB_RECT.WRITE_TOP],
+          rects[rect + DAB_RECT.WRITE_WIDTH],
+          rects[rect + DAB_RECT.WRITE_HEIGHT]
         )
         pass.draw(6, 1, 0, i)
         pass.end()
@@ -621,7 +724,119 @@ export function createDirectStroke(
         reservoirIndex = next
       }
     }
+    if (anyRun)
+      device.queue.writeBuffer(
+        runUniform,
+        0,
+        runParams,
+        0,
+        drawn * RUN_DAB_FLOATS
+      )
     device.queue.submit([encoder.finish()])
+  }
+
+  /**
+   * Before a dab writes: any tile under it that no dab has yet touched is
+   * kept as it is.
+   */
+  function keepTiles(encoder: GPUCommandEncoder, dab: number) {
+    const stroke = session!
+    const rect = dab * DAB_RECT_STRIDE
+    const left = rects[rect + DAB_RECT.WRITE_LEFT]
+    const top = rects[rect + DAB_RECT.WRITE_TOP]
+    const width = rects[rect + DAB_RECT.WRITE_WIDTH]
+    const height = rects[rect + DAB_RECT.WRITE_HEIGHT]
+    if (width <= 0 || height <= 0) return
+    const tilesAcross = Math.ceil(context.size().width / TILE_SIZE)
+    const lastColumn = (left + width - 1) >> TILE_SHIFT
+    const lastRow = (top + height - 1) >> TILE_SHIFT
+    for (let row = top >> TILE_SHIFT; row <= lastRow; row++)
+      for (let column = left >> TILE_SHIFT; column <= lastColumn; column++) {
+        const tile = row * tilesAcross + column
+        if (stroke.kept.has(tile)) continue
+        const slot = stroke.kept.size
+        stroke.kept.set(tile, slot)
+        copyBackupTile(encoder, stroke.target, tile, slot, "keep")
+      }
+  }
+
+  /**
+   * Draws a run of dragging dabs, `from` up to `to`, in one pass (live
+   * brushes 22): the region `runRegion` names is copied out of the surface,
+   * each dab reads it as the dab before left it and writes it on, and what
+   * the last wrote is copied back. Two copies and a pass for the run, where
+   * its dabs drawn alone are a copy and a pass each.
+   */
+  function drawRun(encoder: GPUCommandEncoder, from: number, to: number) {
+    const stroke = session!
+    const left = runRegion[0]
+    const top = runRegion[1]
+    const width = runRegion[2]
+    const height = runRegion[3]
+    const extent = { width, height }
+    const inSurface = {
+      texture: stroke.target.texture,
+      origin: { x: left, y: top },
+    }
+    for (let dab = from; dab < to; dab++) {
+      keepTiles(encoder, dab)
+      const instance = dab * SMUDGE_INSTANCE_STRIDE
+      const rect = dab * DAB_RECT_STRIDE
+      const block = dab * RUN_DAB_FLOATS
+      runParams[block + RUN_DAB.VIEWPORT_X] = params[0]
+      runParams[block + RUN_DAB.VIEWPORT_Y] = params[1]
+      runParams[block + RUN_DAB.FEATHER] = params[2]
+      runParams[block + RUN_DAB.USE_TIP] = params[3]
+      runParams[block + RUN_DAB.USE_SELECTION] = params[4]
+      runParams[block + RUN_DAB.CENTER_X] =
+        drawnDabs[instance + SMUDGE.CENTER_X]
+      runParams[block + RUN_DAB.CENTER_Y] =
+        drawnDabs[instance + SMUDGE.CENTER_Y]
+      runParams[block + RUN_DAB.TRAVEL_X] =
+        drawnDabs[instance + SMUDGE.TRAVEL_X]
+      runParams[block + RUN_DAB.TRAVEL_Y] =
+        drawnDabs[instance + SMUDGE.TRAVEL_Y]
+      runParams[block + RUN_DAB.RADIUS] = drawnDabs[instance + SMUDGE.RADIUS]
+      runParams[block + RUN_DAB.STRENGTH] =
+        drawnDabs[instance + SMUDGE.STRENGTH]
+      runParams[block + RUN_DAB.ANGLE] = drawnDabs[instance + SMUDGE.ANGLE]
+      runParams[block + RUN_DAB.ROUNDNESS] =
+        drawnDabs[instance + SMUDGE.ROUNDNESS]
+      runParams[block + RUN_DAB.TIP_FRAME] =
+        drawnDabs[instance + SMUDGE.TIP_FRAME]
+      runParams[block + RUN_DAB.REGION_X] = left
+      runParams[block + RUN_DAB.REGION_Y] = top
+      runParams[block + RUN_DAB.REGION_WIDTH] = width
+      runParams[block + RUN_DAB.REGION_HEIGHT] = height
+      const clipLeft = rects[rect + DAB_RECT.WRITE_LEFT]
+      const clipTop = rects[rect + DAB_RECT.WRITE_TOP]
+      runParams[block + RUN_DAB.CLIP_LEFT] = clipLeft
+      runParams[block + RUN_DAB.CLIP_TOP] = clipTop
+      runParams[block + RUN_DAB.CLIP_RIGHT] =
+        clipLeft + rects[rect + DAB_RECT.WRITE_WIDTH]
+      runParams[block + RUN_DAB.CLIP_BOTTOM] =
+        clipTop + rects[rect + DAB_RECT.WRITE_HEIGHT]
+    }
+    if (stroke.source) {
+      // The region's corners are no dab's, so they are reached here.
+      stroke.source.reach(left, top, left + width, top + height)
+      stroke.source.copy(encoder, left, top, width, height, carry)
+    }
+    encoder.copyTextureToTexture(inSurface, { texture: runTextures[0] }, extent)
+    const pass = encoder.beginComputePass()
+    pass.setPipeline(runPipeline)
+    const across = Math.ceil(width / RUN_WORKGROUP)
+    const down = Math.ceil(height / RUN_WORKGROUP)
+    for (let dab = from; dab < to; dab++) {
+      pass.setBindGroup(0, runBindings[(dab - from) & 1], runOffsets, dab, 1)
+      pass.dispatchWorkgroups(across, down)
+    }
+    pass.end()
+    encoder.copyTextureToTexture(
+      { texture: runTextures[(to - from) & 1] },
+      inSurface,
+      extent
+    )
   }
 
   /**
@@ -817,6 +1032,9 @@ export function createDirectStroke(
       carry.destroy()
       destinationCarry.destroy()
       bindGroup = undefined
+      runBindings = []
+      for (const texture of runTextures) texture.destroy()
+      runUniform.destroy()
       uniform.destroy()
       instances.destroy()
     },
