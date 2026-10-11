@@ -19,6 +19,7 @@
  * a dense scattering brush against the same painting without; `--smudge`
  * smudges the painting against painting it (smudge 01); `--wet` paints over
  * it with wet brushes against the same brushes dry (live brushes 10);
+ * `--blender` compares small blenders with wet brushes that have flow;
  * `--vector` times
  * redrawing a vector layer of many paths (19); `--navigate` times panning and
  * zooming a stack whose caches each step rebuilds (sharp-zoom 01). They are
@@ -47,7 +48,7 @@ import {
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 const RESULTS = join(ROOT, "bench", "results")
 const HISTORY = join(RESULTS, "history.jsonl")
-const PORT = 3102
+const PORT = Number(process.env.VELURA_BENCH_PORT ?? 3102)
 const HARNESS = `http://127.0.0.1:${PORT}/tests/harness/`
 
 /**
@@ -440,7 +441,9 @@ async function smudgeSweep(): Promise<void> {
   console.log()
 }
 
-const WET_DIAMETERS = [64, 512]
+const WET_DIAMETERS = process.argv.includes("--blender")
+  ? [4, 8, 16, 32]
+  : [64, 512]
 const HEAVY_PICKUP = 0.8
 /**
  * The closest dabs a brush can be given: an imported preset's spacing goes
@@ -448,16 +451,21 @@ const HEAVY_PICKUP = 0.8
  * spacing floor at both sizes, so this row is the floor itself, measured.
  */
 const DENSEST_SPACING = 0.01
-const WET_PAINTS = [
-  { name: "dry", pickup: 0, dry: true },
-  { name: "wet", pickup: 0 },
-  { name: "wet, pickup", pickup: HEAVY_PICKUP },
-  { name: "wet, all layers", pickup: HEAVY_PICKUP, sampleAllLayers: true },
-  { name: "wet, densest", pickup: HEAVY_PICKUP, spacing: DENSEST_SPACING },
-  // The most dabs a spacing step can be made to lay (live brushes 12).
-  { name: "dry, scatter", pickup: 0, dry: true, scatter: DENSE_SCATTER },
-  { name: "wet, scatter", pickup: HEAVY_PICKUP, scatter: DENSE_SCATTER },
-]
+const WET_PAINTS = process.argv.includes("--blender")
+  ? [
+      { name: "blender", pickup: 0.9, flow: 0 },
+      { name: "wet, pickup", pickup: 0.9 },
+    ]
+  : [
+      { name: "dry", pickup: 0, dry: true },
+      { name: "wet", pickup: 0 },
+      { name: "wet, pickup", pickup: HEAVY_PICKUP },
+      { name: "wet, all layers", pickup: HEAVY_PICKUP, sampleAllLayers: true },
+      { name: "wet, densest", pickup: HEAVY_PICKUP, spacing: DENSEST_SPACING },
+      // The most dabs a spacing step can be made to lay (live brushes 12).
+      { name: "dry, scatter", pickup: 0, dry: true, scatter: DENSE_SCATTER },
+      { name: "wet, scatter", pickup: HEAVY_PICKUP, scatter: DENSE_SCATTER },
+    ]
 
 /**
  * Wet brushes (live brushes 10, 11), against the same brushes dry. A wet dab
@@ -608,7 +616,8 @@ async function main(): Promise<void> {
           ? scatterSweep
           : process.argv.includes("--smudge")
             ? smudgeSweep
-            : process.argv.includes("--wet")
+            : process.argv.includes("--wet") ||
+                process.argv.includes("--blender")
               ? wetSweep
               : process.argv.includes("--vector")
                 ? vectorSweep

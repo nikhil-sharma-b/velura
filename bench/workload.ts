@@ -103,6 +103,8 @@ export type WorkloadOptions = {
   wet?: {
     diameter: number
     pickup: number
+    /** Flow for the measured stroke; zero benchmarks a blender. */
+    flow?: number
     spacing?: number
     dry?: boolean
     sampleAllLayers?: boolean
@@ -241,12 +243,14 @@ export function createWorkload(options: WorkloadOptions): Workload {
     throw new Error("A workload's feather must be finite and not negative.")
   if (options.scatter !== undefined) validateScatter(options.scatter)
   if (options.wet !== undefined) {
-    const { diameter, pickup, spacing, scatter } = options.wet
+    const { diameter, pickup, flow, spacing, scatter } = options.wet
     positive(diameter, "brush diameter")
     if (spacing !== undefined) positive(spacing, "brush spacing")
     if (scatter !== undefined) validateScatter(scatter)
     if (!Number.isFinite(pickup) || pickup < 0 || pickup > 1)
       throw new Error("A workload's pickup must be in [0, 1].")
+    if (flow !== undefined && (!Number.isFinite(flow) || flow < 0 || flow > 1))
+      throw new Error("A workload's flow must be in [0, 1].")
     if (options.smudge)
       throw new Error("A workload is smudged or painted wet, not both.")
   }
