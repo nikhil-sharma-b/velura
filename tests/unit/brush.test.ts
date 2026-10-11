@@ -108,12 +108,12 @@ describe("brush definition", () => {
     expect(wetSpacingFloor(8)).toBe(WET_SPACING_FLOOR)
   })
 
-  test("a blender is held to the same floor as a brush that lays", () => {
+  test("a small blender follows smudge spacing", () => {
     const blender = {
       ...PENCIL,
       rendering: { ...PENCIL.rendering, flow: 0, wet: { pickup: 0.5 } },
     }
-    expect(brushSpacing(blender)).toBe(WET_SPACING_FLOOR)
+    expect(brushSpacing(blender)).toBe(1)
   })
 
   test("a wet brush that scatters is held to a floor as many times wider as its count", () => {
@@ -148,7 +148,7 @@ describe("brush definition", () => {
       rendering: { ...PENCIL.rendering, flow: 0, wet: { pickup: 0.5 } },
       scatter: { amount: 2, count: 4, axes: "both" },
     }
-    expect(brushSpacing(blender)).toBe(WET_SPACING_FLOOR)
+    expect(brushSpacing(blender)).toBe(1)
   })
 
   test("a clone shares nothing with the brush it came from", () => {

@@ -1,3 +1,4 @@
+import { smudgeSpacing } from "./smudge"
 import type { TipSelectionMode } from "./tip-sets"
 import type { Modulator } from "./dynamics"
 import type { BrushScatter } from "./scatter"
@@ -175,8 +176,8 @@ export function dabSpacing(brush: Brush, radius: number): number {
 }
 
 /**
- * The closest a wet brush's dabs may be, in canvas pixels, whatever its size
- * (live brushes 10). Every wet dab is a copy and a draw of its own into the
+ * The performance floor for a wet brush's dabs, in canvas pixels, whatever
+ * its size (live brushes 10). Every wet dab is a copy and a draw of its own into the
  * layer, where a dry brush's dabs share one draw; a draw costs a frame much
  * the same however small the dab, so what D30 can afford is a number of dabs
  * in a frame. At this floor a fast hand lays about eight in a 120 Hz frame,
@@ -193,8 +194,8 @@ const WET_SPACING_FLOOR_RATIO = 1 / 16
 
 /**
  * The closest the dabs of a wet brush may be, in canvas pixels, for a dab of
- * the given radius. A blender's too: it has no reservoir, but its dab is
- * the same copy and draw into the layer, and that is where the cost is.
+ * the given radius. Small blenders need closer overlap to avoid a comb;
+ * `wetDabSpacing` chooses that pitch and pays its frame cost.
  */
 export function wetSpacingFloor(radius: number): number {
   return Math.max(WET_SPACING_FLOOR, radius * WET_SPACING_FLOOR_RATIO)
@@ -211,15 +212,20 @@ export function thrownScatter(brush: Brush): BrushScatter | undefined {
 
 /**
  * Distance between a wet brush's spacing steps in canvas pixels, for a dab
- * of the given radius: the brush's own spacing, held at the floor D30 sets.
+ * of the given radius: the brush's own spacing, held at the floor D30 sets
+ * where overlap permits it (live brushes 23).
  * Scatter lays `count` dabs a step, each a copy and a draw of its own, so
  * the floor is that many times wider and a frame holds the dabs it did.
  */
 export function wetDabSpacing(brush: Brush, radius: number): number {
-  return Math.max(
+  const spacing = Math.max(
     wetSpacingFloor(radius) * (thrownScatter(brush)?.count ?? 1),
     dabSpacing(brush, radius)
   )
+  // A blender hands on the pixel behind: uneven overlap leaves a comb.
+  // Cap its pitch at smudge's, even when a preset requests wider spacing
+  // (live brushes 23). Small blenders pay for those dabs in the frame.
+  return isBlender(brush) ? Math.min(spacing, smudgeSpacing(radius)) : spacing
 }
 
 /** Distance between dabs in canvas pixels, for a brush at rest. */
