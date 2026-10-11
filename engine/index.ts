@@ -315,6 +315,7 @@ import {
   SMUDGE_STRIDE,
 } from "./gpu/smudge-dab"
 import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
+import { createWarmKeeper } from "./gpu/warm-keeper"
 import { attachPointerSampler } from "./input/pointer-sampler"
 import {
   dragRect,
@@ -468,6 +469,18 @@ const DEFAULT_CLOUD_IDLE_MS = 30_000
  * enough that the artist, looking over at the list, finds it already true.
  */
 const THUMBNAIL_QUIET_MS = 300
+
+/**
+ * Between the warmings of what a stroke draws into (live brushes 24). A
+ * texture went cold between one and two seconds unused where it was
+ * measured, so this is under the one.
+ */
+const WARM_INTERVAL_MS = 800
+/**
+ * How long after the pen was last over the canvas, or a frame last drew, the
+ * warming goes on: the pauses of someone painting, and not an open tab's.
+ */
+const WARM_LIFETIME_MS = 30_000
 /** Product canvas ceiling; a device may impose a lower texture limit. */
 const MAX_DOCUMENT_EDGE = 8192
 
@@ -1819,6 +1832,7 @@ export function createEngine(
   let appliedTextures: string | undefined
   let frame: number | undefined
   let detachSampler: (() => void) | undefined
+  let detachWarmth: (() => void) | undefined
   let detachGestures: (() => void) | undefined
   // Frame instrumentation. All of it is inert until an observer is attached.
   let frameObserver: ((frame: FrameTiming) => void) | null = null
@@ -5097,6 +5111,8 @@ export function createEngine(
   }
 
   function drawFrame(timestamp: number) {
+    // Before the frame is forgotten: this one draws, and needs no warming.
+    warmth.touch()
     frame = undefined
     const cpuStart = frameObserver ? performance.now() : 0
     frameStamps = 0
@@ -5267,6 +5283,21 @@ export function createEngine(
       })
     })
   }
+
+  /**
+   * Keeps what a stroke's first frame draws into warm while the artist is at
+   * the canvas (live brushes 24). A frame in flight is drawing into it, and a
+   * hidden canvas has nobody at it.
+   */
+  const warmth = createWarmKeeper({
+    warm() {
+      if (frame !== undefined || stroking || snapshot.status !== "ready") return
+      if (globalThis.document?.visibilityState === "hidden") return
+      renderer?.keepWarm()
+    },
+    intervalMs: WARM_INTERVAL_MS,
+    lifetimeMs: WARM_LIFETIME_MS,
+  })
 
   function scheduleFrame() {
     if (frame === undefined && !disposed)
@@ -6129,6 +6160,15 @@ export function createEngine(
             altSamples: () => !isSelectionTool(tool) && !isVectorTool(tool),
           }
         )
+        // A pen over the canvas is about to draw on it: what it will draw
+        // into is warmed ahead of the pen (live brushes 24).
+        const target = canvas
+        target.addEventListener("pointerenter", warmth.touch)
+        target.addEventListener("pointermove", warmth.touch)
+        detachWarmth = () => {
+          target.removeEventListener("pointerenter", warmth.touch)
+          target.removeEventListener("pointermove", warmth.touch)
+        }
         // Navigation is input too, and it belongs to the same canvas. Holding
         // it here rather than in the host is what keeps the pen, the present
         // pass and the snapshot agreeing about where the canvas is (D28).
@@ -8187,6 +8227,9 @@ export function createEngine(
       layerTransform = undefined
       detachSampler?.()
       detachSampler = undefined
+      detachWarmth?.()
+      detachWarmth = undefined
+      warmth.dispose()
       detachGestures?.()
       detachGestures = undefined
       // A disposed engine has no frames to report, and holding the observer

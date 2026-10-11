@@ -393,6 +393,14 @@ export interface Renderer {
    */
   render(view: GPUTextureView, overlay?: { ants: number }): void
   /**
+   * Draws nothing into what the next stroke's first frame draws into: the
+   * surface it paints, the stroke buffer, the brush's load. A large texture
+   * left a second or two is slow the next time it is a pass's target, which
+   * is the frame a stroke opens in; this is what keeps it from being left
+   * (live brushes 24). Changes no pixel.
+   */
+  keepWarm(): void
+  /**
    * Draws the document at its own size, unviewed, into a target that size:
    * the artwork as it exports, whatever the view. `plan`, when given, is
    * drawn in place of the one in force, which the screen keeps.
@@ -3229,6 +3237,20 @@ export function createRenderer(
       } finally {
         buffer.destroy()
       }
+    },
+    keepWarm() {
+      const encoder = device.createCommandEncoder()
+      if (paintTarget)
+        encoder
+          .beginRenderPass({
+            colorAttachments: [
+              { view: paintTarget.view, loadOp: "load", storeOp: "store" },
+            ],
+          })
+          .end()
+      buffered.warm(encoder)
+      direct.warm(encoder)
+      device.queue.submit([encoder.finish()])
     },
     render(view, overlay) {
       screen.draw(view, overlay)

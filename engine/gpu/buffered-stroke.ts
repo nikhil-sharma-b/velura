@@ -75,6 +75,11 @@ export interface BufferedStroke extends StrokeRenderer<BufferedOpening> {
   /** The opacity the stroke in flight will land at; one between strokes. */
   opacity(): number
   mode(): StrokeMode
+  /**
+   * Keeps what a stroke's first stamps draw into from going cold (live
+   * brushes 24): the buffer and the depth its coverage is held by.
+   */
+  warm(encoder: GPUCommandEncoder): void
   /** The document was resized and the buffer replaced: nothing is in flight. */
   resize(): void
   destroy(): void
@@ -500,6 +505,22 @@ export function createBufferedStroke(
     },
     opacity: () => strokeOpacity,
     mode: () => strokeMode,
+    warm(encoder) {
+      const buffer = context.buffer()
+      if (!buffer || !coverageDepthView) return
+      encoder
+        .beginRenderPass({
+          colorAttachments: [
+            { view: buffer.view, loadOp: "load", storeOp: "store" },
+          ],
+          depthStencilAttachment: {
+            view: coverageDepthView,
+            depthLoadOp: "load",
+            depthStoreOp: "store",
+          },
+        })
+        .end()
+    },
     resize() {
       coverageDepth?.destroy()
       log.reset()

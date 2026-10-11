@@ -69,6 +69,28 @@ describe("summarize", () => {
     expect(report.latencyMs.max).toBe(4)
   })
 
+  test("the pause between strokes is not a frame", () => {
+    // Two strokes of fifty frames with the pen up for two seconds between.
+    const run = frames(100, 1000 / 120, 4)
+    for (let i = 50; i < 100; i++) run[i].start += 2000
+    const whole = summarize(run, { warmupFrames: 0 })
+    expect(whole.frameIntervalMs.max).toBeGreaterThan(2000)
+    const report = summarize(run, { warmupFrames: 0, strokeStarts: [0, 50] })
+    expect(report.frameIntervalMs.samples).toBe(98)
+    expect(report.frameIntervalMs.max).toBeCloseTo(1000 / 120, 6)
+    expect(report.frameIntervalMs.mean).toBeCloseTo(1000 / 120, 6)
+    expect(report.droppedFrames).toBe(0)
+    expect(report.frames).toBe(100)
+  })
+
+  test("strokes are found where they began once warm-up frames are dropped", () => {
+    const run = frames(100, 1000 / 120, 4)
+    for (let i = 50; i < 100; i++) run[i].start += 2000
+    const report = summarize(run, { warmupFrames: 20, strokeStarts: [0, 50] })
+    expect(report.frameIntervalMs.samples).toBe(78)
+    expect(report.frameIntervalMs.max).toBeCloseTo(1000 / 120, 6)
+  })
+
   test("counts a frame that stutters against the run's own rhythm as dropped", () => {
     const run = frames(100, 1000 / 120, 4)
     run[50].start += 20

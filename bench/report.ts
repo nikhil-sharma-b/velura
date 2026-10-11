@@ -71,6 +71,13 @@ export type SummarizeOptions = {
    * whatever the steady state actually is.
    */
   warmupFrames: number
+  /**
+   * Where in the records each stroke began. The interval that ends there is
+   * the pen being up, which is as long as history takes to put the stroke
+   * before away (live brushes 24) and is no frame's cost; given these, it is
+   * left out of the frame intervals. Absent, every interval is kept.
+   */
+  strokeStarts?: readonly number[]
 }
 
 /** Nearest-rank percentile over a sorted copy; `fraction` is in [0, 1]. */
@@ -111,9 +118,12 @@ export function summarize(
       `A run needs at least 10 frames after warm-up to summarize; got ${kept.length}.`
     )
 
+  const penDowns = new Set(
+    options.strokeStarts?.map((start) => start - options.warmupFrames)
+  )
   const intervals: number[] = []
   for (let i = 1; i < kept.length; i++)
-    intervals.push(kept[i].start - kept[i - 1].start)
+    if (!penDowns.has(i)) intervals.push(kept[i].start - kept[i - 1].start)
   const frameIntervalMs = distribution(intervals)
   const cadence = Math.max(
     frameIntervalMs.median,
