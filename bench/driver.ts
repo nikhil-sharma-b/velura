@@ -455,6 +455,9 @@ export async function runBenchmark(
     await engine.save()
     if (wet) {
       await engine.dispatch({ type: "setColor", hex: "#ffff00" })
+      // After the ground, which is laid solid whatever is painted over it.
+      if (wet.scatter)
+        await engine.dispatch({ type: "setBrush", scatter: wet.scatter })
       if (!wet.dry)
         await engine.dispatch({
           type: "setBrush",

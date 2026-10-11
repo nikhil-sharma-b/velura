@@ -54,7 +54,8 @@ describe("the built-in wet brushes", () => {
   test("are each wet, with nothing a wet dab would ignore", () => {
     for (const brush of WET_BRUSHES) {
       expect(brush.rendering.wet).toBeDefined()
-      // Scatter and colour jitter do not reach a wet dab (live brushes 12, 13).
+      // Colour jitter does not reach a wet dab (live brushes 13), and a
+      // blender does not scatter (12); none of the four is a spray.
       expect(brush.scatter).toBeUndefined()
       expect(brush.color).toBeUndefined()
     }

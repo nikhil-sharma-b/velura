@@ -7,7 +7,8 @@ import type { TipSelectionMode } from "../../engine/brush/tip-sets"
  * command seam and the pixels it presents: its dynamics reach each wet dab,
  * a tip of several frames gives each dab the frame the brush would have
  * drawn, a selection limits what a wet stroke writes and not what it reads,
- * scatter is left out, and colour dynamics tint the clean load once.
+ * scatter throws its dabs as it does a dry brush's (live brushes 12), and
+ * colour dynamics tint the clean load once.
  */
 
 const WIDTH = 240
@@ -683,30 +684,12 @@ test("on a vector layer a wet brush says the layer holds shapes", async ({
   await expect(page.getByText(/holds\s+shapes/)).toBeVisible()
 })
 
-test("a wet brush ignores scatter while colour dynamics tint its clean load", async ({
-  page,
-}) => {
+test("colour dynamics tint a wet brush's clean load", async ({ page }) => {
   const errors: Error[] = []
   page.on("pageerror", (error) => errors.push(error))
   const samples = run(40, 200, [0.3, 1])
   const plain = await drawn(page, "wet", {}, samples)
-  const thrown = await drawn(
-    page,
-    "wet",
-    {
-      scatter: { amount: 2, count: 3, axes: "both" },
-      color: { hue: 0.5, saturation: 0.5, lightness: 0.5 },
-      dynamics: [
-        { source: "random", target: "scatter", range: [0, 2], mix: "multiply" },
-        { source: "random", target: "hue", range: [-1, 1], mix: "add" },
-        { source: "pressure", target: "lightness", range: [-1, 1], mix: "add" },
-      ],
-    },
-    samples
-  )
-  expect(thrown.image).not.toEqual(thrown.empty)
-  expect(thrown.image).not.toEqual(plain.image)
-  const tinted = await drawn(
+  const jittered = await drawn(
     page,
     "wet",
     {
@@ -718,8 +701,137 @@ test("a wet brush ignores scatter while colour dynamics tint its clean load", as
     },
     samples
   )
-  expect(thrown.image).toEqual(tinted.image)
+  expect(jittered.image).not.toEqual(jittered.empty)
+  expect(jittered.image).not.toEqual(plain.image)
   expect(errors).toEqual([])
+})
+
+/** Wide enough apart that the wet spacing floor does not move the dabs. */
+const THROWN = {
+  spacing: 0.5,
+  feather: 0,
+  flow: 1,
+  scatter: { amount: 1.5, count: 2, axes: "both" },
+} as const
+
+/** Whether the stroke changed each pixel: where its dabs landed. */
+function footprint(image: number[], empty: number[]) {
+  const marked: boolean[] = []
+  for (let y = 0; y < HEIGHT; y++)
+    for (let x = 0; x < WIDTH; x++) marked.push(change(image, empty, x, y) > 0)
+  return marked
+}
+
+/** How far from the row the stroke reached, over a run of columns. */
+function spread(image: number[], empty: number[], from: number, to: number) {
+  let furthest = 0
+  for (let y = 0; y < HEIGHT; y++)
+    for (let x = from; x < to; x++)
+      if (change(image, empty, x, y) > 0)
+        furthest = Math.max(furthest, Math.abs(y - ROW))
+  return furthest
+}
+
+test("a wet brush with scatter places its dabs where the same brush would dry", async ({
+  page,
+}) => {
+  const samples = run(40, 200, 1)
+  const plain = await drawn(page, "wet", { ...THROWN, scatter: null }, samples)
+  const wet = await drawn(page, "wet", THROWN, samples)
+  const dry = await drawn(page, "dry", THROWN, samples)
+
+  // Thrown off the path, which a wet stroke without scatter keeps to.
+  expect(spread(wet.image, wet.empty, 0, WIDTH)).toBeGreaterThan(
+    spread(plain.image, plain.empty, 0, WIDTH) + RADIUS / 2
+  )
+  // And to the places the dry brush throws them, give or take a dab's rim.
+  const wetMarks = footprint(wet.image, wet.empty)
+  const dryMarks = footprint(dry.image, dry.empty)
+  const inked = dryMarks.filter(Boolean).length
+  const apart = wetMarks.filter((mark, i) => mark !== dryMarks[i]).length
+  expect(inked).toBeGreaterThan(0)
+  expect(apart / inked).toBeLessThan(0.03)
+
+  // The same seed throws them the same way again.
+  const again = await drawn(page, "wet", THROWN, samples)
+  expect(again.image).toEqual(wet.image)
+})
+
+test("each scattered wet dab mixes with the paint it lands on", async ({
+  page,
+}) => {
+  /** A blue bar, then a red wet stroke along it and on past its end. */
+  const over = async (pickup: number) => {
+    await openCanvas(page)
+    await dispatch(page, { type: "setColor", hex: BLUE })
+    await penStroke(page, run(40, 110, 1))
+    await dispatch(page, { type: "setColor", hex: RED })
+    await dispatch(page, {
+      type: "setBrush",
+      ...THROWN,
+      scatter: { amount: 1.5, count: 2, axes: "across" },
+      wet: { pickup },
+    })
+    await penStroke(page, run(40, 200, 1))
+    return pixels(page)
+  }
+  const clean = await over(0)
+  const loaded = await over(0.8)
+  // Past the bar and off the path, where only a thrown dab reaches: with
+  // pickup it lays the blue the dabs before it took up, from the one
+  // reservoir they share in the order drawn.
+  let bluer = 0
+  for (let y = 0; y < HEIGHT; y++)
+    for (let x = 150; x < WIDTH; x++) {
+      if (Math.abs(y - ROW) <= RADIUS) continue
+      const blue = (y * WIDTH + x) * 4 + 2
+      if (loaded[blue] > clean[blue] + 10) bluer++
+    }
+  expect(bluer).toBeGreaterThan(20)
+})
+
+test("the scatter dynamics target reaches a wet dab", async ({ page }) => {
+  const { image, empty } = await drawn(
+    page,
+    "wet",
+    {
+      spacing: 0.25,
+      feather: 0,
+      flow: 1,
+      scatter: { amount: 3, count: 1, axes: "across" },
+      dynamics: [
+        {
+          source: "pressure",
+          target: "scatter",
+          range: [0, 1],
+          mix: "multiply",
+        },
+      ],
+    },
+    run(30, 210, [0.05, 1])
+  )
+  // A light touch keeps the dabs near the path; pressing throws them wide.
+  expect(spread(image, empty, 30, 80)).toBeLessThan(RADIUS * 2)
+  expect(spread(image, empty, 150, 222)).toBeGreaterThan(RADIUS * 2.5)
+})
+
+test("a blender with scatter set drags along the path, as one without", async ({
+  page,
+}) => {
+  const smeared = async (scatter: typeof THROWN.scatter | null) => {
+    await openCanvas(page)
+    await penStroke(page, run(40, 110, 1))
+    await dispatch(page, {
+      type: "setBrush",
+      spacing: 0.5,
+      scatter,
+      flow: 0,
+      wet: { pickup: 0.8 },
+    })
+    await penStroke(page, run(80, 180, 1))
+    return pixels(page)
+  }
+  expect(await smeared(THROWN.scatter)).toEqual(await smeared(null))
 })
 
 test("textured bristles retain separate colours as size, angle and roundness change", async ({
