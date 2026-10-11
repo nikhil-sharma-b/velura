@@ -466,6 +466,7 @@ export async function runBenchmark(
         await engine.dispatch({
           type: "setBrush",
           wet: { pickup: wet.pickup },
+          flow: wet.flow ?? WET_BRUSH.flow,
         })
     } else {
       await engine.dispatch({ type: "setTool", tool: "smudge" })

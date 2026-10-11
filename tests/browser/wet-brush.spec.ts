@@ -662,7 +662,12 @@ for (const flow of [0, 1])
           }),
         jitter
       )
-      await stroke(page, origin, 40, 200)
+      // A full-strength blender over uniform paint can be a no-op,
+      // with no undo step to wait for. This check concerns its pixels.
+      if (flow === 0) {
+        await idleDrag(page, origin, 40, 200)
+        await page.evaluate(() => window.engine.save())
+      } else await stroke(page, origin, 40, 200)
       return pixels(page)
     }
     const plain = await dragged(false)
@@ -1122,3 +1127,60 @@ for (const stack of [
     expect(distance(rgba(isolated, 80), rgba(reference, 80))).toBeLessThan(8)
   })
 }
+
+for (const radius of [0.5, 1, 2, 4, 6, 8, 12, 16, 32])
+  test(`a blender at radius ${radius} leaves a smear that only thins`, async ({
+    page,
+  }) => {
+    const origin = await openCanvas(page)
+    await addLayer(page)
+    await paintBar(page, origin)
+    const painted = await pixels(page)
+    await page.evaluate(
+      (radius) => window.engine.dispatch({ type: "setBrush", radius }),
+      radius
+    )
+    await setWet(page, { pickup: 0.9 }, 0)
+    if (radius < 1) await idleDrag(page, origin, 80, 160)
+    else await stroke(page, origin, 80, 160)
+    const dragged = await pixels(page)
+    const green = (x: number) => rgba(dragged, x)[1]
+    // Begin beyond the painted bar's round end; allow two levels of
+    // channel rounding, as the smudge spec does. A subpixel tip may not
+    // carry paint as far as this point, but must never leave a comb.
+    if (radius >= 1) expect(green(113)).toBeLessThan(rgba(painted, 113)[1])
+    for (let x = 112; x < 151; x++)
+      expect(green(x + 1) - green(x)).toBeGreaterThanOrEqual(-2)
+  })
+
+for (const radius of [2, 4, 8, 16])
+  test(`a wet brush with flow at radius ${radius} carries picked-up paint beyond the bar`, async ({
+    page,
+  }, testInfo) => {
+    const origin = await openCanvas(page)
+    await addLayer(page)
+    await paintBar(page, origin)
+    const painted = await pixels(page)
+    await setColour(page, "#ffffff")
+    await page.evaluate(
+      (radius) => window.engine.dispatch({ type: "setBrush", radius }),
+      radius
+    )
+    await setWet(page, { pickup: 0.9 }, 0.3)
+    await stroke(page, origin, 80, 160)
+    const dragged = await pixels(page)
+    expect(rgba(dragged, 113)[1]).toBeLessThan(rgba(painted, 113)[1])
+    // Reservoir brushes are checked too. Record their largest back-step
+    // without requiring monotonicity: bristles retain different paint,
+    // unlike a blender's direct hand-off (benchmark, live brushes 23).
+    let backStep = 0
+    for (let x = 112; x < 151; x++)
+      backStep = Math.max(
+        backStep,
+        rgba(dragged, x)[1] - rgba(dragged, x + 1)[1]
+      )
+    await testInfo.attach("reservoir-smear", {
+      body: JSON.stringify({ radius, backStep }),
+      contentType: "application/json",
+    })
+  })

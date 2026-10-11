@@ -1093,6 +1093,80 @@ Throughput and steady frames are where they were: 434.8–454.5 fps at 8192², m
 
 These rows do not establish the under-10-ms pointer-to-pixel target: a 75 Hz panel paces the median to about one 13.3 ms period whatever the engine does. The 120 Hz run is follow-up 25.
 
+## Small blenders keep the smear, paying for closer dabs (live brushes 23)
+
+A blender now caps its pitch at smudge's spacing: a quarter of the dab's
+radius, at least one pixel. The wet performance floor still applies where
+it is closer; a preset requesting a wider pitch cannot put the comb back.
+This follows the actual dab radius as dynamics size it. Reservoir brushes
+retain their existing floor and spacing.
+
+The browser regression draws out of the same bar as the smudge spec, with
+pickup 0.9. Radii 0.5, 1, 2, 4, 6, 8, 12, 16 and 32 px are checked for no
+back-step larger than two displayed channel levels along the smear. At
+radii below a pixel the tip may carry nothing that far; the check still
+requires that it leave no comb.
+
+**Reservoir brushes were checked too, and the earlier assumption needs
+correction.** With white clean paint, pickup 0.9 and flow 0.3, a brush
+leaving the red bar does carry red past its end, but it can ripple: at a
+4 px radius the largest displayed green-channel back-step was 18 levels
+at the four-pixel floor. The final single-worker check recorded 6, 18, 13
+and 8 levels at radii 2, 4, 8 and 16 px respectively. Giving it smudge
+spacing removed that small-tip
+ripple in the trial, but at radii 16 and 32 px back-steps of 8 and 5 levels
+remained even at smudge spacing. This is different from the blender's
+pixel-behind hand-off: different bristles hold different paint. The check
+records reservoir back-steps as test attachments; it does not assert that
+a reservoir smear is monotone or lock in a particular ripple. Changing its
+spacing does not establish the same guarantee, so its behavior is left
+for separate investigation.
+
+`bun run bench/run.ts --blender` reproduces a small-tip sweep on 2048² and
+8192² documents. The measured stroke has pickup 0.9, flow zero for the
+blender and 0.3 for the reservoir brush, and spacing 0.125 of the diameter.
+The dry ground is laid at flow 0.3 before timing either stroke. The runner
+accepts `VELURA_BENCH_PORT` to isolate it from other harness servers.
+
+Measured on 12 October 2026 on Apple M4, on the working tree over `af3c4da`,
+with browser tests stopped. Sizes below are **radii**; the runner prints
+diameters. These are one run, not a claim about run-to-run spread.
+
+| document | radius | paint | mean frame | sustained fps | first frame median / worst | latency median / p95 | dabs | painting readbacks | allocations |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 2 px | blender | 0.640 ms | 1000.0 | 2.5 / 29.9 ms | 16.3 / 21.5 ms | 4886 | 0 | 1 |
+| 2048² | 2 px | wet, pickup | 0.765 ms | 833.3 | 2.2 / 20.7 ms | 13.7 / 17.2 ms | 1226 | 0 | 1 |
+| 2048² | 4 px | blender | 0.630 ms | 1000.0 | 2.0 / 35.2 ms | 16.1 / 20.7 ms | 4886 | 0 | 1 |
+| 2048² | 4 px | wet, pickup | 0.711 ms | 909.1 | 2.1 / 39.0 ms | 14.2 / 17.7 ms | 1223 | 0 | 1 |
+| 2048² | 8 px | blender | 0.603 ms | 1000.0 | 2.5 / 22.4 ms | 14.1 / 17.5 ms | 2445 | 0 | 1 |
+| 2048² | 8 px | wet, pickup | 0.604 ms | 1000.0 | 1.9 / 18.8 ms | 14.2 / 17.3 ms | 1226 | 0 | 1 |
+| 2048² | 16 px | blender | 0.631 ms | 1000.0 | 2.7 / 23.4 ms | 13.1 / 15.9 ms | 1223 | 0 | 1 |
+| 2048² | 16 px | wet, pickup | 0.616 ms | 909.1 | 2.1 / 24.3 ms | 14.1 / 16.9 ms | 1220 | 0 | 1 |
+| 8192² | 2 px | blender | 2.192 ms | 243.9 | 3.1 / 22.3 ms | 23.6 / 72.1 ms | 21990 | 0 | 1 |
+| 8192² | 2 px | wet, pickup | 1.569 ms | 416.7 | 4.0 / 26.5 ms | 15.3 / 18.9 ms | 5503 | 0 | 1 |
+| 8192² | 4 px | blender | 2.230 ms | 303.0 | 4.4 / 14.9 ms | 23.5 / 65.4 ms | 21990 | 0 | 1 |
+| 8192² | 4 px | wet, pickup | 1.592 ms | 400.0 | 3.5 / 18.9 ms | 15.4 / 19.1 ms | 5498 | 0 | 1 |
+| 8192² | 8 px | blender | 1.770 ms | 357.1 | 3.9 / 17.1 ms | 18.9 / 24.9 ms | 10987 | 0 | 1 |
+| 8192² | 8 px | wet, pickup | 1.628 ms | 400.0 | 4.0 / 29.0 ms | 15.4 / 18.8 ms | 5507 | 0 | 1 |
+| 8192² | 16 px | blender | 1.592 ms | 400.0 | 4.4 / 16.3 ms | 16.0 / 20.2 ms | 5503 | 0 | 1 |
+| 8192² | 16 px | wet, pickup | 1.610 ms | 400.0 | 3.1 / 29.8 ms | 15.3 / 19.0 ms | 5503 | 0 | 1 |
+
+**The small blender does not hold the frame.** On 8192² the 2 and 4 px
+radii lay about 21,990 dabs, four times the reservoir brush at its floor,
+and median/p95 latency is 23.6/72.1 and 23.5/65.4 ms against 15.3/18.9
+and 15.4/19.1 ms. At 8 px it lays twice the dabs and costs 18.9/24.9 ms;
+at 16 px both brushes are back at four-pixel pitch and the blender costs
+16.0/20.2 ms against 15.3/19.0 ms. The small-document medians are
+16.1–16.3 ms at the two smallest sizes, against 13.7–14.2 ms with flow.
+
+Throughput stays above 120 fps (243.9–303.0 fps at the smallest sizes on
+8192²), but this does not establish D30: the smooth smear still pays too
+many separate copy/draw dabs in a paced frame, as small smudge does. Making
+those direct dabs cheaper is live brushes 22. All rows have zero painting
+readbacks and one cancel-page allocation across the run. The existing
+120 Hz display validation is still required; these timings do not establish
+under-10-ms pointer-to-pixel latency.
+
 ## A run of dragging dabs shares a pass (live brushes 22)
 
 Spacing could not buy a small smudge its frame (live brushes 19), so the dab
@@ -1188,7 +1262,26 @@ mid-stroke changes from one to the other. Giving the render pass the same
 worked-out position would close that, and would move every wet brush's
 pixels by the same rounding; it was not done here (live brushes 27).
 
-A blender's dabs drag as smudge's do and go the same way. It is still held
-to the wet spacing floor, which was the price of its dab and is why it combs
-below about 12 px (live brushes 23); whether it still needs the floor is
-that ticket's to measure.
+**Blenders.** A blender's dabs drag as smudge's do and go the same way.
+Live brushes 23, above, gave a small blender smudge's spacing and recorded
+it missing the frame for it. `bun run bench/run.ts --blender` with both
+changes in, same machine and day, one run; sizes are radii, and the
+"before" column is 23's table:
+
+| document | radius | paint | latency median / p95, before | after | dabs | painting readbacks | allocations |
+|---|---:|---|---:|---:|---:|---:|---:|
+| 2048² | 2 px | blender | 16.3 / 21.5 ms | 12.3 / 14.5 ms | 4,898 | 0 | 1 |
+| 2048² | 4 px | blender | 16.1 / 20.7 ms | 12.5 / 14.7 ms | 4,898 | 0 | 1 |
+| 2048² | 8 px | blender | 14.1 / 17.5 ms | 12.0 / 14.2 ms | 2,451 | 0 | 1 |
+| 2048² | 16 px | blender | 13.1 / 15.9 ms | 12.2 / 14.3 ms | 1,226 | 0 | 1 |
+| 8192² | 2 px | blender | 23.6 / 72.1 ms | 13.2 / 15.6 ms | 21,972 | 0 | 1 |
+| 8192² | 4 px | blender | 23.5 / 65.4 ms | 13.3 / 15.8 ms | 22,008 | 0 | 1 |
+| 8192² | 8 px | blender | 18.9 / 24.9 ms | 13.3 / 15.3 ms | 11,005 | 0 | 1 |
+| 8192² | 16 px | blender | 16.0 / 20.2 ms | 13.2 / 15.6 ms | 5,503 | 0 | 3 |
+
+A small blender holds the frame at every size, with four times the dabs of
+the reservoir brush beside it, which reads 14.8 / 18.1–18.6 ms on 8192² and
+13.2–13.6 / 16.0–16.6 ms on 2048² in the same run: a blender is now the
+cheaper of the two, since the reservoir brush's dabs are still a copy and
+one or two passes each. The three allocations in the last row are cancel
+pages, as six 16 px strokes across the large document reach more tiles.
