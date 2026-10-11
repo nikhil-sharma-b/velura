@@ -82,8 +82,16 @@ export type WorkloadOptions = {
    * a cancel must not weigh on the frame it opens in, which this measures.
    */
   smudge?: boolean
-  /** Wet sweep: diameter in document pixels and reservoir pickup. */
-  wet?: { diameter: number; pickup: number }
+  /**
+   * Paints the workload a second time over itself with a wet brush
+   * `diameter` pixels across (live brushes 10, 11): the strokes are painted
+   * once, untimed, so there is paint underneath, and then drawn again along
+   * the same paths in another colour. Every wet dab is a neighbourhood copy
+   * and a draw of its own. `spacing` is the brush's, as a fraction of its
+   * diameter; absent, an eighth. `dry` paints with the same brush not wet,
+   * whose dabs share one draw: what the wet one is weighed against.
+   */
+  wet?: { diameter: number; pickup: number; spacing?: number; dry?: boolean }
 }
 
 /**
@@ -216,6 +224,15 @@ export function createWorkload(options: WorkloadOptions): Workload {
   )
     throw new Error("A workload's feather must be finite and not negative.")
   if (options.scatter !== undefined) validateScatter(options.scatter)
+  if (options.wet !== undefined) {
+    const { diameter, pickup, spacing } = options.wet
+    positive(diameter, "brush diameter")
+    if (spacing !== undefined) positive(spacing, "brush spacing")
+    if (!Number.isFinite(pickup) || pickup < 0 || pickup > 1)
+      throw new Error("A workload's pickup must be in [0, 1].")
+    if (options.smudge)
+      throw new Error("A workload is smudged or painted wet, not both.")
+  }
   const random = createRandom(options.seed)
   const strokes: BenchStroke[] = []
   for (let i = 0; i < options.strokes; i++)

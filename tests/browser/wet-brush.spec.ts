@@ -43,7 +43,8 @@ async function openCanvas(page: Page, documentId?: string): Promise<Origin> {
       if (state.status !== "ready") throw new Error(state.error ?? state.status)
       await window.engine.dispatch({ type: "setStabilization", strength: 0 })
       // An eighth of the diameter between dabs: a quarter of the radius,
-      // which is where smudge's own dabs fall.
+      // which is where smudge's own dabs fall. Wet, the brush's floor holds
+      // them a pixel further apart, at four (live brushes 10).
       await window.engine.dispatch({
         type: "setBrush",
         radius: 12,
@@ -255,11 +256,18 @@ test("at no flow a wet brush lays nothing and drags as smudge does", async ({
     await paintBar(page, origin)
     const painted = await pixels(page)
     await setColour(page, BLUE)
-    if (tool === "brush") await setWet(page, { pickup: PICKUP }, 0)
-    else
+    // At a radius of 16 the two fall into step: an eighth of the brush's
+    // diameter is its spacing floor of four pixels (live brushes 10), and
+    // a quarter of smudge's radius is the same.
+    if (tool === "brush") {
+      await page.evaluate(() =>
+        window.engine.dispatch({ type: "setBrush", radius: 16 })
+      )
+      await setWet(page, { pickup: PICKUP }, 0)
+    } else
       await page.evaluate(
         (strength) =>
-          window.engine.dispatch({ type: "setSmudge", radius: 12, strength }),
+          window.engine.dispatch({ type: "setSmudge", radius: 16, strength }),
         PICKUP
       )
     await setTool(page, tool)

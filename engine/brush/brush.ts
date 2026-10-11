@@ -174,12 +174,37 @@ export function dabSpacing(brush: Brush, radius: number): number {
 }
 
 /**
+ * The closest a wet brush's dabs may be, in canvas pixels, whatever its size
+ * (live brushes 10). Every wet dab is a copy and a draw of its own into the
+ * layer, where a dry brush's dabs share one draw; a draw costs a frame much
+ * the same however small the dab, so what D30 can afford is a number of dabs
+ * in a frame. At this floor a fast hand lays about eight in a 120 Hz frame,
+ * which is what fits (`docs/design/benchmark.md`).
+ */
+export const WET_SPACING_FLOOR = 4
+
+/**
+ * The floor for a large dab, whose copy and draws do grow with it, as a
+ * fraction of its radius: the dabs in a frame fall as each one's cost
+ * rises. It passes the pixel floor at a 128 px brush.
+ */
+const WET_SPACING_FLOOR_RATIO = 1 / 16
+
+/**
+ * The closest the dabs of a wet brush may be, in canvas pixels, for a dab of
+ * the given radius. A blender's too: it has no reservoir, but its dab is
+ * the same copy and draw into the layer, and that is where the cost is.
+ */
+export function wetSpacingFloor(radius: number): number {
+  return Math.max(WET_SPACING_FLOOR, radius * WET_SPACING_FLOOR_RATIO)
+}
+
+/**
  * Distance between a wet brush's dabs in canvas pixels, for a dab of the
- * given radius. Never under a pixel, where a dab would have no whole pixel
- * behind it to drag.
+ * given radius: the brush's own spacing, held at the floor D30 sets.
  */
 export function wetDabSpacing(brush: Brush, radius: number): number {
-  return Math.max(1, dabSpacing(brush, radius))
+  return Math.max(wetSpacingFloor(radius), dabSpacing(brush, radius))
 }
 
 /** Distance between dabs in canvas pixels, for a brush at rest. */

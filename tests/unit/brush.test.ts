@@ -4,7 +4,9 @@ import {
   brushSpacing,
   cloneBrush,
   DEFAULT_BRUSH,
+  WET_SPACING_FLOOR,
   wetDabSpacing,
+  wetSpacingFloor,
 } from "../../engine/brush/brush"
 import { validateDynamics } from "../../engine/brush/dynamics"
 
@@ -71,26 +73,47 @@ describe("brush definition", () => {
     expect(brushSpacing(hair)).toBeGreaterThan(0)
   })
 
-  test("a wet brush's dabs are never under a pixel apart", () => {
+  test("a wet brush's dabs are never closer than its floor", () => {
     const wet = {
       ...PENCIL,
       rendering: { ...PENCIL.rendering, wet: { pickup: 0.5 } },
     }
-    // The pencil's own 0.8 px would leave a dab no whole pixel behind it.
-    expect(brushSpacing(wet)).toBe(1)
-    const broad = { ...wet, shape: { ...wet.shape, radius: 20 } }
-    expect(brushSpacing(broad)).toBeCloseTo(4, 6)
+    // The pencil's own 0.8 px would be more dabs in a frame than D30 allows.
+    expect(brushSpacing(wet)).toBe(WET_SPACING_FLOOR)
+    const broad = { ...wet, shape: { ...wet.shape, radius: 40 } }
+    expect(brushSpacing(broad)).toBeCloseTo(8, 6)
   })
 
   test("a wet brush's spacing follows the dab as dynamics size it", () => {
     const wet = {
       ...PENCIL,
-      shape: { ...PENCIL.shape, radius: 20 },
+      shape: { ...PENCIL.shape, radius: 40 },
       rendering: { ...PENCIL.rendering, wet: { pickup: 0.5 } },
     }
-    expect(wetDabSpacing(wet, 10)).toBeCloseTo(2, 6)
-    // And is held at a pixel once the dab is too small for its own.
-    expect(wetDabSpacing(wet, 2)).toBe(1)
+    expect(wetDabSpacing(wet, 30)).toBeCloseTo(6, 6)
+    // And is held at the floor once the dab is too small for its own.
+    expect(wetDabSpacing(wet, 2)).toBe(WET_SPACING_FLOOR)
+  })
+
+  test("a large wet brush's floor grows with it", () => {
+    const fine = {
+      ...PENCIL,
+      shape: { ...PENCIL.shape, radius: 256, spacing: 0.01 },
+      rendering: { ...PENCIL.rendering, wet: { pickup: 0.5 } },
+    }
+    // Its own 5.12 px would be too many 512 px dabs in a frame.
+    expect(brushSpacing(fine)).toBe(16)
+    // The pixel floor is the one that holds up to a 128 px brush.
+    expect(wetSpacingFloor(64)).toBe(WET_SPACING_FLOOR)
+    expect(wetSpacingFloor(8)).toBe(WET_SPACING_FLOOR)
+  })
+
+  test("a blender is held to the same floor as a brush that lays", () => {
+    const blender = {
+      ...PENCIL,
+      rendering: { ...PENCIL.rendering, flow: 0, wet: { pickup: 0.5 } },
+    }
+    expect(brushSpacing(blender)).toBe(WET_SPACING_FLOOR)
   })
 
   test("a clone shares nothing with the brush it came from", () => {

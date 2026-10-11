@@ -324,7 +324,9 @@ test("a wet brush's dabs close up as dynamics shrink them", async ({
     expect(change(image, empty, x), `column ${x}`).toBeGreaterThan(0)
 })
 
-test("a wet brush's dabs are never under a pixel apart", async ({ page }) => {
+test("a wet brush's dabs are never closer than its spacing floor", async ({
+  page,
+}) => {
   await openCanvas(page)
   // A dab shrunk to where its spacing would be a small fraction of a pixel.
   await dispatch(page, {
@@ -345,9 +347,10 @@ test("a wet brush's dabs are never under a pixel apart", async ({ page }) => {
   const dabs = await page.evaluate(
     () => (window as unknown as { dabs: number }).dabs
   )
-  expect(dabs).toBeGreaterThan(100)
-  // One for each pixel of the path, and one to open it.
-  expect(dabs).toBeLessThanOrEqual(161)
+  expect(dabs).toBeGreaterThan(30)
+  // One for every four pixels of the path, and one to open it: more in a
+  // frame than that and the paint falls behind the pen (D30).
+  expect(dabs).toBeLessThanOrEqual(41)
 })
 
 test("a device with no force sensor draws a wet brush at its settings", async ({
@@ -571,7 +574,12 @@ test("along a feathered edge a wet stroke lays in proportion to the selection's 
   expect(taken[0]).toBeGreaterThan(0)
   expect(taken).toEqual([...taken].sort((a, b) => a - b))
   expect(taken[taken.length - 1]).toBeGreaterThan(taken[0])
-  expect(taken[taken.length - 1]).toBeLessThan(change(laid, empty, 145))
+  // Against the most a wholly selected pixel took: the dabs are thin and
+  // four pixels apart, so what one column took depends on where they fell.
+  const whole = Array.from({ length: 16 }, (_, i) =>
+    change(laid, empty, 130 + i)
+  )
+  expect(taken[taken.length - 1]).toBeLessThan(Math.max(...whole))
 })
 
 test("a wet stroke wholly outside the selection changes nothing and is not a step", async ({

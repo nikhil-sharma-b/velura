@@ -108,18 +108,24 @@ export function createDirectStroke(
    * each copied out the first time one did. The stroke's size and not the
    * document's, so the frame a stroke opens in pays for a dab's tiles alone.
    * In pages, so more room is a new texture and never a move of what is
-   * kept; the first stays between strokes, as the carry does.
+   * kept; the first stays between strokes.
    */
   const backupPages: GPUTexture[] = []
   /**
    * What a dab reads: its own neighbourhood of the surface, copied out
-   * because a pass cannot read what it writes. Dab-sized, kept between
-   * strokes, and grown when a dab needs more.
+   * because a pass cannot read what it writes. As wide as a dab may ask
+   * for and allocated once, as the reservoir is, so no dab ever waits on a
+   * larger one being made (D30).
    */
-  let carry: GPUTexture | undefined
+  const carry = device.createTexture({
+    label: "smudge carry",
+    size: { width: MAX_CARRY_SIZE, height: MAX_CARRY_SIZE },
+    format: LAYER_FORMAT,
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  })
   /**
    * Holds the tip's, the carry's, the selection's and the grain's views, so
-   * it goes when any of them is replaced.
+   * it goes when the tip, the selection or the grain is replaced.
    */
   let bindGroup: GPUBindGroup | undefined
   const params = new Float32Array(12)
@@ -274,7 +280,6 @@ export function createDirectStroke(
       ? Math.min(height, bounds.y + bounds.height)
       : height
     let drawn = 0
-    let need = 0
     for (let i = 0; i < count; i++) {
       const dab = i * SMUDGE_STRIDE
       const x = dabs[dab + SMUDGE.CENTER_X]
@@ -327,7 +332,6 @@ export function createDirectStroke(
       if (fromRight <= fromLeft || fromBottom <= fromTop) continue
       const span = Math.max(fromRight - fromLeft, fromBottom - fromTop)
       if (span > MAX_CARRY_SIZE) continue
-      need = Math.max(need, span)
       const instance = drawn * SMUDGE_INSTANCE_STRIDE
       drawnDabs.set(dabs.subarray(dab, dab + SMUDGE_STRIDE), instance)
       drawnDabs[instance + SMUDGE.FLOW] = flow
@@ -354,18 +358,6 @@ export function createDirectStroke(
       drawn++
     }
     if (drawn === 0) return
-    if (!carry || carry.width < need) {
-      carry?.destroy()
-      let size = 64
-      while (size < need) size *= 2
-      carry = device.createTexture({
-        size: { width: size, height: size },
-        format: LAYER_FORMAT,
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-      })
-      bindGroup = undefined
-      reservoirBindings = []
-    }
     const tip = context.tip()
     params[0] = width
     params[1] = height
@@ -634,8 +626,7 @@ export function createDirectStroke(
       session = undefined
       for (const page of backupPages.splice(0)) page.destroy()
       for (const texture of reservoirs) texture.destroy()
-      carry?.destroy()
-      carry = undefined
+      carry.destroy()
       bindGroup = undefined
       uniform.destroy()
       instances.destroy()

@@ -38,6 +38,14 @@ export type RunResult = {
   readbacks: number
   /** Readbacks over the whole run, the pen-up ones included. */
   readbacksTotal: number
+  /**
+   * Textures and buffers created while the pen is down. D30 allows the
+   * stroke path none, with one sanctioned exception: a direct stroke's
+   * cancel tiles are kept in pages, and a stroke that outgrows its pages
+   * creates another (smudge 06). So this is zero for a dry brush and the
+   * page count for smudge and wet brushes, and never grows with the dabs.
+   */
+  allocations: number
   /** Wall-clock milliseconds the pen was down. */
   elapsedMs: number
   /**
@@ -54,29 +62,42 @@ const VIEWPORT = 800
 /** Milliseconds of stillness between strokes, so the loop can wind down. */
 const BETWEEN_STROKES = 120
 
+/**
+ * The wet sweep's brush (live brushes 10, 11), where the workload names no
+ * spacing of its own: an eighth of the diameter between dabs, laying thinly
+ * so what is underneath shows through and mixes.
+ */
+const WET_BRUSH = { spacing: 0.125, flow: 0.3 }
+
 const nextFrame = () =>
   new Promise<number>((resolve) => requestAnimationFrame(resolve))
 
 /**
  * Counts every call that could pull pixels back across the bus, for as long as
- * the run lasts, and separately those that happen while the pen is down.
+ * the run lasts, and separately those that happen while the pen is down; and,
+ * while it is down, every texture and buffer created.
  * Patched rather than inspected: the claim is about what the engine does while
  * painting, and only running it can settle that.
  */
-function watchForReadback(): {
+function watchInteractivePath(): {
   count: () => number
   total: () => number
+  allocations: () => number
   /** Called as the pen goes down and comes up: what makes the path the interactive one. */
   setPenDown: (down: boolean) => void
   restore: () => void
 } {
   let count = 0
   let total = 0
+  let allocations = 0
   let penDown = false
   const buffer = GPUBuffer.prototype
   const encoder = GPUCommandEncoder.prototype
+  const device = GPUDevice.prototype
   const mapAsync = buffer.mapAsync
   const copyTextureToBuffer = encoder.copyTextureToBuffer
+  const createTexture = device.createTexture
+  const createBuffer = device.createBuffer
   const record = () => {
     total++
     if (penDown) count++
@@ -91,15 +112,26 @@ function watchForReadback(): {
     record()
     return copyTextureToBuffer.apply(this, args)
   }
+  device.createTexture = function (...args: Parameters<typeof createTexture>) {
+    if (penDown) allocations++
+    return createTexture.apply(this, args)
+  }
+  device.createBuffer = function (...args: Parameters<typeof createBuffer>) {
+    if (penDown) allocations++
+    return createBuffer.apply(this, args)
+  }
   return {
     count: () => count,
     total: () => total,
+    allocations: () => allocations,
     setPenDown(down) {
       penDown = down
     },
     restore() {
       buffer.mapAsync = mapAsync
       encoder.copyTextureToBuffer = copyTextureToBuffer
+      device.createTexture = createTexture
+      device.createBuffer = createBuffer
     },
   }
 }
@@ -394,9 +426,19 @@ export async function runBenchmark(
     )
   }
 
-  if (workload.options.wet)
+  const wet = workload.options.wet
+  if (wet) {
+    // The ground is laid with the brush itself, dry, so a dab of any size
+    // has paint under the whole of it to pick up.
     await engine.dispatch({ type: "setColor", hex: "#0000ff" })
-  if (workload.options.smudge || workload.options.wet) {
+    await engine.dispatch({
+      type: "setBrush",
+      radius: wet.diameter / 2,
+      spacing: wet.spacing ?? WET_BRUSH.spacing,
+      flow: WET_BRUSH.flow,
+    })
+  }
+  if (workload.options.smudge || wet) {
     // Paint to smear, laid before anything is timed or counted: a frame's
     // worth of samples at a time, so none are dropped on the way in.
     for (const stroke of workload.strokes) {
@@ -411,22 +453,20 @@ export async function runBenchmark(
       await nextFrame()
     }
     await engine.save()
-    if (workload.options.wet) {
+    if (wet) {
       await engine.dispatch({ type: "setColor", hex: "#ffff00" })
-      await engine.dispatch({
-        type: "setBrush",
-        radius: workload.options.wet.diameter / 2,
-        spacing: 0.125,
-        flow: 0.3,
-        wet: { pickup: workload.options.wet.pickup },
-      })
+      if (!wet.dry)
+        await engine.dispatch({
+          type: "setBrush",
+          wet: { pickup: wet.pickup },
+        })
     } else await engine.dispatch({ type: "setTool", tool: "smudge" })
   }
   const detachThumbnails = attachThumbnails(engine)
 
   const frames: FrameTiming[] = []
   engine.observeFrames((frame) => frames.push(frame))
-  const readback = watchForReadback()
+  const watch = watchInteractivePath()
   const pump = createPump()
   let dispatched = 0
   const strokeStarts: number[] = []
@@ -439,7 +479,7 @@ export async function runBenchmark(
       // that prior mark's readback look like an interactive one.
       if (dispatched > 0) await engine.save()
       const [first] = stroke.samples
-      readback.setPenDown(true)
+      watch.setPenDown(true)
       strokeStarts.push(frames.length)
       dispatch("pointerdown", first)
       dispatched++
@@ -466,7 +506,7 @@ export async function runBenchmark(
         pump.post(step)
       })
       dispatch("pointerup", stroke.samples[stroke.samples.length - 1])
-      readback.setPenDown(false)
+      watch.setPenDown(false)
       // Two frames: one flushes the tail and composites the stroke, and the
       // loop has stopped by the end of the next.
       await nextFrame()
@@ -477,7 +517,7 @@ export async function runBenchmark(
     engine.observeFrames(null)
     detachThumbnails()
     pump.close()
-    readback.restore()
+    watch.restore()
   }
 
   // The last frame's timing is resolved on a GPU fence, so it may land a task
@@ -492,8 +532,9 @@ export async function runBenchmark(
       (total, stroke) => total + stroke.samples.length,
       0
     ),
-    readbacks: readback.count(),
-    readbacksTotal: readback.total(),
+    readbacks: watch.count(),
+    readbacksTotal: watch.total(),
+    allocations: watch.allocations(),
     elapsedMs: performance.now() - started,
     strokeStarts,
   }

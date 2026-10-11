@@ -18,6 +18,7 @@ bun run bench/run.ts --sweep   # the document-size ladder, for diagnosis
 bun run bench/run.ts --layers  # the layer-count ladder, for the compositor
 bun run bench/run.ts --scatter # a dense scattering brush against none
 bun run bench/run.ts --smudge  # smudging the workload against painting it
+bun run bench/run.ts --wet     # wet brushes over the workload against dry ones
 bun run bench/run.ts --vector  # redrawing a vector layer of many paths (19)
 bun run bench/run.ts --navigate # panning and zooming a stack (sharp-zoom 01)
 ```
@@ -540,3 +541,181 @@ machine observations, not an isolated before/after regression comparison.
 No wet spacing change is justified by these throughput results. This sweep
 covers the pigment ticket's model-on measurement; ticket 10 still owns the
 broader dry comparison, densest supported spacing and opening-frame analysis.
+
+## Wet brushes hold D30: the spacing floor (live brushes 10)
+
+The sweep above left this ticket the dry comparison, the closest spacing
+and the opening frame. `--wet` now runs them. The ground is laid with the
+brush itself, dry, so a dab of any size has paint under the whole of it;
+each size is then painted over dry, wet with no pickup, wet with heavy
+pickup (0.8), and wet with heavy pickup at the closest spacing a brush can
+be given: 1% of its diameter, which an imported preset can ask for (the
+editor stops at 2%). Spacing is otherwise the eighth of a diameter the
+sweep above used. Each row is two passes: the frame's cost unpaced,
+pen-to-pixel paced, with the frame each stroke opens in read on its own as
+the smudge sweep reads it. The runner also counts the textures and buffers
+created while the pen is down.
+
+A wet dab does not batch. It is a copy of its neighbourhood and a draw into
+the layer, then a second draw into the reservoir when it picks up, where a
+dry brush's dabs are instances in one draw.
+
+### What it found: the cost is the dab, not its size
+
+With the spacing floor at one pixel, where it then was, a 64 px brush at 1%
+spacing lays a dab every pixel: about 48 in a 75 Hz frame at the workload's
+hand speed. Paced, model from `e3a220e`:
+
+| document | brush | paint | pen-to-pixel, median / p95 | over dry | dabs in a frame |
+|---|---|---|---:|---:|---:|
+| 2048² | 64 px | Dry | 12.5 / 15.1 ms | | 74 |
+| 2048² | 64 px | Wet, no pickup | 15.1 / 20.3 ms | 2.6 ms | 48 |
+| 2048² | 64 px | Wet, heavy pickup | 18.0 / 24.0 ms | 5.5 ms | 48 |
+| 8192² | 64 px | Dry | 13.3 / 15.7 ms | | 79 |
+| 8192² | 64 px | Wet, no pickup | 21.2 / 44.2 ms | 7.9 ms | 51 |
+| 8192² | 64 px | Wet, heavy pickup | 20.3 / 40.2 ms | 7.0 ms | 51 |
+| 8192² | 512 px | Dry | 13.2 / 15.3 ms | | 10 |
+| 8192² | 512 px | Wet, heavy pickup | 16.9 / 21.2 ms | 3.7 ms | 10 |
+
+The 64 px brush missed D30 at a setting an artist can reach: paint half a
+frame late at the median and three frames late at the p95. That is not the
+case the ticket expected, which was the large brush. Fifty dabs of 64 px
+cost twice what ten of 512 px do, though the ten move thirteen times the
+pixels. A dab costs between a tenth and a sixth of a millisecond before its
+size counts for anything: what it costs to begin and end a render pass on
+this GPU, which a dry brush pays once a frame and a wet one once or twice a
+dab. Before the pigment model landed, shrinking the reservoir's texture
+from 2048² to 128² moved the 2048² figure by nothing, so it is not the
+target's pixels either.
+
+Size counts second. With the floor below in place, heavy pickup at the
+floor on 8192², against a dry brush at 13.2 ms:
+
+| brush | spacing | dabs in a 75 Hz frame | pen-to-pixel, median | over dry | per dab |
+|---|---:|---:|---:|---:|---:|
+| 64 px | 4 px | 12.7 | 15.0 ms | 1.8 ms | 0.14 ms |
+| 128 px | 4 px | 12.7 | 15.4 ms | 2.2 ms | 0.17 ms |
+| 200 px | 6.25 px | 8.1 | 15.0 ms | 1.8 ms | 0.22 ms |
+| 256 px | 8 px | 6.4 | 14.5 ms | 1.3 ms | 0.20 ms |
+| 400 px | 12.5 px | 4.1 | 14.3 ms | 1.1 ms | 0.27 ms |
+| 512 px | 16 px | 3.2 | 14.3 ms | 1.1 ms | 0.34 ms |
+
+Sixty-four times the pixels for two and a half times the cost. These are
+single runs and the medians move by a few tenths between runs, so the last
+column is good to about a quarter.
+
+### The floor
+
+So what a frame can afford is a number of dabs. **The wet spacing floor is
+now four pixels, or a sixteenth of the dab's radius where that is more**
+(from a 128 px brush up). It was one pixel. The workload's hand moves 33 px
+in a 120 Hz frame, so at four pixels it lays about eight dabs there, and at
+512 px two.
+
+A blender is held to the same floor. It has no reservoir draw, but on the
+8192² document the dab with no pickup cost as much as the dab with it, so
+there was no measurement to give it a lower one.
+
+The floor costs something. The four built-in wet brushes sat between 1.9
+and 2.6 px at rest and are now held at four, and a wet brush under 32 px
+across can no longer have dabs closer than an eighth of its diameter: an
+8 px one is held at half. How that looks on the smallest brushes was not
+judged here.
+
+### With the floor
+
+Apple M4 (integrated), 75 Hz display, Chrome/WebGPU, through a 2560 × 1440
+window, six strokes, on top of `7dd55ad`, nothing else running:
+
+| document | brush | paint | ms/frame, unpaced | sustained fps | stroke's first frame, median / worst | all frames, median / p95 | dabs | readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 64 px | Dry | 0.498 | 1428.6 | 1.7 / 6.4 ms | 12.3 / 15.6 ms | 617 | 0 | 0 |
+| 2048² | 64 px | Wet | 0.506 | 1428.6 | 1.8 / 15.6 ms | 12.6 / 15.9 ms | 617 | 0 | 1 |
+| 2048² | 64 px | Wet, pickup | 0.510 | 1428.6 | 2.0 / 17.6 ms | 13.0 / 16.5 ms | 615 | 0 | 1 |
+| 2048² | 64 px | Wet, densest | 0.515 | 1250.0 | 1.9 / 17.1 ms | 13.7 / 16.8 ms | 1,226 | 0 | 1 |
+| 2048² | 512 px | Dry | 0.525 | 1111.1 | 1.6 / 5.0 ms | 12.1 / 15.1 ms | 80 | 0 | 0 |
+| 2048² | 512 px | Wet | 0.542 | 1111.1 | 2.0 / 11.9 ms | 12.5 / 15.0 ms | 80 | 0 | 1 |
+| 2048² | 512 px | Wet, pickup | 0.557 | 1000.0 | 1.8 / 11.7 ms | 12.6 / 15.3 ms | 80 | 0 | 1 |
+| 2048² | 512 px | Wet, densest | 0.573 | 1250.0 | 2.1 / 13.7 ms | 13.0 / 16.4 ms | 311 | 0 | 1 |
+| 8192² | 64 px | Dry | 1.209 | 500.0 | 2.6 / 15.3 ms | 13.2 / 16.4 ms | 2,751 | 0 | 0 |
+| 8192² | 64 px | Wet | 1.264 | 476.2 | 2.9 / 15.1 ms | 13.9 / 17.4 ms | 2,751 | 0 | 1 |
+| 8192² | 64 px | Wet, pickup | 1.276 | 476.2 | 2.6 / 19.1 ms | 13.8 / 17.2 ms | 2,751 | 0 | 1 |
+| 8192² | 64 px | Wet, densest | 1.348 | 476.2 | 2.7 / 19.9 ms | 15.1 / 18.8 ms | 5,498 | 0 | 1 |
+| 8192² | 512 px | Dry | 1.240 | 476.2 | 3.2 / 12.5 ms | 13.0 / 16.1 ms | 348 | 0 | 0 |
+| 8192² | 512 px | Wet | 1.292 | 476.2 | 4.6 / 14.7 ms | 13.3 / 16.6 ms | 348 | 0 | 7 |
+| 8192² | 512 px | Wet, pickup | 1.376 | 454.5 | 2.8 / 16.8 ms | 13.2 / 16.4 ms | 348 | 0 | 7 |
+| 8192² | 512 px | Wet, densest | 1.639 | 434.8 | 2.9 / 14.2 ms | 14.2 / 18.1 ms | 1,376 | 0 | 7 |
+| 2048², repeat | 64 px | Dry | 0.498 | 1428.6 | 1.8 / 14.2 ms | 12.0 / 14.5 ms | 614 | 0 | 0 |
+| 2048², repeat | 64 px | Wet | 0.509 | 1250.0 | 1.9 / 14.7 ms | 12.5 / 15.4 ms | 617 | 0 | 1 |
+| 2048², repeat | 64 px | Wet, pickup | 0.510 | 1250.0 | 2.1 / 15.3 ms | 12.8 / 15.9 ms | 617 | 0 | 1 |
+| 2048², repeat | 64 px | Wet, densest | 0.518 | 1250.0 | 2.1 / 16.6 ms | 13.5 / 17.9 ms | 1,226 | 0 | 1 |
+| 2048², repeat | 512 px | Dry | 0.524 | 1111.1 | 1.7 / 4.7 ms | 11.9 / 15.2 ms | 80 | 0 | 0 |
+| 2048², repeat | 512 px | Wet | 0.540 | 1111.1 | 1.8 / 11.3 ms | 12.2 / 15.0 ms | 80 | 0 | 1 |
+| 2048², repeat | 512 px | Wet, pickup | 0.560 | 1000.0 | 2.0 / 11.1 ms | 12.3 / 15.2 ms | 80 | 0 | 1 |
+| 2048², repeat | 512 px | Wet, densest | 0.573 | 1250.0 | 2.0 / 11.6 ms | 12.4 / 15.5 ms | 311 | 0 | 1 |
+| 8192², repeat | 64 px | Dry | 1.211 | 476.2 | 2.5 / 12.0 ms | 12.8 / 15.6 ms | 2,742 | 0 | 0 |
+| 8192², repeat | 64 px | Wet | 1.262 | 500.0 | 2.7 / 19.1 ms | 13.9 / 17.7 ms | 2,751 | 0 | 1 |
+| 8192², repeat | 64 px | Wet, pickup | 1.271 | 476.2 | 2.7 / 22.3 ms | 14.0 / 17.5 ms | 2,742 | 0 | 1 |
+| 8192², repeat | 64 px | Wet, densest | 1.350 | 454.5 | 2.8 / 20.5 ms | 15.1 / 19.0 ms | 5,507 | 0 | 1 |
+| 8192², repeat | 512 px | Dry | 1.239 | 454.5 | 2.3 / 12.0 ms | 13.1 / 16.2 ms | 348 | 0 | 0 |
+| 8192², repeat | 512 px | Wet | 1.295 | 454.5 | 2.9 / 13.9 ms | 13.2 / 16.7 ms | 348 | 0 | 7 |
+| 8192², repeat | 512 px | Wet, pickup | 1.367 | 454.5 | 3.9 / 13.8 ms | 13.3 / 16.8 ms | 348 | 0 | 7 |
+| 8192², repeat | 512 px | Wet, densest | 1.644 | 434.8 | 3.0 / 14.7 ms | 14.3 / 18.0 ms | 1,376 | 0 | 7 |
+
+**Frame rate.** Every row sustains more than three times 120 fps, wet and
+dry alike.
+
+**Pen-to-pixel.** On this 75 Hz panel no brush reads under 10 ms, the dry
+one included: its median is a hair under one panel period (13.3 ms), as it
+has been in every section above. What matters here is what a wet brush adds
+to it. At 8192² that is about a millisecond for the 64 px brush at an
+eighth spacing, and about two (1.9 and 2.3) at the floor, where a 75 Hz
+frame holds thirteen dabs; for the 512 px brush, a few tenths, and 1.2 at
+the floor. A 120 Hz frame holds five eighths as many dabs, so at the floor
+the 64 px brush would add 1.2 to 1.4 ms to a dry median a hair under
+8.3 ms: about 9.6 ms, inside 10 and not by much. That is arithmetic and not
+a measurement, as it is for the dry brush, and the 120 Hz run that settles
+both is the one already owed (brush-library 17). If that run reads over
+10 ms, the floor is the number to raise.
+
+**The opening frame.** At the median a wet stroke opens in about 2 ms on
+2048² and under 3 ms on 8192², within a few tenths of the dry brush on the
+same document, so the difference between documents is the document's, as it
+was for smudge. Pen-down fills the two reservoir textures and keeps the
+tiles under one dab, and neither knows the document's size. Two 512 px rows
+read higher in one run (4.6 and 3.9 ms) and not in the other. The worst
+opening frame is one stroke of six; a wet brush's reads higher than the dry
+brush's on the small document (11 to 18 ms against 5 to 14) and level with
+it on the large one. It does not grow with the document, and was not
+chased further.
+
+**Readback and allocation.** Nothing is read back while the pen is down.
+A dry brush creates no texture or buffer while it is down. A wet stroke
+creates only the pages its cancel tiles are kept in (smudge 06): one for the
+whole run where the strokes fit in a page, seven where six 512 px strokes
+across an 8192² document each outgrow the first. Before this ticket there
+was one more, the texture a dab's neighbourhood is copied into, which was
+made to fit the first dab and remade whenever a dab outgrew it. It is now
+allocated once with the renderer at the largest size a dab may ask for, as
+the reservoir is: 32 MiB, held whether or not anything is smudged.
+
+The dab counts for the 512 px brush at the floor on 2048² are 311 here; an
+earlier run on the same settings recorded 375. The pen is paced by the
+wall clock and the count follows what reached the ring, as the first
+section says.
+
+**Smudge.** Its spacing is its own and was not changed. `--smudge` on the
+same commit:
+
+| document | tool | stroke's first frame, median / worst | all frames, median / p95 | dabs | painting readbacks |
+|---|---|---:|---:|---:|---:|
+| 2048² | Brush | 1.9 / 2.8 ms | 12.0 / 15.1 ms | 1,646 | 0 |
+| 2048² | Smudge | 2.1 / 6.7 ms | 12.8 / 16.0 ms | 1,230 | 0 |
+| 8192² | Brush | 2.6 / 37.2 ms | 13.2 / 16.0 ms | 7,332 | 0 |
+| 8192² | Smudge | 3.2 / 12.4 ms | 15.5 / 19.9 ms | 5,498 | 0 |
+
+Level with what smudge 06 recorded (3.0 / 12.5 and 15.3 / 19.1 ms at
+8192²), with the pigment model now in its mix. Smudge at its default size
+lays a dab every four pixels, which is the wet floor. A smaller smudge goes
+closer, down to a pixel, and by this section's arithmetic would not hold;
+that is smudge's to answer (live brushes 19) and is not changed here.
