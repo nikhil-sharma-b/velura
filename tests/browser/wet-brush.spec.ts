@@ -671,3 +671,208 @@ for (const flow of [0, 1])
       expect(rgba(jittered, 190)).toEqual(rgba(plain, 190))
     }
   })
+test("a brush can keep its load between strokes and be cleaned by hand", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await paintBar(page, origin)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setColor", hex: "#1040e0" })
+    await window.engine.dispatch({ type: "setBrush", wet: { pickup: 0.5 } })
+    await window.engine.dispatch({
+      type: "setCleanBrushAfterStroke",
+      enabled: false,
+    })
+  })
+  await stroke(page, origin, 45, 85)
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().brushDirty)
+  ).toBe(true)
+  await addLayer(page)
+  await stroke(page, origin, 140, 180)
+  const carried = await pixels(page)
+  await page.evaluate(() => window.engine.dispatch({ type: "cleanBrush" }))
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().brushDirty)
+  ).toBe(false)
+  await addLayer(page)
+  await stroke(page, origin, 140, 180)
+  const clean = await pixels(page)
+  expect(distance(rgba(carried, 145), rgba(clean, 145))).toBeGreaterThan(30)
+})
+
+/** Leave a blue brush holding the red ground it picked up. */
+async function dirtyBrush(page: Page, documentId?: string) {
+  const origin = await openCanvas(page, documentId)
+  await paintBar(page, origin)
+  await setColour(page, BLUE)
+  await setWet(page, { pickup: PICKUP })
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setCleanBrushAfterStroke", enabled: false })
+  )
+  await stroke(page, origin, 45, 85)
+  return origin
+}
+
+test("cancelling a stroke restores the dirty load, and undo and redo leave it alone", async ({
+  page,
+}) => {
+  let origin = await dirtyBrush(page)
+  await addLayer(page)
+  await stroke(page, origin, 140, 180)
+  const expected = await pixels(page)
+
+  origin = await dirtyBrush(page)
+  const before = await pixels(page)
+  await page.mouse.move(origin.x + 160, origin.y + ROW)
+  await page.mouse.down()
+  await page.mouse.move(origin.x + 200, origin.y + ROW, { steps: 15 })
+  await frames(page)
+  await setTool(page, "eraser")
+  await page.mouse.up()
+  await setTool(page, "brush")
+  expect(await pixels(page)).toEqual(before)
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().brushDirty)
+  ).toBe(true)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "undo" })
+    await window.engine.dispatch({ type: "redo" })
+  })
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().brushDirty)
+  ).toBe(true)
+  await addLayer(page)
+  await stroke(page, origin, 140, 180)
+  expect(await pixels(page)).toEqual(expected)
+})
+
+for (const change of [
+  "colour",
+  "brush",
+  "size",
+  "automatic cleaning",
+  "mask",
+] as const) {
+  test(`${change} cleans a retained brush load`, async ({ page }) => {
+    const origin = await dirtyBrush(page)
+    await page.evaluate(async (change) => {
+      if (change === "colour")
+        await window.engine.dispatch({ type: "setColor", hex: "#1040e0" })
+      if (change === "brush")
+        await window.engine.dispatch({ type: "setBrush", id: "another-brush" })
+      if (change === "size")
+        await window.engine.dispatch({ type: "setBrush", radius: 15 })
+      if (change === "automatic cleaning")
+        await window.engine.dispatch({
+          type: "setCleanBrushAfterStroke",
+          enabled: true,
+        })
+      if (change === "mask") {
+        const id = window.engine.getSnapshot().activeLayerId
+        await window.engine.dispatch({ type: "addMask", id })
+        await window.engine.dispatch({ type: "selectMask", id })
+      }
+    }, change)
+    expect(
+      await page.evaluate(() => window.engine.getSnapshot().brushDirty)
+    ).toBe(false)
+    if (change !== "mask") {
+      await addLayer(page)
+      await stroke(page, origin, 180, 180)
+      expect(distance(rgba(await pixels(page), 180), BLUE_PIXEL)).toBeLessThan(
+        8
+      )
+    }
+  })
+}
+
+test("reload discards the dirty brush and restores automatic cleaning", async ({
+  page,
+}) => {
+  const documentId = `dirty-${Date.now()}-${Math.random()}`
+  await dirtyBrush(page, documentId)
+  await page.evaluate(() => window.engine.save())
+  await page.reload()
+  await openCanvas(page, documentId)
+  expect(
+    await page.evaluate(() => ({
+      dirty: window.engine.getSnapshot().brushDirty,
+      clean: window.engine.getSnapshot().cleanBrushAfterStroke,
+    }))
+  ).toEqual({ dirty: false, clean: true })
+})
+
+test("switching to a mask cancels the stroke before cleaning its old load", async ({
+  page,
+}) => {
+  const origin = await dirtyBrush(page)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "addMask",
+      id: window.engine.getSnapshot().activeLayerId,
+    })
+  })
+  await page.mouse.move(origin.x + 150, origin.y + ROW)
+  await page.mouse.down()
+  await page.mouse.move(origin.x + 190, origin.y + ROW, { steps: 15 })
+  await frames(page)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "selectMask",
+      id: window.engine.getSnapshot().activeLayerId,
+    })
+    await window.engine.dispatch({ type: "setTool", tool: "eraser" })
+  })
+  await page.mouse.up()
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().brushDirty)
+  ).toBe(false)
+})
+
+test("importing a document clears the load and its dirty indicator", async ({
+  page,
+}) => {
+  await dirtyBrush(page)
+  await page.evaluate(async () => {
+    const bytes = await window.engine.exportDocument()
+    await window.engine.importDocument(bytes)
+  })
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().brushDirty)
+  ).toBe(false)
+})
+
+test("colour jitter does not refill or recolour a retained dirty load", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await stroke(page, origin, 20, 220)
+  await setColour(page, BLUE)
+  await setWet(page, { pickup: 1 }, 1)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "setBrush",
+      dynamics: [
+        { source: "random", target: "hue", range: [0.3, 0.3], mix: "replace" },
+      ],
+    })
+    await window.engine.dispatch({
+      type: "setCleanBrushAfterStroke",
+      enabled: false,
+    })
+  })
+  await stroke(page, origin, 40, 200)
+  expect(
+    await page.evaluate(() => window.engine.getSnapshot().brushDirty)
+  ).toBe(true)
+  await addLayer(page)
+  await stroke(page, origin, 180, 180)
+  const retained = rgba(await pixels(page), 180)
+  expect(distance(retained, [208, 32, 42, 255])).toBeLessThan(8)
+  await page.evaluate(() => window.engine.dispatch({ type: "cleanBrush" }))
+  await addLayer(page)
+  await stroke(page, origin, 180, 180)
+  expect(distance(rgba(await pixels(page), 180), retained)).toBeGreaterThan(30)
+})

@@ -436,6 +436,13 @@ export const studioCommands = createRegistry<StudioContext>(
       run: ({ engine }) => void engine?.dispatch({ type: "redo" }),
     },
     {
+      id: "brush.clean",
+      label: "Clean brush",
+      category: "Tools",
+      keybinds: [],
+      ...dispatching({ type: "cleanBrush" }),
+    },
+    {
       id: "tool.brush",
       label: "Brush tool",
       category: "Tools",
