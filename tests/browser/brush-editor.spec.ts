@@ -339,6 +339,44 @@ test("wet swaps the stroke's controls for pickup, and a saved wet brush keeps it
   await expect(page.getByRole("option", { name: "Pickup" })).toHaveCount(0)
 })
 
+test("a wet brush taken to no flow is named as the blender it has become", async ({
+  page,
+}) => {
+  await openEditor(page)
+  const panel = editor(page)
+  await panel.getByRole("tab", { name: "Rendering" }).click()
+  const wet = panel.getByRole("switch", { name: "Wet" })
+  const blender = panel.getByRole("status").filter({ hasText: "Blender" })
+  const typed = panel.locator('input[aria-label="Flow"]')
+
+  // A dry brush with no flow is only a brush that lays nothing.
+  await typed.fill("0")
+  await typed.press("Enter")
+  await expect(
+    panel.getByRole("slider", { name: "Flow", exact: true })
+  ).toHaveAttribute("aria-valuenow", "0")
+  await expect(blender).toHaveCount(0)
+
+  // Wet, the same flow is a different brush, and the editor says which.
+  await wet.click()
+  await expect(blender).toContainText("lays nothing, drags what is there")
+  await expect(wet).toContainText("Drags the paint under it and lays none")
+
+  // One step off zero it trades with its load again, and is not a blender.
+  const laid = panel.locator('input[aria-label="Flow (colour laid)"]')
+  await laid.fill("1")
+  await laid.press("Enter")
+  await expect(blender).toHaveCount(0)
+  await expect(wet).toContainText("Lays colour and drags")
+
+  // The slider reaches the same zero the typed field does.
+  const flow = panel.getByRole("slider", { name: "Flow (colour laid)" })
+  await flow.focus()
+  await flow.press("ArrowLeft")
+  await expect(flow).toHaveAttribute("aria-valuenow", "0")
+  await expect(blender).toBeVisible()
+})
+
 test("the preview stroke re-renders as the brush changes", async ({ page }) => {
   await openEditor(page)
   const panel = editor(page)

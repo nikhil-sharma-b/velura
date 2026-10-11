@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { type Brush, DEFAULT_WET_PICKUP } from "@/engine/brush/brush"
+import { type Brush, DEFAULT_WET_PICKUP, isBlender } from "@/engine/brush/brush"
 import {
   TIP_SELECTION_MODES,
   type TipSelectionMode,
@@ -422,6 +422,11 @@ export function BrushEditor({
   const scatter = brush.scatter ?? NO_SCATTER
   const color = brush.color ?? UNIT_COLOR
   const wet = brush.rendering.wet
+  const blender = isBlender(brush)
+  const laying = wet
+    ? "Lays colour and drags the paint under it along"
+    : "Lays colour over the paint under it"
+  const wetSummary = blender ? "Drags the paint under it and lays none" : laying
   const legacyScatter = legacyScatterMappings(brush)
   const [importProblem, setImportProblem] = useState<string | null>(null)
   const own = textures.filter((id) => !shipped.has(id))
@@ -828,9 +833,7 @@ export function BrushEditor({
           >
             <span className="text-xs text-foreground">Wet</span>
             <span className="text-[11px] leading-tight text-muted-foreground">
-              {wet
-                ? "Lays colour and drags the paint under it along"
-                : "Lays colour over the paint under it"}
+              {wetSummary}
             </span>
           </button>
           {/* A wet stroke is written straight to the layer (D41), so what the
@@ -897,6 +900,18 @@ export function BrushEditor({
             unit="%"
             onChange={(flow) => apply({ rendering: { flow } })}
           />
+          {/* Flow has a cliff at zero on a wet brush (D41): there it stops
+              trading with a load and drags from the pixel behind. Said here,
+              where the slider that crosses it is. The region is always
+              there and only its words come and go, so that crossing the cliff
+              is announced; empty, it gives back the gap it would take. */}
+          <p
+            role="status"
+            className="text-xs text-muted-foreground empty:-mt-3"
+          >
+            {blender &&
+              "Blender: lays nothing, drags what is there. Pickup sets how hard. Above zero, flow trades with a load of its own instead, and a low flow barely marks."}
+          </p>
         </TabsContent>
 
         <TabsContent value="dynamics" className="space-y-3">
