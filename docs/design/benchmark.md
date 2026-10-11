@@ -720,6 +720,64 @@ lays a dab every four pixels, which is the wet floor. A smaller smudge goes
 closer, down to a pixel, and by this section's arithmetic would not hold;
 that is smudge's to answer (live brushes 19) and is not changed here.
 
+## Smudge's spacing floor: measured, and left alone (live brushes 19)
+
+`--smudge` gains a row: smudge at a radius of 4 px, where its spacing, a
+quarter of its radius, is a pixel. Smudge's spacing as it is:
+
+| document | tool | stroke's first frame, median / worst | all frames, median / p95 | dabs | painting readbacks |
+|---|---|---:|---:|---:|---:|
+| 2048² | Brush | 2.0 / 14.8 ms | 12.0 / 13.9 ms | 1,634 | 0 |
+| 2048² | Smudge | 2.0 / 9.2 ms | 12.6 / 15.4 ms | 1,226 | 0 |
+| 2048² | Smudge, 4 px | 1.9 / 7.9 ms | 15.2 / 20.3 ms | 4,911 | 0 |
+| 8192² | Brush | 2.9 / 31.8 ms | 13.0 / 15.5 ms | 7,326 | 0 |
+| 8192² | Smudge | 2.9 / 12.9 ms | 15.7 / 19.5 ms | 5,494 | 0 |
+| 8192² | Smudge, 4 px | 2.3 / 19.6 ms | 21.0 / 42.0 ms | 21,972 | 0 |
+
+A small smudge lays four times the dabs and does not hold: 21.0 / 42.0 ms on
+the large document against 15.7 / 19.5 ms at its default size. The same row
+under three floors that were tried, at 8192²:
+
+| smudge's spacing | all frames, median / p95 | dabs |
+|---|---:|---:|
+| a quarter of the radius, a pixel at least (as shipped) | 21.0 / 42.0 ms | 21,972 |
+| the wet floor, no wider than half the radius | 18.5 / 23.5 ms | 10,987 |
+| the wet floor (four pixels) | 15.6 / 19.3 ms | 5,498 |
+
+The wet floor holds the frame, level with smudge at its default size. It
+does not hold the smear. A bar of paint was smudged out of its end along
+80 px with the round tip at strength 0.9, and the paint left along the path
+read back, as coverage from 0 to 1. A smear should only thin as it leaves the
+paint; the ripple is the largest step back up between neighbouring pixels,
+and the paint carried is the coverage gained past the bar's end, summed in
+pixels.
+
+| radius | spacing as shipped: ripple, carried | half-radius cap | third-radius cap | wet floor |
+|---:|---:|---:|---:|---:|
+| 2 px | 0.00, 13.1 | 0.00, 13.1 | 0.00, 13.1 | 0.48, 9.3 |
+| 4 px | 0.00, 36.6 | 0.00, 31.6 | 0.00, 29.6 | 0.29, 25.2 |
+| 6 px | not run | 0.15, 38.7 | 0.00, 43.1 | not run |
+| 8 px | 0.00, 47.8 | 0.14, 43.9 | 0.03, 45.6 | 0.14, 43.9 |
+| 12 px | 0.00, 49.1 | 0.02, 49.6 | 0.02, 49.6 | 0.02, 49.6 |
+
+At four pixels a 4 px smudge leaves a comb, its coverage alternating between
+0.82 and 0.51 two pixels at a time, and a 2 px smudge a dotted line, 0.46
+and 0.01. A dab drags from the pixel one dab's travel behind it, so a pixel
+is handed on once for every dab that covers it; once the dabs are further
+apart than about a third of a radius the pixels of the path are not covered
+the same number of times, and the difference is the comb. A floor capped at
+a third of the radius keeps the smear and saves a quarter of the dabs, which
+is not the frame; capped at a half it saves half of them and ripples between
+5 and 10 px.
+
+So smudge keeps its spacing, and a small smudge on a large document misses
+D30 until its dab is cheaper: spacing cannot buy it (live brushes 22). The
+bar is not dropped. The miss is recorded here as a miss.
+
+A blender is the same dab and is held to the wet floor, so it leaves the
+same comb below a radius of about 12 px: 0.48, 0.29 and 0.14 at 2, 4 and
+8 px, measured the same way with pickup 0.9 (live brushes 23).
+
 ## Scatter on wet brushes: the floor times the count (live brushes 12)
 
 A wet brush now scatters, and scatter count multiplies its dabs: sixteen a

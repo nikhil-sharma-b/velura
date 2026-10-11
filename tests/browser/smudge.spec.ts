@@ -509,6 +509,25 @@ test("the smudge's size is its own: a larger one reaches further off the path", 
   expect(moved(large)).toBeGreaterThan(0)
 })
 
+test("a small smudge's smear only thins along the stroke", async ({ page }) => {
+  // Dabs a quarter of a radius apart, and not at the floor a wet brush is
+  // held to: four pixels apart, a dab this small leaves a comb of paint.
+  const { painted, smudged } = await smudgedBy(
+    page,
+    { radius: 4 },
+    "mouse",
+    0.5
+  )
+  // Green is low in the paint and high in the paper under it.
+  const green = (image: number[], x: number) => rgba(image, x)[1]
+  // From the bar's round end, along most of the stroke.
+  const smear = Array.from({ length: 40 }, (_, step) => 112 + step)
+  expect(green(smudged, 130)).toBeLessThan(green(painted, 130))
+  // Two levels of rounding either way; a comb steps back by thirty and more.
+  for (const x of smear)
+    expect(green(smudged, x + 1) - green(smudged, x)).toBeGreaterThanOrEqual(-2)
+})
+
 test("smudge and brush keep their sizes apart, through a change of tool", async ({
   page,
 }) => {

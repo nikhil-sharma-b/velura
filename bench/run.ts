@@ -386,6 +386,17 @@ async function scatterSweep(): Promise<void> {
  * anything with one frame in flight.
  */
 const SMUDGE_SIZES = [2048, 8192]
+/**
+ * Smudge at its default size, and at a size small enough that its spacing,
+ * a quarter of its radius, is a pixel (live brushes 19): the most dabs a
+ * smudge lays in a frame, which the wet spacing floor would not let a wet
+ * brush lay and which smudge, keeping its spacing, does.
+ */
+const SMUDGE_TOOLS = [
+  { name: "brush", smudge: false },
+  { name: "smudge", smudge: true },
+  { name: "smudge, 4 px", smudge: true, smudgeRadius: 4 },
+]
 
 const middle = (values: number[]) =>
   [...values].sort((a, b) => a - b)[values.length >> 1]
@@ -405,21 +416,21 @@ async function smudgeSweep(): Promise<void> {
   const pass = PASSES.find((entry) => entry.name === "paced")!
   console.log(
     "\n  pen-to-pixel in ms" +
-      "\n  document  tool      stroke's first frame (median / worst)   all frames (median / p95)   dabs     readbacks"
+      "\n  document  tool          stroke's first frame (median / worst)   all frames (median / p95)   dabs     readbacks"
   )
   for (const size of SMUDGE_SIZES)
-    for (const smudge of [false, true]) {
+    for (const { name, ...tool } of SMUDGE_TOOLS) {
       const measured = await measure(pass, {
         ...BENCHMARK_WORKLOAD,
         width: size,
         height: size,
         strokes: SWEEP_STROKES,
-        smudge,
+        ...tool,
       })
       const { report, readbacks } = measured
       const opening = openingFrames(measured)
       console.log(
-        `  ${`${size}²`.padEnd(8)}  ${(smudge ? "smudge" : "brush").padEnd(8)}  ` +
+        `  ${`${size}²`.padEnd(8)}  ${name.padEnd(12)}  ` +
           `${fixed(middle(opening)).padStart(18)} / ${fixed(Math.max(...opening)).padEnd(15)}   ` +
           `${fixed(report.latencyMs.median).padStart(12)} / ${fixed(report.latencyMs.p95).padEnd(8)}   ` +
           `${String(report.stamps.total).padStart(6)}   ${String(readbacks).padStart(9)}`
