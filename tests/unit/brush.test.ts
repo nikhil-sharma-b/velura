@@ -116,6 +116,41 @@ describe("brush definition", () => {
     expect(brushSpacing(blender)).toBe(WET_SPACING_FLOOR)
   })
 
+  test("a wet brush that scatters is held to a floor as many times wider as its count", () => {
+    const wet = {
+      ...PENCIL,
+      rendering: { ...PENCIL.rendering, wet: { pickup: 0.5 } },
+    }
+    const thrown: Brush = {
+      ...wet,
+      scatter: { amount: 2, count: 4, axes: "both" },
+    }
+    // Four dabs a step, each a copy and a draw: the steps are a quarter as
+    // many, so a frame holds the dabs it did.
+    expect(brushSpacing(thrown)).toBe(WET_SPACING_FLOOR * 4)
+    // A brush whose own spacing is already wider keeps it.
+    const open = {
+      ...thrown,
+      shape: { ...thrown.shape, radius: 40, spacing: 0.5 },
+    }
+    expect(brushSpacing(open)).toBeCloseTo(40, 6)
+    // The count is the dabs laid, whatever the amount comes to.
+    const stacked: Brush = {
+      ...wet,
+      scatter: { amount: 0, count: 3, axes: "across" },
+    }
+    expect(wetDabSpacing(stacked, 4)).toBe(WET_SPACING_FLOOR * 3)
+  })
+
+  test("a blender does not scatter, so its count does not widen its floor", () => {
+    const blender: Brush = {
+      ...PENCIL,
+      rendering: { ...PENCIL.rendering, flow: 0, wet: { pickup: 0.5 } },
+      scatter: { amount: 2, count: 4, axes: "both" },
+    }
+    expect(brushSpacing(blender)).toBe(WET_SPACING_FLOOR)
+  })
+
   test("a clone shares nothing with the brush it came from", () => {
     const copy = cloneBrush(PENCIL)
     expect(copy).toEqual(PENCIL)

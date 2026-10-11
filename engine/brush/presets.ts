@@ -169,8 +169,8 @@ const CANVAS_GRAIN = "krita:01-canvas"
  * Each is the same `Brush` data as the dry ones, with `rendering.wet` set, so
  * it lays its colour by `flow` and drags what is under it by `pickup` (D41).
  * The stroke opacity and accumulation they carry are what the brush goes back
- * to if wet is turned off in the editor. None scatters or jitters its colour:
- * neither reaches a wet dab yet.
+ * to if wet is turned off in the editor. None scatters, and none jitters its
+ * colour, which does not reach a wet dab yet.
  *
  * Pickup is small where the brush is meant to cover. The bristles are loaded
  * once, at pen-down, and every dab trades some of that load for what is under

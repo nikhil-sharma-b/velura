@@ -90,8 +90,17 @@ export type WorkloadOptions = {
    * and a draw of its own. `spacing` is the brush's, as a fraction of its
    * diameter; absent, an eighth. `dry` paints with the same brush not wet,
    * whose dabs share one draw: what the wet one is weighed against.
+   * `scatter` is the brush's for the second painting alone (live brushes
+   * 12), the ground being laid without: its count multiplies the dabs of
+   * every spacing step, each still a copy and a draw of its own.
    */
-  wet?: { diameter: number; pickup: number; spacing?: number; dry?: boolean }
+  wet?: {
+    diameter: number
+    pickup: number
+    spacing?: number
+    dry?: boolean
+    scatter?: BrushScatter
+  }
 }
 
 /**
@@ -225,9 +234,10 @@ export function createWorkload(options: WorkloadOptions): Workload {
     throw new Error("A workload's feather must be finite and not negative.")
   if (options.scatter !== undefined) validateScatter(options.scatter)
   if (options.wet !== undefined) {
-    const { diameter, pickup, spacing } = options.wet
+    const { diameter, pickup, spacing, scatter } = options.wet
     positive(diameter, "brush diameter")
     if (spacing !== undefined) positive(spacing, "brush spacing")
+    if (scatter !== undefined) validateScatter(scatter)
     if (!Number.isFinite(pickup) || pickup < 0 || pickup > 1)
       throw new Error("A workload's pickup must be in [0, 1].")
     if (options.smudge)

@@ -719,3 +719,99 @@ Level with what smudge 06 recorded (3.0 / 12.5 and 15.3 / 19.1 ms at
 lays a dab every four pixels, which is the wet floor. A smaller smudge goes
 closer, down to a pixel, and by this section's arithmetic would not hold;
 that is smudge's to answer (live brushes 19) and is not changed here.
+
+## Scatter on wet brushes: the floor times the count (live brushes 12)
+
+A wet brush now scatters, and scatter count multiplies its dabs: sixteen a
+spacing step at the most, each the copy and the draw (and the reservoir draw)
+that the section above priced at a tenth to a sixth of a millisecond. `--wet`
+gains two rows per brush: the densest scatter a brush can ask for (count 16,
+thrown four radii across and along the path) painted dry, and the same wet
+with heavy pickup. The ground is laid without scatter, so it is solid.
+
+Apple M4 (integrated), 75 Hz display, Chrome/WebGPU, 2560 × 1440 window, six
+strokes, 2026-10-11, on top of `547f52e`. First with scatter reaching the wet
+dab and the floor as live brushes 10 left it:
+
+| document | brush | paint | ms/frame, unpaced | sustained fps | stroke's first frame, median / worst | all frames, median / p95 | dabs | readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 64 px | Dry, scatter | 0.584 | 1111.1 | 1.6 / 14.0 ms | 12.4 / 14.9 ms | 9,824 | 0 | 0 |
+| 2048² | 64 px | Wet, scatter | 0.740 | 833.3 | 3.5 / 24.1 ms | 26.2 / 77.4 ms | 9,872 | 0 | 1 |
+| 2048² | 512 px | Dry, scatter | 0.745 | 1000.0 | 3.8 / 5.3 ms | 12.1 / 15.4 ms | 1,280 | 0 | 0 |
+| 2048² | 512 px | Wet, scatter | 1.218 | 909.1 | 5.7 / 15.2 ms | 15.0 / 18.4 ms | 1,280 | 0 | 1 |
+| 8192² | 64 px | Dry, scatter | 1.584 | 434.8 | 4.1 / 17.9 ms | 14.1 / 17.7 ms | 43,984 | 0 | 0 |
+| 8192² | 64 px | Wet, scatter | 3.916 | 158.7 | 6.4 / 37.3 ms | 141.6 / 443.5 ms | 40,656 | 0 | 2 |
+| 8192² | 512 px | Dry, scatter | 1.840 | 416.7 | 9.0 / 15.8 ms | 14.0 / 17.0 ms | 5,568 | 0 | 0 |
+| 8192² | 512 px | Wet, scatter | 1.554 | 188.7 | 46.7 / 46.7 ms | 20.6 / 24.0 ms | 1,456 | 0 | 7 |
+
+The small brush misses by an order of magnitude: sixteen times the dabs is
+sixteen times the draws, and the paint falls a tenth of a second behind the
+pen. (The 512 px wet row counts 1,456 dabs against the dry row's 5,568: the
+paced count follows what reached the ring, and the frames had fallen behind
+the pen.)
+
+By live brushes 10's rule the floor rises and the bar does not drop. **The
+wet spacing floor is multiplied by the scatter count**, so the dabs in a
+frame are what they were without scatter: a wet brush laying sixteen dabs a
+step is held to 64 px between steps, or to its radius where that is more. A
+brush whose own spacing is wider keeps it. With that:
+
+| document | brush | paint | ms/frame, unpaced | sustained fps | stroke's first frame, median / worst | all frames, median / p95 | dabs | readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 64 px | Dry | 0.618 | 1000.0 | 1.7 / 14.4 ms | 12.3 / 14.7 ms | 614 | 0 | 0 |
+| 2048² | 64 px | Wet | 0.624 | 1000.0 | 2.0 / 42.8 ms | 13.1 / 15.6 ms | 614 | 0 | 1 |
+| 2048² | 64 px | Wet, pickup | 0.627 | 1000.0 | 2.0 / 30.1 ms | 13.5 / 16.5 ms | 614 | 0 | 1 |
+| 2048² | 64 px | Wet, densest | 0.632 | 1000.0 | 2.1 / 45.6 ms | 14.0 / 17.2 ms | 1,223 | 0 | 1 |
+| 2048² | 64 px | Dry, scatter | 0.614 | 1000.0 | 1.9 / 13.7 ms | 12.5 / 15.2 ms | 9,824 | 0 | 0 |
+| 2048² | 64 px | Wet, scatter | 0.670 | 909.1 | 3.9 / 51.7 ms | 14.2 / 16.9 ms | 1,280 | 0 | 1 |
+| 2048² | 512 px | Dry | 0.655 | 909.1 | 1.7 / 6.8 ms | 12.6 / 14.9 ms | 80 | 0 | 0 |
+| 2048² | 512 px | Wet | 0.685 | 1000.0 | 2.2 / 54.0 ms | 12.9 / 15.3 ms | 80 | 0 | 1 |
+| 2048² | 512 px | Wet, pickup | 0.714 | 1000.0 | 2.2 / 34.0 ms | 12.9 / 15.3 ms | 80 | 0 | 1 |
+| 2048² | 512 px | Wet, densest | 0.736 | 1000.0 | 2.0 / 40.1 ms | 12.9 / 15.8 ms | 310 | 0 | 1 |
+| 2048² | 512 px | Dry, scatter | 0.776 | 1000.0 | 2.4 / 6.3 ms | 12.6 / 14.8 ms | 1,280 | 0 | 0 |
+| 2048² | 512 px | Wet, scatter | 1.253 | 909.1 | 6.1 / 49.9 ms | 13.0 / 17.1 ms | 352 | 0 | 1 |
+| 8192² | 64 px | Dry | 1.493 | 400.0 | 3.2 / 13.9 ms | 13.7 / 16.1 ms | 2,753 | 0 | 0 |
+| 8192² | 64 px | Wet | 1.542 | 416.7 | 4.3 / 27.8 ms | 14.5 / 18.0 ms | 2,753 | 0 | 1 |
+| 8192² | 64 px | Wet, pickup | 1.581 | 434.8 | 3.1 / 39.7 ms | 14.5 / 17.5 ms | 2,744 | 0 | 1 |
+| 8192² | 64 px | Wet, densest | 1.671 | 384.6 | 3.7 / 20.2 ms | 15.6 / 19.2 ms | 5,494 | 0 | 1 |
+| 8192² | 64 px | Dry, scatter | 1.524 | 416.7 | 4.0 / 17.5 ms | 13.8 / 16.4 ms | 44,080 | 0 | 0 |
+| 8192² | 64 px | Wet, scatter | 1.888 | 344.8 | 6.1 / 31.3 ms | 16.2 / 20.2 ms | 5,568 | 0 | 2 |
+| 8192² | 512 px | Dry | 1.514 | 400.0 | 5.0 / 11.2 ms | 14.0 / 16.7 ms | 348 | 0 | 0 |
+| 8192² | 512 px | Wet | 1.656 | 416.7 | 3.8 / 34.1 ms | 14.1 / 17.9 ms | 348 | 0 | 7 |
+| 8192² | 512 px | Wet, pickup | 1.728 | 384.6 | 3.7 / 35.6 ms | 14.2 / 17.5 ms | 348 | 0 | 7 |
+| 8192² | 512 px | Wet, densest | 2.068 | 357.1 | 6.9 / 36.0 ms | 15.0 / 18.2 ms | 1,377 | 0 | 7 |
+| 8192² | 512 px | Dry, scatter | 2.001 | 400.0 | 15.4 / 16.6 ms | 14.1 / 17.1 ms | 5,568 | 0 | 0 |
+| 8192² | 512 px | Wet, scatter | 5.207 | 227.3 | 191.9 / 206.0 ms | 15.9 / 41.1 ms | 1,424 | 0 | 22 |
+
+The 64 px scattering brush is back with the floor's own row: 16.2 / 20.2 ms
+at 8192² against 15.6 / 19.2 ms for wet at the densest spacing, which lays
+the same number of dabs, and every row clears 120 fps unpaced. Nothing is
+read back. The worst first frames in this run are higher across the board
+than in the section above, the unscattered rows included, and were not
+looked into; the medians are level.
+
+**What does not hold: a 512 px wet brush thrown four radii.** Its frames
+are level in the median, but the frame a stroke opens in takes 192 ms and
+the p95 is 41 ms. The count is not the cause, and so the floor is not the
+cure. Varying one thing at a time on that row (8192², 512 px, single runs):
+
+| scatter | pickup | ms/frame, unpaced | stroke's first frame, median / worst | all frames, median / p95 | allocations |
+|---|---|---:|---:|---:|---:|
+| ×16, 4 radii | 0.8 | 5.495 | 168.4 / 309.3 ms | 15.6 / 43.6 ms | 22 |
+| ×16, stacked on the path | 0.8 | 1.706 | 10.1 / 31.6 ms | 14.5 / 21.7 ms | 6 |
+| ×16, 1 radius | 0.8 | 2.550 | 14.6 / 34.9 ms | 15.1 / 23.6 ms | 9 |
+| ×4, 4 radii | 0.8 | 5.512 | 190.8 / 306.4 ms | 16.2 / 71.0 ms | 22 |
+| ×16, 4 radii | 0 | 2.506 | 27.0 / 80.8 ms | 15.0 / 24.9 ms | 22 |
+| ×16, 4 radii, cancel pages kept between strokes | 0.8 | 4.401 | 51.4 / 67.5 ms | 15.3 / 26.3 ms | 6 |
+| ×16, 4 radii, cancel pages kept between strokes | 0 | 2.240 | 15.0 / 54.9 ms | 14.5 / 21.3 ms | 6 |
+
+It is the throw. A 512 px dab thrown a thousand pixels lands on tiles no dab
+has touched, and each is copied out for a cancel (smudge 06); by arithmetic
+the first step of a stroke can reach some 120 tiles at once, which is two
+32 MiB cancel pages made in that frame, which the stroke
+before had just released. Keeping the pages between strokes takes two
+thirds off the opening frame, at the cost of holding them. What is left is
+there only with pickup and was not found. Thrown within a radius the brush
+is close to the rest of the table. This is the cancel backup's cost and not
+scatter's, a dry brush pays nothing like it, and it is ticketed as live
+brushes 20 and not fixed here.

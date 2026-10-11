@@ -89,6 +89,7 @@ import {
   brushSpacing,
   dabSpacing,
   wetDabSpacing,
+  thrownScatter,
   cloneBrush,
   isBlender,
   DEFAULT_BRUSH,
@@ -4623,9 +4624,13 @@ export function createEngine(
    * None of the brush's dynamics reach it. A wet brush's (D41) is the brush's
    * own dab, laying by its flow and dragging by its pickup: the dynamics
    * graph scales its radius, flow, pickup and grain depth and turns and
-   * squashes its tip as it does a dry dab's. Scatter and colour are left out,
-   * since a dab thrown off the path has no one dab behind it to drag from. A
-   * tip of several frames gives either dab the one the brush would have drawn.
+   * squashes its tip as it does a dry dab's. Scatter throws it off the path
+   * as it does a dry dab (live brushes 12): the dabs of one spacing step go
+   * to the renderer in the order placed and trade paint with the one
+   * reservoir in that order. A blender has no reservoir and drags from the
+   * dab behind it, which a thrown dab does not have, so it keeps to the
+   * path. Colour is left out. A tip of several frames gives either dab the
+   * one the brush would have drawn.
    */
   function emitDirect(
     x: number,
@@ -4635,17 +4640,15 @@ export function createEngine(
     tiltY: number,
     time: number
   ) {
-    if (directCount === MAX_SMUDGE_DABS_PER_DRAW) flushStamps()
     const brush = activeBrush()
     const context = dynamics.next(x, y, pressure, tiltX, tiltY, time)
-    const offset = directCount * SMUDGE_STRIDE
-    directDabs[offset + SMUDGE.CENTER_X] = x
-    directDabs[offset + SMUDGE.CENTER_Y] = y
     const wet = directWet
-    directDabs[offset + SMUDGE.TIP_FRAME] = nextTipFrame(brush, context)
-    directCount++
-    frameStamps++
     if (!wet) {
+      if (directCount === MAX_SMUDGE_DABS_PER_DRAW) flushStamps()
+      const offset = directCount * SMUDGE_STRIDE
+      directDabs[offset + SMUDGE.CENTER_X] = x
+      directDabs[offset + SMUDGE.CENTER_Y] = y
+      directDabs[offset + SMUDGE.TIP_FRAME] = nextTipFrame(brush, context)
       directDabs[offset + SMUDGE.RADIUS] = smudge.radius
       directDabs[offset + SMUDGE.STRENGTH] = smudgeDabStrength(
         smudge.strength,
@@ -4656,6 +4659,8 @@ export function createEngine(
       directDabs[offset + SMUDGE.GRAIN_DEPTH] = 0
       directDabs[offset + SMUDGE.ANGLE] = brush.shape.angle
       directDabs[offset + SMUDGE.ROUNDNESS] = brush.shape.roundness
+      directCount++
+      frameStamps++
       return
     }
     evaluateDynamics(
@@ -4664,15 +4669,35 @@ export function createEngine(
       params
     )
     const radius = brush.shape.radius * params.size
-    directDabs[offset + SMUDGE.RADIUS] = radius
-    directDabs[offset + SMUDGE.STRENGTH] = wet.pickup * params.pickup
-    directDabs[offset + SMUDGE.FLOW] = brush.rendering.flow * params.flow
-    // As a dry dab's: the brush's own depth is the renderer's, and this is
-    // what the graph does to it. It bites what the dab lays, not what it drags.
-    directDabs[offset + SMUDGE.GRAIN_DEPTH] = params.grainDepth
-    directDabs[offset + SMUDGE.ANGLE] = brush.shape.angle + params.angle
-    directDabs[offset + SMUDGE.ROUNDNESS] =
-      brush.shape.roundness * params.roundness
+    const strength = wet.pickup * params.pickup
+    const flow = brush.rendering.flow * params.flow
+    const angle = brush.shape.angle + params.angle
+    const roundness = brush.shape.roundness * params.roundness
+    const count = scatterPlacer.place(
+      thrownScatter(brush),
+      params.scatter,
+      radius,
+      context.direction,
+      scatterOffsets
+    )
+    for (let i = 0; i < count; i++) {
+      if (directCount === MAX_SMUDGE_DABS_PER_DRAW) flushStamps()
+      const offset = directCount * SMUDGE_STRIDE
+      directDabs[offset + SMUDGE.CENTER_X] = x + scatterOffsets[i * 2]
+      directDabs[offset + SMUDGE.CENTER_Y] = y + scatterOffsets[i * 2 + 1]
+      directDabs[offset + SMUDGE.TIP_FRAME] = nextTipFrame(brush, context)
+      directDabs[offset + SMUDGE.RADIUS] = radius
+      directDabs[offset + SMUDGE.STRENGTH] = strength
+      directDabs[offset + SMUDGE.FLOW] = flow
+      // As a dry dab's: the brush's own depth is the renderer's, and this is
+      // what the graph does to it. It bites what the dab lays, not what it
+      // drags.
+      directDabs[offset + SMUDGE.GRAIN_DEPTH] = params.grainDepth
+      directDabs[offset + SMUDGE.ANGLE] = angle
+      directDabs[offset + SMUDGE.ROUNDNESS] = roundness
+      directCount++
+      frameStamps++
+    }
     // What follows this dab, measured against the dab actually drawn, as a
     // dry stroke's is; a dry stroke leaves the resampler at its last pitch.
     resampler.setSpacing(wetDabSpacing(brush, radius))
@@ -5587,6 +5612,8 @@ export function createEngine(
         time,
         ++strokeSeed
       )
+      // A wet brush's scatter is thrown from the stroke's seed, as a dry one's.
+      scatterPlacer.begin(strokeSeed)
       stroking = true
       opening = true
       fromLastPoint = shiftHeld

@@ -1,4 +1,9 @@
-import { type Brush, brushSpacing, isBlender } from "@/engine/brush/brush"
+import {
+  type Brush,
+  brushSpacing,
+  isBlender,
+  thrownScatter,
+} from "@/engine/brush/brush"
 import {
   evaluateDynamics,
   NEUTRAL_STAMP_CONTEXT,
@@ -169,7 +174,8 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
   // A wet stroke goes straight onto the layer (D41), each dab mixed over the
   // last by its flow: there is no stroke opacity to apply and no coverage to
   // take, whatever the brush still holds for when it is dry again. Nor is a
-  // wet dab scattered or its colour moved, so the preview leaves both out.
+  // wet dab's colour moved, so the preview leaves that out; it is thrown as
+  // a dry one is, unless the brush is a blender, which keeps to the path.
   const wet = !!brush.rendering.wet
   // A blender lays nothing, and a stroke of nothing says nothing about it. It
   // is shown by what it would drag instead: its pickup, as the graph moves it.
@@ -202,7 +208,7 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
       lightness: wet ? 0 : params.lightness * (brush.color?.lightness ?? 1),
     }
     const thrown = scatter.place(
-      wet ? undefined : brush.scatter,
+      thrownScatter(brush),
       params.scatter,
       dab.radius,
       context.direction,
