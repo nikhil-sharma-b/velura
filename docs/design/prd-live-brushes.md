@@ -110,7 +110,7 @@ type BrushRendering = {
 
 **What a wet brush does not have.** A wet stroke writes the layer directly, so the things the stroke buffer provides cannot apply: stroke opacity, the coverage/buildup accumulation mode, and blend modes. A wet brush always mixes normally. The values stay on the brush, unread, so turning wet off restores them.
 
-**Which brush features reach a wet dab.** Size, angle and roundness dynamics; flow dynamics; the new pickup target; tip textures and tip sets with their frame selection; grain, applied to the laid colour only and not to the paint being dragged. Scatter did not until the reservoir gave a thrown dab something to trade with (follow-up 12): scattered dabs now share the one reservoir in the order drawn, and only a blender, which has none, still keeps to the path. Colour jitter does not, and is ticketed as a follow-up: a wet brush with colour set draws as if it were absent.
+**Which brush features reach a wet dab.** Size, angle and roundness dynamics; flow dynamics; the new pickup target; tip textures and tip sets with their frame selection; grain, applied to the laid colour only and not to the paint being dragged. Scatter did not until the reservoir gave a thrown dab something to trade with (follow-up 12): scattered dabs now share the one reservoir in the order drawn, and only a blender, which has none, still keeps to the path. Colour jitter (follow-up 13) now tints the clean reservoir once per stroke, at the first dab; later sensor values do not recolour it, and picked-up paint is never jittered (architecture §6.2).
 
 **Dab spacing.** A wet brush uses its own spacing setting, held at a floor: four pixels or a sixteenth of the dab's radius, whichever is more, a blender included. The floor was one pixel, as smudge's is, until the D30 measurement raised it (live brushes 10, `docs/design/benchmark.md`).
 
@@ -120,7 +120,7 @@ type BrushRendering = {
 
 **Cancel, undo, persistence.** Inherited from the direct stroke path unchanged: each tile is copied on the GPU the first time a dab is about to write to it, a cancel copies those tiles back, a kept stroke pushes one undo entry for the region reached, and the tiles flush and sync as any painted tiles do. No pixel crosses to the CPU while the pen is down (D30).
 
-**Reservoir.** A tip-sized texture that persists from dab to dab for the length of a stroke. At pen-down it is filled with the brush colour. Each dab trades paint with the layer per pixel: the layer takes from the reservoir by `flow`, and the reservoir takes from the layer by `pickup`. It replaces the "pixel one dab behind" read for wet brushes; smudge keeps that read, and so does a wet brush whose own flow is zero (a blender), which can lay nothing from a reservoir and so has none. It is allocated with the renderer at the largest tip size, not per stroke. It is cleared at pen-up: the brush does not stay dirty between strokes, so undo never has to restore brush state.
+**Reservoir.** A tip-sized texture that persists from dab to dab for the length of a stroke. At pen-down it is filled with the brush colour. Each dab trades paint with the layer per pixel: the layer takes from the reservoir by `flow`, and the reservoir takes from the layer by `pickup`. It replaces the "pixel one dab behind" read for wet brushes; smudge keeps that read, and so does a wet brush whose own flow is zero (a blender), which can lay nothing from a reservoir and so has none. It is allocated with the renderer at the largest tip size, not per stroke. It is cleared at pen-up by default. Follow-up 14 adds a session-only clean-brush toggle and manual cleaning: with automatic cleaning off, the load survives between strokes. Cancellation restores the previous load; undo/redo leave it alone. Colour and brush edits clean it; reload starts clean. See architecture §6.2.
 
 **Editor (D32).** The Rendering tab gains a wet toggle and a pickup control. With wet on, stroke opacity, accumulation and blend mode are hidden, and `pickup` appears among the dynamics targets.
 
@@ -154,9 +154,9 @@ Supporting checks:
 - **Wetness and drying:** recent paint mixing while old paint does not, whether per session or saved with the document.
 - **Paint thickness, impasto and lighting.**
 - Ticketed as follow-ups, not built here:
-  - A brush that stays dirty between strokes, with a clean-brush toggle.
+  - A brush that stays dirty between strokes, with a clean-brush toggle (implemented in follow-up 14).
   - Scatter on wet brushes.
-  - Colour jitter on wet brushes.
+  - Colour jitter on wet brushes: completed in follow-up 13 as a jittered clean load per stroke.
   - Sample all layers (picking up from the composited picture).
 - Wet vector brushes.
 - A wet eraser.

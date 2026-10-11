@@ -115,7 +115,8 @@ export function isBlender(brush: Brush): boolean {
 
 /** Amplitudes scaling the graph's colour offsets. Absent means unit scales.
  * Hue is in turns; saturation and lightness are fractions of their HSL range.
- * Random-source mappings provide seeded per-dab jitter, just like size jitter.
+ * Random-source mappings provide seeded per-dab jitter for dry brushes. Wet
+ * brushes sample these offsets once, tinting the clean load at the first dab.
  */
 export type BrushColor = { hue: number; saturation: number; lightness: number }
 

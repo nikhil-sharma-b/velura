@@ -661,6 +661,8 @@ export type EngineCommand =
    * only needs the one conversion into linear light.
    */
   | { type: "setColor"; hex: string }
+  | { type: "cleanBrush" }
+  | { type: "setCleanBrushAfterStroke"; enabled: boolean }
   /**
    * The brush. Every field is optional and unnamed ones are left alone, so a
    * control that owns one property need not know the rest of the brush.
@@ -1136,6 +1138,8 @@ export type EngineSnapshot = Readonly<{
   color: EngineColor
   /** The brush in the hand: serialisable data, never code (D23). */
   brush: Brush
+  cleanBrushAfterStroke: boolean
+  brushDirty: boolean
   eraser: Brush
   /** The smudge tool's own size and strength; its tip's shape is the brush's. */
   smudge: Smudge
@@ -1286,6 +1290,8 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
     hex: "#242526",
   }),
   brush: Object.freeze(cloneBrush(DEFAULT_BRUSH)),
+  cleanBrushAfterStroke: true,
+  brushDirty: false,
   eraser: Object.freeze(eraserBrush()),
   smudge: DEFAULT_SMUDGE,
   textures: BUILTIN_TEXTURE_IDS,
@@ -2142,7 +2148,12 @@ export function createEngine(
     resetSelection()
     uploadLayers()
     syncComposition()
-    publish({ width: size.width, height: size.height, ...describeLayers(doc) })
+    publish({
+      width: size.width,
+      height: size.height,
+      brushDirty: false,
+      ...describeLayers(doc),
+    })
   }
 
   function resize() {
@@ -4256,6 +4267,10 @@ export function createEngine(
    * the frame that shows it is drawn.
    */
   function applyLayerChange() {
+    if (doc && snapshot.paintingMask !== doc.paintingMask) {
+      cancelStroke()
+      cleanBrush()
+    }
     const document = requireDocument()
     if (shapeDrag) {
       const target = findNodeIn(document.layers, shapeDrag.layerId)
@@ -4624,13 +4639,13 @@ export function createEngine(
    * None of the brush's dynamics reach it. A wet brush's (D41) is the brush's
    * own dab, laying by its flow and dragging by its pickup: the dynamics
    * graph scales its radius, flow, pickup and grain depth and turns and
-   * squashes its tip as it does a dry dab's. Scatter throws it off the path
-   * as it does a dry dab (live brushes 12): the dabs of one spacing step go
-   * to the renderer in the order placed and trade paint with the one
-   * reservoir in that order. A blender has no reservoir and drags from the
-   * dab behind it, which a thrown dab does not have, so it keeps to the
-   * path. Colour is left out. A tip of several frames gives either dab the
-   * one the brush would have drawn.
+   * squashes its tip as it does a dry dab's. Colour tints the clean reservoir
+   * load at the first dab only. Scatter throws it off the path as it does a
+   * dry dab (live brushes 12): the dabs of one spacing step go to the
+   * renderer in the order placed and trade paint with the one reservoir in
+   * that order. A blender has no reservoir and drags from the dab behind it,
+   * which a thrown dab does not have, so it keeps to the path. A tip of
+   * several frames gives either dab the one the brush would have drawn.
    */
   function emitDirect(
     x: number,
@@ -4656,6 +4671,9 @@ export function createEngine(
         strokeSensesPressure
       )
       directDabs[offset + SMUDGE.FLOW] = 0
+      directDabs[offset + SMUDGE.HUE] = 0
+      directDabs[offset + SMUDGE.SATURATION] = 0
+      directDabs[offset + SMUDGE.LIGHTNESS] = 0
       directDabs[offset + SMUDGE.GRAIN_DEPTH] = 0
       directDabs[offset + SMUDGE.ANGLE] = brush.shape.angle
       directDabs[offset + SMUDGE.ROUNDNESS] = brush.shape.roundness
@@ -4673,6 +4691,9 @@ export function createEngine(
     const flow = brush.rendering.flow * params.flow
     const angle = brush.shape.angle + params.angle
     const roundness = brush.shape.roundness * params.roundness
+    const hue = params.hue * (brush.color?.hue ?? 1)
+    const saturation = params.saturation * (brush.color?.saturation ?? 1)
+    const lightness = params.lightness * (brush.color?.lightness ?? 1)
     const count = scatterPlacer.place(
       thrownScatter(brush),
       params.scatter,
@@ -4689,6 +4710,9 @@ export function createEngine(
       directDabs[offset + SMUDGE.RADIUS] = radius
       directDabs[offset + SMUDGE.STRENGTH] = strength
       directDabs[offset + SMUDGE.FLOW] = flow
+      directDabs[offset + SMUDGE.HUE] = hue
+      directDabs[offset + SMUDGE.SATURATION] = saturation
+      directDabs[offset + SMUDGE.LIGHTNESS] = lightness
       // As a dry dab's: the brush's own depth is the renderer's, and this is
       // what the graph does to it. It bites what the dab lays, not what it
       // drags.
@@ -5056,6 +5080,7 @@ export function createEngine(
       const direct = directTargetId
       directTargetId = undefined
       const region = direct ? renderer?.endDirect(true) : renderer?.endStroke()
+      if (direct) publish({ brushDirty: renderer?.brushDirty() ?? false })
       // One stroke, one step. The region the mark landed in is read back off
       // the GPU after the frame, never during one.
       if (region && doc) {
@@ -5595,7 +5620,14 @@ export function createEngine(
       // A blender never lays, so it opens as smudge does and drags from the
       // pixel behind, with the brush's own size, pickup and dynamics.
       const lays = wet && !isBlender(activeBrush())
-      if (!renderer?.beginDirect(target, lays ? ink : null)) return
+      if (
+        !renderer?.beginDirect(
+          target,
+          lays ? ink : null,
+          !snapshot.cleanBrushAfterStroke
+        )
+      )
+        return
       directTargetId = target
       directWet = wet
       strokeSensesPressure = sensesPressure
@@ -5705,6 +5737,7 @@ export function createEngine(
       directTargetId = undefined
       directCount = 0
       renderer?.endDirect(false)
+      publish({ brushDirty: renderer?.brushDirty() ?? false })
     }
     if (snapshot.status === "ready") render()
   }
@@ -6116,6 +6149,12 @@ export function createEngine(
     }
   }
 
+  /** Discards the session's picked-up paint without changing document pixels. */
+  function cleanBrush() {
+    renderer?.cleanBrush()
+    publish({ brushDirty: false })
+  }
+
   /**
    * The one place the ink changes, whether it came from the picker or from the
    * eyedropper. Painting is premultiplied linear light; the snapshot carries
@@ -6133,6 +6172,8 @@ export function createEngine(
      */
     encoded?: readonly [number, number, number]
   ) {
+    cancelStroke()
+    cleanBrush()
     // Every colour arriving here is display-referred and therefore in gamut,
     // but the primaries matrices are published rounded to seven decimals, so
     // their rows do not sum to exactly one: white comes back as 1.0000001 in
@@ -6457,6 +6498,8 @@ export function createEngine(
           // changes it needs a new one. Never mid-stroke: the pen is up.
           if (tool === "brush" && brushSpacing(next) !== brushSpacing(brush))
             resampler = createStrokeResampler(brushSpacing(next))
+          cancelStroke()
+          cleanBrush()
           brush = next
           applyBrushTextures()
           if (snapshot.status === "ready") render()
@@ -7776,6 +7819,15 @@ export function createEngine(
               : { tool, vectorSelection: [] }
           )
           break
+        case "cleanBrush":
+          cancelStroke()
+          cleanBrush()
+          break
+        case "setCleanBrushAfterStroke":
+          cancelStroke()
+          if (command.enabled) cleanBrush()
+          publish({ cleanBrushAfterStroke: command.enabled })
+          break
         case "setColor": {
           if (!parseHex(command.hex))
             throw new Error(`Not a colour: ${command.hex}`)
@@ -8079,6 +8131,7 @@ export function createEngine(
       publish({
         width: imported.manifest.width,
         height: imported.manifest.height,
+        brushDirty: false,
         view,
         ...describeLayers(doc),
       })

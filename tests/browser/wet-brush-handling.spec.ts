@@ -8,7 +8,7 @@ import type { TipSelectionMode } from "../../engine/brush/tip-sets"
  * a tip of several frames gives each dab the frame the brush would have
  * drawn, a selection limits what a wet stroke writes and not what it reads,
  * scatter throws its dabs as it does a dry brush's (live brushes 12), and
- * colour jitter is left out.
+ * colour dynamics tint the clean load once.
  */
 
 const WIDTH = 240
@@ -684,9 +684,7 @@ test("on a vector layer a wet brush says the layer holds shapes", async ({
   await expect(page.getByText(/holds\s+shapes/)).toBeVisible()
 })
 
-test("a wet brush with colour jitter set draws as if it were absent", async ({
-  page,
-}) => {
+test("colour dynamics tint a wet brush's clean load", async ({ page }) => {
   const errors: Error[] = []
   page.on("pageerror", (error) => errors.push(error))
   const samples = run(40, 200, [0.3, 1])
@@ -704,7 +702,7 @@ test("a wet brush with colour jitter set draws as if it were absent", async ({
     samples
   )
   expect(jittered.image).not.toEqual(jittered.empty)
-  expect(jittered.image).toEqual(plain.image)
+  expect(jittered.image).not.toEqual(plain.image)
   expect(errors).toEqual([])
 })
 

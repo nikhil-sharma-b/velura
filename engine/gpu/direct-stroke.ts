@@ -1,5 +1,6 @@
 import { type PixelRect, TILE_SIZE } from "../doc/tile-grid"
 import type { LinearColor } from "../doc/tiled-layer"
+import { brushLoadShader } from "../shaders/brush-load"
 import { smudgeShader } from "../shaders/smudge"
 import {
   MAX_SMUDGE_DABS_PER_DRAW,
@@ -48,6 +49,8 @@ export type DirectOpening = {
    * smudge, which lays nothing whatever flow its dabs name.
    */
   lay: LinearColor | null
+  /** Keep the picked-up load after this stroke, instead of cleaning it. */
+  retain?: boolean
 }
 
 /**
@@ -55,14 +58,18 @@ export type DirectOpening = {
  * it holds on to between dabs.
  */
 export interface DirectStroke extends StrokeRenderer<DirectOpening> {
+  /** Discard the brush load so the next wet stroke starts with its ink. */
+  cleanBrush(): void
+  /** Whether the brush has picked up paint, including transparency. */
+  brushDirty(): boolean
   /**
    * The tip, the grain or the selection was replaced: the views held of them
    * are stale.
    */
   invalidateBinding(): void
   /**
-   * Lets go of the stroke in flight without putting anything back, because
-   * its surface is going away. Given a surface, only a stroke on that one.
+   * Cancels a stroke whose surface is going away, restoring its brush load.
+   * Without a surface, drops the document and cleans the brush too.
    */
   drop(surface?: Surface): void
   destroy(): void
@@ -77,7 +84,7 @@ const MAX_CARRY_SIZE = 2048
 /**
  * The stroke that reads and writes its surface as it goes (D29, smudge 01):
  * smudge mixes towards the pixel one dab behind. Wet brushes exchange paint
- * with a stroke-local reservoir held in tip coordinates (D41).
+ * with a reservoir held in tip coordinates (D41), optionally kept between strokes.
  */
 export function createDirectStroke(
   device: GPUDevice,
@@ -91,6 +98,11 @@ export function createDirectStroke(
         target: Surface
         /** Whether the stroke lays colour: a wet brush's, and not smudge's. */
         lays: boolean
+        /** The clean load, until the first dab supplies its colour offsets. */
+        load: LinearColor | null
+        retain: boolean
+        beforeDirty: boolean
+        beforeExtent: number
         /** Whether the surface held nothing as the stroke opened. */
         wasEmpty: boolean
         /** Null until the first dab says where the stroke began. */
@@ -215,13 +227,67 @@ export function createDirectStroke(
       size: [reservoirSize, reservoirSize],
       format: LAYER_FORMAT,
       usage:
-        GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        GPUTextureUsage.COPY_SRC |
+        GPUTextureUsage.COPY_DST,
     })
   )
+  const reservoirBackup = device.createTexture({
+    label: "brush load before stroke",
+    size: [reservoirSize, reservoirSize],
+    format: LAYER_FORMAT,
+    usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+  })
+  let dirty = false
   const reservoirViews = reservoirs.map((texture) => texture.createView())
   let reservoirExtent = 0
   let reservoirIndex = 0
   let reservoirBindings: { layer: GPUBindGroup; pickup: GPUBindGroup }[] = []
+  const loadModule = device.createShaderModule({ code: brushLoadShader })
+  const loadPipeline = device.createRenderPipeline({
+    label: "wet brush colour load",
+    layout: "auto",
+    vertex: { module: loadModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: loadModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format: LAYER_FORMAT }],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  const loadParams = new Float32Array(8)
+  const loadUniform = device.createBuffer({
+    size: loadParams.byteLength,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
+  const loadBinding = device.createBindGroup({
+    layout: loadPipeline.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: { buffer: loadUniform } }],
+  })
+
+  function tintLoad(color: LinearColor, dabs: Float32Array) {
+    loadParams.set(color)
+    loadParams[4] = dabs[SMUDGE.HUE]
+    loadParams[5] = dabs[SMUDGE.SATURATION]
+    loadParams[6] = dabs[SMUDGE.LIGHTNESS]
+    if (loadParams[4] === 0 && loadParams[5] === 0 && loadParams[6] === 0)
+      return
+    device.queue.writeBuffer(loadUniform, 0, loadParams)
+    const encoder = device.createCommandEncoder()
+    for (const view of reservoirViews) {
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{ view, loadOp: "clear", storeOp: "store" }],
+      })
+      pass.setViewport(0, 0, reservoirExtent, reservoirExtent, 0, 1)
+      pass.setPipeline(loadPipeline)
+      pass.setBindGroup(0, loadBinding)
+      pass.draw(3)
+      pass.end()
+    }
+    device.queue.submit([encoder.finish()])
+  }
+
   function clearReservoir(color: LinearColor = [0, 0, 0, 0]) {
     const encoder = device.createCommandEncoder()
     for (const view of reservoirViews) {
@@ -244,6 +310,7 @@ export function createDirectStroke(
         .end()
     }
     device.queue.submit([encoder.finish()])
+    dirty = false
     reservoirExtent = 0
     reservoirIndex = 0
   }
@@ -269,6 +336,14 @@ export function createDirectStroke(
   /** Draws the dabs of the stroke into its surface, one after another. */
   function drawDabs(dabs: Float32Array, count: number) {
     const stroke = session!
+    if (stroke.load) {
+      reservoirExtent = Math.min(
+        reservoirSize,
+        Math.max(64, Math.ceil(dabs[SMUDGE.RADIUS] * 2))
+      )
+      tintLoad(stroke.load, dabs)
+      stroke.load = null
+    }
     const { width, height } = context.size()
     const selection = context.selection()
     // Selection bounds clip writes; reservoir pickup still reads the whole tip.
@@ -365,12 +440,6 @@ export function createDirectStroke(
     params[3] = tip.usesTip ? 1 : 0
     params[4] = selection ? 1 : 0
     params[5] = stroke.lays ? 1 : 0
-    if (stroke.lays && reservoirExtent === 0) {
-      reservoirExtent = Math.min(
-        reservoirSize,
-        Math.max(64, Math.ceil(drawnDabs[SMUDGE.RADIUS] * 2))
-      )
-    }
     params[6] = reservoirExtent / reservoirSize
     const grain = context.grain()
     params[7] = grain.scale
@@ -489,6 +558,7 @@ export function createDirectStroke(
         pickup.setVertexBuffer(0, instances)
         pickup.draw(6, 1, 0, i)
         pickup.end()
+        dirty = true
         reservoirIndex = next
       }
     }
@@ -552,9 +622,32 @@ export function createDirectStroke(
 
   function end(keep: boolean): PixelRect | null {
     if (!session) return null
-    const { target, reached, kept, wasEmpty, lays } = session
+    const {
+      target,
+      reached,
+      kept,
+      wasEmpty,
+      lays,
+      retain,
+      beforeDirty,
+      beforeExtent,
+    } = session
     session = undefined
-    if (lays) clearReservoir()
+    if (lays) {
+      if (!keep && beforeDirty) {
+        const encoder = device.createCommandEncoder()
+        for (const texture of reservoirs)
+          encoder.copyTextureToTexture(
+            { texture: reservoirBackup },
+            { texture },
+            [beforeExtent, beforeExtent]
+          )
+        device.queue.submit([encoder.finish()])
+        dirty = beforeDirty
+        reservoirExtent = beforeExtent
+        reservoirIndex = 0
+      } else if (!keep || !retain) clearReservoir()
+    }
     const region =
       reached.right > reached.left && reached.bottom > reached.top
         ? {
@@ -582,13 +675,30 @@ export function createDirectStroke(
      * writes to it. A surface that holds nothing has nothing to smear, so
      * only a stroke that lays colour opens on one.
      */
-    begin({ target, lay }) {
+    begin({ target, lay, retain = false }) {
       if (target.empty && !lay) return false
       if (session) end(false)
-      if (lay) clearReservoir(lay)
+      const beforeDirty = dirty
+      const beforeExtent = reservoirExtent
+      if (lay) {
+        if (dirty) {
+          const encoder = device.createCommandEncoder()
+          encoder.copyTextureToTexture(
+            { texture: reservoirs[reservoirIndex] },
+            { texture: reservoirBackup },
+            [reservoirExtent, reservoirExtent]
+          )
+          device.queue.submit([encoder.finish()])
+        }
+        if (!retain || !dirty) clearReservoir(lay)
+      }
       session = {
         target,
         lays: !!lay,
+        load: !retain || !beforeDirty ? lay : null,
+        retain,
+        beforeDirty,
+        beforeExtent,
         wasEmpty: target.empty,
         last: null,
         reached: {
@@ -612,20 +722,25 @@ export function createDirectStroke(
       drawDabs(dabs, count)
     },
     end,
+    cleanBrush: () => clearReservoir(),
+    brushDirty: () => dirty,
     invalidateBinding() {
       bindGroup = undefined
       reservoirBindings = []
     },
     drop(surface) {
       if (surface && session?.target !== surface) return
-      if (session?.lays) clearReservoir()
+      if (session) end(false)
+      if (!surface) clearReservoir()
       session = undefined
       trimBackup()
     },
     destroy() {
       session = undefined
       for (const page of backupPages.splice(0)) page.destroy()
+      loadUniform.destroy()
       for (const texture of reservoirs) texture.destroy()
+      reservoirBackup.destroy()
       carry.destroy()
       bindGroup = undefined
       uniform.destroy()
