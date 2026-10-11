@@ -1262,9 +1262,29 @@ mid-stroke changes from one to the other. Giving the render pass the same
 worked-out position would close that, and would move every wet brush's
 pixels by the same rounding; it was not done here (live brushes 27).
 
-A blender's dabs drag as smudge's do and go the same way. Live brushes 23
-now caps blender pitch at smudge spacing to keep small smears smooth; its
-measurements above predate this compute-pass change.
+**Blenders.** A blender's dabs drag as smudge's do and go the same way.
+Live brushes 23, above, gave a small blender smudge's spacing and recorded
+it missing the frame for it. `bun run bench/run.ts --blender` with both
+changes in, same machine and day, one run; sizes are radii, and the
+"before" column is 23's table:
+
+| document | radius | paint | latency median / p95, before | after | dabs | painting readbacks | allocations |
+|---|---:|---|---:|---:|---:|---:|---:|
+| 2048² | 2 px | blender | 16.3 / 21.5 ms | 12.3 / 14.5 ms | 4,898 | 0 | 1 |
+| 2048² | 4 px | blender | 16.1 / 20.7 ms | 12.5 / 14.7 ms | 4,898 | 0 | 1 |
+| 2048² | 8 px | blender | 14.1 / 17.5 ms | 12.0 / 14.2 ms | 2,451 | 0 | 1 |
+| 2048² | 16 px | blender | 13.1 / 15.9 ms | 12.2 / 14.3 ms | 1,226 | 0 | 1 |
+| 8192² | 2 px | blender | 23.6 / 72.1 ms | 13.2 / 15.6 ms | 21,972 | 0 | 1 |
+| 8192² | 4 px | blender | 23.5 / 65.4 ms | 13.3 / 15.8 ms | 22,008 | 0 | 1 |
+| 8192² | 8 px | blender | 18.9 / 24.9 ms | 13.3 / 15.3 ms | 11,005 | 0 | 1 |
+| 8192² | 16 px | blender | 16.0 / 20.2 ms | 13.2 / 15.6 ms | 5,503 | 0 | 3 |
+
+A small blender holds the frame at every size, with four times the dabs of
+the reservoir brush beside it, which reads 14.8 / 18.1–18.6 ms on 8192² and
+13.2–13.6 / 16.0–16.6 ms on 2048² in the same run: a blender is now the
+cheaper of the two, since the reservoir brush's dabs are still a copy and
+one or two passes each. The three allocations in the last row are cancel
+pages, as six 16 px strokes across the large document reach more tiles.
 
 **Validation on current dev.** On 2026-10-12, the committed implementation
 was reapplied over `19d3285`, including live brushes 23's closer blender
