@@ -1832,6 +1832,37 @@ export function CanvasHost({
                       </PopoverPrimitive.Portal>
                     </PopoverPrimitive.Root>
                   )}
+                  {snapshot.tool === "brush" &&
+                    snapshot.brush.rendering.wet && (
+                      <div className="flex flex-col gap-2 px-2 py-1 text-xs">
+                        <label className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={snapshot.cleanBrushAfterStroke}
+                            onChange={(event) =>
+                              void engine?.dispatch({
+                                type: "setCleanBrushAfterStroke",
+                                enabled: event.target.checked,
+                              })
+                            }
+                          />
+                          Clean brush after each stroke
+                        </label>
+                        <button
+                          type="button"
+                          disabled={!snapshot.brushDirty}
+                          onClick={() =>
+                            runStudioCommand("brush.clean", commandContext)
+                          }
+                          className="rounded px-2 py-1 hover:bg-studio-edge disabled:opacity-50"
+                        >
+                          {snapshot.brushDirty
+                            ? "Dirty brush · Clean brush"
+                            : "Brush is clean"}
+                        </button>
+                        <span>Undo leaves the brush load as it is.</span>
+                      </div>
+                    )}
                   {/* Size and opacity are the two a hand reaches for mid-piece, so
                 they stay on the canvas: the editor is for shaping a brush,
                 not for the adjustment made between one stroke and the next. */}
