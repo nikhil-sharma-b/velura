@@ -7,7 +7,7 @@ import type { TipSelectionMode } from "../../engine/brush/tip-sets"
  * command seam and the pixels it presents: its dynamics reach each wet dab,
  * a tip of several frames gives each dab the frame the brush would have
  * drawn, a selection limits what a wet stroke writes and not what it reads,
- * and scatter and colour jitter are left out.
+ * scatter is left out, and colour dynamics tint the clean load once.
  */
 
 const WIDTH = 240
@@ -683,7 +683,7 @@ test("on a vector layer a wet brush says the layer holds shapes", async ({
   await expect(page.getByText(/holds\s+shapes/)).toBeVisible()
 })
 
-test("a wet brush with scatter and colour jitter set draws as if they were absent", async ({
+test("a wet brush ignores scatter while colour dynamics tint its clean load", async ({
   page,
 }) => {
   const errors: Error[] = []
@@ -705,7 +705,20 @@ test("a wet brush with scatter and colour jitter set draws as if they were absen
     samples
   )
   expect(thrown.image).not.toEqual(thrown.empty)
-  expect(thrown.image).toEqual(plain.image)
+  expect(thrown.image).not.toEqual(plain.image)
+  const tinted = await drawn(
+    page,
+    "wet",
+    {
+      color: { hue: 0.5, saturation: 0.5, lightness: 0.5 },
+      dynamics: [
+        { source: "random", target: "hue", range: [-1, 1], mix: "add" },
+        { source: "pressure", target: "lightness", range: [-1, 1], mix: "add" },
+      ],
+    },
+    samples
+  )
+  expect(thrown.image).toEqual(tinted.image)
   expect(errors).toEqual([])
 })
 
