@@ -698,8 +698,8 @@ export function createDirectStroke(
   return {
     /**
      * Nothing is copied yet: each tile is kept as it is when a dab first
-     * writes to it. A surface that holds nothing has nothing to smear, so
-     * only a stroke that lays colour opens on one.
+     * writes to it. A stroke can open on an empty destination when it lays
+     * colour or has visible artwork to sample.
      */
     begin({ target, lay, retain = false, source }) {
       if (target.empty && !lay && (!source || source.empty)) return false

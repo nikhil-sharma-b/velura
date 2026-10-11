@@ -1881,11 +1881,7 @@ export function CanvasHost({
                             ? "All layers"
                             : "Active layer"
                         }
-                        readout={
-                          snapshot.sampleAllLayers
-                            ? "All layers"
-                            : "Active layer"
-                        }
+                        readout={snapshot.sampleAllLayers ? "All" : "Layer"}
                         icon={<DropHalfIcon />}
                       >
                         <label className="flex items-center gap-2 text-xs">

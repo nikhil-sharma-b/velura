@@ -350,8 +350,8 @@ export interface Renderer {
    * Starts a direct stroke on one surface (smudge 01, D41): a wet brush's,
    * which lays `lay`, or with null a smudge or a blender, which lay nothing. Nothing is copied yet: each
    * tile is kept as it is when a dab first writes to it, which is what a
-   * cancel puts back. False for a smudge when the surface holds nothing,
-   * and so has nothing to smear.
+   * cancel puts back. Sampling all layers freezes visible artwork before
+   * any dab writes. False for a smudge when its pickup source holds nothing.
    */
   beginDirect(
     surfaceId: string,
@@ -2305,8 +2305,10 @@ export function createRenderer(
       presentUniform,
       snapshot(target: Surface) {
         validGroupCaches.clear()
-        clearSurface(target)
-        if (!plan?.active) return
+        if (!plan?.active) {
+          clearSurface(target)
+          return
+        }
         let current = plan.active
         let items: CompositeItem[] = []
         for (const stage of plan.stages ?? [
@@ -2315,7 +2317,27 @@ export function createRenderer(
           items = [...stage.below, current, ...stage.above]
           if (stage.container) current = { ...stage.container, children: items }
         }
-        renderItems(items, target)
+        const visible = items.filter((item) => {
+          const surface = item.opacity > 0 ? itemSurface(item) : undefined
+          return surface && !surface.empty
+        })
+        const single = visible.length === 1 ? visible[0] : undefined
+        const source = single ? itemSurface(single) : undefined
+        if (
+          source &&
+          single &&
+          single.opacity === 1 &&
+          single.blend === "normal" &&
+          !single.maskId &&
+          !single.clip
+        ) {
+          // The artwork space is document-sized: one unmodified surface can
+          // be frozen by a blit, without shading every document pixel.
+          copySurface(source, target)
+        } else {
+          clearSurface(target)
+          renderItems(items, target)
+        }
       },
       compositeSurface,
       groupThumbnailSurface,
