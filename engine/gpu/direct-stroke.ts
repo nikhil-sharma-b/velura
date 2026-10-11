@@ -83,8 +83,8 @@ const BACKUP_PAGE_SLOTS = BACKUP_PAGE_TILES * BACKUP_PAGE_TILES
 /**
  * Pages kept from one stroke to the next (live brushes 20): 256 tiles, which
  * is what one spacing step of the densest scatter reaches with a 512 px dab
- * thrown wide. A stroke that needs no more than the stroke before it then
- * allocates nothing, the frame it opens in least of all.
+ * thrown wide. A stroke that needs no more than these allocates nothing once
+ * a stroke before it has, the frame it opens in least of all.
  */
 const BACKUP_PAGES_KEPT = 4
 /** The widest neighbourhood a dab may ask for; one reaching further is skipped. */
@@ -770,9 +770,10 @@ export function createDirectStroke(
     drop(surface) {
       if (surface && session?.target !== surface) return
       if (session) end(false)
-      if (!surface) clearReservoir()
       session = undefined
-      // A surface going away is no stroke to follow: only the first stays.
+      if (surface) return
+      clearReservoir()
+      // The document is going: its strokes' pages go with it, but the first.
       trimBackup(1)
     },
     destroy() {

@@ -868,13 +868,15 @@ has touched, and each is copied out for a cancel (smudge 06); by arithmetic
 the first step of a stroke can reach some 120 tiles at once, which is two
 32 MiB cancel pages made in that frame, which the stroke
 before had just released. Keeping the pages between strokes takes two
-thirds off the opening frame, at the cost of holding them. What is left is
+thirds off the opening frame in that run (and 2 ms in the runs of live
+brushes 20, below, where the frame was 22 ms to begin with), at the cost of
+holding them. What is left is
 there only with pickup and was not found. Thrown within a radius the brush
 is close to the rest of the table. This is the cancel backup's cost and not
 scatter's, a dry brush pays nothing like it, and it is ticketed as live
 brushes 20 and not fixed here.
 
-## A wide-thrown wet brush's opening frame: pages kept, and not held (live brushes 20)
+## A wide-thrown wet brush's opening frame: pages kept, the frame still missed (live brushes 20)
 
 Apple M4 (integrated, 16 GiB), 75 Hz display, Chrome/WebGPU, 2560 × 1440
 window, six strokes, 2026-10-11, on top of `94f43cd`. The row live brushes 12
@@ -893,11 +895,20 @@ same brush unscattered, and the rest of this section is about that 22 ms.
 back every page but the first as it ended, and the next made them again with
 the pen down. Keeping them takes the allocations of this row from 22 to 9
 and those of the unscattered 512 px rows from 7 to 3, and takes about 2 ms
-off this row's opening frame (20.7 to 21.0 ms over four runs) and about 4 ms
+off this row's opening frame (20.1 to 21.0 ms over five runs) and about 4 ms
 with no pickup (11.5 to 12.5 ms down to 7.5 to 7.8 ms). It is not what the
 opening frame is made of. Four pages are 256 tiles, a full step of sixteen
-512 px dabs; the cost is up to 96 MiB more held between strokes (see the
-architecture document). With that:
+512 px dabs at the most a dab's box can cover, where this row's opening step
+reached 91; the cost is up to 96 MiB more held between strokes (see the
+architecture document). A stroke of this row needs five pages, so each still
+makes one with the pen down, though not in the frame it opens in.
+
+The other two things live brushes 12 left to decide were not done. Pages are
+not allocated ahead of need: the frame that pays is the first, before there
+is an ahead. And a wet brush's throw is not limited by its size: thrown one
+radius the row opens in 10.1 ms but its p95 is still 21.7 ms (the table
+below), so the limit would cost the brush its reach and not buy the frame.
+With the pages kept:
 
 | document | brush | paint | ms/frame, unpaced | sustained fps | stroke's first frame, median / worst | all frames, median / p95 | dabs | readbacks | allocations |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|
@@ -912,7 +923,8 @@ architecture document). With that:
 | 8192² | 512 px | Wet, scatter | 3.646 | 263.2 | 20.1 / 21.1 ms | 14.1 / 22.3 ms | 1,424 | 0 | 9 |
 
 **The row still misses**: 20.1 ms to open and a p95 of 22.3 ms, where the
-other 512 px wet rows open in 3 ms and hold 16 to 17.5 ms. The bar is not
+other 512 px wet rows open in 3 ms and hold 16 to 17.5 ms (sampling all
+layers apart, whose opening frame is live brushes 21's). The bar is not
 dropped and the miss is recorded as a miss (live brushes 24).
 
 **What pickup costs.** Not the dab, and not fresh tiles. Varying one thing
@@ -957,8 +969,8 @@ Two things were found that are part of it and not all of it. History keeps
 each stroke's changed tiles and compresses the older ones, and tiles that
 are not flat are slow to compress: with that compression off the opening
 frame was 14.6 to 19.6 ms paced, and with no history recorded at all it was
-15.4 to 16.6 ms, so about 5 ms of the 20 is the stroke before, still being
-put away. And the unpaced ms/frame of this row is not the frame's cost: the
+15.4 to 16.6 ms against 20 to 22 ms, so some 4 to 6 ms is the stroke
+before, still being put away. And the unpaced ms/frame of this row is not the frame's cost: the
 mean is over every interval, the pause between strokes included, and
 history's settling is in that pause (3.68 ms with history's compression on,
 2.07 ms with it off).

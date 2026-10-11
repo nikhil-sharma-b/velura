@@ -182,6 +182,10 @@ test("a wet stroke thrown wide keeps its cancel pages for the stroke after it", 
   )
 
   expect(result.dispatched).toBe(result.requested)
+  expect(result.strokeStarts).toHaveLength(3)
+  expect(
+    result.frames.reduce((total, frame) => total + frame.stamps, 0)
+  ).toBeGreaterThan(50)
   expect(result.readbacks).toBe(0)
   // The second page is made once, by the first stroke to outgrow the first,
   // and is there for the strokes that follow (live brushes 20): two pages at
