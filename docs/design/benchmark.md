@@ -719,3 +719,36 @@ Level with what smudge 06 recorded (3.0 / 12.5 and 15.3 / 19.1 ms at
 lays a dab every four pixels, which is the wet floor. A smaller smudge goes
 closer, down to a pixel, and by this section's arithmetic would not hold;
 that is smudge's to answer (live brushes 19) and is not changed here.
+
+## Sample all layers (live brushes 15)
+
+Measured on 11 October 2026 on Apple M4 with `bun run bench/run.ts --wet`, at `596d4c7`. The added row first paints its ground, adds an empty layer above it, enables sampling and runs the same wet workload. Other rows retain the active-layer source. Browser regressions ran concurrently with the early 2048² rows; the 8192² rows ran after them. The display remains 75 Hz.
+
+| document | brush | paint | mean frame | sustained fps | first frame median / worst | latency median / p95 | dabs | painting readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 64 px | dry | 0.518 ms | 1250.0 | 1.6 / 6.9 ms | 12.5 / 14.8 ms | 5904 | 0 | 0 |
+| 2048² | 64 px | wet | 0.530 ms | 1250.0 | 2.0 / 18.0 ms | 12.3 / 14.8 ms | 617 | 0 | 1 |
+| 2048² | 64 px | wet, pickup | 0.566 ms | 1250.0 | 2.1 / 18.8 ms | 12.8 / 15.2 ms | 617 | 0 | 1 |
+| 2048² | 64 px | wet, all layers | 0.545 ms | 1250.0 | 2.4 / 21.2 ms | 12.7 / 15.2 ms | 617 | 0 | 2 |
+| 2048² | 64 px | wet, densest | 0.576 ms | 1111.1 | 2.1 / 21.5 ms | 13.5 / 16.2 ms | 1226 | 0 | 1 |
+| 2048² | 512 px | dry | 0.597 ms | 1000.0 | 1.4 / 6.7 ms | 12.5 / 14.7 ms | 80 | 0 | 0 |
+| 2048² | 512 px | wet | 0.652 ms | 1000.0 | 1.6 / 12.2 ms | 12.5 / 15.0 ms | 80 | 0 | 1 |
+| 2048² | 512 px | wet, pickup | 0.667 ms | 1111.1 | 2.2 / 12.0 ms | 12.1 / 15.7 ms | 115 | 0 | 1 |
+| 2048² | 512 px | wet, all layers | 0.716 ms | 833.3 | 2.7 / 19.4 ms | 12.2 / 14.6 ms | 80 | 0 | 2 |
+| 2048² | 512 px | wet, densest | 0.601 ms | 1111.1 | 1.9 / 12.4 ms | 12.6 / 15.0 ms | 310 | 0 | 1 |
+| 8192² | 64 px | dry | 1.228 ms | 476.2 | 2.5 / 14.9 ms | 13.1 / 15.2 ms | 2744 | 0 | 0 |
+| 8192² | 64 px | wet | 1.282 ms | 476.2 | 2.6 / 21.5 ms | 14.0 / 16.8 ms | 2751 | 0 | 1 |
+| 8192² | 64 px | wet, pickup | 1.289 ms | 476.2 | 2.9 / 20.9 ms | 13.9 / 16.4 ms | 2744 | 0 | 1 |
+| 8192² | 64 px | wet, all layers | 1.323 ms | 454.5 | 16.6 / 42.1 ms | 14.0 / 16.6 ms | 2751 | 0 | 2 |
+| 8192² | 64 px | wet, densest | 1.361 ms | 454.5 | 2.7 / 22.4 ms | 15.1 / 18.6 ms | 5481 | 0 | 1 |
+| 8192² | 512 px | dry | 1.257 ms | 476.2 | 3.7 / 13.1 ms | 13.1 / 15.4 ms | 348 | 0 | 0 |
+| 8192² | 512 px | wet | 1.309 ms | 454.5 | 2.9 / 17.1 ms | 13.2 / 16.1 ms | 348 | 0 | 7 |
+| 8192² | 512 px | wet, pickup | 1.386 ms | 434.8 | 3.5 / 17.3 ms | 13.2 / 15.6 ms | 348 | 0 | 7 |
+| 8192² | 512 px | wet, all layers | 1.366 ms | 434.8 | 16.4 / 40.8 ms | 13.4 / 16.1 ms | 348 | 0 | 8 |
+| 8192² | 512 px | wet, densest | 1.665 ms | 434.8 | 2.8 / 17.7 ms | 14.4 / 17.4 ms | 1376 | 0 | 7 |
+
+Sampling sustains **434–454 fps at 8192²**, above D30's 120 fps throughput target, with zero painting readbacks. Steady-stroke median/p95 latency is close to active-layer pickup: 14.0/16.6 ms against 13.9/16.4 ms at 64 px; 13.4/16.1 ms against 13.2/15.6 ms at 512 px.
+
+**The opening frame is not held.** Freezing the whole artwork raises its median to 16.4–16.6 ms (worst 40.8–42.1 ms), against 2.9–3.5 ms for active-layer pickup. A single full-opacity normal surface can be copied directly, but later strokes also contain the new active paint and need full composition. Avoiding that document-sized freeze is follow-up 21 in the local live-brushes tracker. These measurements do not establish the under-10-ms pointer-to-pixel target; the existing 120 Hz display validation is also still required. The throughput pass must not be read as full D30 acceptance.
+
+The frozen RGBA16F artwork costs 512 MiB at 8192², reused between strokes; an additional 32 MiB bounded destination carry is allocated with the renderer. The all-layer row allocates one extra texture on its first stroke, then only the existing cancel-backup pages. Hidden layers, group opacity, masks, blend modes and clipping use the artwork compositor, and no display background is baked into pickup.
