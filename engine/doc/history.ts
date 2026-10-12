@@ -179,7 +179,10 @@ export interface DocumentHistory {
   spilledBytes(): number
   /** Forgets everything: a resize re-tiles the document past recognition. */
   clear(): void
-  /** Waits for recording that is still in flight. */
+  /**
+   * Waits for recording that is still in flight, and for the store to have
+   * compressed and spilled what that left it with.
+   */
   settle(): Promise<void>
   /**
    * Every surface's tiles by content hash, as of the last recorded step. This
@@ -497,6 +500,26 @@ export function createDocumentHistory(options: {
     await writePixels(entry, side)
   }
 
+  /**
+   * Waits for every step queued to have been recorded, and not for the store
+   * to have put their tiles away. Undo and redo wait on this alone: a step's
+   * tiles are whole from the moment they are stored, and compressing a thrown
+   * stroke's is two seconds an undo would spend waiting for tiles it is about
+   * to ask for raw (live brushes 32).
+   */
+  async function recorded() {
+    let pending = queue
+    // Recording can queue more recording: a stroke's pen-up lands on a frame
+    // of its own. Undo acts the moment this returns, and popping past a step
+    // still being recorded leaves that step's pixels on a layer the tree no
+    // longer has.
+    while (true) {
+      await pending
+      if (pending === queue) break
+      pending = queue
+    }
+  }
+
   return {
     store,
     recordUpload(surfaceId, tiles, canvas) {
@@ -605,7 +628,7 @@ export function createDocumentHistory(options: {
       })
     },
     async undo(applyStructure, applyScenes) {
-      await this.settle()
+      await recorded()
       const entry = stack.undo()
       if (!entry) return false
       if (entry.structure) applyStructure(entry.structure.before)
@@ -616,7 +639,7 @@ export function createDocumentHistory(options: {
       return true
     },
     async redo(applyStructure, applyScenes) {
-      await this.settle()
+      await recorded()
       const entry = stack.redo()
       if (!entry) return false
       if (entry.structure) applyStructure(entry.structure.after)
@@ -656,9 +679,7 @@ export function createDocumentHistory(options: {
       let pending = queue
       // Recording can queue more recording, and so can anything that runs
       // while the store settles — a stroke's pen-up lands on a frame of its
-      // own. The queue is looked at last, after every wait: undo acts the
-      // moment this returns, and popping past a step still being recorded
-      // leaves that step's pixels on a layer the tree no longer has.
+      // own. The queue is looked at last, after every wait.
       while (true) {
         await pending
         await store.settle()

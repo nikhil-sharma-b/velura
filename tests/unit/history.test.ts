@@ -10,6 +10,7 @@ import {
   tileKey,
 } from "../../engine/doc/tile-grid"
 import {
+  createInlineTileWork,
   createMemorySpill,
   createTileStore,
   type TileStore,
@@ -264,6 +265,61 @@ describe("recording strokes", () => {
     expect(fixture.history.canRedo()).toBe(false)
     await fixture.history.undo(noStructure)
     expect(fixture.read("layer", ORIGIN)![0]).toBe(1)
+  })
+})
+
+describe("undo while the store is still putting a stroke away", () => {
+  /** History over a store whose compression waits to be let through. */
+  function held() {
+    const surfaces = createFakeSurfaces()
+    const inline = createInlineTileWork()
+    let open = Promise.resolve()
+    let release = () => {}
+    const history = createDocumentHistory({
+      bridge: surfaces.bridge,
+      store: createTileStore({
+        hotBytes: 0,
+        warmBytes: TILE_BYTES * 8,
+        work: {
+          ...inline,
+          deflate: async (bytes) => {
+            await open
+            return inline.deflate(bytes)
+          },
+        },
+      }),
+    })
+    return {
+      ...surfaces,
+      history,
+      hold() {
+        open = new Promise((resolve) => (release = resolve))
+      },
+      release: () => release(),
+    }
+  }
+
+  test("takes the stroke back and puts it back without waiting for compression", async () => {
+    const fixture = held()
+    await stroke(fixture, 1)
+    fixture.hold()
+    fixture.paint("layer", ORIGIN, 2)
+    fixture.history.recordStroke("layer", wholeTile(ORIGIN))
+
+    expect(await fixture.history.undo(noStructure)).toBe(true)
+    expect(fixture.read("layer", ORIGIN)).toEqual(
+      new Uint16Array(TILE_VALUES).fill(1)
+    )
+    expect(await fixture.history.redo(noStructure)).toBe(true)
+    expect(fixture.read("layer", ORIGIN)).toEqual(
+      new Uint16Array(TILE_VALUES).fill(2)
+    )
+
+    fixture.release()
+    await fixture.history.settle()
+    expect(fixture.read("layer", ORIGIN)).toEqual(
+      new Uint16Array(TILE_VALUES).fill(2)
+    )
   })
 })
 
@@ -673,25 +729,11 @@ describe("restoring a stored state", () => {
 })
 
 describe("undo racing a stroke", () => {
-  test("a stroke that lands while undo waits on the store is what undo takes back", async () => {
-    // The store's own settling is the last thing undo waits on. Whatever is
-    // handed to this runs inside that wait, after the recording queue was
-    // last seen empty.
-    let duringSettle: (() => void) | undefined
-    const inner = createTileStore({
-      hotBytes: TILE_BYTES * 2,
-      warmBytes: 64 * 1024,
-      spill: createMemorySpill(),
-    })
-    const store: TileStore = {
-      ...inner,
-      async settle() {
-        await inner.settle()
-        const landed = duringSettle
-        duringSettle = undefined
-        landed?.()
-      },
-    }
+  test("a stroke that lands while undo waits on recording is what undo takes back", async () => {
+    // Recording is the one thing undo waits on. Whatever is handed to this
+    // runs inside a readback undo is waiting for, after undo looked at the
+    // queue.
+    let duringReadback: (() => void) | undefined
     const surfaces = createFakeSurfaces()
     const history = createDocumentHistory({
       bridge: {
@@ -700,10 +742,17 @@ describe("undo racing a stroke", () => {
         // come back on a later task, which is the window the race needs.
         async readTiles(surfaceId, coords) {
           await new Promise((resolve) => setTimeout(resolve, 0))
+          const landed = duringReadback
+          duringReadback = undefined
+          landed?.()
           return surfaces.bridge.readTiles(surfaceId, coords)
         },
       },
-      store,
+      store: createTileStore({
+        hotBytes: TILE_BYTES * 2,
+        warmBytes: 64 * 1024,
+        spill: createMemorySpill(),
+      }),
     })
     const doc = createDocument({ width: 512, height: 512 })
     const before = captureStructure(doc)
@@ -715,18 +764,27 @@ describe("undo racing a stroke", () => {
     await history.settle()
 
     // The pen lifts on the new layer as the artist reaches for undo: the
-    // stroke's readback is queued while undo is still settling.
+    // stroke's readback is queued while undo is still waiting.
+    const NEXT = { x: 1, y: 0 }
+    duringReadback = () => {
+      surfaces.paint(added, NEXT, 6)
+      history.recordStroke(added, wholeTile(NEXT))
+    }
     surfaces.paint(added, ORIGIN, 5)
-    duringSettle = () => history.recordStroke(added, wholeTile(ORIGIN))
+    history.recordStroke(added, wholeTile(ORIGIN))
     let structure = captureStructure(doc)
     await history.undo((restored) => {
       structure = restored
     })
     await history.settle()
 
-    // Undo took back the stroke, not the layer it was painted on.
+    // Undo took back the stroke that landed last, not the one before it nor
+    // the layer they were painted on.
     expect(structureSurfaceIds(structure).has(added)).toBe(true)
-    expect(surfaces.read(added, ORIGIN)).toBeNull()
+    expect(surfaces.read(added, NEXT)).toBeNull()
+    expect(surfaces.read(added, ORIGIN)).toEqual(
+      new Uint16Array(TILE_VALUES).fill(5)
+    )
     // So no surface with pixels is left that the tree does not name, which is
     // the manifest a reopened document would have shown blank.
     const named = structureSurfaceIds(structure)

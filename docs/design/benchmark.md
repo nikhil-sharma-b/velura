@@ -1775,6 +1775,7 @@ away are compression, a `CompressionStream` a tile on the worker, one
 after another. It is off the main thread and costs the next stroke no
 frames (live brushes 28), so it is left: what it could cost is an undo
 pressed inside those two seconds, which waits, and that was not measured.
+(It was in live brushes 32, below, and the undo no longer waits.)
 
 
 ## A large wet dab’s cost is deposition (live brushes 29)
@@ -2115,3 +2116,74 @@ against the table of live brushes 30 above:
 
 Medians and p95 are within 0.3 ms and 0.9 ms of that table's, most of them
 lower.
+
+
+## An undo pressed while a stroke is being put away (live brushes 32)
+
+Apple M4 (integrated, 16 GiB), 75 Hz display, Chrome/WebGPU, 2560 × 1440
+window, six strokes, 2026-10-12, on top of `05ba079`. Live brushes 30 left
+the two seconds a thrown 512 px wet stroke takes to be put away, as
+compression off the main thread, and said that what it could cost was an
+undo pressed inside them, unmeasured. `bun run bench/run.ts --wet --undo`
+measures it: the scattering rows, paced, with undo pressed after each
+stroke and timed to the step having been taken back, its tiles handed to
+the GPU, then redone so the stroke after paints over the same ground. It
+is pressed as the stroke reaches history (two frames after pen-up), a
+second later, and once `engine.save()` has resolved, which is what the
+undo itself takes. Median / worst of the six, one run:
+
+| document | brush | paint | as the stroke reaches history | a second later | history settled |
+|---|---|---|---:|---:|---:|
+| 2048² | 64 px | Dry, scatter | 3 / 9 ms | 7 / 8 ms | 2 / 3 ms |
+| 2048² | 64 px | Wet, scatter | 3 / 12 ms | 6 / 10 ms | 2 / 3 ms |
+| 2048² | 512 px | Dry, scatter | 117 / 126 ms | 26 / 31 ms | 15 / 17 ms |
+| 2048² | 512 px | Wet, scatter | 452 / 572 ms | 33 / 58 ms | 14 / 31 ms |
+| 8192² | 64 px | Dry, scatter | 90 / 161 ms | 33 / 50 ms | 13 / 24 ms |
+| 8192² | 64 px | Wet, scatter | 152 / 166 ms | 36 / 48 ms | 14 / 22 ms |
+| 8192² | 512 px | Dry, scatter | 577 / 639 ms | 131 / 134 ms | 97 / 104 ms |
+| 8192² | 512 px | Wet, scatter | 2114 / 2653 ms | 1109 / 1622 ms | 206 / 407 ms |
+
+The first column is the table of live brushes 30's "pen-up to history
+settled" again, row for row: an undo waited for all of it. Undo and redo
+called `settle()`, which waits for recording, the readback and the hashing
+that make the step, and then for the store to have compressed and spilled
+what that left it with. The first an undo cannot do without: popping a
+step still being recorded leaves its pixels on the layer. The second it
+has no use for. A tile is whole from the moment it is stored, the store
+answers a read of one it is deflating with the raw texels it still holds,
+and the tiles an undo asks for it asks for raw.
+
+**So undo and redo wait for recording and no more.** Everything else that
+calls `settle()` (a save, an export, the steps that read history's index)
+waits as it did. After, one run:
+
+| document | brush | paint | as the stroke reaches history | a second later | history settled |
+|---|---|---|---:|---:|---:|
+| 2048² | 64 px | Dry, scatter | 2 / 6 ms | 7 / 9 ms | 2 / 3 ms |
+| 2048² | 64 px | Wet, scatter | 2 / 9 ms | 6 / 10 ms | 2 / 3 ms |
+| 2048² | 512 px | Dry, scatter | 48 / 49 ms | 29 / 31 ms | 12 / 16 ms |
+| 2048² | 512 px | Wet, scatter | 44 / 57 ms | 33 / 58 ms | 13 / 30 ms |
+| 8192² | 64 px | Dry, scatter | 38 / 67 ms | 36 / 51 ms | 14 / 23 ms |
+| 8192² | 64 px | Wet, scatter | 38 / 64 ms | 35 / 47 ms | 14 / 21 ms |
+| 8192² | 512 px | Dry, scatter | 293 / 387 ms | 128 / 131 ms | 101 / 102 ms |
+| 8192² | 512 px | Wet, scatter | 344 / 591 ms | 189 / 402 ms | 202 / 403 ms |
+
+An undo pressed straight after a thrown 512 px wet stroke at 8192² takes
+344 ms where it took 2114 ms, and a second later takes what it takes with
+history settled. What is left in the first column over the last is the
+readback and the hashing of the stroke, which the undo has to have.
+
+**Not done, and left.** The stroke is still two seconds being compressed
+(2010 / 2274 ms from pen-up, live brushes 30): nothing waits on that now
+but a save, so it was not shortened, and a second worker, a faster codec
+and streams side by side were not tried. The undo itself is 200 ms for
+that row, 339 tiles read from the store and written to the layer, a good
+part of them inflated since the stroke pushed the tiles it replaced out of
+the 64 MiB kept raw; how it divides between the inflating and the writing
+was not measured. The "a second later" column is above the settled one in
+the small rows by a few milliseconds in both tables, and was not looked
+into. Frames were not re-measured: nothing a stroke does was changed.
+
+That an undo does not wait for compression, and that a stroke landing
+while it waits for recording is still the step it takes back, are held by
+`tests/unit/history.test.ts`.

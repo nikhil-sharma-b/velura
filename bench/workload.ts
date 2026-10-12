@@ -103,6 +103,14 @@ export type WorkloadOptions = {
    */
   pauseMs?: number
   /**
+   * Presses undo after each stroke and times it to the step being taken
+   * back, then redoes it (live brushes 32): this many milliseconds after the
+   * stroke reached history, or once history has "settled" as the baseline.
+   * History is still hashing and compressing a thrown stroke for seconds
+   * after pen-up, and an undo pressed then waits for some of it.
+   */
+  undoAfter?: number | "settled"
+  /**
    * Paints the workload a second time over itself with a wet brush
    * `diameter` pixels across (live brushes 10, 11): the strokes are painted
    * once, untimed, so there is paint underneath, and then drawn again along

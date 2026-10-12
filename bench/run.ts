@@ -20,7 +20,8 @@
  * smudges the painting against painting it (smudge 01); `--wet` paints over
  * it with wet brushes against the same brushes dry (live brushes 10), and
  * with `--unwaited` its scattering rows again with the pen not waiting for
- * history between strokes (live brushes 28);
+ * history between strokes (live brushes 28), and with `--undo` undo pressed
+ * while history is still putting each stroke away (live brushes 32);
  * `--wet --dab --large` selects the 512 px pickup, densest and scattered
  * rows at 8192² without changing their workload; `--wet-dab` measures warm
  * sixteen-dab pass ablations (`--scatter-dabs` uses thrown centres and
@@ -107,6 +108,7 @@ type Measured = Pass & {
   strokeStarts: number[]
   readbackBytes: number
   historySettledMs: number[]
+  undoMs: number[]
 }
 
 type BenchRun = {
@@ -195,6 +197,7 @@ async function measure(
       strokeStarts: result.strokeStarts,
       readbackBytes: result.readbackBytes,
       historySettledMs: result.historySettledMs,
+      undoMs: result.undoMs,
     }
   } finally {
     await browser.close()
@@ -502,6 +505,7 @@ const WET_PAINTS = process.argv.includes("--blender")
  */
 async function wetSweep(): Promise<void> {
   if (process.argv.includes("--unwaited")) return unwaitedSweep()
+  if (process.argv.includes("--undo")) return undoSweep()
   if (process.argv.includes("--pause")) return pauseSweep()
   const paced = PASSES.find((entry) => entry.name === "paced")!
   const unpaced = PASSES.find((entry) => entry.name === "unpaced")!
@@ -631,6 +635,48 @@ async function unwaitedSweep(): Promise<void> {
             `${cells.join("   ")}   ${String(readbacks).padStart(9)}   ` +
             `${`${fixed(readbackBytes / 2 ** 20)} MiB`.padStart(16)}   ` +
             `${fixed(middle(settled), 0).padStart(12)} / ${fixed(Math.max(...settled), 0)} ms`
+        )
+      }
+  console.log()
+}
+
+/**
+ * What an undo pressed while history is putting a stroke away waits for (live
+ * brushes 32): the scattering rows, whose strokes change the most tiles,
+ * paced, with undo pressed as the stroke reaches history, a second later,
+ * and once history has settled, which is what the undo itself takes. Timed
+ * to the step having been taken back, its tiles handed to the GPU.
+ */
+const UNDO_AFTER = [0, 1000, "settled"] as const
+
+async function undoSweep(): Promise<void> {
+  const paced = PASSES.find((entry) => entry.name === "paced")!
+  const paints = WET_PAINTS.filter(({ name }) => name.endsWith("scatter"))
+  const sizes = process.argv.includes("--large") ? [8192] : SMUDGE_SIZES
+  console.log(
+    "\n                                    undo pressed to the step taken back, median / worst in ms" +
+      "\n  document  brush   paint         as the stroke reaches history     a second later     history settled"
+  )
+  for (const size of sizes)
+    for (const diameter of WET_DIAMETERS)
+      for (const { name, ...paint } of paints) {
+        const cells: string[] = []
+        for (const undoAfter of UNDO_AFTER) {
+          const { undoMs } = await measure(paced, {
+            ...BENCHMARK_WORKLOAD,
+            width: size,
+            height: size,
+            strokes: SWEEP_STROKES,
+            wet: { diameter, ...paint },
+            undoAfter,
+          })
+          cells.push(
+            `${fixed(middle(undoMs), 0)} / ${fixed(Math.max(...undoMs), 0)}`
+          )
+        }
+        console.log(
+          `  ${`${size}²`.padEnd(8)}  ${`${diameter} px`.padEnd(6)}  ${name.padEnd(12)}  ` +
+            `${cells[0].padStart(29)}   ${cells[1].padStart(16)}   ${cells[2].padStart(17)}`
         )
       }
   console.log()
