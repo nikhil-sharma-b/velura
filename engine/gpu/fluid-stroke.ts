@@ -96,7 +96,7 @@ export type FluidStrokeContext = {
 
 /** What shows wet paint reads: each tile's slot, and the two pigment fields. */
 export type WetViews = {
-  /** Which views these are: zero for none, or one for each copy. */
+  /** Which copy of the fields these are of, from one. */
   key: number
   slots: GPUTextureView
   deposited: GPUTextureView
@@ -111,10 +111,9 @@ export type WetViews = {
 export interface FluidStroke extends StrokeRenderer<FluidOpening> {
   /**
    * What the compositor shows over a layer's pixels: the wet tiles' slots
-   * and their pigment, or placeholders that glaze nothing unless `surface`
-   * is the one that is wet.
+   * and their pigment, or nothing unless `surface` is the one that is wet.
    */
-  wet(surface: Surface): WetViews
+  wet(surface: Surface): WetViews | undefined
   /** Whether any tile is wet. */
   isWet(): boolean
   /**
@@ -285,24 +284,6 @@ export function createFluidStroke(
   const simRates = new Float32Array(simData, 0, 2)
   const simTiles = new Int32Array(simData, SIM_TILES_OFFSET)
 
-  // Bound where nothing is wet, so what shows a layer is always complete.
-  const noSlots = device.createTexture({
-    size: { width: 1, height: 1 },
-    format: "r8uint",
-    usage: GPUTextureUsage.TEXTURE_BINDING,
-  })
-  const noPigment = device.createTexture({
-    size: { width: 1, height: 1 },
-    format: LAYER_FORMAT,
-    usage: GPUTextureUsage.TEXTURE_BINDING,
-  })
-  const noPigmentView = noPigment.createView()
-  const nothingWet: WetViews = {
-    key: 0,
-    slots: noSlots.createView(),
-    deposited: noPigmentView,
-    suspended: noPigmentView,
-  }
   const uniformValues = new Float32Array(8)
 
   /**
@@ -616,7 +597,7 @@ export function createFluidStroke(
 
   return {
     wet(of) {
-      if (!surface || of !== surface) return nothingWet
+      if (!surface || of !== surface) return undefined
       const views = fields!.copies[current]
       return (shown[current] ??= {
         key: current + 1,
@@ -779,8 +760,6 @@ export function createFluidStroke(
     destroy() {
       for (const texture of fields?.textures ?? []) texture.destroy()
       slots?.texture.destroy()
-      noSlots.destroy()
-      noPigment.destroy()
       uniform.destroy()
       simUniform.destroy()
       instanceBuffer.destroy()

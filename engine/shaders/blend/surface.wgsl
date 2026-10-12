@@ -2,7 +2,7 @@
 #include "stroke"
 #include "space"
 #include "pigment"
-#include "wet"
+#include "wetLayer"
 @group(0) @binding(0) var<uniform> composite: Composite;
 @group(0) @binding(1) var source: texture_2d<f32>;
 @group(0) @binding(2) var backdrop: texture_2d<f32>;
@@ -10,10 +10,6 @@
 @group(0) @binding(4) var mask: texture_2d<f32>;
 @group(0) @binding(5) var clipBase: texture_2d<f32>;
 @group(0) @binding(6) var docSampler: sampler;
-// What is wet on the source (D42), or placeholders where nothing is.
-@group(0) @binding(7) var wetSlots: texture_2d<u32>;
-@group(0) @binding(8) var wetDeposited: texture_2d<f32>;
-@group(0) @binding(9) var wetSuspended: texture_2d<f32>;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -23,11 +19,8 @@ fn vertexMain(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32>
 fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
   let texel = vec2<i32>(position.xy);
   // Wet paint is inside the layer: under its opacity, blend mode and mask.
-  let painted = glazeWet(
+  let painted = withWet(
     readSurface(source, position.xy, composite.sourceInDoc),
-    wetSlots,
-    wetDeposited,
-    wetSuspended,
     documentPoint(position.xy)
   );
   var layer = painted;
