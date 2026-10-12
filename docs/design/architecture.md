@@ -218,31 +218,46 @@ A render pass cannot sample the texture it renders to, so a dab drawn into the l
 
 **Wet brushes (D41)** use the direct stroke's surface copies, tip, selections and cancel backups, with a reservoir that holds premultiplied linear paint in fixed tip coordinates. Two textures are allocated with the renderer at the largest supported direct-dab size; they alternate as pickup reads one and writes the other. At pen-down both are filled with the current brush colour (or the mask's paint value), unless the artist has turned off **Clean brush after each stroke** and the brush holds a picked-up load. Each dab first mixes the layer towards its bristle's reservoir paint by flow times tip and selection coverage, then mixes the reservoir towards the pre-dab layer by pickup times tip coverage. Pickup reads the whole tip neighbourhood, including outside a selection; only deposition is clipped. Zero pickup keeps the original load. A dab whose flow the dynamics graph has taken to zero still loads the bristles, without changing the layer. A brush whose own flow is zero is a different thing: it can never lay, so nothing it carried could reach the layer, and it has no reservoir. It is a blender, and drags from the pixel one dab's travel behind exactly as smudge does, with the brush's own tip, size, pickup and dynamics; the built-in Blender is this brush. Smudge still reads the pixel one dab's travel behind and has no reservoir.
 
-**Wet deposition into a bounded attachment (live brushes 29).** When a wet
-stroke samples its active layer, its pre-dab neighbourhood
-is copied into carry. Deposition fills a bounded attachment with mixed paint
-inside the tip and the original pixels outside it, then copies the region
-back, clipped to its write rectangle and selection bounds. Pickup-only dabs
-copy no paint back. Pickup still reads the pre-dab carry and the reservoir passes from
-dab to dab. Shape and grain use document coordinates. No dabs wait for another
-frame, so pen-to-pixel continues to belong to their original sample.
+**A wet dab works locally (live brushes 29).** Active-layer wet deposition
+uses a bounded attachment instead of loading and storing the document-sized
+layer for every dab. Its pre-dab neighbourhood is copied into carry;
+deposition fills scratch with mixed paint inside the tip and original pixels
+outside it, then copies only the write rectangle back. Pickup-only dabs copy
+no paint back. Shape, grain and selection use document coordinates. The
+reservoir still passes from dab to dab, and no dab waits for another frame.
 
 The existing destination carry has independent scratch levels from 2048² down
-to 64². A frame chooses the smallest attachment that fits its largest dab's
-neighbourhood. Bounds follow its rotation and roundness, guarded at the rim
-and with a texel border for filtering. Levels are never filtered or generated mipmaps. Their
-extra storage is 10.65625 MiB per renderer, independent of document size.
-Every texture and view is allocated at renderer creation, and the scratch
-levels join the empty warming passes. Sample-all-layers strokes and dragging
-dabs retain their previous deposition paths. Zero-depth paper, procedural
-tip textures and zero-coverage pigment samples are skipped; a wet dab never
-samples the smudge-only pixel behind it.
+to 64². A frame chooses the smallest level that fits its largest read rectangle.
+These levels are never filtered or generated mipmaps. They add 10.65625 MiB per
+renderer and join the empty warming passes. Write bounds follow rotation and
+roundness with a pixel guarding the rim. Reads retain their conservative
+origin and filtering border: moving that origin can change floating-point
+sampling when a dirty load is later used at a different size.
+
+A procedural, unrotated round dab without paper, whose diameter matches the
+power-of-two active reservoir extent, deposits and picks up in two compute
+dispatches sharing one pass. Each kernel carries only its own paint work;
+both read the incoming layer and reservoir, and write scratch and the next
+reservoir separately from their inputs. On power-of-two documents they read
+the layer directly, avoiding the neighbourhood copy. Other document sizes
+keep carry so normalized texture sampling retains its precision. Shaped or
+textured tips, paper, sampled artwork and differently sized loads retain the
+render path. No optional GPU feature or additional buffer is required.
+
+Procedural round pickup derives bristle coordinates from the reservoir texel
+centre in both render and compute paths, including when the dab and retained
+load differ in size. This replaces raster-varying interpolation for that case;
+its numerical adjustment is bounded against the previous mapping in the pixel
+tests. Textured and shaped pickup retain interpolation. Zero-depth paper,
+procedural tip textures and zero-coverage pigment reads are skipped, and a wet
+dab never samples the smudge-only pixel behind it. All textures, buffers and
+pipelines are allocated ahead of painting; the optimized path adds no readback.
 
 Cancel tiles are kept before a dab writes. Adjacent newly reached tiles in a
-document row and a backup row share one copy; a kept tile, page row or document
-edge ends the run. Restoration retains the individual tile mapping. The exact
-stored-paint comparison against full-layer deposition, including retained
-loads and cancellation, is in `tests/browser/wet-deposition.spec.ts`.
+document row and backup row share one copy; a kept tile, page row or document
+edge ends the run. Restoration retains the individual tile mapping. Stored-paint
+comparisons, including retained loads, cancellation, selection, geometry
+changes and the scratch fallback, are in `tests/browser/wet-deposition.spec.ts`.
 
 **Colour jitter on wet brushes (live brushes 13).** Colour dynamics tint a fresh clean reservoir **once per stroke**, using the first resampled dab's hue, saturation and lightness offsets scaled by the brush's colour bases. Random targets use the existing stroke seed: successive marks have different loads, and replay with the same seed reproduces the load. Pressure and other sensors are sampled at that first dab too; later values do not recolour the reservoir. This is a jittered load, not uneven bristles or a fresh paint feed. The shared HSL shader adjusts the straight linear working colour and retains its alpha before any pickup. All bristles start with that load, then exchange paint as before: zero pickup keeps its tint, and pickup can exhaust it. Paint picked up from the layer is never adjusted. When automatic cleaning is off, a retained dirty load keeps its colour and extent on the next stroke; colour dynamics apply again only when a clean load is filled. Flow-zero blenders and smudge have no clean load to tint. A small GPU load pass covers only the active reservoir square, uses resources allocated with the renderer, and adds no painting readback. Neutral offsets keep the existing clear load without a shader round trip.
 

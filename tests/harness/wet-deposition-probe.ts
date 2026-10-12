@@ -11,9 +11,15 @@ export async function wetDepositionProbe(options: {
   tip: boolean
   cancel: boolean
   decorated?: boolean
+  selected?: boolean
+  changingRadius?: boolean
   large?: boolean
+  aligned?: boolean
+  legacyPickup?: boolean
+  scratchTarget?: boolean
   edge?: boolean
   pickupOnly?: boolean
+  powerOfTwo?: boolean
   spread?: boolean
 }) {
   const adapter = await navigator.gpu.requestAdapter()
@@ -28,13 +34,20 @@ export async function wetDepositionProbe(options: {
     background: [1, 1, 1],
     ink: [0.1, 0.2, 0.7, 1],
     feather: 1,
-    directWetTarget: options.layerTarget ? "layer" : undefined,
+    directWetTarget: options.layerTarget
+      ? "layer"
+      : options.scratchTarget
+        ? "scratch"
+        : undefined,
+    directLegacyPickup: options.legacyPickup,
   })
   try {
     const width = options.edge
       ? 3031
       : options.spread
-        ? 3072
+        ? options.powerOfTwo
+          ? 4096
+          : 3072
         : options.large
           ? 1024
           : 240
@@ -50,9 +63,11 @@ export async function wetDepositionProbe(options: {
         { width: 16, height: 16, data },
         { scale: 8, depth: 0.7, movement: 0.6 }
       )
+    }
+    if (options.decorated || options.selected) {
       const mask = rectSelection(
         { width, height },
-        { x: 80, y: 35, width: 100, height: 50 }
+        { x: 80 + offset, y: 35 + offset, width: 100, height: 50 }
       )!
       renderer.setSelection(featherSelection({ width, height }, mask, 8))
     }
@@ -83,9 +98,11 @@ export async function wetDepositionProbe(options: {
           40.3 + offset + i * (options.spread ? 700 : 40)
         if (i === 4) dabs[start + SMUDGE.CENTER_X] = width - 16.3
         dabs[start + SMUDGE.CENTER_Y] = i === 4 ? height - 16.6 : y + offset
-        dabs[start + SMUDGE.RADIUS] = radius
-        dabs[start + SMUDGE.ANGLE] = 0.13
-        dabs[start + SMUDGE.ROUNDNESS] = 0.6
+        dabs[start + SMUDGE.RADIUS] = options.changingRadius
+          ? radius * (1 + (i % 3) * 0.1)
+          : radius
+        dabs[start + SMUDGE.ANGLE] = options.aligned ? 0 : 0.13
+        dabs[start + SMUDGE.ROUNDNESS] = options.aligned ? 1 : 0.6
         dabs[start + SMUDGE.FLOW] = flow
         dabs[start + SMUDGE.STRENGTH] = 0.8
         dabs[start + SMUDGE.GRAIN_DEPTH] = 0.75
@@ -120,7 +137,11 @@ export async function wetDepositionProbe(options: {
       for (let y = 0; y < (options.large ? TILE_SIZE : height); y++)
         for (let x = 0; x < (options.large ? TILE_SIZE : width) * 4; x++)
           texels.push(tile[y * TILE_SIZE * 4 + x])
-    return { texels, dirty, cleaned }
+    return {
+      texels,
+      dirty,
+      cleaned,
+    }
   } finally {
     renderer.destroy()
     device.destroy()

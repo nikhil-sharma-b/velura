@@ -68,7 +68,13 @@ export async function wetDabProbe(
     }
     const compute = encoder.beginComputePass.bind(encoder)
     encoder.beginComputePass = (descriptor) => {
-      if (active && omit === "layer" && descriptor?.label === "wet deposition")
+      if (
+        active &&
+        ((omit === "layer" && descriptor?.label === "wet deposition") ||
+          (omit === "pickup" && descriptor?.label === "wet pickup") ||
+          (omit === "dab" &&
+            ["wet dab", "wet step"].includes(descriptor?.label ?? "")))
+      )
         return createEncoder().beginComputePass(descriptor)
       return compute(descriptor)
     }
@@ -100,7 +106,9 @@ export async function wetDabProbe(
       dabs[start + SMUDGE.FLOW] = 0.3
       dabs[start + SMUDGE.STRENGTH] = 0.8
     }
-    const modes = ["none", "copy", "layer", "pickup", "backup"]
+    const modes = options.layerTarget
+      ? ["none", "copy", "layer", "pickup", "backup"]
+      : ["none", "copy", "dab", "backup"]
     const times = modes.map(() => [] as number[])
     renderer.beginDirect("layer", [0.1, 0.2, 0.7, 1])
     // Interleave controls and ablations so GPU clock changes affect all rows.

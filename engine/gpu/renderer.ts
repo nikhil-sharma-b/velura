@@ -485,7 +485,9 @@ export function createRenderer(
     /** See `DirectStrokeContext.runSize`; a test's, and absent otherwise. */
     directRunSize?: number
     /** See `DirectStrokeContext.wetTarget`; a pixel-equivalence test control. */
-    directWetTarget?: "layer"
+    directWetTarget?: "layer" | "scratch"
+    /** See `DirectStrokeContext.legacyPickup`; bounds the numerical change. */
+    directLegacyPickup?: boolean
   }
 ): Renderer {
   const presentPipelines = new Map<BlendMode, GPURenderPipeline>()
@@ -1599,6 +1601,7 @@ export function createRenderer(
     noSelection,
     runSize: options.directRunSize,
     wetTarget: options.directWetTarget,
+    legacyPickup: options.directLegacyPickup,
   })
 
   /**

@@ -1720,57 +1720,83 @@ and a copy each way, and was not timed.
 
 ## A large wet dab’s cost is deposition (live brushes 29)
 
-Apple M4, Chrome/WebGPU, 75 Hz display, 2026-10-12, over `954fb42`.
-The comparison uses warm textures. The old cold-texture one-variable table
-is not evidence for the cost of any of these passes.
+Apple M4, Chrome 153/WebGPU, 2026-10-12. The diagnostic uses warm textures;
+the old cold-texture one-variable table is not evidence for these pass costs.
+The original implementation was measured over `954fb42`; the retained change
+also includes `dev`'s history worker (`db418f4`, live brushes 28).
 
-`bun run bench/run.ts --wet-dab` drives the renderer on an 8192² layer.
-Each submission draws sixteen 512 px dabs with flow 0.3 and pickup 0.8.
-Before each submission it restores the same painted ground and clean load,
-then waits for the queue; restoration, load clears, and first-use work are
-outside the measured interval. Four modes are interleaved for eighty rounds,
-with the first twenty rounds discarded. The time is CPU encoding through the
-GPU completion fence, divided by sixteen. Removing a render pass omits its
-whole submitted attachment load/store, not just its draw. The discarded pass
-is still encoded into an unsubmitted encoder, so its CPU encoding remains.
-The final control and ablations are reproducible with the same command.
+`bun run bench/run.ts --wet-dab --layer-target` drives sixteen 512 px dabs
+with flow 0.3 and pickup 0.8 on an 8192² layer. Before each submission it
+restores the same painted ground and clean load, then waits for the queue.
+Restoration, clears and first-use work are outside the interval. Controls and
+ablations are interleaved for eighty rounds, discarding the first twenty.
+Timing is CPU encoding through the completion fence, divided by sixteen.
+An omitted pass is encoded into an unsubmitted encoder, removing its whole
+GPU attachment load/store while retaining its CPU encoding.
 
-| submitted work omitted | before, median / p95 per dab | after, median / p95 per dab |
-|---|---:|---:|
-| Nothing | 0.625 / 0.713 ms | 0.169 / 0.200 ms |
-| Neighbourhood copy | 0.575 / 0.662 ms | 0.144 / 0.169 ms |
-| Layer deposition pass | 0.288 / 0.344 ms | 0.113 / 0.119 ms |
-| Reservoir pickup pass | 0.594 / 0.663 ms | 0.144 / 0.169 ms |
+The initial, close-packed control and ablations were:
 
-Before the change the marginal savings are about 0.337 ms for deposition,
-0.050 ms for the copy and 0.031 ms for pickup. Deposition is the largest
-measured component. These deltas are not an additive GPU-pass decomposition:
-the fence also includes CPU work and copies of cancel tiles, and omitting
-work changes what later passes read. No rendering or benchmark readback is
-added to production painting. GPU timestamps were tried in a scratch probe,
-but summed pass intervals exceeded the entire submission fence on this
-adapter, so they were rejected rather than recorded as pass costs.
+| submitted work omitted | median / p95 per dab |
+|---|---:|
+| Nothing | 0.625 / 0.713 ms |
+| Neighbourhood copy | 0.575 / 0.662 ms |
+| Layer deposition pass | 0.288 / 0.344 ms |
+| Reservoir pickup pass | 0.594 / 0.663 ms |
 
-The optimization changes where deposition renders. Consecutive dabs whose
-reads fit a 2048 px square share a bounded scratch run: one layer-to-scratch
-copy, each dab's pre-dab neighbourhood copied from scratch to carry, deposition
-into scratch and sequential reservoir pickup, then one copy back to the layer.
-The run's first copy seeds pixels outside the tip, so deposition keeps its
-original quad and discard. Dabs that overlap read earlier deposition correctly;
-independence is not required. The frame chooses the smallest scratch mip level
-that fits its runs. This probe's sixteen dabs share one 2048² attachment rather
-than sixteen 8192² layer attachments. The copy ablation removes the per-dab
-neighbourhood copy; the run's layer transfers remain in the final control.
-Sample-all-layers and smudge keep their previous paths. Independent scratch
-levels add 10.65625 MiB per renderer; no dab creates a texture or buffer.
-Scratch joins the existing warming passes.
+The marginal savings were 0.337 ms for deposition, 0.050 ms for the copy and
+0.031 ms for pickup. Deposition was the largest component. These are not an
+additive GPU-pass decomposition: the fence includes encoding and cancel-tile
+copies, and omissions change later inputs. GPU timestamps were tried, but
+summed intervals exceeded the complete submission fence on this adapter;
+those measurements were rejected. Production painting gains no readback.
 
-Rendering individual dabs into scratch first brought the control to 0.344 ms,
-but the full wet sweep still held the 8192² scattered row at 21.1 ms p95.
-Sharing the layer transfers is the retained change. The warm probe's control
-is now 0.169 ms, about 73% below its original 0.625 ms.
+`--scatter-dabs` uses the workload's seeded sixteen thrown centres instead of
+the close-packed grid. Repeated full-layer scattered controls ranged from
+0.419 to 0.650 ms median per dab as the host's GPU clock changed. Cross-run
+ratios should therefore not be treated as precise speedups.
 
-The original 0.46 ms estimate and this 0.625 ms warm control are different
-workloads: this probe resets a coloured ground before every overlapping batch
-and includes encoding and cancel copies. The unchanged `--wet` workload is
-the acceptance measurement; the probe identifies which work to make cheaper.
+The implementation moves deposition into bounded carry levels. A procedural
+round dab without paper and with a matching power-of-two reservoir diameter
+uses separate deposition and pickup compute kernels within one pass. They read
+the same incoming layer and load; their writes land in scratch and the next
+reservoir. Power-of-two documents allow direct layer sampling without a
+neighbourhood copy. Scratch levels add 10.65625 MiB. Shaped or textured tips,
+paper, sampled artwork and differently sized loads retain the render path.
+No dabs are held across frames.
+
+The final scattered diagnostic, `--wet-dab --scatter-dabs`, recorded:
+
+| submitted work omitted | median / p95 per dab |
+|---|---:|
+| Nothing | 0.175 / 0.181 ms |
+| Neighbourhood copy (absent on this path) | 0.175 / 0.175 ms |
+| Combined wet compute pass | 0.075 / 0.081 ms |
+| Cancel-tile backup copies | 0.138 / 0.150 ms |
+
+The warm diagnostic identifies the work; the unchanged `--wet` workload
+judges opening and sustained latency. Early wide scratch runs reached
+0.169 ms in the close-packed probe but still left scattered p95 at 21.3 ms;
+read/load atlases, reservoir mips, independent-dab pickup batches and optional
+read-write full-layer storage also failed to
+meet the paced target and were removed. Their best isolated values are not
+reported as the final result.
+
+Procedural round pickup now derives its coordinates from reservoir texel
+centres in both render and compute, rather than raster-varying interpolation.
+The full-layer equivalence control uses that same mapping. A separate legacy
+control retains the previous interpolation and bounds the numerical change:
+radii 32, 33, 129 and 513, with retained loads and cancellation, differed by
+at most 0, 1/8192, 1/4096 and 1/4096 per stored linear channel respectively
+on the test adapter. All 28 path comparisons and the three-way direct-read,
+copied-read and full-layer comparison matched stored half-float bits exactly.
+
+The acceptance run is `bun run bench/run.ts --wet --dab --large`: the same
+512 px pickup, densest and scatter workloads at 8192², with both paced and
+unpaced passes, selected from the complete wet sweep without changing samples,
+spacing, scattering, pressure, stroke count or sample-to-fence attribution.
+
+The latency acceptance criterion remains open. The user requested a PR for the
+measured improvement while leaving ticket 29 incomplete. Batched deposition
+and eager initialization of four cancel pages did not close the gap and were
+removed, including their extra 48.189 MiB of batch arrays and 128 MiB of eager
+backup pages. Cancel pages continue to grow and be retained as before.
