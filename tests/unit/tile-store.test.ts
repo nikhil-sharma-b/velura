@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import {
+  createInlineTileWork,
   createMemorySpill,
   createTileStore,
+  hashTexels,
   type SpillDevice,
+  type TileWork,
 } from "../../engine/doc/tile-store"
 import { TILE_CHANNELS, TILE_TEXELS } from "../../engine/doc/tile-grid"
 
@@ -151,5 +154,79 @@ describe("tiering", () => {
       "warm",
       "hot",
     ])
+  })
+})
+
+describe("work done elsewhere", () => {
+  /** The store's own work, counting what it was asked for. */
+  function counted(): TileWork & { calls: string[] } {
+    const inline = createInlineTileWork()
+    const calls: string[] = []
+    return {
+      calls,
+      digest(tiles) {
+        calls.push("digest")
+        return inline.digest(tiles)
+      },
+      deflate(bytes) {
+        calls.push("deflate")
+        return inline.deflate(bytes)
+      },
+      inflate(bytes) {
+        calls.push("inflate")
+        return inline.inflate(bytes)
+      },
+      dispose() {},
+    }
+  }
+
+  test("a digest names each tile's hash, and a blank tile has none", async () => {
+    const store = roomy()
+    const blank = new Uint16Array(TILE_TEXELS * TILE_CHANNELS)
+    const { tiles, hashes } = await store.digest([tile(1), blank, tile(2)])
+    expect(hashes).toEqual([
+      hashTexels(tile(1)),
+      undefined,
+      hashTexels(tile(2)),
+    ])
+    expect(tiles[0]).toEqual(tile(1))
+    expect(tiles[2]).toEqual(tile(2))
+  })
+
+  test("an adopted tile is the tile put would have stored", async () => {
+    const store = roomy()
+    const { tiles, hashes } = await store.digest([tile(5)])
+    const hash = store.adopt(tiles[0], hashes[0]!)
+    expect(hash).toBe(hashTexels(tile(5)))
+    expect(store.put(tile(5))).toBe(hash)
+    expect(store.count()).toBe(1)
+    store.release(hash)
+    expect(await store.get(hash)).toEqual(tile(5))
+    store.release(hash)
+    expect(store.count()).toBe(0)
+  })
+
+  test("adopting pixels already held takes a reference and no copy", async () => {
+    const store = roomy()
+    const hash = store.put(tile(6))
+    expect(store.adopt(tile(6), hash)).toBe(hash)
+    expect(store.count()).toBe(1)
+    expect(store.residentBytes()).toBe(TILE_BYTES)
+  })
+
+  test("compressing and reading back go through the work the store was given", async () => {
+    const work = counted()
+    const store = createTileStore({
+      hotBytes: TILE_BYTES,
+      warmBytes: 1 << 30,
+      work,
+    })
+    const old = store.put(tile(1))
+    store.put(tile(2))
+    await store.settle()
+    expect(store.tier(old)).toBe("warm")
+    expect(await store.get(old)).toEqual(tile(1))
+    expect(work.calls).toContain("deflate")
+    expect(work.calls).toContain("inflate")
   })
 })

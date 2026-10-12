@@ -215,7 +215,12 @@ import {
   type ImageSourceCodec,
   type OpenImage,
 } from "./doc/image-source"
-import { createOpfsSpill, createTileStore } from "./doc/tile-store"
+import {
+  createOpfsSpill,
+  createTileStore,
+  type TileWork,
+} from "./doc/tile-store"
+import { createTileWorker } from "./doc/tile-worker"
 import {
   intersectRect,
   type PixelRect,
@@ -1716,6 +1721,8 @@ export function createEngine(
   let fullyLoaded: Promise<void> = Promise.resolve()
   let loadBackgroundTiles: (() => Promise<void>) | undefined
   let disposed = false
+  /** The thread history hashes and compresses on; it goes with the history. */
+  let tileWork: TileWork | undefined
 
   // The stroke path. Every buffer here is allocated once, at construction:
   // a frame of drawing performs no allocation at all (D30).
@@ -2084,6 +2091,8 @@ export function createEngine(
     shapeDrag = undefined
     history?.clear()
     history = undefined
+    tileWork?.dispose()
+    tileWork = undefined
     persistence = undefined
     flushScheduler?.dispose()
     flushScheduler = undefined
@@ -5949,6 +5958,8 @@ export function createEngine(
         ? createDocumentStore(local.blobs ?? createLocalBlobStore())
         : undefined
       documents = store
+      const work = createTileWorker()
+      tileWork = work
       history = createDocumentHistory({
         bridge: {
           readTiles: (id, coords) => target.readTiles(id, coords),
@@ -5966,6 +5977,9 @@ export function createEngine(
           hotBytes: options.history?.hotBytes ?? DEFAULT_HOT_BYTES,
           warmBytes: options.history?.warmBytes ?? DEFAULT_WARM_BYTES,
           spill: createOpfsSpill(),
+          // Hashing and compressing a stroke's tiles is seconds of work that
+          // the stroke after it must not wait behind (live brushes 28).
+          work,
         }),
         onChange: () => publishHistory(),
         onError: fail,

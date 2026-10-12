@@ -61,6 +61,33 @@ import { createFreezeLedger, FREEZE_CHUNK } from "./freeze-ledger"
 import { LAYER_FORMAT, type Surface } from "./surface"
 
 const BYTES_PER_TEXEL = TILE_CHANNELS * 2
+
+/**
+ * How long a readback copies tiles out of its buffer before it lets the
+ * frame in: a tile is about a tenth of a millisecond, so this is some ten
+ * tiles, and well inside what a frame has to spare.
+ */
+const READBACK_SLICE_MS = 1
+
+/**
+ * Lets whatever else is waiting on this thread run: a frame, the pen. One
+ * channel for every wait, since a readback takes them between the frames of
+ * a stroke, where nothing is to be allocated that need not be (D30).
+ */
+let yieldChannel: MessageChannel | undefined
+const yielded: (() => void)[] = []
+function yieldToFrame(): Promise<void> {
+  if (!yieldChannel) {
+    yieldChannel = new MessageChannel()
+    yieldChannel.port1.onmessage = () => yielded.shift()?.()
+  }
+  const channel = yieldChannel
+  return new Promise((resolve) => {
+    yielded.push(resolve)
+    channel.port2.postMessage(null)
+  })
+}
+
 /**
  * mat3x3 occupies three 16-byte columns, then one vec4 of background, then the
  * four floats the present pass needs to know about the stack it is showing,
@@ -3093,13 +3120,22 @@ export function createRenderer(
         device.queue.submit([encoder.finish()])
         await buffer.mapAsync(GPUMapMode.READ)
         const mapped = new Uint16Array(buffer.getMappedRange())
-        return coords.map((_, index) => {
+        // A thrown stroke's tiles are hundreds of megabytes to copy out, and
+        // the pen may be down again by now: a little at a time, with the
+        // frame let in between (live brushes 28).
+        const tiles: Uint16Array[] = []
+        let sliceStarted = performance.now()
+        for (let index = 0; index < coords.length; index++) {
           const texels = blank()
-          if (!regions[index]) return texels
+          tiles.push(texels)
+          if (!regions[index]) continue
           const start = (index * tileBytes) / 2
           texels.set(mapped.subarray(start, start + texels.length))
-          return texels
-        })
+          if (performance.now() - sliceStarted < READBACK_SLICE_MS) continue
+          await yieldToFrame()
+          sliceStarted = performance.now()
+        }
+        return tiles
       } finally {
         buffer.destroy()
       }

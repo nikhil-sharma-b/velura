@@ -223,7 +223,6 @@ export function createDirectStroke(
     (_, level) =>
       destinationCarry.createView({ baseMipLevel: level, mipLevelCount: 1 })
   )
-  const destinationView = destinationViews[0]
   // Four independent reads and incoming loads can share one deposition pass.
   // Array layers keep the original filtering precision at each local origin.
   const wetAtlases = ["wet neighbourhoods", "wet incoming loads"].map((label) =>

@@ -692,3 +692,42 @@ describe("undo racing a stroke", () => {
     expect(history.tileIndex()).toEqual([])
   })
 })
+
+describe("a stroke's pixels", () => {
+  test("are hashed by the store's digest, and the stroke undoes as before", async () => {
+    const inner = createTileStore({ hotBytes: 1 << 30, warmBytes: 1 << 30 })
+    let digested = 0
+    const store: TileStore = {
+      ...inner,
+      // Hashing in `put` is hashing on the thread the pen is on.
+      put() {
+        throw new Error("A stroke's readback was hashed where it landed.")
+      },
+      digest(tiles) {
+        digested += tiles.length
+        return inner.digest(tiles)
+      },
+    }
+    const surfaces = createFakeSurfaces()
+    const history = createDocumentHistory({ bridge: surfaces.bridge, store })
+    surfaces.paint("layer", ORIGIN, 7)
+    // Two tiles asked for, one of them blank.
+    history.recordStroke("layer", {
+      x: 0,
+      y: 0,
+      width: TILE_SIZE * 2,
+      height: TILE_SIZE,
+    })
+    await history.settle()
+    expect(digested).toBe(2)
+    expect(history.occupiedTiles("layer")).toEqual([ORIGIN])
+    expect(history.depth()).toBe(1)
+
+    await history.undo(noStructure)
+    expect(surfaces.read("layer", ORIGIN)).toBeNull()
+    await history.redo(noStructure)
+    expect(surfaces.read("layer", ORIGIN)).toEqual(
+      new Uint16Array(TILE_VALUES).fill(7)
+    )
+  })
+})
