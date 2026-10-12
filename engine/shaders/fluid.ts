@@ -1,10 +1,20 @@
+import { WET_SLOTS } from "../gpu/wet-tiles"
 import { pigmentShader } from "./pigment"
 import { preprocess } from "./preprocess"
 import wet from "./wet.wgsl"
 
+/** The most water a cell holds. */
+export const FLUID_MAX_WATER = 1
+
+/** Steps for damp paper to dry out once its water has gone. */
+export const FLUID_DAMP_STEPS = 50
+
 /**
- * A fluid brush's dabs (D42), drawn batched into the wet fields: water into
- * one target and pigment into the other, each added to what is there.
+ * A fluid brush's dabs (D42), drawn batched: water and dampness into one
+ * target and pigment into the other, each added to the batch's other dabs.
+ * The targets are not the wet fields. They hold what one batch laid, which
+ * `pourMain` then pours into the fields, so that paint landing on wet paint
+ * of another colour mixes with it as pigment.
  *
  * An instance is one dab in one wet tile, placed in the field texture where
  * that tile's slot is; a dab over a border is an instance for each tile it
@@ -74,7 +84,9 @@ fn fragmentMain(varyings: Varyings) -> Fields {
   let feather = max(fluid.feather, 1.0);
   let shape = 1.0 - smoothstep(varyings.radius - feather, varyings.radius, distance(cell, varyings.center));
   var out: Fields;
-  out.water = vec4<f32>(fluid.water * shape, 0.0, 0.0, 0.0);
+  // A dab leaves the paper damp well out to its rim, where it lays little
+  // water: dampness is what lets water move there at all.
+  out.water = vec4<f32>(fluid.water * shape, 4.0 * shape, 0.0, 0.0);
   // Density is the pigment's alpha, and its colour is premultiplied by it.
   out.pigment = fluid.ink * (varyings.load * shape);
   return out;
@@ -93,7 +105,8 @@ export const fluidSettleShader = preprocess(
 
 @group(0) @binding(0) var under: texture_2d<f32>;
 @group(0) @binding(1) var wetSlots: texture_2d<u32>;
-@group(0) @binding(2) var wetPigment: texture_2d<f32>;
+@group(0) @binding(2) var wetDeposited: texture_2d<f32>;
+@group(0) @binding(3) var wetSuspended: texture_2d<f32>;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -106,7 +119,172 @@ fn vertexMain(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32>
 fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
   // The copy holds one tile, from its own corner.
   let texel = vec2<i32>(position.xy) & vec2<i32>(255);
-  return glazeWet(textureLoad(under, texel, 0), wetSlots, wetPigment, position.xy);
+  return glazeWet(
+    textureLoad(under, texel, 0),
+    wetSlots,
+    wetDeposited,
+    wetSuspended,
+    position.xy
+  );
+}
+`,
+  { pigment: pigmentShader, wet }
+)
+
+/**
+ * The simulation (D42), the engine's compute pipelines: one pass over every
+ * cell of every wet tile, reading one copy of the wet fields and writing the
+ * other. An invocation is a cell of a slot; `sim.tiles` says which tile holds
+ * the slot, and a neighbour over a tile border is found through the slots
+ * map, so a body of water is simulated as one sheet.
+ *
+ * `stepMain` is one step of the clock. `pourMain` moves nothing: it pours
+ * what a batch of dabs laid into the fields.
+ *
+ * The water field holds standing water in x and the paper's dampness in y,
+ * with the water that crossed the cell's right and bottom faces in z and w.
+ */
+export const fluidSimShader = preprocess(
+  /* wgsl */ `
+#include "pigment"
+#include "wet"
+
+struct Sim {
+  // Water a cell loses in a step.
+  evaporation: f32,
+  // The share of its pigment a cell trades with each neighbour holding water.
+  bleed: f32,
+  // Each slot's tile in xy, and in z whether one holds it.
+  tiles: array<vec4<i32>, ${WET_SLOTS}>,
+}
+
+// How fast water levels: the share of a height difference that crosses a
+// face in a step.
+const FLOW: f32 = 0.2;
+// No cell gives more than this share of its water across one face in a step.
+const FACE_SHARE: f32 = 0.2;
+// The most water a cell holds.
+const MAX_WATER: f32 = ${FLUID_MAX_WATER.toFixed(1)};
+// How fast paper loses its dampness once no water stands on it.
+const DAMP_FADE: f32 = ${(1 / FLUID_DAMP_STEPS).toFixed(4)};
+// The share of suspended pigment the paper takes in a step, and of deposited
+// pigment that lifts back while water stands on it.
+const DEPOSIT: f32 = 0.0003;
+const LIFT: f32 = 0.001;
+
+@group(0) @binding(0) var<uniform> sim: Sim;
+@group(0) @binding(1) var wetSlots: texture_2d<u32>;
+@group(0) @binding(2) var water: texture_2d<f32>;
+@group(0) @binding(3) var suspended: texture_2d<f32>;
+@group(0) @binding(4) var deposited: texture_2d<f32>;
+@group(0) @binding(5) var waterOut: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(6) var suspendedOut: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(7) var depositedOut: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(8) var laidWater: texture_2d<f32>;
+@group(0) @binding(9) var laidPigment: texture_2d<f32>;
+
+// Where a slot's cell is in a field texture.
+fn slotTexel(slot: u32, cell: vec2<u32>) -> vec2<i32> {
+  let at = i32(slot);
+  return vec2<i32>(at % WET_FIELD_COLUMNS, at / WET_FIELD_COLUMNS) * WET_CELLS + vec2<i32>(cell);
+}
+
+// Water crossing the face from a to b in a step. It follows the difference
+// in height and moves only between two cells of damp paper, which is what
+// keeps the edge of a wash where the brush put it. Both cells work the same
+// number out for the face they share, so none is made or lost.
+fn faceFlow(a: vec4<f32>, b: vec4<f32>) -> f32 {
+  let damp = smoothstep(0.02, 0.3, min(a.y, b.y));
+  return clamp(FLOW * (a.x - b.x) * damp, -FACE_SHARE * b.x, FACE_SHARE * a.x);
+}
+
+// How freely pigment diffuses between two cells: both have to hold water.
+fn bleedGate(a: vec4<f32>, b: vec4<f32>) -> f32 {
+  return sim.bleed * smoothstep(0.0, 0.25, min(a.x, b.x));
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
+  let tile = sim.tiles[id.z];
+  if (tile.z == 0) { return; }
+  let texel = slotTexel(id.z, id.xy);
+  let cell = tile.xy * WET_CELLS + vec2<i32>(id.xy);
+  let left = cell + vec2<i32>(-1, 0);
+  let right = cell + vec2<i32>(1, 0);
+  let up = cell + vec2<i32>(0, -1);
+  let down = cell + vec2<i32>(0, 1);
+
+  let c = textureLoad(water, texel, 0);
+  let l = wetCell(wetSlots, water, left);
+  let r = wetCell(wetSlots, water, right);
+  let u = wetCell(wetSlots, water, up);
+  let d = wetCell(wetSlots, water, down);
+
+  // Water levels, then evaporates.
+  let toRight = faceFlow(c, r);
+  let fromLeft = faceFlow(l, c);
+  let toDown = faceFlow(c, d);
+  let fromUp = faceFlow(u, c);
+  let level = c.x - toRight + fromLeft - toDown + fromUp;
+  let w = clamp(level - sim.evaporation, 0.0, MAX_WATER);
+  // Paper under water is damp, and dries out once the water has gone.
+  let dampness = select(max(0.0, c.y - DAMP_FADE), min(1.0, c.y + 0.2), w > 0.001);
+
+  // Suspended pigment rides the water: the share of a cell's water crossing
+  // a face carries the same share of its pigment. It also diffuses.
+  let mine = 1.0 / max(c.x, 0.0001);
+  let outRight = max(toRight, 0.0) * mine;
+  let outLeft = max(-fromLeft, 0.0) * mine;
+  let outDown = max(toDown, 0.0) * mine;
+  let outUp = max(-fromUp, 0.0) * mine;
+  let inRight = max(-toRight, 0.0) / max(r.x, 0.0001);
+  let inLeft = max(fromLeft, 0.0) / max(l.x, 0.0001);
+  let inDown = max(-toDown, 0.0) / max(d.x, 0.0001);
+  let inUp = max(fromUp, 0.0) / max(u.x, 0.0001);
+  let bleedRight = bleedGate(c, r);
+  let bleedLeft = bleedGate(c, l);
+  let bleedDown = bleedGate(c, d);
+  let bleedUp = bleedGate(c, u);
+  // At most a fifth by each face and the brush's bleed by each again: a
+  // cell never gives away more than it has, so none is made or lost.
+  let leaving = min(
+    outRight + outLeft + outDown + outUp + bleedRight + bleedLeft + bleedDown + bleedUp,
+    1.0
+  );
+  var s = textureLoad(suspended, texel, 0) * (1.0 - leaving);
+  s = addPaint(s, wetCell(wetSlots, suspended, right) * (inRight + bleedRight));
+  s = addPaint(s, wetCell(wetSlots, suspended, left) * (inLeft + bleedLeft));
+  s = addPaint(s, wetCell(wetSlots, suspended, down) * (inDown + bleedDown));
+  s = addPaint(s, wetCell(wetSlots, suspended, up) * (inUp + bleedUp));
+
+  // The paper takes pigment slowly while water stands on it and all of it
+  // once the water has gone; a little lifts back while it is under water.
+  let p = textureLoad(deposited, texel, 0);
+  let taken = s * clamp(DEPOSIT + 1.0 - smoothstep(0.0, 0.05, w), 0.0, 1.0);
+  let lifted = p * (LIFT * smoothstep(0.0, 0.25, w));
+
+  textureStore(waterOut, texel, vec4<f32>(w, dampness, toRight, toDown));
+  textureStore(suspendedOut, texel, addPaint(s - taken, lifted));
+  textureStore(depositedOut, texel, addPaint(p - lifted, taken));
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn pourMain(@builtin(global_invocation_id) id: vec3<u32>) {
+  if (sim.tiles[id.z].z == 0) { return; }
+  let texel = slotTexel(id.z, id.xy);
+  let c = textureLoad(water, texel, 0);
+  let laid = textureLoad(laidWater, texel, 0);
+  textureStore(
+    waterOut,
+    texel,
+    vec4<f32>(min(MAX_WATER, c.x + laid.x), max(c.y, min(1.0, laid.y)), c.zw)
+  );
+  textureStore(
+    suspendedOut,
+    texel,
+    addPaint(textureLoad(suspended, texel, 0), textureLoad(laidPigment, texel, 0))
+  );
+  textureStore(depositedOut, texel, textureLoad(deposited, texel, 0));
 }
 `,
   { pigment: pigmentShader, wet }

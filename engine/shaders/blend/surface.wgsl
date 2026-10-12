@@ -12,7 +12,8 @@
 @group(0) @binding(6) var docSampler: sampler;
 // What is wet on the source (D42), or placeholders where nothing is.
 @group(0) @binding(7) var wetSlots: texture_2d<u32>;
-@group(0) @binding(8) var wetPigment: texture_2d<f32>;
+@group(0) @binding(8) var wetDeposited: texture_2d<f32>;
+@group(0) @binding(9) var wetSuspended: texture_2d<f32>;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -25,7 +26,8 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   let painted = glazeWet(
     readSurface(source, position.xy, composite.sourceInDoc),
     wetSlots,
-    wetPigment,
+    wetDeposited,
+    wetSuspended,
     documentPoint(position.xy)
   );
   var layer = painted;

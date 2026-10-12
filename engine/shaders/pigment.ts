@@ -78,4 +78,23 @@ fn mixPaint(under: vec4<f32>, over: vec4<f32>, amount: f32) -> vec4<f32> {
   let residual = mix(a - reflectanceRGB(ar), b - reflectanceRGB(br), t);
   return vec4<f32>((reflectanceRGB(mixed) + residual) * linear.a, linear.a);
 }
+
+// Two quantities of paint poured together (D42). Alpha here is pigment
+// density, not coverage: the densities add, and the colour is the mix of the
+// two weighted by density.
+fn addPaint(p: vec4<f32>, q: vec4<f32>) -> vec4<f32> {
+  let linear = p + q;
+  if (p.a <= 0.00001 || q.a <= 0.00001) { return linear; }
+  let a = p.rgb / p.a;
+  let b = q.rgb / q.a;
+  if (all(abs(a - b) < vec3<f32>(0.002))) { return linear; }
+  let t = q.a / linear.a;
+  let ar = paintReflectance(a);
+  let br = paintReflectance(b);
+  var mixed: Reflectance;
+  mixed.short = mixReflectance(ar.short, br.short, t);
+  mixed.long = mixReflectance(ar.long, br.long, t);
+  let residual = mix(a - reflectanceRGB(ar), b - reflectanceRGB(br), t);
+  return vec4<f32>((reflectanceRGB(mixed) + residual) * linear.a, linear.a);
+}
 `

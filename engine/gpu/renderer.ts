@@ -414,17 +414,30 @@ export interface Renderer {
   /**
    * Starts a fluid stroke on one surface (D42): its dabs lay `water` and
    * `ink` into the surface's wet tiles, `load` of the ink at full flow, and
-   * the surface's own pixels are left alone until the stroke ends.
+   * the surface's own pixels are left alone until that paint settles. Only
+   * one surface is wet at a time: another's wet paint is dried first.
    */
   beginFluid(surfaceId: string, stroke: Omit<FluidOpening, "surface">): void
   /** Draws `count` dabs (see `STAMP`) into the wet surface. */
   drawFluid(dabs: Float32Array, count: number): void
   /**
-   * Ends the fluid stroke. Kept, everything wet settles into the surface
-   * and what the dabs reached is returned; not kept, the wet paint is gone
-   * and the surface holds what it did before.
+   * Ends the fluid stroke. Kept, its paint stays wet; not kept, a stroke
+   * that found the surface dry leaves it dry. Either way no pixel of the
+   * surface has changed.
    */
-  endFluid(keep: boolean): StrokeMark | null
+  endFluid(keep: boolean): void
+  /** Whether any paint is wet. */
+  fluidWet(): boolean
+  /**
+   * Runs the simulation on by `steps` steps (D42). Answers what each body
+   * that dried along the way settled into its surface, in order.
+   */
+  advanceFluid(steps: number): StrokeMark[]
+  /**
+   * Settles everything wet into its surface at once. Answers what that
+   * wrote, or null with nothing wet.
+   */
+  dryFluid(): StrokeMark | null
   /** Allocates the wet fields ahead of the first fluid stroke (D30). */
   prepareFluid(): void
   /**
@@ -1635,6 +1648,9 @@ export function createRenderer(
     wetChanged() {
       for (const compositor of compositors) compositor.refreshWet()
     },
+    wetMoved() {
+      for (const compositor of compositors) compositor.showWet()
+    },
   })
 
   /**
@@ -1780,6 +1796,8 @@ export function createRenderer(
     const validGroupCaches = new Set<string>()
     const coverageCaches = new Map<string, Surface>()
     let presentBindGroup: GPUBindGroup | undefined
+    /** The present pass's binding for each copy of the wet fields. */
+    const presentBindGroups = new Map<number, GPUBindGroup>()
     /** The plan applied. Undefined forces the next one to be applied in full. */
     let composition: string | undefined
     /** That plan as given, so a frame can tell it is still the one in force. */
@@ -1865,6 +1883,7 @@ export function createRenderer(
       liveAbove = []
       activeItem = undefined
       presentBindGroup = undefined
+      presentBindGroups.clear()
       forgetBindGroups()
       invalidate()
     }
@@ -1938,11 +1957,11 @@ export function createRenderer(
     ): GPUBindGroup {
       blendScratch ??= createTarget()
       const mask = maskId ? surfaces.get(maskId) : undefined
-      const bindingKey = `${mode}:${source.id}:${mask?.id ?? 0}:${clipBase?.id ?? 0}:${usesStroke ? 1 : 0}`
-      const existing = blendBindGroups.get(bindingKey)
-      if (existing) return existing
       // Wet paint is the layer's own, so it is read wherever the layer is.
       const wet = fluid.wet(source)
+      const bindingKey = `${mode}:${source.id}:${mask?.id ?? 0}:${clipBase?.id ?? 0}:${usesStroke ? 1 : 0}:${wet.key}`
+      const existing = blendBindGroups.get(bindingKey)
+      if (existing) return existing
       const bindings = device.createBindGroup({
         layout: blendPipeline(mode).getBindGroupLayout(0),
         entries: [
@@ -1957,7 +1976,8 @@ export function createRenderer(
           { binding: 5, resource: clipBase?.view ?? placeholderView },
           { binding: 6, resource: docSampler },
           { binding: 7, resource: wet.slots },
-          { binding: 8, resource: wet.pigment },
+          { binding: 8, resource: wet.deposited },
+          { binding: 9, resource: wet.suspended },
         ],
       })
       blendBindGroups.set(bindingKey, bindings)
@@ -2188,8 +2208,20 @@ export function createRenderer(
     }
 
     function refreshPresentBindGroup() {
+      presentBindGroups.clear()
+      showWet()
+    }
+
+    /**
+     * Binds the present pass to the wet fields as they now are. A step of
+     * the simulation moves on to the fields' other copy, so the binding for
+     * each copy is kept and a step makes none.
+     */
+    function showWet() {
       if (!active || !stroke || !pipeline) return
       const wet = fluid.wet(active)
+      presentBindGroup = presentBindGroups.get(wet.key)
+      if (presentBindGroup) return
       presentBindGroup = device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
         entries: [
@@ -2207,9 +2239,11 @@ export function createRenderer(
           { binding: 4, resource: above?.view ?? placeholderView },
           { binding: 5, resource: docSampler },
           { binding: 6, resource: wet.slots },
-          { binding: 7, resource: wet.pigment },
+          { binding: 7, resource: wet.deposited },
+          { binding: 8, resource: wet.suspended },
         ],
       })
+      presentBindGroups.set(wet.key, presentBindGroup)
     }
 
     /**
@@ -2476,6 +2510,8 @@ export function createRenderer(
         blendBindGroups.clear()
         refreshPresentBindGroup()
       },
+      /** The simulation moved on to the wet fields' other copy. */
+      showWet,
       destroy() {
         releaseTargets()
         presentUniform.destroy()
@@ -3382,8 +3418,11 @@ export function createRenderer(
       fluid.draw(dabs, count)
     },
     endFluid(keep) {
-      return fluid.end(keep)
+      fluid.end(keep)
     },
+    fluidWet: () => fluid.isWet(),
+    advanceFluid: (steps) => fluid.advance(steps),
+    dryFluid: () => fluid.dry(),
     prepareFluid() {
       if (width > 0) fluid.prepare()
     },

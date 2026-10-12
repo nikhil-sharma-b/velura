@@ -312,6 +312,7 @@ import {
   type ThumbnailSubject,
   type VectorDraw,
 } from "./gpu/renderer"
+import type { StrokeMark } from "./gpu/stroke-renderer"
 import { createThumbnailScheduler, thumbnailOwners } from "./view/thumbnails"
 import {
   createContentBounds,
@@ -1099,6 +1100,13 @@ export type EngineCommand =
   | { type: "copySelectionToLayer" }
   | { type: "undo" }
   | { type: "redo" }
+  /** Settles everything wet into its layer at once (D42). */
+  | { type: "dryNow" }
+  /**
+   * Runs the fluid simulation on by a whole number of steps (D42), whatever
+   * the clock: paint moves, and a body whose time has come settles.
+   */
+  | { type: "advanceFluid"; steps: number }
 
 export type EngineSnapshot = Readonly<{
   status:
@@ -1211,6 +1219,8 @@ export type EngineSnapshot = Readonly<{
   /** Whether there is a step to take back, and one to put back (D21). */
   canUndo: boolean
   canRedo: boolean
+  /** Whether any paint is wet, and so still moving (D42). */
+  wet: boolean
   error: string | null
   /** A non-fatal durability/sync problem with an explicit next action. */
   problem: ExplainedFailure | null
@@ -1338,6 +1348,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   wand: DEFAULT_WAND,
   canUndo: false,
   canRedo: false,
+  wet: false,
   error: null,
   problem: null,
   syncStatus: null,
@@ -1548,6 +1559,13 @@ export type CloudOptions = {
   }) => void
 }
 
+/**
+ * The fluid simulation's clock (D42): the steps it aims at in a second, and
+ * the most it runs in a frame, which is one at 120 Hz and two at 60.
+ */
+const FLUID_STEPS_PER_SECOND = 120
+const FLUID_STEPS_PER_FRAME = 2
+
 /** Canvas attachment is a lifecycle operation; commands contain only values. */
 export function createEngine(
   canvas: HTMLCanvasElement | OffscreenCanvas,
@@ -1576,6 +1594,12 @@ export function createEngine(
      * does not know either, which a brush naming it is then refused for.
      */
     resolveTexture?: (id: string) => Promise<GrayscaleTexture | undefined>
+    /**
+     * Leaves the fluid simulation (D42) to be stepped by `advanceFluid` alone
+     * and never by the frame, so a test's wash has run an exact number of
+     * steps whatever the machine.
+     */
+    manualFluidClock?: boolean
   } = {}
 ): Engine {
   let snapshot: EngineSnapshot = INITIAL_SNAPSHOT
@@ -1812,6 +1836,13 @@ export function createEngine(
   let directWet: BrushWet | undefined
   /** The surface a fluid stroke in flight is painting into (D42). */
   let fluidTargetId: string | undefined
+  /** The surface holding wet paint, from its first dab until it has dried. */
+  let wetTargetId: string | undefined
+  // The simulation's clock (D42): its own frame, asked for only while paint
+  // is wet, the time of the last one, and the steps owed since.
+  let fluidFrame: number | undefined
+  let fluidTime: number | undefined
+  let fluidOwed = 0
   const directDabs = new Float32Array(MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_STRIDE)
   let directCount = 0
   let stroking = false
@@ -2096,6 +2127,9 @@ export function createEngine(
     stampCount = 0
     directTargetId = undefined
     fluidTargetId = undefined
+    stopFluidClock()
+    wetTargetId = undefined
+    if (snapshot.wet) publish({ wet: false })
     directCount = 0
     samples.clear()
     renderer?.destroy()
@@ -2185,6 +2219,8 @@ export function createEngine(
     doc = createDocument(size)
     contentBounds.clear()
     renderer?.resize(size.width, size.height)
+    // Nothing wet outlives the surfaces it was on.
+    syncWet()
     drawnScenes.clear()
     resetSelection()
     uploadLayers()
@@ -3026,6 +3062,7 @@ export function createEngine(
   /** Frees a surface's texture, and forgets what was drawn into it. */
   function releaseSurface(id: string) {
     renderer?.releaseLayer(id)
+    syncWet()
     drawnScenes.delete(id)
   }
 
@@ -4811,9 +4848,94 @@ export function createEngine(
       directCount = 0
     }
     if (stampCount === 0) return
-    if (fluidTargetId) renderer?.drawFluid(stamps, stampCount)
-    else renderer?.stamp(stamps, stampCount)
+    if (fluidTargetId) {
+      renderer?.drawFluid(stamps, stampCount)
+      // Wet from the stroke's dabs, and again if it was dried under the pen.
+      wetTargetId = fluidTargetId
+      syncWet()
+    } else renderer?.stamp(stamps, stampCount)
     stampCount = 0
+  }
+
+  /**
+   * Squares what the engine holds with whether paint is wet: the clock runs
+   * while it is and stops when it is not.
+   */
+  function syncWet() {
+    const wet = renderer?.fluidWet() ?? false
+    if (wet) runFluidClock()
+    else {
+      wetTargetId = undefined
+      stopFluidClock()
+    }
+    // React learns nothing with the pen down (§10.2): a stroke's end says.
+    if (snapshot.wet !== wet && !stroking) publish({ wet })
+  }
+
+  /** Wet paint settled into its layer: each settle is one step (D42). */
+  function recordSettled(marks: readonly StrokeMark[]) {
+    const target = wetTargetId
+    if (target)
+      for (const mark of marks) {
+        history?.recordStroke(target, mark.region, mark.tiles)
+        contentBounds.grow(target, mark.region)
+        invalidateThumbnailsOf(target)
+      }
+    syncWet()
+  }
+
+  /** Runs the simulation on, settling whatever dries along the way. */
+  function advanceFluid(steps: number) {
+    recordSettled(renderer?.advanceFluid(steps) ?? [])
+  }
+
+  /** Settles everything wet at once. Nothing on screen changes. */
+  function dryFluid() {
+    const mark = renderer?.dryFluid()
+    recordSettled(mark ? [mark] : [])
+  }
+
+  function runFluidClock() {
+    if (options.manualFluidClock || fluidFrame !== undefined || disposed) return
+    fluidFrame = requestAnimationFrame(tickFluid)
+  }
+
+  function stopFluidClock() {
+    if (fluidFrame !== undefined) cancelAnimationFrame(fluidFrame)
+    fluidFrame = undefined
+    fluidTime = undefined
+    fluidOwed = 0
+  }
+
+  /**
+   * One frame of the simulation's clock. The step is fixed and the clock
+   * aims at `FLUID_STEPS_PER_SECOND`; a frame that comes late is not made up
+   * for past `FLUID_STEPS_PER_FRAME`, so on a slow machine paint moves and
+   * dries more slowly and ends in the same place. The simulation gives way,
+   * the pen does not (D30).
+   */
+  function tickFluid(timestamp: number) {
+    fluidFrame = undefined
+    const elapsed =
+      fluidTime === undefined
+        ? 1000 / FLUID_STEPS_PER_SECOND
+        : timestamp - fluidTime
+    fluidTime = timestamp
+    fluidOwed = Math.min(
+      fluidOwed + (elapsed * FLUID_STEPS_PER_SECOND) / 1000,
+      FLUID_STEPS_PER_FRAME
+    )
+    const steps = Math.floor(fluidOwed)
+    fluidOwed -= steps
+    try {
+      if (steps > 0) {
+        advanceFluid(steps)
+        // A stroke's own frame shows the paint; without one this does.
+        if (frame === undefined && snapshot.status === "ready") render()
+      } else syncWet()
+    } catch (error) {
+      fail(error)
+    }
   }
 
   /**
@@ -5127,16 +5249,19 @@ export function createEngine(
       directTargetId = undefined
       const fluid = fluidTargetId
       fluidTargetId = undefined
-      const mark = direct
-        ? renderer?.endDirect(true)
-        : fluid
-          ? renderer?.endFluid(true)
-          : renderer?.endStroke()
+      // A fluid stroke leaves no mark yet: its paint is still wet, and no
+      // pixel of the layer changes until it settles.
+      let mark: StrokeMark | null | undefined
+      if (direct) mark = renderer?.endDirect(true)
+      else if (fluid) {
+        renderer?.endFluid(true)
+        syncWet()
+      } else mark = renderer?.endStroke()
       if (direct) publish({ brushDirty: renderer?.brushDirty() ?? false })
       // One stroke, one step. The tiles the mark's dabs drew into are read
       // back off the GPU after the frame, never during one.
       if (mark && doc) {
-        const target = direct ?? fluid ?? paintTargetId(doc)
+        const target = direct ?? paintTargetId(doc)
         history?.recordStroke(target, mark.region, mark.tiles)
         contentBounds.grow(target, mark.region)
         invalidateThumbnailsOf(target)
@@ -5757,10 +5882,14 @@ export function createEngine(
       tool === "brush" && !doc.paintingMask ? brush.rendering.fluid : undefined
     if (fluid) {
       const target = paintTargetId(doc)
+      // One layer is wet at a time.
+      if (wetTargetId && wetTargetId !== target) dryFluid()
       renderer?.beginFluid(target, {
         ink,
         load: brush.rendering.opacity * strokeParams.opacity,
         water: fluid.water,
+        drying: fluid.drying,
+        bleed: fluid.bleed,
       })
       fluidTargetId = target
     } else {
@@ -5824,9 +5953,11 @@ export function createEngine(
     samples.clear()
     renderer?.cancelStroke()
     if (fluidTargetId) {
-      // Nothing reached the layer: the wet paint is let go of.
+      // A stroke that found the layer dry leaves it dry. Paint laid into a
+      // wash already wet stays in it.
       fluidTargetId = undefined
       renderer?.endFluid(false)
+      syncWet()
     }
     if (directTargetId) {
       // The dabs went straight into the surface, so the surface is put back.
@@ -7671,6 +7802,18 @@ export function createEngine(
           applyLayerChange()
           break
         }
+        case "dryNow": {
+          dryFluid()
+          if (snapshot.status === "ready") render()
+          break
+        }
+        case "advanceFluid": {
+          if (!Number.isInteger(command.steps) || command.steps < 0)
+            throw new Error("Steps must be a whole number, zero or more.")
+          advanceFluid(command.steps)
+          if (snapshot.status === "ready") render()
+          break
+        }
         case "undo":
         case "redo": {
           if (vectorTransform) {
@@ -7707,6 +7850,9 @@ export function createEngine(
             await cancelLayerTransform()
             break
           }
+          // Wet paint is in no step yet, so it dries first: undo then takes
+          // back that passage, and redo finds nothing to put over it.
+          if (wetTargetId) dryFluid()
           const document = requireDocument()
           const previous = structureSurfaceIds(captureStructure(document))
           let restoredSelection: string | null | undefined
@@ -8250,6 +8396,7 @@ export function createEngine(
         if (bytes) assets.set(ref.id, Object.freeze({ ...ref, bytes }))
       }
       renderer.resize(imported.manifest.width, imported.manifest.height)
+      syncWet()
       if (snapshot.sampleAllLayers) renderer.prepareSampling()
       drawnScenes.clear()
       const size = {
@@ -8307,6 +8454,7 @@ export function createEngine(
       cancelVectorTransform()
       disposed = true
       stopSelection()
+      stopFluidClock()
       thumbnails.dispose()
       thumbnailViews.clear()
       // A picture still held open by a transform that was never finished.

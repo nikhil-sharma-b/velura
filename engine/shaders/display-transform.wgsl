@@ -49,7 +49,8 @@ struct Present {
 @group(0) @binding(5) var viewSampler: sampler;
 // What is wet on the active layer (D42), or placeholders where nothing is.
 @group(0) @binding(6) var wetSlots: texture_2d<u32>;
-@group(0) @binding(7) var wetPigment: texture_2d<f32>;
+@group(0) @binding(7) var wetDeposited: texture_2d<f32>;
+@group(0) @binding(8) var wetSuspended: texture_2d<f32>;
 
 /** Premultiplied "over", in linear light. */
 fn over(source: vec4<f32>, destination: vec3<f32>) -> vec3<f32> {
@@ -93,7 +94,8 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   let painted = glazeWet(
     textureSampleLevel(activeLayer, viewSampler, uv, 0.0),
     wetSlots,
-    wetPigment,
+    wetDeposited,
+    wetSuspended,
     (present.toDoc * vec3<f32>(position.xy, 1.0)).xy
   );
   // The layer's opacity applies to the mark in flight as well as to what is

@@ -2,10 +2,14 @@ import { expect, test, type Page } from "@playwright/test"
 import { PNG } from "pngjs"
 
 /**
- * A fluid brush (fluid brushes 01), through the engine's command seam and the
- * pixels it presents: a stroke lays paint into the layer's wet surface, shown
- * inside the layer while the pen is down, and settles it into the layer as
- * one undo step when the pen lifts. Nothing simulates yet.
+ * A fluid brush (fluid brushes 01 and 02), through the engine's command seam
+ * and the pixels it presents: a stroke lays paint into the layer's wet
+ * surface, shown inside the layer, where it stays wet and moves until it
+ * dries by itself or is told to. Drying settles it into the layer as one
+ * undo step, and changes nothing on screen.
+ *
+ * The simulation's clock is stopped here and stepped by command, so a wash
+ * has run the same number of steps on every machine and no test waits on one.
  */
 
 const WIDTH = 240
@@ -21,15 +25,16 @@ type Origin = { x: number; y: number }
 async function openCanvas(
   page: Page,
   width = WIDTH,
-  height = HEIGHT
+  height = HEIGHT,
+  manualFluidClock = true
 ): Promise<Origin> {
   await page.goto(
     process.env.VELURA_TEST_HARNESS ?? "http://127.0.0.1:3101/tests/harness/"
   )
   await page.waitForFunction(() => !!window.engine)
   await page.evaluate(
-    async ([width, height, colour]) => {
-      window.remountEngine()
+    async ([width, height, colour, manualFluidClock]) => {
+      window.remountEngine({ manualFluidClock })
       await window.engine.dispatch({
         type: "resize",
         width,
@@ -47,7 +52,7 @@ async function openCanvas(
       })
       await window.engine.dispatch({ type: "setColor", hex: colour })
     },
-    [width, height, BLUE] as const
+    [width, height, BLUE, manualFluidClock] as const
   )
   const box = (await page.locator("canvas").boundingBox())!
   return { x: box.x, y: box.y }
@@ -136,7 +141,55 @@ async function penDown(
   await page.mouse.move(origin.x + to, origin.y + row, { steps: 30 })
 }
 
-/** A drag that is expected to land as one undo step, waited for. */
+/** A drag with a fluid brush: its paint is wet, and in no undo step yet. */
+async function wash(
+  page: Page,
+  origin: Origin,
+  from: number,
+  to: number,
+  row = ROW
+) {
+  await penDown(page, origin, from, to, row)
+  await page.mouse.up()
+  // The last dabs are laid by the frame after the pen lifts.
+  await frames(page)
+}
+
+const isWet = (page: Page) =>
+  page.evaluate(() => window.engine.getSnapshot().wet)
+
+/** Runs the simulation on by so many steps. */
+const advance = (page: Page, steps: number) =>
+  page.evaluate(
+    (steps) => window.engine.dispatch({ type: "advanceFluid", steps }),
+    steps
+  )
+
+/** Runs the simulation on until paint has settled by itself. */
+async function untilSettled(page: Page) {
+  const before = await steps(page)
+  for (let i = 0; i < 400 && (await steps(page)) === before; i++) {
+    await advance(page, 10)
+    // History reads the settled tiles back after the frame.
+    await frames(page)
+  }
+  expect(await steps(page)).toBeGreaterThan(before)
+}
+
+/** Dries everything wet, waited for as the undo step it lands as. */
+async function dryNow(page: Page) {
+  const before = await steps(page)
+  await page.evaluate(() => window.engine.dispatch({ type: "dryNow" }))
+  await page.waitForFunction(
+    (n) => window.engine.historyUsage().steps > n,
+    before
+  )
+}
+
+/**
+ * A drag that is expected to land as one undo step, waited for: a fluid
+ * brush's paint is dried at once, so the step is the stroke.
+ */
 async function stroke(
   page: Page,
   origin: Origin,
@@ -145,8 +198,8 @@ async function stroke(
   row = ROW
 ) {
   const before = await steps(page)
-  await penDown(page, origin, from, to, row)
-  await page.mouse.up()
+  await wash(page, origin, from, to, row)
+  await page.evaluate(() => window.engine.dispatch({ type: "dryNow" }))
   await page.waitForFunction(
     (n) => window.engine.historyUsage().steps > n,
     before
@@ -184,7 +237,7 @@ test("a fluid stroke on an empty layer lays the current colour", async ({
   expect(await pixels(page)).toEqual(painted)
 })
 
-test("the frame shown while the pen is down is the picture left when it lifts", async ({
+test("the frame shown while the pen is down is the picture left when it dries", async ({
   page,
 }) => {
   const origin = await openCanvas(page)
@@ -198,10 +251,12 @@ test("the frame shown while the pen is down is the picture left when it lifts", 
   expect(distance(rgba(wet, 110), rgba(empty, 110))).toBeGreaterThan(200)
   expect(await steps(page)).toBe(before)
   await page.mouse.up()
-  await page.waitForFunction(
-    (n) => window.engine.historyUsage().steps > n,
-    before
-  )
+  // Lifting the pen leaves the paint wet: still shown, still in no step.
+  expect(differing(await pixels(page), wet, 180 - TAIL)).toBe(null)
+  expect(await isWet(page)).toBe(true)
+  expect(await steps(page)).toBe(before)
+  await dryNow(page)
+  expect(await isWet(page)).toBe(false)
   expect(differing(await pixels(page), wet, 180 - TAIL)).toBe(null)
 })
 
@@ -340,15 +395,12 @@ for (const [name, patch] of [
     const ground = await pixels(page)
     await setColour(page, BLUE)
     await setFluid(page, FLUID)
-    const before = await steps(page)
     await penDown(page, origin, 60, 180)
     const wet = await pixels(page)
     expect(distance(rgba(wet, 80), rgba(ground, 80))).toBeGreaterThan(40)
     await page.mouse.up()
-    await page.waitForFunction(
-      (n) => window.engine.historyUsage().steps > n,
-      before
-    )
+    await frames(page)
+    await dryNow(page)
     expect(differing(await pixels(page), wet, 180 - TAIL)).toBe(null)
   })
 
@@ -451,4 +503,386 @@ test("golden: a fluid stroke across a two-colour ground", async ({ page }) => {
   expect(PNG.sync.write(png)).toMatchSnapshot("fluid-stroke.png", {
     maxDiffPixelRatio: 0.01,
   })
+})
+
+// ── The simulation (fluid brushes 02) ──
+
+/** A brush whose paint is dry within two hundred steps. */
+const QUICK = { ...FLUID, drying: 1 }
+
+/** The brush's size, and how much pigment each of its dabs carries. */
+const setTip = (page: Page, radius: number, flow: number) =>
+  page.evaluate(
+    ([radius, flow]) =>
+      window.engine.dispatch({ type: "setBrush", radius, flow }),
+    [radius, flow] as const
+  )
+
+/**
+ * A blue wash with a touch of yellow laid into it while it is wet, and the
+ * same touch laid on dry paper beside it, left to move for `count` steps.
+ */
+const TOUCH = { wet: 110, dry: 200, radius: 6, length: 8 }
+async function touchedWash(page: Page, count: number) {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await setFluid(page, FLUID)
+  // A thin wash, and a touch strong enough to show in it.
+  await setTip(page, 30, 0.1)
+  await wash(page, origin, 40, 140)
+  await setColour(page, YELLOW)
+  await setTip(page, TOUCH.radius, 1)
+  for (const x of [TOUCH.wet, TOUCH.dry])
+    await wash(page, origin, x - TOUCH.length / 2, x + TOUCH.length / 2)
+  await advance(page, count)
+  return pixels(page)
+}
+
+test("a colour laid into a wet wash spreads further than on dry paper, and mixes as pigment", async ({
+  page,
+}) => {
+  const image = await touchedWash(page, 100)
+  const empty = [255, 255, 255, 255]
+  // The wash as it is far from the touch: what a row holds with no yellow.
+  const plain = (y: number) => rgba(image, 60, y)
+  // How many pixels of a column differ from what is there with no yellow.
+  const reach = (x: number, without: (y: number) => number[]) => {
+    let rows = 0
+    for (let y = 0; y < HEIGHT; y++)
+      if (distance(rgba(image, x, y), without(y)) > 12) rows++
+    return rows
+  }
+  const inWash = reach(TOUCH.wet, plain)
+  const onPaper = reach(TOUCH.dry, () => empty)
+  expect(onPaper).toBeGreaterThan(TOUCH.radius)
+  expect(inWash).toBeGreaterThan(onPaper + 6)
+
+  // Past the dab's own rim the yellow that bled into the blue reads green.
+  // Pigment mixed: the yellow has taken red out of the blue, where light
+  // mixed would have added its own and gone grey.
+  const y = ROW + TOUCH.radius + 3
+  const [r, g] = rgba(image, TOUCH.wet, y)
+  const [plainR, plainG] = plain(y)
+  expect(g).toBeGreaterThan(r + 15)
+  expect(g - r).toBeGreaterThan(plainG - plainR + 12)
+  expect(r).toBeLessThan(plainR - 20)
+})
+
+test("the same strokes and the same step count give the same pixels", async ({
+  page,
+}) => {
+  const first = await touchedWash(page, 120)
+  expect(await touchedWash(page, 120)).toEqual(first)
+  // And the paint has moved: the count is what the picture depends on.
+  expect(await touchedWash(page, 20)).not.toEqual(first)
+})
+
+test("a wash left alone settles by itself, into the picture it last showed", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  const empty = await pixels(page)
+  await setFluid(page, QUICK)
+  const before = await steps(page)
+  await wash(page, origin, 40, 180)
+  await advance(page, 60)
+  expect(await isWet(page)).toBe(true)
+  expect(await steps(page)).toBe(before)
+
+  let last = await pixels(page)
+  for (let i = 0; i < 100 && (await isWet(page)); i++) {
+    last = await pixels(page)
+    await advance(page, 5)
+  }
+  expect(await isWet(page)).toBe(false)
+  const settled = await pixels(page)
+  expect(differing(settled, last, WIDTH)).toBe(null)
+  expect(distance(rgba(settled, 110), rgba(empty, 110))).toBeGreaterThan(200)
+
+  // The settle is one step: one undo takes the passage back.
+  await page.waitForFunction(
+    (n) => window.engine.historyUsage().steps > n,
+    before
+  )
+  expect(await steps(page)).toBe(before + 1)
+  await undo(page)
+  expect(await pixels(page)).toEqual(empty)
+})
+
+test("dry now settles everything at once and changes nothing on screen", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await setFluid(page, FLUID)
+  const before = await steps(page)
+  await wash(page, origin, 30, 100)
+  await setColour(page, YELLOW)
+  await wash(page, origin, 80, 200)
+  // Part way: water standing, pigment still on the move.
+  await advance(page, 40)
+  const wet = await pixels(page)
+  await dryNow(page)
+  expect(await isWet(page)).toBe(false)
+  expect(differing(await pixels(page), wet, WIDTH)).toBe(null)
+  expect(await steps(page)).toBe(before + 1)
+  // Dry paint stays where it is however long the clock runs.
+  await advance(page, 50)
+  expect(differing(await pixels(page), wet, WIDTH)).toBe(null)
+})
+
+test("dried paint under a later wash does not move", async ({ page }) => {
+  /** A thin yellow wash left to move, over blue dried first or over nothing. */
+  const washed = async (overBlue: boolean) => {
+    const origin = await openCanvas(page)
+    await addLayer(page)
+    await setFluid(page, FLUID)
+    if (overBlue) await stroke(page, origin, 20, 110)
+    const ground = await pixels(page)
+    await setColour(page, YELLOW)
+    await page.evaluate(() =>
+      window.engine.dispatch({ type: "setBrush", flow: 0.2 })
+    )
+    await wash(page, origin, 70, 210)
+    await advance(page, 300)
+    await dryNow(page)
+    return { ground, glazed: await pixels(page) }
+  }
+  const alone = await washed(false)
+  const { ground, glazed } = await washed(true)
+
+  // The overlap mixed, and the blue the wash never reached is untouched.
+  const [r, g, b] = rgba(glazed, 95)
+  expect(g).toBeGreaterThan(r + 20)
+  expect(g).toBeGreaterThan(b + 20)
+  expect(rgba(glazed, 30)).toEqual(rgba(ground, 30))
+  // The wash carried no blue along: past the blue's end it is, to the
+  // pixel, the wash that never met any.
+  for (const x of [135, 150, 190])
+    for (const y of [ROW - 8, ROW, ROW + 8])
+      expect(distance(rgba(glazed, x, y), rgba(alone.glazed, x, y))).toBe(0)
+  // And the blue is all still under there: undo gives it back whole.
+  await undo(page)
+  expect(await pixels(page)).toEqual(ground)
+})
+
+test("undo with paint still wet dries it first and takes that passage back", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  const empty = await pixels(page)
+  await setFluid(page, FLUID)
+  await wash(page, origin, 40, 180)
+  await advance(page, 30)
+  const wet = await pixels(page)
+  await undo(page)
+  expect(await isWet(page)).toBe(false)
+  expect(await pixels(page)).toEqual(empty)
+  await page.evaluate(() => window.engine.dispatch({ type: "redo" }))
+  expect(differing(await pixels(page), wet, WIDTH)).toBe(null)
+})
+
+test("the view moves while paint is wet, and the simulation rebuilds no cache", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  // Marked layers under and over the one painted on: a cache rebuilt is a
+  // pass for each of them.
+  await page.evaluate(() => window.buildLayerStack(12))
+  await setFluid(page, FLUID)
+  await wash(page, origin, 60, 180)
+  const before = await pixels(page)
+
+  const passes = await page.evaluate(async () => {
+    const encoder = GPUCommandEncoder.prototype
+    const beginRenderPass = encoder.beginRenderPass
+    let passes = 0
+    encoder.beginRenderPass = function (
+      ...args: Parameters<typeof beginRenderPass>
+    ) {
+      passes++
+      return beginRenderPass.apply(this, args)
+    }
+    try {
+      for (let i = 0; i < 10; i++)
+        await window.engine.dispatch({ type: "advanceFluid", steps: 1 })
+    } finally {
+      encoder.beginRenderPass = beginRenderPass
+    }
+    return passes
+  })
+  expect(passes).toBeLessThanOrEqual(20)
+
+  // Pan, zoom and rotate, the paint moving all the while.
+  for (const command of [
+    { type: "panView", dx: 30, dy: 10 },
+    { type: "zoomView", factor: 2 },
+    { type: "rotateView", radians: 0.5 },
+  ] as const) {
+    await page.evaluate((command) => window.engine.dispatch(command), command)
+    await advance(page, 5)
+    expect(await isWet(page)).toBe(true)
+  }
+  const moved = await pixels(page)
+  expect(moved).not.toEqual(before)
+  // Still nothing changes at the moment of drying, in a view that is turned.
+  await dryNow(page)
+  expect(differing(await pixels(page), moved, WIDTH)).toBe(null)
+})
+
+test("with nothing wet no step runs and no frame is asked for", async ({
+  page,
+}) => {
+  // On the engine's own clock: this is about when it runs.
+  const origin = await openCanvas(page, WIDTH, HEIGHT, false)
+  await addLayer(page)
+  await setFluid(page, QUICK)
+  await frames(page)
+  // Counts the frames the page asks for and the compute passes it runs
+  // across thirty frames, watched through a frame callback of the test's own.
+  const watch = () =>
+    page.evaluate(async () => {
+      const request = window.requestAnimationFrame
+      const pass = GPUComputePassEncoder.prototype
+      const dispatch = pass.dispatchWorkgroups
+      const seen = { frames: 0, steps: 0, wet: window.engine.getSnapshot().wet }
+      window.requestAnimationFrame = (callback) => {
+        seen.frames++
+        return request.call(window, callback)
+      }
+      pass.dispatchWorkgroups = function (
+        ...args: Parameters<typeof dispatch>
+      ) {
+        seen.steps++
+        return dispatch.apply(this, args)
+      }
+      try {
+        for (let i = 0; i < 30; i++)
+          await new Promise((resolve) => request.call(window, resolve))
+      } finally {
+        window.requestAnimationFrame = request
+        pass.dispatchWorkgroups = dispatch
+      }
+      return seen
+    })
+  expect(await watch()).toEqual({ frames: 0, steps: 0, wet: false })
+
+  const before = await steps(page)
+  await wash(page, origin, 40, 180)
+  const running = await watch()
+  expect(running.wet).toBe(true)
+  expect(running.steps).toBeGreaterThan(0)
+  expect(running.frames).toBeGreaterThan(0)
+
+  // Left alone it dries, and the clock stops with it.
+  await page.waitForFunction(
+    (n) =>
+      !window.engine.getSnapshot().wet &&
+      window.engine.historyUsage().steps > n,
+    before
+  )
+  await frames(page)
+  expect(await watch()).toEqual({ frames: 0, steps: 0, wet: false })
+})
+
+test("paint bleeds across a tile border as it does within a tile", async ({
+  page,
+}) => {
+  const width = 600
+  /**
+   * A wash with a touch of yellow bled into it, the whole of it moved
+   * `shift` pixels right and down: the same paint, on other tiles.
+   */
+  const bled = async (shift: number) => {
+    const origin = await openCanvas(page, width, 400)
+    await addLayer(page)
+    await setFluid(page, FLUID)
+    await setTip(page, 30, 0.1)
+    await wash(page, origin, 120 + shift, 400 + shift, 256 + shift)
+    await setColour(page, YELLOW)
+    await setTip(page, TOUCH.radius, 1)
+    await wash(page, origin, 242 + shift, 250 + shift, 256 + shift)
+    await advance(page, 300)
+    const image = await pixels(page)
+    return (x: number, y: number) => rgba(image, x + shift, y + shift, width)
+  }
+  // Tiles are 256 px. Unshifted the touch is on the border between two rows
+  // of them and ten pixels short of one between two columns; a quarter tile
+  // on, the same paint has no border within its reach.
+  const across = await bled(0)
+  const within = await bled(64)
+  // It has bled over the column border.
+  expect(distance(across(262, 256), across(340, 256))).toBeGreaterThan(12)
+  // And the picture is the one painted where there is no border to cross.
+  let worst = 0
+  for (let y = 216; y < 296; y++)
+    for (let x = 206; x < 290; x++)
+      worst = Math.max(worst, distance(across(x, y), within(x, y)))
+  expect(worst).toBeLessThanOrEqual(2)
+})
+
+test("a body of wet tiles settles as a whole, and apart from another", async ({
+  page,
+}) => {
+  const width = 1100
+  const origin = await openCanvas(page, width, 300)
+  await addLayer(page)
+  const empty = await pixels(page)
+  await setFluid(page, QUICK)
+  const before = await steps(page)
+  // One wash over four tiles, and later one a tile's width clear of it.
+  await wash(page, origin, 150, 350, 256)
+  await advance(page, 100)
+  await wash(page, origin, 850, 950, 100)
+  const at = (image: number[], x: number, y: number) => rgba(image, x, y, width)
+
+  // The first dries on its own deadline, whole, with the second still wet.
+  await untilSettled(page)
+  expect(await steps(page)).toBe(before + 1)
+  expect(await isWet(page)).toBe(true)
+  await untilSettled(page)
+  expect(await steps(page)).toBe(before + 2)
+  expect(await isWet(page)).toBe(false)
+  const both = await pixels(page)
+
+  // One undo takes back the second and none of the first.
+  await undo(page)
+  const first = await pixels(page)
+  expect(at(first, 900, 100)).toEqual(at(empty, 900, 100))
+  for (const [x, y] of [
+    [200, 250],
+    [200, 262],
+    [300, 250],
+    [300, 262],
+  ]) {
+    expect(distance(at(first, x, y), at(empty, x, y))).toBeGreaterThan(200)
+    expect(at(first, x, y)).toEqual(at(both, x, y))
+  }
+  // And one more takes back the first from every tile it lay in.
+  await undo(page)
+  expect(await pixels(page)).toEqual(empty)
+})
+
+test("a stroke goes on painting after its paint is dried under the pen", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  const empty = await pixels(page)
+  await setFluid(page, FLUID)
+  await penDown(page, origin, 40, 100)
+  await frames(page)
+  await dryNow(page)
+  await page.mouse.move(origin.x + 180, origin.y + ROW, { steps: 30 })
+  await page.mouse.up()
+  await frames(page)
+  // What was laid before is in the layer, and what came after is wet on it.
+  expect(await isWet(page)).toBe(true)
+  const image = await pixels(page)
+  for (const x of [60, 150])
+    expect(distance(rgba(image, x), rgba(empty, x))).toBeGreaterThan(200)
+  await dryNow(page)
+  expect(differing(await pixels(page), image, WIDTH)).toBe(null)
 })

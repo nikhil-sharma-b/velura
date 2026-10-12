@@ -863,6 +863,15 @@ export const studioCommands = createRegistry<StudioContext>(
       ),
     },
     {
+      // Unbound by default: wet paint dries by itself, and this is for the
+      // moment a wash looks right.
+      id: "brush.dryNow",
+      label: "Dry now",
+      category: "Brush",
+      available: ({ engine }) => !!engine?.getSnapshot().wet,
+      run: ({ engine }) => void engine?.dispatch({ type: "dryNow" }),
+    },
+    {
       id: "layer.add",
       label: "Add layer",
       category: "Layers",
