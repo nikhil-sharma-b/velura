@@ -1,0 +1,753 @@
+<!doctype html>
+<!-- PROTOTYPE. Throwaway. Never imported by engine/. Delete before the first fluid-brushes engine ticket. -->
+<meta charset="utf-8" />
+<title>PROTOTYPE · fluid brushes sim (throwaway)</title>
+<style>
+  body { margin: 0; font: 13px/1.45 system-ui, sans-serif; background: #1b1b1d; color: #ddd; }
+  header { padding: 10px 16px; border-bottom: 1px solid #333; }
+  h1 { font-size: 15px; margin: 0 0 4px; } h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #8ab4ff; margin: 14px 0 6px; }
+  header p { margin: 0; color: #aaa; max-width: 1100px; }
+  main { display: flex; gap: 16px; padding: 12px 16px; align-items: flex-start; }
+  canvas { width: 960px; height: 960px; flex: none; background: #000; touch-action: none; cursor: crosshair; }
+  aside { width: 420px; }
+  .state { display: grid; grid-template-columns: 150px 1fr; gap: 2px 8px; background: #242427; padding: 8px; border-radius: 6px; font-variant-numeric: tabular-nums; }
+  .state b { color: #999; font-weight: 400; }
+  .row { display: grid; grid-template-columns: 130px 1fr 52px; gap: 6px; align-items: center; margin: 2px 0; }
+  .row input[type=range] { width: 100%; }
+  button, select { font: inherit; background: #333; color: #eee; border: 1px solid #555; border-radius: 4px; padding: 3px 8px; cursor: pointer; }
+  button:hover { background: #444; } .btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+  .tabs button.on { background: #8ab4ff; color: #111; border-color: #8ab4ff; }
+  #scenario { background: #242427; padding: 8px; border-radius: 6px; margin-top: 6px; }
+  table { border-collapse: collapse; margin-top: 6px; } td, th { border: 1px solid #444; padding: 2px 7px; text-align: right; }
+  .warn { color: #ffb86b; }
+</style>
+<header>
+  <h1>PROTOTYPE · fluid brushes simulation</h1>
+  <p>
+    Question: can a water + pigment sim on <b>sparse 256 px wet tiles</b> give wet-in-wet bleed, edge darkening and granulation
+    with an overdamped (diffusion-like) flow, or does it need momentum (shallow-water)? What does a step cost per wet tile, at which
+    sim resolution, and does flow cross tile borders cleanly? Paint with the pointer; wheel zooms. Wet paint lives in the sim fields and
+    lands in the dry layer only when its tiles settle.
+  </p>
+</header>
+<main>
+  <canvas id="c" width="960" height="960"></canvas>
+  <aside>
+    <h2>Current state</h2>
+    <div class="state" id="state"></div>
+    <h2>Actions</h2>
+    <div class="btns">
+      <button id="bAdv">Advance 100 steps</button><button id="bDry">Dry now</button><button id="bReset">Reset</button
+      ><button id="bFit">Fit view</button><button id="bPause">Pause sim</button>
+    </div>
+    <h2>Guided walkthroughs</h2>
+    <div class="btns tabs" id="tabs"></div>
+    <div id="scenario"></div>
+    <h2>Brush</h2>
+    <div id="brush"></div>
+    <h2>Simulation</h2>
+    <div id="sim"></div>
+    <h2>Benchmark</h2>
+    <div class="btns"><button id="bBench">Run step-cost benchmark</button></div>
+    <div id="bench"></div>
+  </aside>
+</main>
+<script>
+"use strict"
+// ───────────────────────── portable part 1: wet tile bookkeeping (pure, no GPU, no DOM) ─────────────────────────
+// A wet tile holds a slot in the field textures. Tiles connected through allocated neighbours form one body of
+// water and share a dry deadline, so a body always settles and frees together (no half-settled seams).
+function createWetTiles(grid, capacity) {
+  const slotOf = new Int32Array(grid * grid).fill(-1)
+  const tileOf = new Int32Array(capacity * 4).fill(-1) // x, y, flag (1 fresh, 2 settling), unused
+  const deadline = new Float64Array(capacity).fill(Infinity)
+  let count = 0
+  const at = (x, y) => (x < 0 || y < 0 || x >= grid || y >= grid ? -1 : slotOf[y * grid + x])
+  function alloc(x, y) {
+    if (x < 0 || y < 0 || x >= grid || y >= grid) return -1
+    const have = slotOf[y * grid + x]
+    if (have >= 0) return have
+    for (let s = 0; s < capacity; s++) {
+      if (tileOf[s * 4] < 0) {
+        tileOf.set([x, y, 1, 0], s * 4)
+        slotOf[y * grid + x] = s
+        count++
+        return s
+      }
+    }
+    return -1
+  }
+  return {
+    slotOf, tileOf, deadline, grid, capacity,
+    get count() { return count },
+    get highWater() { let h = 0; for (let s = 0; s < capacity; s++) if (tileOf[s * 4] >= 0) h = s + 1; return h },
+    /** A dab reached this tile: allocate it (and its ring when halo), false when out of slots. */
+    touch(x, y, halo) {
+      if (alloc(x, y) < 0) return false
+      if (halo) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) alloc(x + dx, y + dy)
+      return true
+    },
+    /** Push the deadline of every tile connected to (x, y). */
+    refresh(x, y, until) {
+      const seen = new Set(), stack = [[x, y]]
+      while (stack.length) {
+        const [cx, cy] = stack.pop(), s = at(cx, cy)
+        if (s < 0 || seen.has(s)) continue
+        seen.add(s); deadline[s] = until
+        stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1], [cx + 1, cy + 1], [cx - 1, cy - 1], [cx + 1, cy - 1], [cx - 1, cy + 1])
+      }
+    },
+    refreshAll(until) { for (let s = 0; s < capacity; s++) if (tileOf[s * 4] >= 0) deadline[s] = until },
+    expired(step) { const out = []; for (let s = 0; s < capacity; s++) if (tileOf[s * 4] >= 0 && deadline[s] <= step) out.push(s); return out },
+    all() { const out = []; for (let s = 0; s < capacity; s++) if (tileOf[s * 4] >= 0) out.push(s); return out },
+    clearFresh() { let any = false; for (let s = 0; s < capacity; s++) if (tileOf[s * 4 + 2] === 1) { tileOf[s * 4 + 2] = 0; any = true } return any },
+    release(s) { const x = tileOf[s * 4], y = tileOf[s * 4 + 1]; slotOf[y * grid + x] = -1; tileOf.set([-1, -1, 0, 0], s * 4); deadline[s] = Infinity; count-- },
+    neighbour: at,
+  }
+}
+
+// ───────────────────────── portable part 2: the shaders ─────────────────────────
+const U_FIELDS = ["grid", "tile", "slots", "model", "kmMix", "dabCount", "simOn", "view", "showTiles", "maskOn", "benchFill", "settleOnly", "edgeR"]
+const F_FIELDS = ["kw", "drag", "evap", "edgeK", "absorb", "dryRate", "diff", "carry", "depRate", "gran", "lift", "paperK", "wMax", "grainDetail", "viewX", "viewY", "viewScale", "docSize", "hard", "spill"]
+
+const COMMON = /* wgsl */ `
+struct Params { ${U_FIELDS.map((n) => `${n}: u32,`).join(" ")} ${F_FIELDS.map((n) => `${n}: f32,`).join(" ")} }
+
+fn slotAt(t: vec2i) -> i32 {
+  let G = i32(P.grid);
+  if (t.x < 0 || t.y < 0 || t.x >= G || t.y >= G) { return -1; }
+  return slotOf[t.y * G + t.x];
+}
+// A sim cell by its document-wide cell coordinate. A cell in a tile with no slot is dry paper: zero.
+fn gcell(tex: texture_2d_array<f32>, g: vec2i) -> vec4f {
+  if (g.x < 0 || g.y < 0) { return vec4f(0.0); }
+  let T = i32(P.tile);
+  let tile = g / T;
+  let slot = slotAt(tile);
+  if (slot < 0) { return vec4f(0.0); }
+  let info = tileOf[slot];
+  if (info.z == 1) { return vec4f(0.0); }
+  if (P.settleOnly == 1u && info.z != 2) { return vec4f(0.0); }
+  return textureLoad(tex, g - tile * T, slot, 0);
+}
+fn paperAt(docPx: vec2f) -> f32 {
+  return textureLoad(paperTex, vec2i(max(docPx, vec2f(0.0))) & vec2i(1023), 0).r;
+}
+// Masking fluid stand-in for a selection: 0 inside the masked bar.
+fn maskAt(docPx: vec2f) -> f32 {
+  if (P.maskOn == 0u) { return 1.0; }
+  let u = docPx / P.docSize;
+  if (u.x > 0.46 && u.x < 0.54 && u.y > 0.15 && u.y < 0.85) { return 0.0; }
+  return 1.0;
+}
+
+// ── engine/shaders/pigment.ts, verbatim ──
+struct Reflectance { short: vec3<f32>, long: vec3<f32>, }
+fn paintReflectance(rgb: vec3<f32>) -> Reflectance {
+  let c = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+  let white = min(c.r, min(c.g, c.b));
+  let rest = c - white;
+  let cyan = min(rest.g, rest.b);
+  let magenta = min(rest.r, rest.b);
+  let yellow = min(rest.r, rest.g);
+  let red = rest.r - magenta - yellow;
+  let green = rest.g - cyan - yellow;
+  let blue = rest.b - cyan - magenta;
+  let black = 1.0 - white - cyan - magenta - yellow - red - green - blue;
+  var out: Reflectance;
+  out.short = vec3<f32>(white + 0.02 * black)
+    + cyan * vec3<f32>(0.80, 0.90, 0.90) + magenta * vec3<f32>(0.85, 0.25, 0.04)
+    + yellow * vec3<f32>(0.02, 0.08, 0.70) + red * vec3<f32>(0.02, 0.02, 0.04)
+    + green * vec3<f32>(0.02, 0.25, 0.90) + blue * vec3<f32>(0.80, 0.55, 0.40);
+  out.long = vec3<f32>(white + 0.02 * black)
+    + cyan * vec3<f32>(0.60, 0.04, 0.02) + magenta * vec3<f32>(0.04, 0.60, 0.90)
+    + yellow * vec3<f32>(0.90, 0.90, 0.85) + red * vec3<f32>(0.15, 0.80, 0.90)
+    + green * vec3<f32>(0.65, 0.08, 0.02) + blue * vec3<f32>(0.20, 0.02, 0.02);
+  return out;
+}
+fn reflectanceRGB(r: Reflectance) -> vec3<f32> {
+  return vec3<f32>(r.long.y + r.long.z, r.short.z + r.long.x, r.short.x + r.short.y) * 0.5;
+}
+fn absorption(r: vec3<f32>) -> vec3<f32> {
+  let safe = max(r, vec3<f32>(0.0001));
+  return (1.0 - safe) * (1.0 - safe) / (2.0 * safe);
+}
+fn mixReflectance(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
+  let ks = mix(absorption(a), absorption(b), t);
+  return 1.0 / (1.0 + ks + sqrt(ks * ks + 2.0 * ks));
+}
+fn kmColour(a: vec3f, b: vec3f, t: f32) -> vec3f {
+  let ar = paintReflectance(a);
+  let br = paintReflectance(b);
+  var mixed: Reflectance;
+  mixed.short = mixReflectance(ar.short, br.short, t);
+  mixed.long = mixReflectance(ar.long, br.long, t);
+  let residual = mix(a - reflectanceRGB(ar), b - reflectanceRGB(br), t);
+  return reflectanceRGB(mixed) + residual;
+}
+fn mixPaint(under: vec4<f32>, over: vec4<f32>, amount: f32) -> vec4<f32> {
+  let lin = mix(under, over, amount);
+  if (amount <= 0.0 || amount >= 1.0 || under.a <= 0.0 || over.a <= 0.0) { return lin; }
+  let a = under.rgb / under.a;
+  let b = over.rgb / over.a;
+  if (all(abs(a - b) < vec3<f32>(0.00001))) { return lin; }
+  return vec4<f32>(kmColour(a, b, amount * over.a / lin.a) * lin.a, lin.a);
+}
+// ── new for fluid: two quantities of paint poured together. Alpha is pigment density, not coverage. ──
+fn addPaint(p: vec4f, q: vec4f) -> vec4f {
+  let lin = p + q;
+  if (P.kmMix == 0u || p.a <= 0.00001 || q.a <= 0.00001) { return lin; }
+  let a = p.rgb / p.a;
+  let b = q.rgb / q.a;
+  if (all(abs(a - b) < vec3f(0.002))) { return lin; }
+  return vec4f(kmColour(a, b, q.a / lin.a) * lin.a, lin.a);
+}
+// Transparent paint of some density over what is beneath. Used by the live composite and by settle alike.
+fn glaze(under: vec4f, paint: vec4f) -> vec4f {
+  if (paint.a <= 0.00001) { return under; }
+  let amount = 1.0 - exp(-paint.a);
+  return mixPaint(under, vec4f(paint.rgb / paint.a, 1.0), amount);
+}
+`
+
+const STEP = /* wgsl */ `
+struct Dab { pos: vec2f, radius: f32, water: f32, color: vec4f }
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var<storage, read> slotOf: array<i32>;
+@group(0) @binding(2) var<storage, read> tileOf: array<vec4i>;
+@group(0) @binding(3) var<storage, read> dabs: array<Dab>;
+@group(0) @binding(4) var paperTex: texture_2d<f32>;
+@group(0) @binding(5) var Win: texture_2d_array<f32>;   // x water, y paper saturation, z flow on right face, w flow on bottom face
+@group(0) @binding(6) var Sin: texture_2d_array<f32>;   // suspended pigment, premultiplied by density
+@group(0) @binding(7) var Din: texture_2d_array<f32>;   // deposited pigment
+@group(0) @binding(8) var Wout: texture_storage_2d_array<rgba16float, write>;
+@group(0) @binding(9) var Sout: texture_storage_2d_array<rgba16float, write>;
+@group(0) @binding(10) var Dout: texture_storage_2d_array<rgba16float, write>;
+${COMMON}
+// Water only moves between two cells of damp paper, and never through the mask.
+fn gate(a: vec4f, b: vec4f, ma: f32, mb: f32) -> f32 { return smoothstep(0.02, 0.3, min(a.y, b.y)) * ma * mb; }
+// Water crossing a face per step, before the donor's limit.
+// model 0: overdamped, flow follows the height difference, so a puddle levels and its edge stays fed.
+// model 1: the face keeps momentum.
+fn faceFlow(old: f32, ha: f32, hb: f32, g: f32) -> f32 {
+  var q = P.kw * (ha - hb);
+  if (P.model == 1u) { q = old * (1.0 - P.drag) + q * P.drag; }
+  return q * g;
+}
+fn pgate(a: vec4f, b: vec4f) -> f32 { return smoothstep(0.0, 0.25, min(a.x, b.x)); }
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let slot = i32(gid.z);
+  let info = tileOf[slot];
+  if (info.x < 0) { return; }
+  let T = i32(P.tile);
+  let p = vec2i(gid.xy);
+  let g = info.xy * T + p;
+  let scale = 256.0 / f32(T);
+  let docPx = (vec2f(g) + 0.5) * scale;
+
+  let c = gcell(Win, g);
+  let l = gcell(Win, g + vec2i(-1, 0)); let r = gcell(Win, g + vec2i(1, 0));
+  let u = gcell(Win, g + vec2i(0, -1)); let d = gcell(Win, g + vec2i(0, 1));
+  let hc = paperAt(docPx);
+  let mc = maskAt(docPx);
+  var w = c.x; var s = c.y; var vR = 0.0; var vD = 0.0;
+  var S = gcell(Sin, g);
+  var D = gcell(Din, g);
+
+  if (P.simOn == 1u) {
+    let ml = maskAt(docPx + vec2f(-scale, 0.0)); let mr = maskAt(docPx + vec2f(scale, 0.0));
+    let mu = maskAt(docPx + vec2f(0.0, -scale)); let md = maskAt(docPx + vec2f(0.0, scale));
+    let Hc = c.x + P.paperK * hc;
+    let Hl = l.x + P.paperK * paperAt(docPx + vec2f(-scale, 0.0));
+    let Hr = r.x + P.paperK * paperAt(docPx + vec2f(scale, 0.0));
+    let Hu = u.x + P.paperK * paperAt(docPx + vec2f(0.0, -scale));
+    let Hd = d.x + P.paperK * paperAt(docPx + vec2f(0.0, scale));
+    // no cell gives more than a fifth of its water across one face in one step
+    vR = clamp(faceFlow(c.z, Hc, Hr, gate(c, r, mc, mr)), -0.2 * r.x, 0.2 * c.x);
+    let vL = clamp(faceFlow(l.z, Hl, Hc, gate(l, c, ml, mc)), -0.2 * c.x, 0.2 * l.x);
+    vD = clamp(faceFlow(c.w, Hc, Hd, gate(c, d, mc, md)), -0.2 * d.x, 0.2 * c.x);
+    let vU = clamp(faceFlow(u.w, Hu, Hc, gate(u, c, mu, mc)), -0.2 * c.x, 0.2 * u.x);
+    // the same flows as the fraction of each donor's water, which is the fraction of its pigment that rides along
+    let inv = 1.0 / max(c.x, 0.0001);
+    let oR = max(vR, 0.0) * inv; let oL = max(-vL, 0.0) * inv; let oD = max(vD, 0.0) * inv; let oU = max(-vU, 0.0) * inv;
+    let iR = max(-vR, 0.0) / max(r.x, 0.0001); let iL = max(vL, 0.0) / max(l.x, 0.0001);
+    let iD = max(-vD, 0.0) / max(d.x, 0.0001); let iU = max(vU, 0.0) / max(u.x, 0.0001);
+
+    // water: what leaves, what arrives, what evaporates (faster near the edge of the damp area)
+    w = c.x - vR + vL - vD + vU;
+    // "near the edge" looks edgeR cells out as well as next door, so the rim that dries first is a band, not one cell
+    let R = i32(P.edgeR);
+    let far = gcell(Win, g + vec2i(-R, 0)).y + gcell(Win, g + vec2i(R, 0)).y + gcell(Win, g + vec2i(0, -R)).y + gcell(Win, g + vec2i(0, R)).y;
+    let edge = 1.0 - 0.125 * (l.y + r.y + u.y + d.y + far);
+    w = clamp(w - P.evap * (1.0 + P.edgeK * edge), 0.0, P.wMax);
+
+    // paper saturation: dampness creeps into dry paper next to standing water, and fades once the water is gone
+    // only water standing deeper than the paper can hold (spill) pushes the damp front outward: that is a bloom
+    let creep = max(l.y - s, 0.0) * smoothstep(P.spill, P.spill + 0.2, l.x) * ml + max(r.y - s, 0.0) * smoothstep(P.spill, P.spill + 0.2, r.x) * mr
+              + max(u.y - s, 0.0) * smoothstep(P.spill, P.spill + 0.2, u.x) * mu + max(d.y - s, 0.0) * smoothstep(P.spill, P.spill + 0.2, d.x) * md;
+    s = s + P.absorb * creep * mc;
+    if (w > 0.001) { s = min(1.0, s + 0.2); } else { s = max(0.0, s - P.dryRate); }
+
+    // suspended pigment: rides the water that crosses each face, and diffuses where both cells hold water
+    let dR = P.diff * pgate(c, r) * mc * mr; let dL = P.diff * pgate(c, l) * mc * ml;
+    let dD = P.diff * pgate(c, d) * mc * md; let dU = P.diff * pgate(c, u) * mc * mu;
+    let leave = min(P.carry * (oR + oL + oD + oU) + dR + dL + dD + dU, 0.9);
+    S = S * (1.0 - leave);
+    S = addPaint(S, gcell(Sin, g + vec2i(1, 0)) * (P.carry * iR + dR));
+    S = addPaint(S, gcell(Sin, g + vec2i(-1, 0)) * (P.carry * iL + dL));
+    S = addPaint(S, gcell(Sin, g + vec2i(0, 1)) * (P.carry * iD + dD));
+    S = addPaint(S, gcell(Sin, g + vec2i(0, -1)) * (P.carry * iU + dU));
+
+    // deposit into the paper (more in its valleys: granulation), everything once the water is gone; a little lifts back
+    let valley = 1.0 - 2.0 * hc;
+    let depFrac = clamp(P.depRate * max(1.0 + P.gran * valley * 2.0, 0.0) + (1.0 - smoothstep(0.0, 0.05, w)), 0.0, 1.0);
+    let liftFrac = P.lift * smoothstep(0.0, 0.25, w);
+    let dep = S * depFrac;
+    let lifted = D * liftFrac;
+    S = addPaint(S - dep, lifted);
+    D = addPaint(D - lifted, dep);
+  }
+
+  for (var i = 0u; i < P.dabCount; i++) {
+    let dab = dabs[i];
+    let dist = distance(docPx, dab.pos);
+    if (dist < dab.radius) {
+      let k = (1.0 - smoothstep(dab.radius * P.hard, dab.radius, dist)) * mc;
+      w = min(P.wMax, w + dab.water * k);
+      s = max(s, min(1.0, k * 4.0));
+      S = addPaint(S, dab.color * k);
+    }
+  }
+  if (P.benchFill == 1u) { // worst case: every cell wet, every neighbour a different colour
+    let q = vec2f(g);
+    w = 0.8; s = 1.0;
+    S = vec4f(0.5 + 0.5 * sin(q.x * 0.21), 0.5 + 0.5 * sin(q.y * 0.17), 0.5 + 0.5 * sin((q.x + q.y) * 0.13), 1.0) * 0.5;
+    D = vec4f(0.0);
+  }
+  textureStore(Wout, p, slot, vec4f(w, s, vR, vD));
+  textureStore(Sout, p, slot, S);
+  textureStore(Dout, p, slot, D);
+}
+`
+
+const DRAW = /* wgsl */ `
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var<storage, read> slotOf: array<i32>;
+@group(0) @binding(2) var<storage, read> tileOf: array<vec4i>;
+@group(0) @binding(3) var paperTex: texture_2d<f32>;
+@group(0) @binding(4) var Wtex: texture_2d_array<f32>;
+@group(0) @binding(5) var Stex: texture_2d_array<f32>;
+@group(0) @binding(6) var Dtex: texture_2d_array<f32>;
+@group(0) @binding(7) var layerTex: texture_2d<f32>;
+${COMMON}
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  return vec4f(f32(i32(i & 1u) * 4 - 1), f32(i32(i >> 1u) * 4 - 1), 0.0, 1.0);
+}
+fn field(tex: texture_2d_array<f32>, docPx: vec2f) -> vec4f {
+  let scale = 256.0 / f32(P.tile);
+  let q = docPx / scale - 0.5;
+  let q0 = floor(q); let f = q - q0; let i = vec2i(q0);
+  return mix(mix(gcell(tex, i), gcell(tex, i + vec2i(1, 0)), f.x),
+             mix(gcell(tex, i + vec2i(0, 1)), gcell(tex, i + vec2i(1, 1)), f.x), f.y);
+}
+// The one function both the screen and settle use, so nothing changes at the moment of drying.
+fn paintOver(under: vec4f, docPx: vec2f) -> vec4f {
+  let grain = max(1.0 + P.grainDetail * (1.0 - 2.0 * paperAt(docPx)), 0.0);
+  let c = glaze(under, field(Dtex, docPx) * grain);
+  return glaze(c, field(Stex, docPx));
+}
+@fragment fn fsSettle(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  return paintOver(textureLoad(layerTex, vec2i(pos.xy), 0), pos.xy);
+}
+@fragment fn fsDisplay(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  let docPx = vec2f(P.viewX, P.viewY) + pos.xy * P.viewScale;
+  if (docPx.x < 0.0 || docPx.y < 0.0 || docPx.x >= P.docSize || docPx.y >= P.docSize) { return vec4f(0.08, 0.08, 0.09, 1.0); }
+  let h = paperAt(docPx);
+  let paper = vec3f(0.97, 0.96, 0.93) * (0.95 + 0.05 * h);
+  let under = textureLoad(layerTex, vec2i(docPx), 0);
+  let W = field(Wtex, docPx);
+  var rgb: vec3f;
+  if (P.view == 0u) { let c = paintOver(under, docPx); rgb = c.rgb + paper * (1.0 - c.a); }
+  else if (P.view == 1u) { rgb = mix(vec3f(0.05), vec3f(0.2, 0.55, 1.0), W.x); }
+  else if (P.view == 2u) { rgb = vec3f(W.y); }
+  else if (P.view == 3u) { let c = glaze(vec4f(0.0), field(Stex, docPx)); rgb = c.rgb + paper * (1.0 - c.a); }
+  else if (P.view == 4u) { let c = glaze(vec4f(0.0), field(Dtex, docPx)); rgb = c.rgb + paper * (1.0 - c.a); }
+  else { rgb = vec3f(abs(W.z) * 60.0, abs(W.w) * 60.0, 0.05); }
+  if (maskAt(docPx) == 0.0) { rgb = mix(rgb, vec3f(0.9, 0.75, 0.3), 0.25); }
+  if (P.showTiles == 1u) {
+    let tile = vec2i(docPx / 256.0);
+    let inTile = docPx - vec2f(tile) * 256.0;
+    let slot = slotAt(tile);
+    if (slot >= 0) { rgb = mix(rgb, vec3f(0.1, 0.8, 0.4), 0.12); }
+    if (min(inTile.x, inTile.y) < P.viewScale) { rgb = mix(rgb, vec3f(0.0), 0.35); }
+  }
+  return vec4f(pow(max(rgb, vec3f(0.0)), vec3f(1.0 / 2.2)), 1.0);
+}
+`
+
+// ───────────────────────── throwaway page from here down ─────────────────────────
+const $ = (id) => document.getElementById(id)
+const S = {
+  // layout
+  grid: 8, tile: 128, capacity: 64, halo: 1,
+  // sim
+  model: 0, kmMix: 1, simOn: 1, stepsPerFrame: 1, view: 0, showTiles: 0, maskOn: 0, audit: 1,
+  kw: 0.2, drag: 0.15, evap: 0.0008, edgeK: 6, edgeR: 6, absorb: 0.1, spill: 0.6, dryRate: 0.02, diff: 0.03, carry: 1,
+  depRate: 0.0003, gran: 1, lift: 0.001, paperK: 0.03, wMax: 1, grainDetail: 0.15,
+  // brush
+  color: "#0d3fc0", radius: 60, water: 0.1, load: 0.3, hard: 0.8,
+  // view
+  viewX: 0, viewY: 0, viewScale: 1,
+}
+const stats = { step: 0, gpuMs: null, dropped: 0, audit: "none yet", settled: 0 }
+let device, ctx, format, paramsBuf, paperTex, stepPipe, displayPipe, settlePipe, stepLayout, drawLayout
+let sim = null, layers = null, layerCur = 0, benchRunning = false, hasTs = false
+const dabQueue = []
+
+function writeParams(over = {}, target = sim) {
+  const v = { ...S, grid: target.grid, tile: target.tile, slots: target.capacity, docSize: target.grid * 256, dabCount: 0, benchFill: 0, settleOnly: 0, ...over }
+  const buf = new ArrayBuffer((U_FIELDS.length + F_FIELDS.length) * 4)
+  const u = new Uint32Array(buf, 0, U_FIELDS.length), f = new Float32Array(buf, U_FIELDS.length * 4)
+  U_FIELDS.forEach((n, i) => (u[i] = v[n]))
+  F_FIELDS.forEach((n, i) => (f[i] = v[n]))
+  device.queue.writeBuffer(paramsBuf, 0, buf)
+}
+
+function makePaper() {
+  const N = 1024, out = new Uint8Array(N * N), rnd = (() => { let s = 12345; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296) })()
+  const octaves = [[8, 0.5], [4, 0.3], [2, 0.2]].map(([cell, wgt]) => { const n = N / cell; return { cell, wgt, n, v: Float32Array.from({ length: n * n }, rnd) } })
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    let h = 0
+    for (const o of octaves) {
+      const fx = x / o.cell, fy = y / o.cell, x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0
+      const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty), g = (i, j) => o.v[(j % o.n) * o.n + (i % o.n)]
+      h += o.wgt * ((g(x0, y0) * (1 - sx) + g(x0 + 1, y0) * sx) * (1 - sy) + (g(x0, y0 + 1) * (1 - sx) + g(x0 + 1, y0 + 1) * sx) * sy)
+    }
+    out[y * N + x] = Math.max(0, Math.min(255, Math.round((0.5 + (h - 0.5) * 1.8) * 255)))
+  }
+  const tex = device.createTexture({ size: [N, N], format: "r8unorm", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST })
+  device.queue.writeTexture({ texture: tex }, out, { bytesPerRow: N }, [N, N])
+  return tex
+}
+
+function makeSim(tile, capacity, grid) {
+  const mk = () => device.createTexture({ size: [tile, tile, capacity], format: "rgba16float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC })
+  const tex = [0, 1].map(() => ({ W: mk(), S: mk(), D: mk() }))
+  const view = (t) => t.createView({ dimension: "2d-array" })
+  const slotBuf = device.createBuffer({ size: grid * grid * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+  const tileBuf = device.createBuffer({ size: capacity * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+  const dabBuf = device.createBuffer({ size: 32 * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+  const stepBG = [0, 1].map((i) => device.createBindGroup({ layout: stepLayout, entries: [
+    { binding: 0, resource: { buffer: paramsBuf } }, { binding: 1, resource: { buffer: slotBuf } }, { binding: 2, resource: { buffer: tileBuf } },
+    { binding: 3, resource: { buffer: dabBuf } }, { binding: 4, resource: paperTex.createView() },
+    { binding: 5, resource: view(tex[i].W) }, { binding: 6, resource: view(tex[i].S) }, { binding: 7, resource: view(tex[i].D) },
+    { binding: 8, resource: view(tex[1 - i].W) }, { binding: 9, resource: view(tex[1 - i].S) }, { binding: 10, resource: view(tex[1 - i].D) },
+  ] }))
+  const tiles = createWetTiles(grid, capacity)
+  const self = {
+    tile, capacity, grid, tex, cur: 0, slotBuf, tileBuf, dabBuf, stepBG, tiles, dirty: true,
+    upload() { device.queue.writeBuffer(slotBuf, 0, tiles.slotOf); device.queue.writeBuffer(tileBuf, 0, tiles.tileOf); self.dirty = false },
+    drawBG(layerTex) { const t = tex[self.cur]; return device.createBindGroup({ layout: drawLayout, entries: [
+      { binding: 0, resource: { buffer: paramsBuf } }, { binding: 1, resource: { buffer: slotBuf } }, { binding: 2, resource: { buffer: tileBuf } },
+      { binding: 3, resource: paperTex.createView() }, { binding: 4, resource: view(t.W) }, { binding: 5, resource: view(t.S) }, { binding: 6, resource: view(t.D) },
+      { binding: 7, resource: layerTex.createView() } ] }) },
+    destroy() { for (const t of tex) { t.W.destroy(); t.S.destroy(); t.D.destroy() } slotBuf.destroy(); tileBuf.destroy(); dabBuf.destroy() },
+    get megabytes() { return (6 * tile * tile * capacity * 8) / 1048576 },
+  }
+  return self
+}
+
+function rebuild() {
+  sim?.destroy(); layers?.forEach((t) => t.destroy())
+  sim = makeSim(S.tile, S.capacity, S.grid)
+  const doc = S.grid * 256
+  layers = [0, 1].map(() => device.createTexture({ size: [doc, doc], format: "rgba16float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT }))
+  for (const t of layers) { const e = device.createCommandEncoder(); e.beginRenderPass({ colorAttachments: [{ view: t.createView(), loadOp: "clear", storeOp: "store", clearValue: [0, 0, 0, 0] }] }).end(); device.queue.submit([e.finish()]) }
+  layerCur = 0; dabQueue.length = 0
+  Object.assign(stats, { step: 0, dropped: 0, audit: "none yet", settled: 0, gpuMs: null })
+  fitView()
+}
+const fitView = () => Object.assign(S, { viewX: 0, viewY: 0, viewScale: (S.grid * 256) / 960 })
+
+/** Steps a body stays allocated after its last dab. A timer, not a readback: the audit says whether it holds. */
+const dryIn = () => (S.evap <= 0 ? Infinity : Math.ceil(S.wMax / S.evap) + Math.ceil(1 / S.dryRate) + 20)
+
+function stepOnce() {
+  const t = sim.tiles, batch = dabQueue.splice(0, 32), data = new Float32Array(32 * 8)
+  let n = 0
+  for (const d of batch) {
+    let ok = true
+    const x0 = Math.floor((d.x - d.r) / 256), x1 = Math.floor((d.x + d.r) / 256), y0 = Math.floor((d.y - d.r) / 256), y1 = Math.floor((d.y + d.r) / 256)
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      if (x < 0 || y < 0 || x >= S.grid || y >= S.grid) continue
+      if (!t.touch(x, y, S.halo)) ok = false
+      else t.refresh(x, y, stats.step + dryIn())
+    }
+    if (!ok) { stats.dropped++; continue }
+    data.set([d.x, d.y, d.r, d.water, d.c[0] * d.load, d.c[1] * d.load, d.c[2] * d.load, d.load], n++ * 8)
+    sim.dirty = true
+  }
+  if (t.count === 0 || (!S.simOn && n === 0)) return
+  if (sim.dirty) sim.upload()
+  writeParams({ dabCount: n })
+  device.queue.writeBuffer(sim.dabBuf, 0, data)
+  const enc = device.createCommandEncoder()
+  const timed = hasTs && !tsBusy && stats.step % 20 === 0
+  const pass = enc.beginComputePass(timed ? { timestampWrites: { querySet: tsQuery, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } } : {})
+  pass.setPipeline(stepPipe); pass.setBindGroup(0, sim.stepBG[sim.cur])
+  pass.dispatchWorkgroups(sim.tile / 8, sim.tile / 8, t.highWater); pass.end()
+  if (timed) { enc.resolveQuerySet(tsQuery, 0, 2, tsResolve, 0); enc.copyBufferToBuffer(tsResolve, 0, tsRead, 0, 16) }
+  device.queue.submit([enc.finish()])
+  if (timed) { tsBusy = true; tsRead.mapAsync(GPUMapMode.READ).then(() => { const q = new BigInt64Array(tsRead.getMappedRange()); stats.gpuMs = Number(q[1] - q[0]) / 1e6; tsRead.unmap(); tsBusy = false }) }
+  sim.cur = 1 - sim.cur
+  if (t.clearFresh()) sim.dirty = true
+  stats.step++
+  const done = t.expired(stats.step)
+  if (done.length) settle(done)
+}
+
+const h2f = (h) => { const e = (h >> 10) & 31, m = h & 1023, s = h >> 15 ? -1 : 1; return e === 0 ? s * m * 2 ** -24 : e === 31 ? Infinity : s * (1 + m / 1024) * 2 ** (e - 15) }
+/** Prototype-only check of the timer: was there still water in what we freed, and did dampness reach a wall? */
+function audit(slots) {
+  const T = sim.tile, t = sim.tiles, buf = device.createBuffer({ size: T * T * 8 * slots.length, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })
+  const enc = device.createCommandEncoder()
+  const walls = slots.map((s, i) => {
+    enc.copyTextureToBuffer({ texture: sim.tex[sim.cur].W, origin: [0, 0, s] }, { buffer: buf, offset: i * T * T * 8, bytesPerRow: T * 8 }, [T, T, 1])
+    const x = t.tileOf[s * 4], y = t.tileOf[s * 4 + 1]
+    return [t.neighbour(x - 1, y) < 0, t.neighbour(x + 1, y) < 0, t.neighbour(x, y - 1) < 0, t.neighbour(x, y + 1) < 0]
+  })
+  device.queue.submit([enc.finish()])
+  buf.mapAsync(GPUMapMode.READ).then(() => {
+    const px = new Uint16Array(buf.getMappedRange())
+    let water = 0, wall = 0
+    slots.forEach((_, i) => {
+      const at = (x, y, ch) => h2f(px[(i * T * T + y * T + x) * 4 + ch])
+      for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) water = Math.max(water, at(x, y, 0))
+      for (let k = 0; k < T; k++) {
+        if (walls[i][0]) wall = Math.max(wall, at(0, k, 1)); if (walls[i][1]) wall = Math.max(wall, at(T - 1, k, 1))
+        if (walls[i][2]) wall = Math.max(wall, at(k, 0, 1)); if (walls[i][3]) wall = Math.max(wall, at(k, T - 1, 1))
+      }
+    })
+    stats.audit = `freed ${slots.length} tiles at step ${stats.step}: max water ${water.toFixed(4)}, max dampness on a wall ${wall.toFixed(3)}`
+    buf.unmap(); buf.destroy()
+  })
+}
+
+function settle(slots, forced = false) {
+  const t = sim.tiles
+  if (S.audit && !forced) audit(slots)
+  for (const s of slots) t.tileOf[s * 4 + 2] = 2
+  sim.upload()
+  writeParams({ settleOnly: 1 })
+  const enc = device.createCommandEncoder()
+  const pass = enc.beginRenderPass({ colorAttachments: [{ view: layers[1 - layerCur].createView(), loadOp: "clear", storeOp: "store", clearValue: [0, 0, 0, 0] }] })
+  pass.setPipeline(settlePipe); pass.setBindGroup(0, sim.drawBG(layers[layerCur])); pass.draw(3); pass.end()
+  device.queue.submit([enc.finish()])
+  layerCur = 1 - layerCur
+  for (const s of slots) t.release(s)
+  sim.upload()
+  stats.settled += slots.length
+}
+
+function draw() {
+  writeParams()
+  if (sim.dirty) sim.upload()
+  const enc = device.createCommandEncoder()
+  const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: "clear", storeOp: "store", clearValue: [0, 0, 0, 1] }] })
+  pass.setPipeline(displayPipe); pass.setBindGroup(0, sim.drawBG(layers[layerCur])); pass.draw(3); pass.end()
+  device.queue.submit([enc.finish()])
+}
+
+function renderState() {
+  const t = sim.tiles, left = t.all().reduce((m, s) => Math.min(m, t.deadline[s] - stats.step), Infinity)
+  const rows = {
+    "Flow model": S.model ? "momentum (shallow-water-like)" : "overdamped (diffusion-like)",
+    "Sim resolution": `${S.tile} cells per 256 px tile (1/${256 / S.tile})`,
+    "Step": stats.step,
+    "Wet tiles": `${t.count} of ${t.capacity} slots` + (stats.dropped ? ` · <span class=warn>${stats.dropped} dabs dropped, out of slots</span>` : ""),
+    "Field memory": `${sim.megabytes.toFixed(0)} MB allocated · ${((6 * S.tile * S.tile * 8) / 1048576).toFixed(2)} MB per wet tile`,
+    "GPU time per step": stats.gpuMs == null ? (hasTs ? "…" : "timestamp-query unavailable; use the benchmark") : `${stats.gpuMs.toFixed(3)} ms (${t.count ? (stats.gpuMs / t.count * 1000).toFixed(1) : "–"} µs per tile)`,
+    "Dries in": Number.isFinite(left) ? `${left} steps (${dryIn()} after the last dab)` : "nothing wet",
+    "Tiles settled": stats.settled,
+    "Timer audit": stats.audit,
+  }
+  $("state").innerHTML = Object.entries(rows).map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join("")
+}
+
+function frame() {
+  if (!benchRunning) {
+    const n = Math.max(S.stepsPerFrame, Math.ceil(dabQueue.length / 32))
+    for (let i = 0; i < n; i++) stepOnce()
+    draw(); renderState()
+  }
+  requestAnimationFrame(frame)
+}
+
+// ── scripted API (walkthroughs, and anything driving the page from outside) ──
+const hex = (h) => [1, 3, 5].map((i) => Math.pow(parseInt(h.slice(i, i + 2), 16) / 255, 2.2))
+function stroke(points, o = {}) {
+  const b = { c: hex(o.color ?? S.color), r: o.radius ?? S.radius, water: o.water ?? S.water, load: o.load ?? S.load }
+  const doc = S.grid * 256, pts = points.map(([x, y]) => [x * doc, y * doc])
+  if (pts.length === 1) return dabQueue.push({ x: pts[0][0], y: pts[0][1], ...b })
+  for (let i = 1; i < pts.length; i++) {
+    const [ax, ay] = pts[i - 1], [bx, by] = pts[i], len = Math.hypot(bx - ax, by - ay), n = Math.max(1, Math.round(len / (b.r * 0.3)))
+    for (let k = i === 1 ? 0 : 1; k <= n; k++) dabQueue.push({ x: ax + ((bx - ax) * k) / n, y: ay + ((by - ay) * k) / n, ...b })
+  }
+}
+function advance(n) { while (dabQueue.length) stepOnce(); for (let i = 0; i < n; i++) stepOnce() }
+function dryNow() { while (dabQueue.length) stepOnce(); const all = sim.tiles.all(); if (all.length) settle(all, true) }
+function set(o) { const layout = ["grid", "tile", "capacity"].some((k) => k in o && o[k] !== S[k]); Object.assign(S, o); if (layout) rebuild(); else if ("evap" in o || "dryRate" in o) sim.tiles.refreshAll(stats.step + dryIn()); syncControls() }
+window.proto = { S, stats, stroke, advance, dryNow, set, reset: rebuild, bench: runBench, get sim() { return sim } }
+
+const BLUE = "#0d3fc0", YELLOW = "#f2c80f", RED = "#c8201c", SEPIA = "#5a3a22"
+const SCENARIOS = [
+  { name: "Bleed", text: "A blue wash, then yellow touched into it while wet and the same yellow on dry paper beside it. Watch: yellow should feather into the blue (and go green), and keep a crisp edge on dry paper.", steps: [
+    ["Reset", () => { rebuild(); set({ view: 0 }) }],
+    ["Lay a blue wash", () => stroke([[0.2, 0.3], [0.5, 0.3], [0.5, 0.4], [0.2, 0.4]], { color: BLUE, radius: 90 })],
+    ["Yellow into the wet blue", () => stroke([[0.35, 0.2], [0.35, 0.5]], { color: YELLOW, radius: 40, water: 0.3 })],
+    ["Same yellow on dry paper", () => stroke([[0.75, 0.2], [0.75, 0.5]], { color: YELLOW, radius: 40, water: 0.3 })],
+    ["Advance 300 steps", () => advance(300)],
+  ] },
+  { name: "Edge darkening", text: "One flat wash left to dry. Watch: the rim should end darker than the middle. Compare the two flow models and the 'edge evaporation' slider.", steps: [
+    ["Reset", () => { rebuild(); set({ view: 0 }) }],
+    ["Lay a wash", () => stroke([[0.3, 0.5], [0.7, 0.5]], { color: RED, radius: 140 })],
+    ["Advance 200 steps", () => advance(200)], ["Advance 400 more", () => advance(400)],
+  ] },
+  { name: "Granulation", text: "A sepia wash with granulation turned up. Watch: pigment should gather in the paper's valleys as speckle. Zoom in with the wheel. Then try sim resolution 64 and see how much of it survives.", steps: [
+    ["Reset, granulation high", () => { rebuild(); set({ view: 0, gran: 2, depRate: 0.002, grainDetail: 0.3 }) }],
+    ["Lay a wash", () => stroke([[0.3, 0.45], [0.7, 0.45], [0.7, 0.55], [0.3, 0.55]], { color: SEPIA, radius: 110 })],
+    ["Advance 600 steps", () => advance(600)],
+  ] },
+  { name: "Tile borders", text: "A very wet stroke just above a tile border, on paper set to hold little water, so it blooms outward. Tile grid shown, allocated tiles tinted green. With the ring of neighbour tiles allocated the bloom crosses the border; without it the border is a wall.", steps: [
+    ["Reset, show tiles, ring on", () => { rebuild(); set({ view: 0, showTiles: 1, halo: 1, absorb: 0.5, spill: 0.1, edgeK: 0 }) }],
+    ["Stroke along a border", () => stroke([[0.26, 0.4805], [0.74, 0.4805]], { color: BLUE, radius: 36, water: 0.5 })],
+    ["Advance 300 steps", () => advance(300)],
+    ["Reset, ring OFF", () => { rebuild(); set({ halo: 0 }) }],
+    ["Same stroke", () => stroke([[0.26, 0.4805], [0.74, 0.4805]], { color: BLUE, radius: 36, water: 0.5 })],
+    ["Advance 300 steps", () => advance(300)],
+  ] },
+  { name: "Glaze and settle", text: "Blue, dried into the layer, then yellow washed across it. Watch: the overlap goes green, the dry blue does not move, and nothing changes on screen at the moment of 'Dry now'.", steps: [
+    ["Reset", () => { rebuild(); set({ view: 0 }) }],
+    ["Blue wash", () => stroke([[0.3, 0.3], [0.3, 0.7]], { color: BLUE, radius: 80 })],
+    ["Dry now", () => dryNow()],
+    ["Yellow across it", () => stroke([[0.15, 0.5], [0.6, 0.5]], { color: YELLOW, radius: 80 })],
+    ["Advance 150 steps", () => advance(150)], ["Dry now (should not pop)", () => dryNow()],
+  ] },
+  { name: "Masked area", text: "A masked bar down the middle stands in for a selection. Watch: paint should pool against it and not cross.", steps: [
+    ["Reset, mask on", () => { rebuild(); set({ view: 0, maskOn: 1 }) }],
+    ["Wash across the bar", () => stroke([[0.3, 0.5], [0.7, 0.5]], { color: RED, radius: 100, water: 0.5 })],
+    ["Advance 300 steps", () => advance(300)],
+  ] },
+]
+
+// ── controls ──
+const CONTROLS = {
+  brush: [["color", "Colour", "color"], ["radius", "Radius (doc px)", 8, 200, 1], ["water", "Water per dab", 0, 1, 0.01], ["load", "Pigment per dab (0 = water brush)", 0, 0.5, 0.005], ["hard", "Edge hardness", 0, 0.95, 0.05]],
+  sim: [
+    ["model", "Flow model", [[0, "overdamped"], [1, "momentum"]]], ["tile", "Sim cells per tile", [[64, "64 (1/4)"], [128, "128 (1/2)"], [256, "256 (full)"]]],
+    ["grid", "Document", [[4, "1024²"], [8, "2048²"], [16, "4096²"]]], ["capacity", "Wet tile slots", [[64, "64"], [128, "128"], [256, "256"]]],
+    ["view", "View", [[0, "paint"], [1, "water"], [2, "paper dampness"], [3, "suspended only"], [4, "deposited only"], [5, "flow"]]],
+    ["kmMix", "Pigment mix in sim", [[1, "Kubelka–Munk"], [0, "linear RGB"]]], ["halo", "Allocate neighbour ring", [[1, "on"], [0, "off"]]],
+    ["showTiles", "Show tiles", [[0, "off"], [1, "on"]]], ["maskOn", "Masked bar", [[0, "off"], [1, "on"]]], ["stepsPerFrame", "Steps per frame", 1, 8, 1],
+    ["kw", "Water flow", 0, 0.24, 0.005], ["drag", "Drag (momentum only)", 0.01, 1, 0.01], ["evap", "Evaporation", 0, 0.01, 0.0002], ["edgeK", "Edge evaporation", 0, 20, 0.1], ["edgeR", "Edge band (cells)", 1, 16, 1],
+    ["absorb", "Damp front speed", 0, 0.5, 0.01], ["spill", "Water the paper holds before it spreads", 0, 1, 0.02], ["diff", "Pigment diffusion", 0, 0.2, 0.005], ["carry", "Pigment carried by flow", 0, 1, 0.05],
+    ["depRate", "Deposit rate", 0, 0.01, 0.0001], ["gran", "Granulation", 0, 2, 0.05], ["lift", "Lift back (1 − staining)", 0, 0.02, 0.0005],
+    ["paperK", "Paper relief on flow", 0, 0.5, 0.01], ["grainDetail", "Paper grain at composite", 0, 1, 0.05],
+  ],
+}
+const syncers = []
+const syncControls = () => syncers.forEach((f) => f())
+for (const [host, list] of Object.entries(CONTROLS)) for (const [key, label, a, b, c] of list) {
+  const row = document.createElement("div"); row.className = "row"; row.innerHTML = `<label>${label}</label>`
+  let el
+  if (Array.isArray(a)) { el = document.createElement("select"); el.innerHTML = a.map(([v, t]) => `<option value=${v}>${t}</option>`).join("") }
+  else { el = document.createElement("input"); if (a === "color") el.type = "color"; else Object.assign(el, { type: "range", min: a, max: b, step: c }) }
+  const out = document.createElement("span"); row.append(el, out); $(host).append(row)
+  el.oninput = () => set({ [key]: a === "color" ? el.value : Number(el.value) })
+  syncers.push(() => { el.value = S[key]; out.textContent = Array.isArray(a) || a === "color" ? "" : S[key] })
+}
+SCENARIOS.forEach((sc, i) => {
+  const b = document.createElement("button"); b.textContent = sc.name; $("tabs").append(b)
+  b.onclick = () => {
+    ;[...$("tabs").children].forEach((x, j) => x.classList.toggle("on", i === j))
+    $("scenario").innerHTML = `<div>${sc.text}</div><div class=btns></div>`
+    sc.steps.forEach(([label, run], k) => { const s = document.createElement("button"); s.textContent = `${k + 1}. ${label}`; s.onclick = run; $("scenario").lastChild.append(s) })
+  }
+})
+$("bAdv").onclick = () => advance(100); $("bDry").onclick = dryNow; $("bReset").onclick = rebuild; $("bFit").onclick = fitView
+$("bPause").onclick = () => { set({ simOn: S.simOn ? 0 : 1 }); $("bPause").textContent = S.simOn ? "Pause sim" : "Resume sim" }
+$("bBench").onclick = () => runBench()
+
+// ── pointer ──
+const cv = $("c"); let last = null
+const toDoc = (e) => { const r = cv.getBoundingClientRect(); return [S.viewX + (e.clientX - r.left) * (960 / r.width) * S.viewScale, S.viewY + (e.clientY - r.top) * (960 / r.height) * S.viewScale] }
+const dabAt = (x, y, e) => dabQueue.push({ x, y, r: S.radius * (e.pointerType === "pen" ? 0.3 + 0.7 * e.pressure : 1), c: hex(S.color), water: S.water, load: S.load })
+cv.onpointerdown = (e) => { cv.setPointerCapture(e.pointerId); last = toDoc(e); dabAt(...last, e) }
+cv.onpointermove = (e) => { if (!last) return; for (const ev of e.getCoalescedEvents?.() ?? [e]) { const p = toDoc(ev), gap = S.radius * 0.3; let d = Math.hypot(p[0] - last[0], p[1] - last[1]); while (d >= gap) { last = [last[0] + ((p[0] - last[0]) * gap) / d, last[1] + ((p[1] - last[1]) * gap) / d]; dabAt(...last, ev); d -= gap } } }
+cv.onpointerup = cv.onpointercancel = () => (last = null)
+cv.onwheel = (e) => { e.preventDefault(); const [dx, dy] = toDoc(e), k = Math.exp(e.deltaY * 0.0015), ns = Math.min((S.grid * 256) / 960, Math.max(0.1, S.viewScale * k)); S.viewX = dx - ((dx - S.viewX) * ns) / S.viewScale; S.viewY = dy - ((dy - S.viewY) * ns) / S.viewScale; S.viewScale = ns }
+
+// ── benchmark: every slot wet, every neighbour a different colour, nothing drying ──
+async function runBench(configs) {
+  benchRunning = true
+  const results = []
+  configs ??= [64, 128, 256].flatMap((tile) => [16, 64, 256].flatMap((n) => [[tile, n, 0, 1], [tile, n, 1, 1], [tile, n, 0, 0]]))
+  for (const [tile, n, model, kmMix] of configs) {
+    $("bench").textContent = `running ${tile} cells × ${n} tiles…`
+    const row = { cellsPerTile: tile, tiles: n, model: model ? "momentum" : "overdamped", mix: kmMix ? "KM" : "linear", MB: Math.round((6 * tile * tile * n * 8) / 1048576) }
+    device.pushErrorScope("out-of-memory"); device.pushErrorScope("validation")
+    const b = makeSim(tile, n, 16), side = Math.sqrt(n)
+    for (let i = 0; i < n; i++) b.tiles.touch(i % side, Math.floor(i / side), false)
+    b.tiles.clearFresh(); b.upload()
+    const run = async (steps, over) => {
+      writeParams({ model, kmMix, evap: 0, simOn: 1, ...over }, b)
+      const enc = device.createCommandEncoder()
+      for (let i = 0; i < steps; i++) { const p = enc.beginComputePass(); p.setPipeline(stepPipe); p.setBindGroup(0, b.stepBG[b.cur]); p.dispatchWorkgroups(tile / 8, tile / 8, n); p.end(); b.cur = 1 - b.cur }
+      const t0 = performance.now(); device.queue.submit([enc.finish()]); await device.queue.onSubmittedWorkDone(); return (performance.now() - t0) / steps
+    }
+    await run(1, { benchFill: 1 }); await run(10, {})
+    const steps = tile * tile * n > 4e6 ? 30 : 100
+    row.msPerStep = +(await run(steps, {})).toFixed(3)
+    row.usPerTile = +((row.msPerStep / n) * 1000).toFixed(1)
+    const e1 = await device.popErrorScope(), e2 = await device.popErrorScope()
+    if (e1 || e2) { row.msPerStep = row.usPerTile = "failed: " + (e1 || e2).message.slice(0, 60) }
+    b.destroy(); results.push(row)
+  }
+  const cols = Object.keys(results[0])
+  $("bench").innerHTML = `<table><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr>${results.map((r) => `<tr>${cols.map((c) => `<td>${r[c]}</td>`).join("")}</tr>`).join("")}</table>`
+  window.__bench = results; benchRunning = false
+  return results
+}
+
+// ── boot ──
+let tsQuery, tsResolve, tsRead, tsBusy = false
+async function boot() {
+  const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" })
+  if (!adapter) { document.body.innerHTML = "<p style='padding:20px'>WebGPU is not available in this browser.</p>"; return }
+  hasTs = adapter.features.has("timestamp-query")
+  device = await adapter.requestDevice({ requiredFeatures: hasTs ? ["timestamp-query"] : [] })
+  device.onuncapturederror = (e) => { console.error("GPU error:", e.error.message); window.__gpuError = e.error.message }
+  ctx = cv.getContext("webgpu"); format = navigator.gpu.getPreferredCanvasFormat(); ctx.configure({ device, format, alphaMode: "opaque" })
+  if (hasTs) { tsQuery = device.createQuerySet({ type: "timestamp", count: 2 }); tsResolve = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }); tsRead = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }) }
+  paramsBuf = device.createBuffer({ size: (U_FIELDS.length + F_FIELDS.length) * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+  paperTex = makePaper()
+  const C = GPUShaderStage.COMPUTE, F = GPUShaderStage.FRAGMENT
+  const ro = (binding, visibility) => ({ binding, visibility, buffer: { type: "read-only-storage" } })
+  const arr = (binding, visibility) => ({ binding, visibility, texture: { viewDimension: "2d-array" } })
+  const sto = (binding) => ({ binding, visibility: C, storageTexture: { format: "rgba16float", viewDimension: "2d-array" } })
+  stepLayout = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: C, buffer: {} }, ro(1, C), ro(2, C), ro(3, C), { binding: 4, visibility: C, texture: {} }, arr(5, C), arr(6, C), arr(7, C), sto(8), sto(9), sto(10)] })
+  drawLayout = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: F, buffer: {} }, ro(1, F), ro(2, F), { binding: 3, visibility: F, texture: {} }, arr(4, F), arr(5, F), arr(6, F), { binding: 7, visibility: F, texture: {} }] })
+  const check = async (code, name) => { const m = device.createShaderModule({ code }); for (const msg of (await m.getCompilationInfo()).messages) { console.error(`${name}:${msg.lineNum}:${msg.linePos} ${msg.message}`); if (msg.type === "error") window.__gpuError = `${name}: ${msg.message}` } return m }
+  const stepMod = await check(STEP, "step"), drawMod = await check(DRAW, "draw")
+  stepPipe = device.createComputePipeline({ layout: device.createPipelineLayout({ bindGroupLayouts: [stepLayout] }), compute: { module: stepMod, entryPoint: "main" } })
+  const dl = device.createPipelineLayout({ bindGroupLayouts: [drawLayout] })
+  displayPipe = device.createRenderPipeline({ layout: dl, vertex: { module: drawMod, entryPoint: "vs" }, fragment: { module: drawMod, entryPoint: "fsDisplay", targets: [{ format }] } })
+  settlePipe = device.createRenderPipeline({ layout: dl, vertex: { module: drawMod, entryPoint: "vs" }, fragment: { module: drawMod, entryPoint: "fsSettle", targets: [{ format: "rgba16float" }] } })
+  rebuild(); syncControls(); $("tabs").firstChild.click()
+  window.__ready = true
+  requestAnimationFrame(frame)
+}
+boot()
+</script>
