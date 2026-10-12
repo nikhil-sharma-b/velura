@@ -121,6 +121,33 @@ describe("brushes on the account", () => {
     ).rejects.toThrow("pickup")
   })
 
+  test("a fluid brush comes back fluid, and never wet as well", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const fluid = {
+      water: 0.5,
+      drying: 0.4,
+      bleed: 0.3,
+      edge: 0.2,
+      granulation: 0.1,
+    }
+    await artist.mutation(api.brushes.save, {
+      name: "Wash",
+      definition: { ...pencil, rendering: { ...pencil.rendering, fluid } },
+    })
+    const [wash] = await artist.query(api.brushes.list, {})
+    expect(wash.definition.rendering.fluid).toEqual(fluid)
+    expect(
+      artist.mutation(api.brushes.save, {
+        name: "Bad",
+        definition: {
+          ...pencil,
+          rendering: { ...pencil.rendering, fluid, wet: { pickup: 0.4 } },
+        },
+      })
+    ).rejects.toThrow("wet or fluid")
+  })
+
   test("signing out leaves the shelf empty rather than throwing", async () => {
     const t = setup()
     expect(await t.query(api.brushes.list, {})).toEqual([])

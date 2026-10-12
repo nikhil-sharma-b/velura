@@ -57,6 +57,7 @@ import {
 } from "../view/magnification"
 import { createBufferedStroke, type StrokeMode } from "./buffered-stroke"
 import { createDirectStroke, type FrozenArtwork } from "./direct-stroke"
+import { createFluidStroke, type FluidOpening } from "./fluid-stroke"
 import { createFreezeLedger, FREEZE_CHUNK } from "./freeze-ledger"
 import type { StrokeMark } from "./stroke-renderer"
 import { LAYER_FORMAT, type Surface } from "./surface"
@@ -410,6 +411,22 @@ export interface Renderer {
    * surface holds what it did before.
    */
   endDirect(keep: boolean): StrokeMark | null
+  /**
+   * Starts a fluid stroke on one surface (D42): its dabs lay `water` and
+   * `ink` into the surface's wet tiles, `load` of the ink at full flow, and
+   * the surface's own pixels are left alone until the stroke ends.
+   */
+  beginFluid(surfaceId: string, stroke: Omit<FluidOpening, "surface">): void
+  /** Draws `count` dabs (see `STAMP`) into the wet surface. */
+  drawFluid(dabs: Float32Array, count: number): void
+  /**
+   * Ends the fluid stroke. Kept, everything wet settles into the surface
+   * and what the dabs reached is returned; not kept, the wet paint is gone
+   * and the surface holds what it did before.
+   */
+  endFluid(keep: boolean): StrokeMark | null
+  /** Allocates the wet fields ahead of the first fluid stroke (D30). */
+  prepareFluid(): void
   /**
    * Draws what the selection covers of one surface into another, in
    * proportion to the coverage (11). Returns the region it wrote, or null
@@ -1611,6 +1628,15 @@ export function createRenderer(
     legacyPickup: options.directLegacyPickup,
   })
 
+  /** The stroke that lays paint into a layer's wet surface (D42). */
+  const fluid = createFluidStroke(device, {
+    size: () => documentSize,
+    feather: () => feather,
+    wetChanged() {
+      for (const compositor of compositors) compositor.refreshWet()
+    },
+  })
+
   /**
    * Draws what the selection covers of `source` into `target`, in
    * proportion to the coverage (11). Answers the region it wrote.
@@ -1915,6 +1941,8 @@ export function createRenderer(
       const bindingKey = `${mode}:${source.id}:${mask?.id ?? 0}:${clipBase?.id ?? 0}:${usesStroke ? 1 : 0}`
       const existing = blendBindGroups.get(bindingKey)
       if (existing) return existing
+      // Wet paint is the layer's own, so it is read wherever the layer is.
+      const wet = fluid.wet(source)
       const bindings = device.createBindGroup({
         layout: blendPipeline(mode).getBindGroupLayout(0),
         entries: [
@@ -1928,6 +1956,8 @@ export function createRenderer(
           { binding: 4, resource: mask?.view ?? placeholderView },
           { binding: 5, resource: clipBase?.view ?? placeholderView },
           { binding: 6, resource: docSampler },
+          { binding: 7, resource: wet.slots },
+          { binding: 8, resource: wet.pigment },
         ],
       })
       blendBindGroups.set(bindingKey, bindings)
@@ -2159,6 +2189,7 @@ export function createRenderer(
 
     function refreshPresentBindGroup() {
       if (!active || !stroke || !pipeline) return
+      const wet = fluid.wet(active)
       presentBindGroup = device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
         entries: [
@@ -2175,6 +2206,8 @@ export function createRenderer(
           { binding: 3, resource: frame ? placeholderView : stroke.view },
           { binding: 4, resource: above?.view ?? placeholderView },
           { binding: 5, resource: docSampler },
+          { binding: 6, resource: wet.slots },
+          { binding: 7, resource: wet.pigment },
         ],
       })
     }
@@ -2438,6 +2471,11 @@ export function createRenderer(
         return !!group || !!coverage || !!drawn
       },
       forgetBindGroups,
+      /** A layer became wet or dry: what reads it binds its wet paint anew. */
+      refreshWet() {
+        blendBindGroups.clear()
+        refreshPresentBindGroup()
+      },
       destroy() {
         releaseTargets()
         presentUniform.destroy()
@@ -2714,6 +2752,7 @@ export function createRenderer(
     prepareSampling,
     resize(nextWidth, nextHeight) {
       releaseSelection()
+      fluid.drop()
       direct.invalidateBinding()
       direct.drop()
       for (const page of frozenPages.splice(0)) page.destroy()
@@ -2830,7 +2869,10 @@ export function createRenderer(
     releaseLayer(id) {
       forgetVectorScene(id)
       const released = surfaces.get(id)
-      if (released) direct.drop(released)
+      if (released) {
+        direct.drop(released)
+        fluid.drop(released)
+      }
       released?.texture.destroy()
       const releasedSurface = surfaces.delete(id)
       let releasedCache = false
@@ -3333,6 +3375,18 @@ export function createRenderer(
     endDirect(keep) {
       return direct.end(keep)
     },
+    beginFluid(surfaceId, opening) {
+      fluid.begin({ surface: ensureSurface(surfaceId), ...opening })
+    },
+    drawFluid(dabs, count) {
+      fluid.draw(dabs, count)
+    },
+    endFluid(keep) {
+      return fluid.end(keep)
+    },
+    prepareFluid() {
+      if (width > 0) fluid.prepare()
+    },
     copySelected(sourceId, targetId) {
       if (!selection) return null
       const source = surfaces.get(sourceId)
@@ -3452,6 +3506,7 @@ export function createRenderer(
     destroy() {
       releaseSelection()
       direct.destroy()
+      fluid.destroy()
       for (const page of frozenPages.splice(0)) page.destroy()
       vector?.textures.forEach((texture) => texture.destroy())
       vector?.uniform.destroy()

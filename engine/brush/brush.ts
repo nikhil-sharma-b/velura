@@ -87,6 +87,13 @@ export type BrushRendering = {
    * accumulation stay on the brush, unread, so turning wet off restores them.
    */
   wet?: BrushWet
+  /**
+   * Present, the brush lays water and pigment into the layer's wet surface
+   * (D42) and never beside `wet`: a brush is one or the other. Its opacity
+   * and flow are the pigment a dab carries; accumulation stays on the brush,
+   * unread, so turning fluid off restores it.
+   */
+  fluid?: BrushFluid
 }
 
 export type BrushWet = {
@@ -101,6 +108,65 @@ export function validateBrushWet(wet: BrushWet): void {
   const pickup = wet?.pickup
   if (!Number.isFinite(pickup) || pickup < 0 || pickup > 1)
     throw new Error("Brush pickup must be in [0, 1].")
+}
+
+/** How a fluid brush's paint behaves while it is wet, each in [0, 1]. */
+export type BrushFluid = {
+  /** How much water a dab carries. */
+  water: number
+  /** How fast its paint dries. */
+  drying: number
+  /** How far pigment spreads into paint that is still wet. */
+  bleed: number
+  /** How strongly the edge of a wash darkens as it dries. */
+  edge: number
+  /** How much pigment settles into the paper's valleys. */
+  granulation: number
+}
+
+/** What a brush is given when it is first made fluid. */
+export const DEFAULT_FLUID: BrushFluid = {
+  water: 0.5,
+  drying: 0.5,
+  bleed: 0.5,
+  edge: 0.5,
+  granulation: 0.5,
+}
+
+const FLUID_FIELDS = [
+  "water",
+  "drying",
+  "bleed",
+  "edge",
+  "granulation",
+] as const
+
+export function validateBrushFluid(fluid: BrushFluid): void {
+  for (const field of FLUID_FIELDS) {
+    const value = fluid?.[field]
+    if (!Number.isFinite(value) || value < 0 || value > 1)
+      throw new Error(`Brush ${field} must be in [0, 1].`)
+  }
+}
+
+/** A fluid setting as it is stored: its five numbers and nothing else. */
+export function copyBrushFluid(fluid: BrushFluid): BrushFluid {
+  return {
+    water: fluid.water,
+    drying: fluid.drying,
+    bleed: fluid.bleed,
+    edge: fluid.edge,
+    granulation: fluid.granulation,
+  }
+}
+
+/** Wet drags paint and fluid lets it run: a brush does one of them. */
+export function validateBrushMedium(rendering: {
+  wet?: unknown
+  fluid?: unknown
+}): void {
+  if (rendering.wet && rendering.fluid)
+    throw new Error("A brush is wet or fluid, not both.")
 }
 
 /**

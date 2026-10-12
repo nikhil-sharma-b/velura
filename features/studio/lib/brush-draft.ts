@@ -97,6 +97,8 @@ export function editBrush(brush: Brush, edit: BrushEdit): Brush {
     delete next.shape.tipTextureId
   if (next.rendering.wet) next.rendering.wet = { ...next.rendering.wet }
   else delete next.rendering.wet
+  if (next.rendering.fluid) next.rendering.fluid = { ...next.rendering.fluid }
+  else delete next.rendering.fluid
   const grain = edit.grain === undefined ? brush.grain : edit.grain
   if (grain) next.grain = { ...grain }
   else delete next.grain
@@ -225,6 +227,7 @@ export function brushCommand(brush: Brush): SetBrushCommand {
     color: brush.color ? { ...brush.color } : null,
     scatter: brush.scatter ? { ...brush.scatter } : null,
     wet: brush.rendering.wet ? { ...brush.rendering.wet } : null,
+    fluid: brush.rendering.fluid ? { ...brush.rendering.fluid } : null,
     dynamics: structuredClone(brush.dynamics),
   }
 }

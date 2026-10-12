@@ -1,6 +1,12 @@
 import { validateTexture } from "../../engine/brush/texture"
 import { validateTipSelection } from "../../engine/brush/tip-sets"
-import { validateBrushColor, validateBrushWet } from "../../engine/brush/brush"
+import {
+  copyBrushFluid,
+  validateBrushColor,
+  validateBrushFluid,
+  validateBrushMedium,
+  validateBrushWet,
+} from "../../engine/brush/brush"
 /**
  * What a stored brush is, in the shape of `convex/lib/palette.ts`: rules that
  * hold with or without a database, so the library panel and the mutation it
@@ -17,6 +23,7 @@ import { validateBrushColor, validateBrushWet } from "../../engine/brush/brush"
 
 import type {
   Brush,
+  BrushFluid,
   BrushGrain,
   BrushRendering,
   BrushShape,
@@ -157,6 +164,12 @@ function normaliseRendering(value: unknown): BrushRendering {
     validateBrushWet(wet)
     next.wet = { pickup: wet.pickup }
   }
+  if (rendering.fluid !== undefined && rendering.fluid !== null) {
+    const fluid = rendering.fluid as BrushFluid
+    validateBrushFluid(fluid)
+    next.fluid = copyBrushFluid(fluid)
+  }
+  validateBrushMedium(next)
   return next
 }
 

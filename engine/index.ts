@@ -86,6 +86,10 @@ import {
   type BrushGrain,
   type BrushWet,
   validateBrushWet,
+  type BrushFluid,
+  copyBrushFluid,
+  validateBrushFluid,
+  validateBrushMedium,
   brushSpacing,
   dabSpacing,
   wetDabSpacing,
@@ -423,6 +427,7 @@ export type {
   BrushShape,
   BrushRendering,
   BrushWet,
+  BrushFluid,
 } from "./brush/brush"
 export {
   BUILTIN_VECTOR_BRUSHES,
@@ -724,6 +729,11 @@ export type EngineCommand =
        * it draws through the stroke buffer again.
        */
       wet?: BrushWet | null
+      /**
+       * Makes the brush fluid (D42): its paint goes into the layer's wet
+       * surface. Null takes that away. Never beside `wet`.
+       */
+      fluid?: BrushFluid | null
       /** Replaces the dynamics graph outright; see `evaluateDynamics`. */
       dynamics?: Modulator[]
     }
@@ -1800,6 +1810,8 @@ export function createEngine(
    * smudge has none, and lays nothing.
    */
   let directWet: BrushWet | undefined
+  /** The surface a fluid stroke in flight is painting into (D42). */
+  let fluidTargetId: string | undefined
   const directDabs = new Float32Array(MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_STRIDE)
   let directCount = 0
   let stroking = false
@@ -2083,6 +2095,7 @@ export function createEngine(
     landing = false
     stampCount = 0
     directTargetId = undefined
+    fluidTargetId = undefined
     directCount = 0
     samples.clear()
     renderer?.destroy()
@@ -4798,7 +4811,8 @@ export function createEngine(
       directCount = 0
     }
     if (stampCount === 0) return
-    renderer?.stamp(stamps, stampCount)
+    if (fluidTargetId) renderer?.drawFluid(stamps, stampCount)
+    else renderer?.stamp(stamps, stampCount)
     stampCount = 0
   }
 
@@ -5108,15 +5122,21 @@ export function createEngine(
       lastStrokeEnd = { x: rawX, y: rawY }
       // The whole mark is in the buffer now, so it goes into the layer once,
       // at the stroke's opacity (D27). A direct stroke is in its surface
-      // already.
+      // already, and a fluid stroke's wet paint settles into its own (D42).
       const direct = directTargetId
       directTargetId = undefined
-      const mark = direct ? renderer?.endDirect(true) : renderer?.endStroke()
+      const fluid = fluidTargetId
+      fluidTargetId = undefined
+      const mark = direct
+        ? renderer?.endDirect(true)
+        : fluid
+          ? renderer?.endFluid(true)
+          : renderer?.endStroke()
       if (direct) publish({ brushDirty: renderer?.brushDirty() ?? false })
       // One stroke, one step. The tiles the mark's dabs drew into are read
       // back off the GPU after the frame, never during one.
       if (mark && doc) {
-        const target = direct ?? paintTargetId(doc)
+        const target = direct ?? fluid ?? paintTargetId(doc)
         history?.recordStroke(target, mark.region, mark.tiles)
         contentBounds.grow(target, mark.region)
         invalidateThumbnailsOf(target)
@@ -5730,12 +5750,27 @@ export function createEngine(
       strokeParams
     )
     scatterPlacer.begin(strokeSeed)
-    // Dabs land in the stroke buffer, not the layer, until the pen lifts.
-    renderer?.beginStroke({
-      accumulation: brush.rendering.accumulation,
-      opacity: brush.rendering.opacity * strokeParams.opacity,
-      mode: tool === "eraser" ? "erase" : "paint",
-    })
+    // A fluid brush lays into the layer's wet surface (D42), with its
+    // opacity in the pigment each dab carries. On a mask, and as the eraser,
+    // it paints as the brush otherwise is.
+    const fluid =
+      tool === "brush" && !doc.paintingMask ? brush.rendering.fluid : undefined
+    if (fluid) {
+      const target = paintTargetId(doc)
+      renderer?.beginFluid(target, {
+        ink,
+        load: brush.rendering.opacity * strokeParams.opacity,
+        water: fluid.water,
+      })
+      fluidTargetId = target
+    } else {
+      // Dabs land in the stroke buffer, not the layer, until the pen lifts.
+      renderer?.beginStroke({
+        accumulation: brush.rendering.accumulation,
+        opacity: brush.rendering.opacity * strokeParams.opacity,
+        mode: tool === "eraser" ? "erase" : "paint",
+      })
+    }
     stroking = true
     opening = true
     // Shift at pen-down rules a line on from where the last stroke lifted.
@@ -5788,6 +5823,11 @@ export function createEngine(
     stampCount = 0
     samples.clear()
     renderer?.cancelStroke()
+    if (fluidTargetId) {
+      // Nothing reached the layer: the wet paint is let go of.
+      fluidTargetId = undefined
+      renderer?.endFluid(false)
+    }
     if (directTargetId) {
       // The dabs went straight into the surface, so the surface is put back.
       directTargetId = undefined
@@ -6496,6 +6536,7 @@ export function createEngine(
           if (command.dynamics) validateDynamics(command.dynamics)
           if (command.scatter) validateScatter(command.scatter)
           if (command.wet) validateBrushWet(command.wet)
+          if (command.fluid) validateBrushFluid(command.fluid)
           // Textures are named, not carried, so a name that resolves to
           // nothing is caught here rather than silently drawing untextured.
           if (command.tipTextureId && !textures.get(command.tipTextureId))
@@ -6573,6 +6614,12 @@ export function createEngine(
               ? brush.rendering.wet
               : (command.wet ?? undefined)
           if (wet) next.rendering.wet = { pickup: wet.pickup }
+          const fluid =
+            command.fluid === undefined
+              ? brush.rendering.fluid
+              : (command.fluid ?? undefined)
+          if (fluid) next.rendering.fluid = copyBrushFluid(fluid)
+          validateBrushMedium(next.rendering)
           // Spacing is fixed for the life of a resampler, so a brush that
           // changes it needs a new one. Never mid-stroke: the pen is up.
           if (tool === "brush" && brushSpacing(next) !== brushSpacing(brush))
@@ -6580,6 +6627,8 @@ export function createEngine(
           cancelStroke()
           cleanBrush()
           brush = next
+          // Ahead of the pen: the wet fields are not allocated by a stroke.
+          if (next.rendering.fluid) renderer?.prepareFluid()
           applyBrushTextures()
           if (snapshot.status === "ready") render()
           publish({ brush: Object.freeze(cloneBrush(next)) })
