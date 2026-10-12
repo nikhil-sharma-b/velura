@@ -18,7 +18,9 @@
  * selection against the same painting with none (11); `--scatter` paints with
  * a dense scattering brush against the same painting without; `--smudge`
  * smudges the painting against painting it (smudge 01); `--wet` paints over
- * it with wet brushes against the same brushes dry (live brushes 10);
+ * it with wet brushes against the same brushes dry (live brushes 10), and
+ * with `--unwaited` its scattering rows again with the pen not waiting for
+ * history between strokes (live brushes 28);
  * `--blender` compares small blenders with wet brushes that have flow;
  * `--cold` times a draw into a texture left alone (live brushes 24);
  * `--vector` times
@@ -486,6 +488,7 @@ const WET_PAINTS = process.argv.includes("--blender")
  * unpaced, pen-to-pixel paced.
  */
 async function wetSweep(): Promise<void> {
+  if (process.argv.includes("--unwaited")) return unwaitedSweep()
   const paced = PASSES.find((entry) => entry.name === "paced")!
   const unpaced = PASSES.find((entry) => entry.name === "unpaced")!
   // The acceptance comparison for the first sampling stroke (live brushes
@@ -525,6 +528,50 @@ async function wetSweep(): Promise<void> {
             `${String(held.report.stamps.total).padStart(6)}   ${String(readbacks).padStart(9)}   ${String(allocations).padStart(11)}`
         )
         if (readbacks > 0) process.exitCode = 1
+      }
+  console.log()
+}
+
+/**
+ * What history costs the stroke after the one it is putting away (live
+ * brushes 28): the scattering rows, whose strokes change the most tiles,
+ * paced, each with the pen waiting for history between strokes and again
+ * with it not waiting, as a person paints. Unwaited, the readback of a
+ * stroke may begin with the pen down again, so readbacks are counted over
+ * both and not failed on.
+ */
+async function unwaitedSweep(): Promise<void> {
+  const paced = PASSES.find((entry) => entry.name === "paced")!
+  const paints = WET_PAINTS.filter(({ name }) => name.endsWith("scatter"))
+  console.log(
+    "\n                                    paced, pen-to-pixel in ms: history waited for             history not waited for" +
+      "\n  document  brush   paint         first frame (median / worst)   all (median / p95)   first frame (median / worst)   all (median / p95)   readbacks"
+  )
+  for (const size of SMUDGE_SIZES)
+    for (const diameter of WET_DIAMETERS)
+      for (const { name, ...paint } of paints) {
+        const workload = {
+          ...BENCHMARK_WORKLOAD,
+          width: size,
+          height: size,
+          strokes: SWEEP_STROKES,
+          wet: { diameter, ...paint },
+        }
+        const cells: string[] = []
+        let readbacks = 0
+        for (const unwaited of [false, true]) {
+          const held = await measure(paced, { ...workload, unwaited })
+          const opening = openingFrames(held)
+          readbacks += held.readbacks
+          cells.push(
+            `${fixed(middle(opening)).padStart(12)} / ${fixed(Math.max(...opening)).padEnd(13)}   ` +
+              `${fixed(held.report.latencyMs.median).padStart(7)} / ${fixed(held.report.latencyMs.p95).padEnd(8)}`
+          )
+        }
+        console.log(
+          `  ${`${size}²`.padEnd(8)}  ${`${diameter} px`.padEnd(6)}  ${name.padEnd(12)}  ` +
+            `${cells.join("   ")}   ${String(readbacks).padStart(9)}`
+        )
       }
   console.log()
 }

@@ -89,6 +89,14 @@ export type WorkloadOptions = {
    */
   smudgeRadius?: number
   /**
+   * Puts the pen down again without waiting for history to put the stroke
+   * before away (live brushes 28), as a person paints: the next stroke's
+   * frames then share the thread with the readback, the hashing and the
+   * compression of the last. Absent, each stroke waits, so a row measures
+   * the stroke alone.
+   */
+  unwaited?: boolean
+  /**
    * Paints the workload a second time over itself with a wet brush
    * `diameter` pixels across (live brushes 10, 11): the strokes are painted
    * once, untimed, so there is paint underneath, and then drawn again along

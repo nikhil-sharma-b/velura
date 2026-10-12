@@ -491,8 +491,9 @@ export async function runBenchmark(
     for (const stroke of workload.strokes) {
       // History captures the previous mark after pen-up, on a later frame.
       // Wait for it before counting the next pen-down or a slow GPU makes
-      // that prior mark's readback look like an interactive one.
-      if (dispatched > 0) await engine.save()
+      // that prior mark's readback look like an interactive one. Unwaited,
+      // it is one: the row is what history costs the stroke after it.
+      if (dispatched > 0 && !workload.options.unwaited) await engine.save()
       const [first] = stroke.samples
       watch.setPenDown(true)
       strokeStarts.push(frames.length)

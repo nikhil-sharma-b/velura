@@ -24,12 +24,46 @@ export interface SpillDevice {
 
 export type TileTier = "hot" | "warm" | "cold" | "absent"
 
+/**
+ * The store's heavy lifting: going over every byte of a tile to hash it, and
+ * deflating and inflating one. A thrown stroke changes hundreds of tiles, and
+ * done where the pen is that is the next stroke's frames (live brushes 28),
+ * so the engine gives the store a worker to do it on. Without one it is done
+ * here.
+ */
+export interface TileWork {
+  /**
+   * Each tile's hash, or nothing for a tile with no pixel in it. The arrays
+   * given are given up: they may have gone to another thread, and the ones
+   * answered with are the ones to use.
+   */
+  digest(tiles: Uint16Array[]): Promise<TileDigest>
+  deflate(bytes: Uint8Array): Promise<Uint8Array>
+  inflate(bytes: Uint8Array): Promise<Uint8Array>
+  dispose(): void
+}
+
+export type TileDigest = {
+  tiles: Uint16Array[]
+  hashes: (string | undefined)[]
+}
+
 export interface TileStore {
   /**
    * Stores texels and returns their hash, taking one reference. Identical
    * pixels already held are not copied again; they gain a reference.
    */
   put(texels: Uint16Array): string
+  /**
+   * Hashes tiles without storing them, wherever the store's work is done:
+   * what a readback of hundreds goes through before `adopt`.
+   */
+  digest(tiles: Uint16Array[]): Promise<TileDigest>
+  /**
+   * `put` for texels already hashed by `digest`, which the caller gives up:
+   * they are kept as they are, not copied.
+   */
+  adopt(texels: Uint16Array, hash: string): string
   /** The exact texels that were stored, from whichever tier holds them. */
   get(hash: string): Promise<Uint16Array>
   retain(hash: string): void
@@ -68,6 +102,8 @@ export type TileStoreOptions = {
   /** Compressed bytes kept in memory before the oldest go to disk. */
   warmBytes: number
   spill?: SpillDevice
+  /** Where hashing and compression are done. Absent, on this thread. */
+  work?: TileWork
 }
 
 /**
@@ -90,18 +126,39 @@ export function hashTexels(texels: Uint16Array): string {
   return `${a.toString(16).padStart(8, "0")}${b.toString(16).padStart(8, "0")}`
 }
 
-async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
+export function isBlank(texels: Uint16Array): boolean {
+  for (let i = 0; i < texels.length; i++) if (texels[i] !== 0) return false
+  return true
+}
+
+export function digestTexels(texels: Uint16Array): string | undefined {
+  return isBlank(texels) ? undefined : hashTexels(texels)
+}
+
+export async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
   const stream = new Blob([bytes as BlobPart])
     .stream()
     .pipeThrough(new CompressionStream("deflate-raw"))
   return new Uint8Array(await new Response(stream).arrayBuffer())
 }
 
-async function inflate(bytes: Uint8Array): Promise<Uint8Array> {
+export async function inflate(bytes: Uint8Array): Promise<Uint8Array> {
   const stream = new Blob([bytes as BlobPart])
     .stream()
     .pipeThrough(new DecompressionStream("deflate-raw"))
   return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+
+/** The work done on the thread that asked for it. */
+export function createInlineTileWork(): TileWork {
+  return {
+    async digest(tiles) {
+      return { tiles, hashes: tiles.map(digestTexels) }
+    },
+    deflate,
+    inflate,
+    dispose() {},
+  }
 }
 
 /** A spill device that never leaves the tab. The fallback where OPFS is not. */
@@ -163,6 +220,7 @@ export function createOpfsSpill(name = "velura-history"): SpillDevice {
 export function createTileStore(options: TileStoreOptions): TileStore {
   const entries = new Map<string, Entry>()
   const spill = options.spill
+  const work = options.work ?? createInlineTileWork()
   let sequence = 0
   let hotBytes = 0
   let warmBytes = 0
@@ -195,7 +253,7 @@ export function createTileStore(options: TileStoreOptions): TileStore {
     for (const entry of byAge((entry) => !!entry.raw)) {
       if (hotBytes <= options.hotBytes) break
       const raw = entry.raw!
-      const compressed = await deflate(
+      const compressed = await work.deflate(
         new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength)
       )
       // A read while compression was in flight put the tile back in the hot
@@ -223,26 +281,36 @@ export function createTileStore(options: TileStoreOptions): TileStore {
   }
 
   function schedule() {
-    settling = (settling ?? Promise.resolve()).then(demote)
     // Failures here cost memory, not pixels: the tile is still in the pool.
-    void settling.catch(() => {})
+    // Caught on the chain itself, so one does not stop every demotion after.
+    settling = (settling ?? Promise.resolve()).then(demote).catch(() => {})
+  }
+
+  /** Takes a reference on `hash`, storing what `texels` answers if it is new. */
+  function hold(hash: string, texels: () => Uint16Array): string {
+    const existing = entries.get(hash)
+    if (existing) {
+      existing.refs++
+      touch(existing)
+      return hash
+    }
+    const raw = texels()
+    entries.set(hash, { hash, refs: 1, sequence: ++sequence, raw })
+    hotBytes += raw.byteLength
+    schedule()
+    return hash
   }
 
   return {
     tileBytes: TILE_BYTES,
     put(texels) {
-      const hash = hashTexels(texels)
-      const existing = entries.get(hash)
-      if (existing) {
-        existing.refs++
-        touch(existing)
-        return hash
-      }
-      const raw = new Uint16Array(texels)
-      entries.set(hash, { hash, refs: 1, sequence: ++sequence, raw })
-      hotBytes += raw.byteLength
-      schedule()
-      return hash
+      return hold(hashTexels(texels), () => new Uint16Array(texels))
+    },
+    digest(tiles) {
+      return work.digest(tiles)
+    },
+    adopt(texels, hash) {
+      return hold(hash, () => texels)
     },
     async get(hash) {
       const entry = entries.get(hash)
@@ -250,7 +318,7 @@ export function createTileStore(options: TileStoreOptions): TileStore {
       touch(entry)
       if (entry.raw) return entry.raw
       const packed = entry.compressed ?? (await spill!.read(hash))
-      const bytes = await inflate(packed)
+      const bytes = await work.inflate(packed)
       // Still held? Then put it back in the hot pool: a tile read once during
       // an undo is about to be read again as the artist keeps going back.
       if (entries.has(hash)) {

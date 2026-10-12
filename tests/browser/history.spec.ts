@@ -293,3 +293,18 @@ test("a long session crosses the tiers without exhausting memory, and still rest
     expect(await painted(page)).toEqual(mark)
   }
 })
+
+test("a stroke's tiles are hashed and compressed on a worker, which goes with the engine", async ({
+  page,
+}) => {
+  // Where the worker cannot load the same work is done on the main thread
+  // and every other test here passes all the same, so that it started is
+  // held on its own (live brushes 28).
+  await openCanvas(page, TINY_HISTORY)
+  const tileWorkers = () =>
+    page.workers().filter((worker) => worker.url().includes("tile-worker"))
+  await expect.poll(() => tileWorkers().length).toBe(1)
+
+  await page.evaluate(() => window.engine.dispose())
+  await expect.poll(() => tileWorkers().length).toBe(0)
+})
