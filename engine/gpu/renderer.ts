@@ -57,7 +57,11 @@ import {
 } from "../view/magnification"
 import { createBufferedStroke, type StrokeMode } from "./buffered-stroke"
 import { createDirectStroke, type FrozenArtwork } from "./direct-stroke"
-import { createFluidStroke, type FluidOpening } from "./fluid-stroke"
+import {
+  createFluidStroke,
+  type FluidOpening,
+  type WetViews,
+} from "./fluid-stroke"
 import { createFreezeLedger, FREEZE_CHUNK } from "./freeze-ledger"
 import type { StrokeMark } from "./stroke-renderer"
 import { LAYER_FORMAT, type Surface } from "./surface"
@@ -414,17 +418,30 @@ export interface Renderer {
   /**
    * Starts a fluid stroke on one surface (D42): its dabs lay `water` and
    * `ink` into the surface's wet tiles, `load` of the ink at full flow, and
-   * the surface's own pixels are left alone until the stroke ends.
+   * the surface's own pixels are left alone until that paint settles. Only
+   * one surface is wet at a time: another's wet paint is dried first.
    */
   beginFluid(surfaceId: string, stroke: Omit<FluidOpening, "surface">): void
   /** Draws `count` dabs (see `STAMP`) into the wet surface. */
   drawFluid(dabs: Float32Array, count: number): void
   /**
-   * Ends the fluid stroke. Kept, everything wet settles into the surface
-   * and what the dabs reached is returned; not kept, the wet paint is gone
-   * and the surface holds what it did before.
+   * Ends the fluid stroke. Kept, its paint stays wet; not kept, a stroke
+   * that found the surface dry leaves it dry. Either way no pixel of the
+   * surface has changed.
    */
-  endFluid(keep: boolean): StrokeMark | null
+  endFluid(keep: boolean): void
+  /** Whether any paint is wet. */
+  fluidWet(): boolean
+  /**
+   * Runs the simulation on by `steps` steps (D42). Answers what each body
+   * that dried along the way settled into its surface, in order.
+   */
+  advanceFluid(steps: number): StrokeMark[]
+  /**
+   * Settles everything wet into its surface at once. Answers what that
+   * wrote, or null with nothing wet.
+   */
+  dryFluid(): StrokeMark | null
   /** Allocates the wet fields ahead of the first fluid stroke (D30). */
   prepareFluid(): void
   /**
@@ -514,15 +531,19 @@ export function createRenderer(
     directLegacyPickup?: boolean
   }
 ): Renderer {
-  const presentPipelines = new Map<BlendMode, GPURenderPipeline>()
-  function presentPipeline(mode: BlendMode): GPURenderPipeline {
-    const existing = presentPipelines.get(mode)
+  // A pipeline for each mode, and another for a layer with wet paint on it
+  // (D42), made the first time one is: wet paint is a shader of its own and
+  // not a branch every pixel of every layer takes.
+  const presentPipelines = new Map<string, GPURenderPipeline>()
+  function presentPipeline(mode: BlendMode, isWet: boolean): GPURenderPipeline {
+    const key = isWet ? `${mode}:wet` : mode
+    const existing = presentPipelines.get(key)
     if (existing) return existing
     const shader = device.createShaderModule({
-      code: displayTransformShader(mode),
+      code: displayTransformShader(mode, isWet),
     })
     const pipeline = device.createRenderPipeline({
-      label: `present:${mode}`,
+      label: `present:${key}`,
       layout: "auto",
       vertex: { module: shader, entryPoint: "vertexMain" },
       fragment: {
@@ -532,16 +553,19 @@ export function createRenderer(
       },
       primitive: { topology: "triangle-list" },
     })
-    presentPipelines.set(mode, pipeline)
+    presentPipelines.set(key, pipeline)
     return pipeline
   }
-  const blendPipelines = new Map<BlendMode, GPURenderPipeline>()
-  function blendPipeline(mode: BlendMode): GPURenderPipeline {
-    const existing = blendPipelines.get(mode)
+  const blendPipelines = new Map<string, GPURenderPipeline>()
+  function blendPipeline(mode: BlendMode, isWet: boolean): GPURenderPipeline {
+    const key = isWet ? `${mode}:wet` : mode
+    const existing = blendPipelines.get(key)
     if (existing) return existing
-    const shader = device.createShaderModule({ code: blendShader(mode) })
+    const shader = device.createShaderModule({
+      code: blendShader(mode, undefined, isWet),
+    })
     const pipeline = device.createRenderPipeline({
-      label: `blend:${mode}`,
+      label: `blend:${key}`,
       layout: "auto",
       vertex: { module: shader, entryPoint: "vertexMain" },
       fragment: {
@@ -551,7 +575,7 @@ export function createRenderer(
       },
       primitive: { topology: "triangle-list" },
     })
-    blendPipelines.set(mode, pipeline)
+    blendPipelines.set(key, pipeline)
     return pipeline
   }
 
@@ -1628,12 +1652,25 @@ export function createRenderer(
     legacyPickup: options.directLegacyPickup,
   })
 
+  /** What a wet layer's pipeline binds of its wet paint; a dry one's, nothing. */
+  const wetEntries = (wet: WetViews | undefined): GPUBindGroupEntry[] =>
+    wet
+      ? [
+          { binding: 7, resource: wet.slots },
+          { binding: 8, resource: wet.deposited },
+          { binding: 9, resource: wet.suspended },
+        ]
+      : []
+
   /** The stroke that lays paint into a layer's wet surface (D42). */
   const fluid = createFluidStroke(device, {
     size: () => documentSize,
     feather: () => feather,
     wetChanged() {
       for (const compositor of compositors) compositor.refreshWet()
+    },
+    wetMoved() {
+      for (const compositor of compositors) compositor.showWet()
     },
   })
 
@@ -1780,6 +1817,10 @@ export function createRenderer(
     const validGroupCaches = new Set<string>()
     const coverageCaches = new Map<string, Surface>()
     let presentBindGroup: GPUBindGroup | undefined
+    /** The mode the present pass draws the active layer in, once planned. */
+    let presentMode: BlendMode | undefined
+    /** The present pass's binding for each copy of the wet fields. */
+    const presentBindGroups = new Map<number, GPUBindGroup>()
     /** The plan applied. Undefined forces the next one to be applied in full. */
     let composition: string | undefined
     /** That plan as given, so a frame can tell it is still the one in force. */
@@ -1865,6 +1906,7 @@ export function createRenderer(
       liveAbove = []
       activeItem = undefined
       presentBindGroup = undefined
+      presentBindGroups.clear()
       forgetBindGroups()
       invalidate()
     }
@@ -1938,13 +1980,13 @@ export function createRenderer(
     ): GPUBindGroup {
       blendScratch ??= createTarget()
       const mask = maskId ? surfaces.get(maskId) : undefined
-      const bindingKey = `${mode}:${source.id}:${mask?.id ?? 0}:${clipBase?.id ?? 0}:${usesStroke ? 1 : 0}`
-      const existing = blendBindGroups.get(bindingKey)
-      if (existing) return existing
       // Wet paint is the layer's own, so it is read wherever the layer is.
       const wet = fluid.wet(source)
+      const bindingKey = `${mode}:${source.id}:${mask?.id ?? 0}:${clipBase?.id ?? 0}:${usesStroke ? 1 : 0}:${wet?.key ?? 0}`
+      const existing = blendBindGroups.get(bindingKey)
+      if (existing) return existing
       const bindings = device.createBindGroup({
-        layout: blendPipeline(mode).getBindGroupLayout(0),
+        layout: blendPipeline(mode, !!wet).getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: { buffer: compositeUniform } },
           { binding: 1, resource: source.view },
@@ -1956,8 +1998,7 @@ export function createRenderer(
           { binding: 4, resource: mask?.view ?? placeholderView },
           { binding: 5, resource: clipBase?.view ?? placeholderView },
           { binding: 6, resource: docSampler },
-          { binding: 7, resource: wet.slots },
-          { binding: 8, resource: wet.pigment },
+          ...wetEntries(wet),
         ],
       })
       blendBindGroups.set(bindingKey, bindings)
@@ -1975,7 +2016,7 @@ export function createRenderer(
       maskInFlight = false
     ) {
       blendScratch ??= createTarget()
-      const pipeline = blendPipeline(item.blend)
+      const pipeline = blendPipeline(item.blend, !!fluid.wet(source))
       const bindings = blendBindings(
         item.blend,
         source,
@@ -2188,8 +2229,21 @@ export function createRenderer(
     }
 
     function refreshPresentBindGroup() {
-      if (!active || !stroke || !pipeline) return
+      presentBindGroups.clear()
+      showWet()
+    }
+
+    /**
+     * Binds the present pass to the wet fields as they now are. A step of
+     * the simulation moves on to the fields' other copy, so the binding for
+     * each copy is kept and a step makes none.
+     */
+    function showWet() {
+      if (!active || !stroke || !presentMode) return
       const wet = fluid.wet(active)
+      pipeline = presentPipeline(presentMode, !!wet)
+      presentBindGroup = presentBindGroups.get(wet?.key ?? 0)
+      if (presentBindGroup) return
       presentBindGroup = device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
         entries: [
@@ -2206,10 +2260,10 @@ export function createRenderer(
           { binding: 3, resource: frame ? placeholderView : stroke.view },
           { binding: 4, resource: above?.view ?? placeholderView },
           { binding: 5, resource: docSampler },
-          { binding: 6, resource: wet.slots },
-          { binding: 7, resource: wet.pigment },
+          ...wetEntries(wet),
         ],
       })
+      presentBindGroups.set(wet?.key ?? 0, presentBindGroup)
     }
 
     /**
@@ -2234,7 +2288,7 @@ export function createRenderer(
         complexStages = plannedStages
         liveAbove = []
         activeItem = { ...next.active }
-        pipeline = presentPipeline("normal")
+        presentMode = "normal"
         stageBelow = complexStages!.map((stage, index) =>
           buildCache(stage.below, stageBelow[index])
         )
@@ -2306,7 +2360,7 @@ export function createRenderer(
         frame?.texture.destroy()
         frame = undefined
       }
-      pipeline = presentPipeline(frame ? "normal" : next.active.blend)
+      presentMode = frame ? "normal" : next.active.blend
       const caches = cacheKey(next)
       if (caches !== cachedFrom) {
         cachedFrom = caches
@@ -2476,6 +2530,8 @@ export function createRenderer(
         blendBindGroups.clear()
         refreshPresentBindGroup()
       },
+      /** The simulation moved on to the wet fields' other copy. */
+      showWet,
       destroy() {
         releaseTargets()
         presentUniform.destroy()
@@ -3382,8 +3438,11 @@ export function createRenderer(
       fluid.draw(dabs, count)
     },
     endFluid(keep) {
-      return fluid.end(keep)
+      fluid.end(keep)
     },
+    fluidWet: () => fluid.isWet(),
+    advanceFluid: (steps) => fluid.advance(steps),
+    dryFluid: () => fluid.dry(),
     prepareFluid() {
       if (width > 0) fluid.prepare()
     },

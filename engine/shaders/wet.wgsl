@@ -44,13 +44,17 @@ fn glaze(under: vec4<f32>, paint: vec4<f32>) -> vec4<f32> {
 }
 
 // A layer's pixel with whatever is wet over that document point glazed onto
-// it. With nothing wet a placeholder is bound, and the pixel is as it was.
+// it: the pigment the paper has taken first, and what is still in the water
+// over it.
 fn glazeWet(
   under: vec4<f32>,
   slots: texture_2d<u32>,
-  pigment: texture_2d<f32>,
+  deposited: texture_2d<f32>,
+  suspended: texture_2d<f32>,
   point: vec2<f32>
 ) -> vec4<f32> {
-  if (i32(textureDimensions(pigment).x) < WET_CELLS) { return under; }
-  return glaze(under, wetField(slots, pigment, point));
+  return glaze(
+    glaze(under, wetField(slots, deposited, point)),
+    wetField(slots, suspended, point)
+  );
 }
