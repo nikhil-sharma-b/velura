@@ -102,6 +102,8 @@ export interface DirectStroke extends StrokeRenderer<DirectOpening> {
    * brushes 24): the load, which pen-down clears and the dab picks up into.
    */
   warm(encoder: GPUCommandEncoder): void
+  /** Initialize the extra sampled-artwork carry before a pen can need it. */
+  prepareSampling(): void
   /**
    * The tip, the grain or the selection was replaced: the views held of them
    * are stale.
@@ -196,6 +198,7 @@ export function createDirectStroke(
     format: LAYER_FORMAT,
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   })
+  let samplingPrepared = false
   /**
    * What a run of dragging dabs is worked in (live brushes 22): its region
    * of the surface, read from one and written to the other dab by dab.
@@ -1014,6 +1017,38 @@ export function createDirectStroke(
     end,
     cleanBrush: () => clearReservoir(),
     brushDirty: () => dirty,
+    prepareSampling() {
+      if (samplingPrepared) return
+      // Creating a texture alone leaves its first GPU use on the first dab.
+      // A full copy initializes the carry without touching a retained load.
+      const blank = device.createTexture({
+        label: "sampled carry initialization",
+        size: [MAX_CARRY_SIZE, MAX_CARRY_SIZE],
+        format: LAYER_FORMAT,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+      })
+      const encoder = device.createCommandEncoder()
+      encoder
+        .beginRenderPass({
+          colorAttachments: [
+            {
+              view: blank.createView(),
+              loadOp: "clear",
+              storeOp: "store",
+              clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            },
+          ],
+        })
+        .end()
+      encoder.copyTextureToTexture(
+        { texture: blank },
+        { texture: destinationCarry },
+        [MAX_CARRY_SIZE, MAX_CARRY_SIZE]
+      )
+      device.queue.submit([encoder.finish()])
+      blank.destroy()
+      samplingPrepared = true
+    },
     warm(encoder) {
       for (const view of reservoirViews)
         encoder
