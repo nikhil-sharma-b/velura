@@ -400,6 +400,8 @@ export interface Renderer {
    * (live brushes 24). Changes no pixel.
    */
   keepWarm(): void
+  /** Ready a bounded set of sampled pages and the carry before pen-down. */
+  prepareSampling(): void
   /**
    * Draws the document at its own size, unviewed, into a target that size:
    * the artwork as it exports, whatever the view. `plan`, when given, is
@@ -2443,6 +2445,45 @@ export function createRenderer(
    * not of the document.
    */
   const frozenPages: GPUTexture[] = []
+  /** Four chunks cover the opening neighbourhood of the wet sweep's brushes. */
+  const FIRST_FROZEN_PAGES = 4
+
+  function createFrozenPage(): GPUTexture {
+    return device.createTexture({
+      label: "frozen artwork",
+      size: { width: FREEZE_CHUNK, height: FREEZE_CHUNK },
+      format: LAYER_FORMAT,
+      usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+    })
+  }
+
+  function prepareSampling() {
+    direct.prepareSampling()
+    const wanted = Math.min(
+      FIRST_FROZEN_PAGES,
+      Math.ceil(width / FREEZE_CHUNK) * Math.ceil(height / FREEZE_CHUNK)
+    )
+    if (frozenPages.length >= wanted) return
+    pickup.setSpace({
+      width: FREEZE_CHUNK,
+      height: FREEZE_CHUNK,
+      toDoc: IDENTITY_MATRIX,
+    })
+    // Only transparent scratch pixels: the artwork is still frozen at the
+    // first dab, so edits after enabling sampling remain visible to it.
+    const blank = pickup.flatten([])
+    const encoder = device.createCommandEncoder()
+    while (frozenPages.length < wanted) {
+      const page = createFrozenPage()
+      encoder.copyTextureToTexture(
+        { texture: blank.texture },
+        { texture: page },
+        [FREEZE_CHUNK, FREEZE_CHUNK]
+      )
+      frozenPages.push(page)
+    }
+    device.queue.submit([encoder.finish()])
+  }
   const compositors = [screen, artwork, pickup]
   /** The window the screen compositor fills, once one has been given. */
   let viewport: { width: number; height: number } | undefined
@@ -2512,14 +2553,7 @@ export function createRenderer(
       empty: visible.length === 0,
       reach(left, top, right, bottom) {
         for (const chunk of ledger.take(left, top, right, bottom)) {
-          const page =
-            frozenPages.pop() ??
-            device.createTexture({
-              label: "frozen artwork",
-              size: { width: FREEZE_CHUNK, height: FREEZE_CHUNK },
-              format: LAYER_FORMAT,
-              usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
-            })
+          const page = frozenPages.pop() ?? createFrozenPage()
           pages.set(
             (chunk.y / FREEZE_CHUNK) * across + chunk.x / FREEZE_CHUNK,
             page
@@ -2588,6 +2622,7 @@ export function createRenderer(
   }
 
   return {
+    prepareSampling,
     resize(nextWidth, nextHeight) {
       releaseSelection()
       direct.invalidateBinding()
