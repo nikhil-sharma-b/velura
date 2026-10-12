@@ -708,7 +708,7 @@ test("colour dynamics tint a wet brush's clean load", async ({ page }) => {
   expect(errors).toEqual([])
 })
 
-/** Wide enough apart that the wet spacing floor does not move the dabs. */
+/** Wide enough apart that the wet spacing floor does not hold the dabs. */
 const THROWN = {
   spacing: 0.5,
   feather: 0,
@@ -734,7 +734,7 @@ function spread(image: number[], empty: number[], from: number, to: number) {
   return furthest
 }
 
-test("a wet brush with scatter places its dabs where the same brush would dry", async ({
+test("a wet brush with scatter throws its dabs as far as the same brush would dry", async ({
   page,
 }) => {
   const samples = run(40, 200, 1)
@@ -746,13 +746,18 @@ test("a wet brush with scatter places its dabs where the same brush would dry", 
   expect(spread(wet.image, wet.empty, 0, WIDTH)).toBeGreaterThan(
     spread(plain.image, plain.empty, 0, WIDTH) + RADIUS / 2
   )
-  // And to the places the dry brush throws them, give or take a dab's rim.
-  const wetMarks = footprint(wet.image, wet.empty)
-  const dryMarks = footprint(dry.image, dry.empty)
-  const inked = dryMarks.filter(Boolean).length
-  const apart = wetMarks.filter((mark, i) => mark !== dryMarks[i]).length
-  expect(inked).toBeGreaterThan(0)
-  expect(apart / inked).toBeLessThan(0.03)
+  // By the throws the dry brush makes, each from where the pen has got to
+  // and not a step's worth from where the step began (live brushes 29): as
+  // far from the row, give or take a dab's rim.
+  expect(
+    Math.abs(
+      spread(wet.image, wet.empty, 0, WIDTH) -
+        spread(dry.image, dry.empty, 0, WIDTH)
+    )
+  ).toBeLessThanOrEqual(2)
+  expect(footprint(wet.image, wet.empty)).not.toEqual(
+    footprint(dry.image, dry.empty)
+  )
 
   // The same seed throws them the same way again.
   const again = await drawn(page, "wet", THROWN, samples)

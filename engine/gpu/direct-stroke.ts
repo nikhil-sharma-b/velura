@@ -52,6 +52,10 @@ export type DirectStrokeContext = {
    * test holds the two to the same smear (live brushes 27).
    */
   runSize?: number
+  /** Test control: deposit directly into the full layer instead of scratch. */
+  wetTarget?: "layer" | "scratch"
+  /** Test control: retain raster-interpolated procedural pickup coordinates. */
+  legacyPickup?: boolean
 }
 
 /**
@@ -198,12 +202,27 @@ export function createDirectStroke(
     format: LAYER_FORMAT,
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   })
+  // Sampled strokes read the live destination here. Active-layer wet
+  // strokes use it as a local render target, avoiding a full-layer attachment
+  // load/store for each dab (live brushes 29). Both share the existing capacity.
   const destinationCarry = device.createTexture({
     label: "direct destination carry",
     size: { width: MAX_CARRY_SIZE, height: MAX_CARRY_SIZE },
+    mipLevelCount: Math.log2(MAX_CARRY_SIZE / 64) + 1,
     format: LAYER_FORMAT,
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    usage:
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_DST |
+      GPUTextureUsage.COPY_SRC |
+      GPUTextureUsage.RENDER_ATTACHMENT |
+      GPUTextureUsage.STORAGE_BINDING,
   })
+  const destinationViews = Array.from(
+    { length: destinationCarry.mipLevelCount },
+    (_, level) =>
+      destinationCarry.createView({ baseMipLevel: level, mipLevelCount: 1 })
+  )
+  const destinationView = destinationViews[0]
   let samplingPrepared = false
   /**
    * What a run of dragging dabs is worked in (live brushes 22): its region
@@ -267,6 +286,36 @@ export function createDirectStroke(
       module: device.createShaderModule({ code: smudgeRunShader }),
       entryPoint: "runMain",
     },
+  })
+  const wetDabLayout = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {} },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: {} },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { viewDimension: "2d-array" },
+      },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, sampler: {} },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: {} },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, texture: {} },
+      {
+        binding: 12,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { format: LAYER_FORMAT },
+      },
+      { binding: 8, visibility: GPUShaderStage.COMPUTE, texture: {} },
+      {
+        binding: 10,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { format: LAYER_FORMAT },
+      },
+      {
+        binding: 11,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { hasDynamicOffset: true, minBindingSize: 64 },
+      },
+    ],
   })
   /** By which of the two textures a dab reads. */
   let runBindings: GPUBindGroup[] = []
@@ -366,7 +415,8 @@ export function createDirectStroke(
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.RENDER_ATTACHMENT |
         GPUTextureUsage.COPY_SRC |
-        GPUTextureUsage.COPY_DST,
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.STORAGE_BINDING,
     })
   )
   const reservoirBackup = device.createTexture({
@@ -380,6 +430,18 @@ export function createDirectStroke(
   let reservoirExtent = 0
   let reservoirIndex = 0
   let reservoirBindings: { layer: GPUBindGroup; pickup: GPUBindGroup }[] = []
+  const wetDabPipeline = device.createComputePipeline({
+    label: "wet dab",
+    layout: device.createPipelineLayout({ bindGroupLayouts: [wetDabLayout] }),
+    compute: { module: shaderModule, entryPoint: "wetDabMain" },
+  })
+  const wetPickupPipeline = device.createComputePipeline({
+    label: "wet pickup",
+    layout: device.createPipelineLayout({ bindGroupLayouts: [wetDabLayout] }),
+    compute: { module: shaderModule, entryPoint: "pickupMain" },
+  })
+  let wetDabBindings: GPUBindGroup[][][] = []
+  let wetDabTarget: GPUTexture | undefined
   const loadModule = device.createShaderModule({ code: brushLoadShader })
   const loadPipeline = device.createRenderPipeline({
     label: "wet brush colour load",
@@ -470,6 +532,7 @@ export function createDirectStroke(
   const rects = new Int32Array(MAX_SMUDGE_DABS_PER_DRAW * DAB_RECT_STRIDE)
 
   /** Draws the dabs of the stroke into its surface, one after another. */
+
   function drawDabs(dabs: Float32Array, count: number) {
     const stroke = session!
     if (stroke.load) {
@@ -511,33 +574,55 @@ export function createDirectStroke(
         !(stroke.source ?? stroke.target).empty
       const picksUp = stroke.lays && dabs[dab + SMUDGE.STRENGTH] > 0
       if (!drags && !(flow > 0) && !picksUp) continue
-      // Rotated textured quads fit inside sqrt(2) radii.
-      const reach = dabs[dab + SMUDGE.RADIUS] * Math.SQRT2
-      const left = Math.max(clipLeft, Math.floor(x - reach))
-      const top = Math.max(clipTop, Math.floor(y - reach))
-      const right = Math.min(clipRight, Math.ceil(x + reach))
-      const bottom = Math.min(clipBottom, Math.ceil(y + reach))
+      // Wet quads need their actual rotated bounds, not the square that
+      // covers every possible angle. A pixel guards f32 mapping at the rim;
+      // the copied read below adds the filtering border. The layer test
+      // control retains the old conservative bounds for pixel comparison.
+      const radius = dabs[dab + SMUDGE.RADIUS]
+      let reachX = radius * Math.SQRT2
+      let reachY = reachX
+      if (stroke.lays && !stroke.source && context.wetTarget !== "layer") {
+        const angle = dabs[dab + SMUDGE.ANGLE] * Math.PI * 2
+        const cosine = Math.abs(Math.cos(angle))
+        const sine = Math.abs(Math.sin(angle))
+        const roundness = dabs[dab + SMUDGE.ROUNDNESS]
+        reachX = radius * (cosine + roundness * sine) + 1
+        reachY = radius * (sine + roundness * cosine) + 1
+      }
+      const left = Math.max(clipLeft, Math.floor(x - reachX))
+      const top = Math.max(clipTop, Math.floor(y - reachY))
+      const right = Math.min(clipRight, Math.ceil(x + reachX))
+      const bottom = Math.min(clipBottom, Math.ceil(y + reachY))
       const writes = right > left && bottom > top && (drags || flow > 0)
       if (!writes && !picksUp) continue
       // Wet pickup reads the full tip, including outside selections. Smudge
       // also needs the pixels one travel behind. A texel borders the blend.
       const fromLeft = Math.max(
         0,
-        Math.floor(stroke.lays ? x - reach : Math.min(left, left - travelX)) - 1
+        Math.floor(
+          stroke.lays ? x - radius * Math.SQRT2 : Math.min(left, left - travelX)
+        ) - 1
       )
       const fromTop = Math.max(
         0,
-        Math.floor(stroke.lays ? y - reach : Math.min(top, top - travelY)) - 1
+        Math.floor(
+          stroke.lays ? y - radius * Math.SQRT2 : Math.min(top, top - travelY)
+        ) - 1
       )
       const fromRight = Math.min(
         width,
-        Math.ceil(stroke.lays ? x + reach : Math.max(right, right - travelX)) +
-          1
+        Math.ceil(
+          stroke.lays
+            ? x + radius * Math.SQRT2
+            : Math.max(right, right - travelX)
+        ) + 1
       )
       const fromBottom = Math.min(
         height,
         Math.ceil(
-          stroke.lays ? y + reach : Math.max(bottom, bottom - travelY)
+          stroke.lays
+            ? y + radius * Math.SQRT2
+            : Math.max(bottom, bottom - travelY)
         ) + 1
       )
       if (fromRight <= fromLeft || fromBottom <= fromTop) continue
@@ -583,6 +668,26 @@ export function createDirectStroke(
     params[7] = grain.scale
     params[8] = grain.depth
     params[9] = grain.movement
+    const localTarget =
+      stroke.lays && !stroke.source && context.wetTarget !== "layer"
+    params[10] = localTarget ? 1 : 0
+    params[11] = context.legacyPickup ? 0 : 1
+    let targetSpan = 64
+    if (localTarget)
+      for (let dab = 0; dab < drawn; dab++) {
+        const rect = dab * DAB_RECT_STRIDE
+        targetSpan = Math.max(
+          targetSpan,
+          rects[rect + DAB_RECT.READ_WIDTH],
+          rects[rect + DAB_RECT.READ_HEIGHT]
+        )
+        const instance = dab * SMUDGE_INSTANCE_STRIDE
+        drawnDabs[instance + SMUDGE.ORIGIN_X] = rects[rect + DAB_RECT.READ_LEFT]
+        drawnDabs[instance + SMUDGE.ORIGIN_Y] = rects[rect + DAB_RECT.READ_TOP]
+      }
+    const targetLevel = localTarget
+      ? Math.floor(Math.log2(MAX_CARRY_SIZE / targetSpan))
+      : 0
     device.queue.writeBuffer(uniform, 0, params)
     device.queue.writeBuffer(
       instances,
@@ -592,7 +697,12 @@ export function createDirectStroke(
       drawn * SMUDGE_INSTANCE_STRIDE
     )
     // Kept between frames of a stroke, which must allocate nothing (D30).
-    if (!bindGroup || reservoirBindings.length === 0) {
+    if (
+      !bindGroup ||
+      reservoirBindings.length === 0 ||
+      wetDabTarget !== stroke.target.texture
+    ) {
+      wetDabTarget = stroke.target.texture
       const entries: GPUBindGroupEntry[] = [
         { binding: 0, resource: { buffer: uniform } },
         { binding: 1, resource: tip.sampler },
@@ -619,7 +729,7 @@ export function createDirectStroke(
             { binding: 8, resource },
             {
               binding: 9,
-              resource: (stroke.source ? destinationCarry : carry).createView(),
+              resource: stroke.source ? destinationView : carry.createView(),
             },
           ],
         }),
@@ -628,6 +738,27 @@ export function createDirectStroke(
           entries: [...entries.slice(0, 5), { binding: 8, resource }],
         }),
       }))
+      wetDabBindings = [false, true].map((direct) =>
+        destinationViews.map((destination) =>
+          reservoirViews.map((resource, reads) =>
+            device.createBindGroup({
+              layout: wetDabLayout,
+              entries: [
+                ...entries.slice(0, 4),
+                {
+                  binding: 4,
+                  resource: direct ? stroke.target.view : carry.createView(),
+                },
+                entries[5],
+                { binding: 8, resource },
+                { binding: 10, resource: reservoirViews[1 - reads] },
+                { binding: 11, resource: { buffer: runUniform, size: 64 } },
+                { binding: 12, resource: destination },
+              ],
+            })
+          )
+        )
+      )
       bindGroup = reservoirBindings[0].layer
       runBindings = runTextures.map((texture, reads) =>
         device.createBindGroup({
@@ -656,6 +787,11 @@ export function createDirectStroke(
     // encoder holds the frame's worth in order.
     const encoder = device.createCommandEncoder()
     let anyRun = false
+    let anyWetCompute = false
+    let wetLeft = 0
+    let wetTop = 0
+    let wetWidth = 0
+    let wetHeight = 0
     for (let i = 0; i < drawn; i++) {
       const runEnd = stroke.lays
         ? i
@@ -668,36 +804,104 @@ export function createDirectStroke(
         continue
       }
       const rect = i * DAB_RECT_STRIDE
-      keepTiles(encoder, i)
-      stroke.source?.copy(
-        encoder,
-        rects[rect + DAB_RECT.READ_LEFT],
-        rects[rect + DAB_RECT.READ_TOP],
-        rects[rect + DAB_RECT.READ_WIDTH],
-        rects[rect + DAB_RECT.READ_HEIGHT],
-        carry
-      )
-      encoder.copyTextureToTexture(
-        {
-          texture: stroke.target.texture,
-          origin: {
-            x: rects[rect + DAB_RECT.READ_LEFT],
-            y: rects[rect + DAB_RECT.READ_TOP],
+      const instance = i * SMUDGE_INSTANCE_STRIDE
+      const radius = drawnDabs[instance + SMUDGE.RADIUS]
+      const aligned =
+        localTarget &&
+        !context.legacyPickup &&
+        !tip.usesTip &&
+        grain.depth === 0 &&
+        drawnDabs[instance + SMUDGE.STRENGTH] > 0 &&
+        drawnDabs[instance + SMUDGE.ANGLE] === 0 &&
+        drawnDabs[instance + SMUDGE.ROUNDNESS] === 1 &&
+        radius * 2 === reservoirExtent &&
+        (reservoirExtent & (reservoirExtent - 1)) === 0
+      const directRead =
+        aligned &&
+        context.wetTarget !== "scratch" &&
+        (width & (width - 1)) === 0 &&
+        (height & (height - 1)) === 0
+      if (localTarget) {
+        wetLeft = rects[rect + DAB_RECT.READ_LEFT]
+        wetTop = rects[rect + DAB_RECT.READ_TOP]
+        wetWidth = rects[rect + DAB_RECT.READ_WIDTH]
+        wetHeight = rects[rect + DAB_RECT.READ_HEIGHT]
+        keepTiles(encoder, i)
+        if (!directRead)
+          encoder.copyTextureToTexture(
+            {
+              texture: stroke.target.texture,
+              origin: { x: wetLeft, y: wetTop },
+            },
+            { texture: carry },
+            [wetWidth, wetHeight]
+          )
+      } else {
+        keepTiles(encoder, i)
+        stroke.source?.copy(
+          encoder,
+          rects[rect + DAB_RECT.READ_LEFT],
+          rects[rect + DAB_RECT.READ_TOP],
+          rects[rect + DAB_RECT.READ_WIDTH],
+          rects[rect + DAB_RECT.READ_HEIGHT],
+          carry
+        )
+        encoder.copyTextureToTexture(
+          {
+            texture: stroke.target.texture,
+            origin: {
+              x: rects[rect + DAB_RECT.READ_LEFT],
+              y: rects[rect + DAB_RECT.READ_TOP],
+            },
           },
-        },
-        { texture: stroke.source ? destinationCarry : carry },
-        {
-          width: rects[rect + DAB_RECT.READ_WIDTH],
-          height: rects[rect + DAB_RECT.READ_HEIGHT],
-        }
-      )
+          { texture: stroke.source ? destinationCarry : carry },
+          {
+            width: rects[rect + DAB_RECT.READ_WIDTH],
+            height: rects[rect + DAB_RECT.READ_HEIGHT],
+          }
+        )
+      }
+      if (aligned) {
+        prepareWetDab(i, directRead)
+        const pickup = encoder.beginComputePass({ label: "wet dab" })
+        pickup.setPipeline(wetDabPipeline)
+        pickup.setBindGroup(
+          0,
+          wetDabBindings[directRead ? 1 : 0][targetLevel][reservoirIndex],
+          runOffsets,
+          i,
+          1
+        )
+        if (
+          rects[rect + DAB_RECT.WRITE_WIDTH] > 0 &&
+          rects[rect + DAB_RECT.WRITE_HEIGHT] > 0
+        )
+          pickup.dispatchWorkgroups(
+            Math.ceil(rects[rect + DAB_RECT.WRITE_WIDTH] / 16),
+            Math.ceil(rects[rect + DAB_RECT.WRITE_HEIGHT] / 8)
+          )
+        pickup.setPipeline(wetPickupPipeline)
+        pickup.dispatchWorkgroups(
+          Math.ceil(reservoirExtent / 16),
+          Math.ceil(reservoirExtent / 8)
+        )
+        pickup.end()
+        anyWetCompute = true
+      }
       if (
+        !aligned &&
         rects[rect + DAB_RECT.WRITE_WIDTH] > 0 &&
         rects[rect + DAB_RECT.WRITE_HEIGHT] > 0
       ) {
         const pass = encoder.beginRenderPass({
           colorAttachments: [
-            { view: stroke.target.view, loadOp: "load", storeOp: "store" },
+            {
+              view: localTarget
+                ? destinationViews[targetLevel]
+                : stroke.target.view,
+              loadOp: "load",
+              storeOp: "store",
+            },
           ],
         })
         pass.setPipeline(pipeline)
@@ -706,9 +910,10 @@ export function createDirectStroke(
           stroke.lays ? reservoirBindings[reservoirIndex].layer : bindGroup
         )
         pass.setVertexBuffer(0, instances)
+        if (localTarget) pass.setViewport(0, 0, wetWidth, wetHeight, 0, 1)
         pass.setScissorRect(
-          rects[rect + DAB_RECT.WRITE_LEFT],
-          rects[rect + DAB_RECT.WRITE_TOP],
+          rects[rect + DAB_RECT.WRITE_LEFT] - (localTarget ? wetLeft : 0),
+          rects[rect + DAB_RECT.WRITE_TOP] - (localTarget ? wetTop : 0),
           rects[rect + DAB_RECT.WRITE_WIDTH],
           rects[rect + DAB_RECT.WRITE_HEIGHT]
         )
@@ -720,26 +925,48 @@ export function createDirectStroke(
         drawnDabs[i * SMUDGE_INSTANCE_STRIDE + SMUDGE.STRENGTH] > 0
       ) {
         const next = 1 - reservoirIndex
-        const pickup = encoder.beginRenderPass({
-          colorAttachments: [
-            {
-              view: reservoirViews[next],
-              loadOp: "load",
-              storeOp: "store",
-            },
-          ],
-        })
-        pickup.setViewport(0, 0, reservoirExtent, reservoirExtent, 0, 1)
-        pickup.setPipeline(reservoirPipeline)
-        pickup.setBindGroup(0, reservoirBindings[reservoirIndex].pickup)
-        pickup.setVertexBuffer(0, instances)
-        pickup.draw(6, 1, 0, i)
-        pickup.end()
+        if (!aligned) {
+          const pickup = encoder.beginRenderPass({
+            colorAttachments: [
+              {
+                view: reservoirViews[next],
+                loadOp: "load",
+                storeOp: "store",
+              },
+            ],
+          })
+          pickup.setViewport(0, 0, reservoirExtent, reservoirExtent, 0, 1)
+          pickup.setPipeline(reservoirPipeline)
+          pickup.setBindGroup(0, reservoirBindings[reservoirIndex].pickup)
+          pickup.setVertexBuffer(0, instances)
+          pickup.draw(6, 1, 0, i)
+          pickup.end()
+        }
         dirty = true
         reservoirIndex = next
       }
+      if (
+        localTarget &&
+        rects[rect + DAB_RECT.WRITE_WIDTH] > 0 &&
+        rects[rect + DAB_RECT.WRITE_HEIGHT] > 0
+      ) {
+        const x = rects[rect + DAB_RECT.WRITE_LEFT]
+        const y = rects[rect + DAB_RECT.WRITE_TOP]
+        encoder.copyTextureToTexture(
+          {
+            texture: destinationCarry,
+            mipLevel: targetLevel,
+            origin: { x: x - wetLeft, y: y - wetTop },
+          },
+          { texture: stroke.target.texture, origin: { x, y } },
+          [
+            rects[rect + DAB_RECT.WRITE_WIDTH],
+            rects[rect + DAB_RECT.WRITE_HEIGHT],
+          ]
+        )
+      }
     }
-    if (anyRun)
+    if (anyRun || anyWetCompute)
       device.queue.writeBuffer(
         runUniform,
         0,
@@ -754,6 +981,32 @@ export function createDirectStroke(
    * Before a dab writes: any tile under it that no dab has yet touched is
    * kept as it is.
    */
+  function prepareWetDab(dab: number, directRead: boolean) {
+    const instance = dab * SMUDGE_INSTANCE_STRIDE
+    const rect = dab * DAB_RECT_STRIDE
+    runParams.set(
+      [
+        drawnDabs[instance + SMUDGE.CENTER_X],
+        drawnDabs[instance + SMUDGE.CENTER_Y],
+        drawnDabs[instance + SMUDGE.RADIUS],
+        drawnDabs[instance + SMUDGE.STRENGTH],
+        drawnDabs[instance + SMUDGE.ORIGIN_X],
+        drawnDabs[instance + SMUDGE.ORIGIN_Y],
+        0,
+        drawnDabs[instance + SMUDGE.FLOW],
+        rects[rect + DAB_RECT.WRITE_WIDTH],
+        rects[rect + DAB_RECT.WRITE_HEIGHT],
+        reservoirExtent,
+        directRead ? 1 : 0,
+        rects[rect + DAB_RECT.WRITE_LEFT] - rects[rect + DAB_RECT.READ_LEFT],
+        rects[rect + DAB_RECT.WRITE_TOP] - rects[rect + DAB_RECT.READ_TOP],
+        0,
+        0,
+      ],
+      dab * RUN_DAB_FLOATS
+    )
+  }
+
   function keepTiles(encoder: GPUCommandEncoder, dab: number) {
     const stroke = session!
     const rect = dab * DAB_RECT_STRIDE
@@ -765,14 +1018,30 @@ export function createDirectStroke(
     const tilesAcross = Math.ceil(context.size().width / TILE_SIZE)
     const lastColumn = (left + width - 1) >> TILE_SHIFT
     const lastRow = (top + height - 1) >> TILE_SHIFT
-    for (let row = top >> TILE_SHIFT; row <= lastRow; row++)
-      for (let column = left >> TILE_SHIFT; column <= lastColumn; column++) {
+    for (let row = top >> TILE_SHIFT; row <= lastRow; row++) {
+      for (let column = left >> TILE_SHIFT; column <= lastColumn;) {
         const tile = row * tilesAcross + column
-        if (stroke.kept.has(tile)) continue
+        if (stroke.kept.has(tile)) {
+          column++
+          continue
+        }
         const slot = stroke.kept.size
-        stroke.kept.set(tile, slot)
-        copyBackupTile(encoder, stroke.target, tile, slot, "keep")
+        let count = 0
+        // One copy for adjacent new tiles in both the document row and the
+        // backup row. Never cross a kept tile, backup row or document edge.
+        const room = BACKUP_PAGE_TILES - (slot % BACKUP_PAGE_TILES)
+        while (
+          column <= lastColumn &&
+          count < room &&
+          !stroke.kept.has(row * tilesAcross + column)
+        ) {
+          stroke.kept.set(row * tilesAcross + column, slot + count)
+          column++
+          count++
+        }
+        copyBackupTile(encoder, stroke.target, tile, slot, "keep", count)
       }
+    }
   }
 
   /**
@@ -864,24 +1133,14 @@ export function createDirectStroke(
     surface: Surface,
     tile: number,
     slot: number,
-    direction: "keep" | "restore"
+    direction: "keep" | "restore",
+    count = 1
   ) {
     const { width, height } = context.size()
     const page = Math.floor(slot / BACKUP_PAGE_SLOTS)
     // The one allocation a stroke may make as it goes, once in as many tiles
     // as a page holds: the alternative is paying for the document at pen-down.
-    while (backupPages.length <= page)
-      backupPages.push(
-        device.createTexture({
-          label: "smudge backup",
-          size: {
-            width: BACKUP_PAGE_TILES * TILE_SIZE,
-            height: BACKUP_PAGE_TILES * TILE_SIZE,
-          },
-          format: LAYER_FORMAT,
-          usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
-        })
-      )
+    while (backupPages.length <= page) backupPages.push(createBackupPage())
     const tilesAcross = Math.ceil(width / TILE_SIZE)
     const x = (tile % tilesAcross) * TILE_SIZE
     const y = Math.floor(tile / tilesAcross) * TILE_SIZE
@@ -898,10 +1157,19 @@ export function createDirectStroke(
       direction === "keep" ? inSurface : inBackup,
       direction === "keep" ? inBackup : inSurface,
       {
-        width: Math.min(TILE_SIZE, width - x),
+        width: Math.min(TILE_SIZE * count, width - x),
         height: Math.min(TILE_SIZE, height - y),
       }
     )
+  }
+
+  function createBackupPage() {
+    return device.createTexture({
+      label: "smudge backup",
+      size: [BACKUP_PAGE_TILES * TILE_SIZE, BACKUP_PAGE_TILES * TILE_SIZE],
+      format: LAYER_FORMAT,
+      usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+    })
   }
 
   /** Gives back the pages a long stroke needed, past those kept. */
@@ -1057,7 +1325,7 @@ export function createDirectStroke(
       samplingPrepared = true
     },
     warm(encoder) {
-      for (const view of reservoirViews)
+      for (const view of [...destinationViews, ...reservoirViews])
         encoder
           .beginRenderPass({
             colorAttachments: [{ view, loadOp: "load", storeOp: "store" }],

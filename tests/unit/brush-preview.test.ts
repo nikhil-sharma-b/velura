@@ -142,8 +142,8 @@ describe("the brush editor's preview stroke", () => {
     expect(previewStroke(jittery, BOX).tinted).toBe(true)
     const wet = previewStroke({ ...jittery, rendering: wetRendering }, BOX)
     expect(wet.tinted).toBe(false)
-    // Thrown off the path, three to a step, where the same brush with its
-    // dabs stacked keeps them on it (live brushes 12).
+    // Thrown off the path, one at a time along the step (live brushes 29),
+    // where the same brush with nothing to throw them by keeps them on it.
     const stacked = previewStroke(
       {
         ...jittery,
@@ -153,7 +153,9 @@ describe("the brush editor's preview stroke", () => {
       BOX
     )
     expect(wet.dabs.length).toBe(stacked.dabs.length)
-    expect(wet.dabs.length % 3).toBe(0)
+    // Each from its own place on the path, and no three from one.
+    for (let i = 1; i < stacked.dabs.length; i++)
+      expect(stacked.dabs[i].x).toBeGreaterThan(stacked.dabs[i - 1].x)
     expect(
       wet.dabs.some(
         (dab, i) =>

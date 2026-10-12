@@ -43,6 +43,19 @@ describe("scatter placement", () => {
     expect(runs.map((run) => run.length)).toEqual([3, 3, 3, 3])
   })
 
+  test("a step's dabs placed one at a time are thrown as the step's would be", () => {
+    const scatter: BrushScatter = { amount: 2, count: 3, axes: "both" }
+    const placer = createScatterPlacer()
+    placer.begin(7)
+    const out = new Float32Array(MAX_SCATTER_COUNT * 2)
+    const single: [number, number][] = []
+    for (let dab = 0; dab < 12; dab++) {
+      expect(placer.place(scatter, 1, RADIUS, 0, out, 1)).toBe(1)
+      single.push([out[0], out[1]])
+    }
+    expect(single).toEqual(offsets(scatter, { seed: 7, dabs: 4 }).flat())
+  })
+
   test("the same seed places the same stroke; another seed does not", () => {
     const scatter: BrushScatter = { amount: 2, count: 2, axes: "both" }
     expect(offsets(scatter, { seed: 7 })).toEqual(offsets(scatter, { seed: 7 }))
