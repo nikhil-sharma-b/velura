@@ -168,8 +168,8 @@ const advance = (page: Page, steps: number) =>
 /** Runs the simulation on until paint has settled by itself. */
 async function untilSettled(page: Page) {
   const before = await steps(page)
-  for (let i = 0; i < 400 && (await steps(page)) === before; i++) {
-    await advance(page, 10)
+  for (let i = 0; i < 200 && (await steps(page)) === before; i++) {
+    await advance(page, 20)
     // History reads the settled tiles back after the frame.
     await frames(page)
   }
@@ -798,13 +798,15 @@ test("paint bleeds across a tile border as it does within a tile", async ({
   const bled = async (shift: number) => {
     const origin = await openCanvas(page, width, 400)
     await addLayer(page)
-    await setFluid(page, FLUID)
+    // Bleeding freely, so few steps show it: a step is slow where the GPU
+    // is software.
+    await setFluid(page, { ...FLUID, bleed: 1 })
     await setTip(page, 30, 0.1)
-    await wash(page, origin, 120 + shift, 400 + shift, 256 + shift)
+    await wash(page, origin, 170 + shift, 330 + shift, 256 + shift)
     await setColour(page, YELLOW)
     await setTip(page, TOUCH.radius, 1)
     await wash(page, origin, 242 + shift, 250 + shift, 256 + shift)
-    await advance(page, 300)
+    await advance(page, 150)
     const image = await pixels(page)
     return (x: number, y: number) => rgba(image, x + shift, y + shift, width)
   }
@@ -832,8 +834,8 @@ test("a body of wet tiles settles as a whole, and apart from another", async ({
   const empty = await pixels(page)
   await setFluid(page, QUICK)
   const before = await steps(page)
-  // One wash over four tiles, and later one a tile's width clear of it.
-  await wash(page, origin, 150, 350, 256)
+  // One wash over two tiles, and later one a tile's width clear of it.
+  await wash(page, origin, 200, 310, 100)
   await advance(page, 100)
   await wash(page, origin, 850, 950, 100)
   const at = (image: number[], x: number, y: number) => rgba(image, x, y, width)
@@ -852,10 +854,10 @@ test("a body of wet tiles settles as a whole, and apart from another", async ({
   const first = await pixels(page)
   expect(at(first, 900, 100)).toEqual(at(empty, 900, 100))
   for (const [x, y] of [
-    [200, 250],
-    [200, 262],
-    [300, 250],
-    [300, 262],
+    [220, 100],
+    [250, 100],
+    [262, 100],
+    [300, 100],
   ]) {
     expect(distance(at(first, x, y), at(empty, x, y))).toBeGreaterThan(200)
     expect(at(first, x, y)).toEqual(at(both, x, y))

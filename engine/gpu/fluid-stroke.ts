@@ -163,101 +163,115 @@ export function createFluidStroke(
   device: GPUDevice,
   context: FluidStrokeContext
 ): FluidStroke {
-  const add: GPUBlendState = {
-    color: { srcFactor: "one", dstFactor: "one" },
-    alpha: { srcFactor: "one", dstFactor: "one" },
-  }
-  const dabModule = device.createShaderModule({ code: fluidDabShader })
-  const dabPipeline = device.createRenderPipeline({
-    label: "fluid dabs",
-    layout: "auto",
-    vertex: {
-      module: dabModule,
-      entryPoint: "vertexMain",
-      buffers: [
-        {
-          arrayStride: INSTANCE_STRIDE * 4,
-          stepMode: "instance",
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: "float32x2" },
-            { shaderLocation: 1, offset: 8, format: "float32" },
-            { shaderLocation: 2, offset: 12, format: "float32" },
-            { shaderLocation: 3, offset: 16, format: "float32x4" },
-          ],
-        },
-      ],
-    },
-    fragment: {
-      module: dabModule,
-      entryPoint: "fragmentMain",
-      targets: [
-        { format: LAID_WATER_FORMAT, blend: add },
-        { format: LAYER_FORMAT, blend: add },
-      ],
-    },
-    primitive: { topology: "triangle-strip" },
-  })
-  const settleModule = device.createShaderModule({ code: fluidSettleShader })
-  const settlePipeline = device.createRenderPipeline({
-    label: "fluid settle",
-    layout: "auto",
-    vertex: { module: settleModule, entryPoint: "vertexMain" },
-    fragment: {
-      module: settleModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format: LAYER_FORMAT }],
-    },
-    primitive: { topology: "triangle-list" },
-  })
-
-  // One layout for the step and the pour, so one binding serves both; each
-  // leaves some of it unread.
-  const read = (binding: number): GPUBindGroupLayoutEntry => ({
-    binding,
-    visibility: GPUShaderStage.COMPUTE,
-    texture: {},
-  })
-  const write = (binding: number): GPUBindGroupLayoutEntry => ({
-    binding,
-    visibility: GPUShaderStage.COMPUTE,
-    storageTexture: { format: LAYER_FORMAT },
-  })
-  const simLayout = device.createBindGroupLayout({
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {} },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.COMPUTE,
-        texture: { sampleType: "uint" },
-      },
-      read(2),
-      read(3),
-      read(4),
-      write(5),
-      write(6),
-      write(7),
-      read(8),
-      read(9),
-    ],
-  })
-  const simModule = device.createShaderModule({ code: fluidSimShader })
-  const simPipeline = (entryPoint: string) =>
-    device.createComputePipeline({
-      label: `fluid ${entryPoint}`,
-      layout: device.createPipelineLayout({ bindGroupLayouts: [simLayout] }),
-      compute: { module: simModule, entryPoint },
-    })
-  const stepPipeline = simPipeline("stepMain")
-  const pourPipeline = simPipeline("pourMain")
-
   const uniform = device.createBuffer({
     size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
-  const dabBinding = device.createBindGroup({
-    layout: dabPipeline.getBindGroupLayout(0),
-    entries: [{ binding: 0, resource: { buffer: uniform } }],
-  })
+  /**
+   * The stroke's pipelines, compiled when a brush is first made fluid and
+   * not with the renderer: a session that never paints fluid pays nothing
+   * for them.
+   */
+  function compile() {
+    const add: GPUBlendState = {
+      color: { srcFactor: "one", dstFactor: "one" },
+      alpha: { srcFactor: "one", dstFactor: "one" },
+    }
+    const dabModule = device.createShaderModule({ code: fluidDabShader })
+    const dabPipeline = device.createRenderPipeline({
+      label: "fluid dabs",
+      layout: "auto",
+      vertex: {
+        module: dabModule,
+        entryPoint: "vertexMain",
+        buffers: [
+          {
+            arrayStride: INSTANCE_STRIDE * 4,
+            stepMode: "instance",
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: "float32x2" },
+              { shaderLocation: 1, offset: 8, format: "float32" },
+              { shaderLocation: 2, offset: 12, format: "float32" },
+              { shaderLocation: 3, offset: 16, format: "float32x4" },
+            ],
+          },
+        ],
+      },
+      fragment: {
+        module: dabModule,
+        entryPoint: "fragmentMain",
+        targets: [
+          { format: LAID_WATER_FORMAT, blend: add },
+          { format: LAYER_FORMAT, blend: add },
+        ],
+      },
+      primitive: { topology: "triangle-strip" },
+    })
+    const settleModule = device.createShaderModule({ code: fluidSettleShader })
+    const settlePipeline = device.createRenderPipeline({
+      label: "fluid settle",
+      layout: "auto",
+      vertex: { module: settleModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: settleModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: LAYER_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    })
+
+    // One layout for the step and the pour, so one binding serves both; each
+    // leaves some of it unread.
+    const read = (binding: number): GPUBindGroupLayoutEntry => ({
+      binding,
+      visibility: GPUShaderStage.COMPUTE,
+      texture: {},
+    })
+    const write = (binding: number): GPUBindGroupLayoutEntry => ({
+      binding,
+      visibility: GPUShaderStage.COMPUTE,
+      storageTexture: { format: LAYER_FORMAT },
+    })
+    const simLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {} },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "uint" },
+        },
+        read(2),
+        read(3),
+        read(4),
+        write(5),
+        write(6),
+        write(7),
+        read(8),
+        read(9),
+      ],
+    })
+    const simModule = device.createShaderModule({ code: fluidSimShader })
+    const simPipeline = (entryPoint: string) =>
+      device.createComputePipeline({
+        label: `fluid ${entryPoint}`,
+        layout: device.createPipelineLayout({ bindGroupLayouts: [simLayout] }),
+        compute: { module: simModule, entryPoint },
+      })
+    const dabBinding = device.createBindGroup({
+      layout: dabPipeline.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: uniform } }],
+    })
+    return {
+      dab: dabPipeline,
+      dabBinding,
+      settle: settlePipeline,
+      simLayout,
+      step: simPipeline("stepMain"),
+      pour: simPipeline("pourMain"),
+    }
+  }
+  let pipelines: ReturnType<typeof compile> | undefined
+
   const instances = new Float32Array(MAX_INSTANCES_PER_DRAW * INSTANCE_STRIDE)
   const instanceBuffer = device.createBuffer({
     size: instances.byteLength,
@@ -352,6 +366,7 @@ export function createFluidStroke(
     const { width, height } = context.size()
     const columns = Math.ceil(width / TILE_SIZE)
     const rows = Math.ceil(height / TILE_SIZE)
+    pipelines ??= compile()
     if (!fields) {
       // A step writes a copy whole, and a freed slot is copied over.
       const simulated =
@@ -436,7 +451,7 @@ export function createFluidStroke(
     const from = fields!.copies[current]
     const to = fields!.copies[1 - current]
     simBindings[current] ??= device.createBindGroup({
-      layout: simLayout,
+      layout: pipelines!.simLayout,
       entries: [
         { binding: 0, resource: { buffer: simUniform } },
         { binding: 1, resource: slots!.view },
@@ -514,12 +529,12 @@ export function createFluidStroke(
         })
       ),
     })
-    pass.setPipeline(dabPipeline)
-    pass.setBindGroup(0, dabBinding)
+    pass.setPipeline(pipelines!.dab)
+    pass.setBindGroup(0, pipelines!.dabBinding)
     pass.setVertexBuffer(0, instanceBuffer)
     pass.draw(4, count)
     pass.end()
-    simulate(encoder, pourPipeline)
+    simulate(encoder, pipelines!.pour)
     device.queue.submit([encoder.finish()])
   }
 
@@ -536,7 +551,7 @@ export function createFluidStroke(
     const canvas = { x: 0, y: 0, width, height }
     const views = fields!.copies[current]
     settleBindings[current] ??= device.createBindGroup({
-      layout: settlePipeline.getBindGroupLayout(0),
+      layout: pipelines!.settle.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: fields!.under.createView() },
         { binding: 1, resource: slots!.view },
@@ -574,7 +589,7 @@ export function createFluidStroke(
           { view: target.view, loadOp: "load", storeOp: "store" },
         ],
       })
-      pass.setPipeline(settlePipeline)
+      pass.setPipeline(pipelines!.settle)
       pass.setBindGroup(0, settleBindings[current])
       pass.setScissorRect(visible.x, visible.y, visible.width, visible.height)
       pass.draw(3)
@@ -743,7 +758,7 @@ export function createFluidStroke(
       let stepped = false
       for (let i = 0; i < steps && tiles.count() > 0; i++) {
         const encoder = device.createCommandEncoder()
-        simulate(encoder, stepPipeline)
+        simulate(encoder, pipelines!.step)
         device.queue.submit([encoder.finish()])
         stepped = true
         clock++
