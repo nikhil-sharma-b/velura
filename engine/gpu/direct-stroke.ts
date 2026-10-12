@@ -16,7 +16,7 @@ import {
   SMUDGE_INSTANCE_STRIDE,
   SMUDGE_STRIDE,
 } from "./smudge-dab"
-import type { StrokeRenderer } from "./stroke-renderer"
+import type { StrokeMark, StrokeRenderer } from "./stroke-renderer"
 import { LAYER_FORMAT, type Surface } from "./surface"
 
 /** A pixel's tile is its coordinate shifted down by this. */
@@ -1177,7 +1177,7 @@ export function createDirectStroke(
     while (backupPages.length > kept) backupPages.pop()!.destroy()
   }
 
-  function end(keep: boolean): PixelRect | null {
+  function end(keep: boolean): StrokeMark | null {
     if (!session) return null
     const {
       target,
@@ -1225,7 +1225,17 @@ export function createDirectStroke(
       target.empty = wasEmpty
     }
     trimBackup()
-    return keep ? region : null
+    if (!keep || !region) return null
+    // The tiles kept for a cancel are the tiles a dab wrote to, which is
+    // what history has to read back (live brushes 30).
+    const tilesAcross = Math.ceil(context.size().width / TILE_SIZE)
+    const tiles = [...kept.keys()]
+      .sort((a, b) => a - b)
+      .map((tile) => ({
+        x: tile % tilesAcross,
+        y: Math.floor(tile / tilesAcross),
+      }))
+    return { region, tiles }
   }
 
   return {

@@ -58,6 +58,7 @@ import {
 import { createBufferedStroke, type StrokeMode } from "./buffered-stroke"
 import { createDirectStroke, type FrozenArtwork } from "./direct-stroke"
 import { createFreezeLedger, FREEZE_CHUNK } from "./freeze-ledger"
+import type { StrokeMark } from "./stroke-renderer"
 import { LAYER_FORMAT, type Surface } from "./surface"
 
 const BYTES_PER_TEXEL = TILE_CHANNELS * 2
@@ -243,10 +244,11 @@ export interface Renderer {
   setInk(color: LinearColor): void
   /**
    * Composites the stroke buffer into the active layer, once, at stroke
-   * opacity. Returns the region the mark landed in, which is the region undo
-   * has to remember, or null when the stroke drew nothing.
+   * opacity. Returns the region the mark landed in and the tiles of it its
+   * dabs drew into, which are what undo has to remember, or null when the
+   * stroke drew nothing.
    */
-  endStroke(): PixelRect | null
+  endStroke(): StrokeMark | null
   /**
    * Abandons the stroke in flight: the buffer is emptied and nothing is
    * composited. This is what a navigation gesture starting mid-mark needs —
@@ -403,10 +405,11 @@ export interface Renderer {
    */
   drawDirect(dabs: Float32Array, count: number): void
   /**
-   * Ends the direct stroke: kept, the surface holds the mark and the region
-   * it reached is returned; not kept, the surface holds what it did before.
+   * Ends the direct stroke: kept, the surface holds the mark, and the region
+   * it reached and the tiles its dabs wrote to are returned; not kept, the
+   * surface holds what it did before.
    */
-  endDirect(keep: boolean): PixelRect | null
+  endDirect(keep: boolean): StrokeMark | null
   /**
    * Draws what the selection covers of one surface into another, in
    * proportion to the coverage (11). Returns the region it wrote, or null

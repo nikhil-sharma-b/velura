@@ -102,7 +102,12 @@ type Pass = {
 }
 
 /** A pass with what is kept out of the recorded summary. */
-type Measured = Pass & { frames: FrameTiming[]; strokeStarts: number[] }
+type Measured = Pass & {
+  frames: FrameTiming[]
+  strokeStarts: number[]
+  readbackBytes: number
+  historySettledMs: number[]
+}
 
 type BenchRun = {
   version: 1
@@ -188,6 +193,8 @@ async function measure(
       }),
       frames: result.frames,
       strokeStarts: result.strokeStarts,
+      readbackBytes: result.readbackBytes,
+      historySettledMs: result.historySettledMs,
     }
   } finally {
     await browser.close()
@@ -556,7 +563,7 @@ async function unwaitedSweep(): Promise<void> {
   const paints = WET_PAINTS.filter(({ name }) => name.endsWith("scatter"))
   console.log(
     "\n                                    paced, pen-to-pixel in ms: history waited for             history not waited for" +
-      "\n  document  brush   paint         first frame (median / worst)   all (median / p95)   first frame (median / worst)   all (median / p95)   readbacks"
+      "\n  document  brush   paint         first frame (median / worst)   all (median / p95)   first frame (median / worst)   all (median / p95)   readbacks   largest readback   pen-up to history settled (median / worst)"
   )
   for (const size of SMUDGE_SIZES)
     for (const diameter of WET_DIAMETERS)
@@ -570,10 +577,14 @@ async function unwaitedSweep(): Promise<void> {
         }
         const cells: string[] = []
         let readbacks = 0
+        let readbackBytes = 0
+        let settled: number[] = []
         for (const unwaited of [false, true]) {
           const held = await measure(paced, { ...workload, unwaited })
           const opening = openingFrames(held)
           readbacks += held.readbacks
+          readbackBytes = Math.max(readbackBytes, held.readbackBytes)
+          if (!unwaited) settled = held.historySettledMs
           cells.push(
             `${fixed(middle(opening)).padStart(12)} / ${fixed(Math.max(...opening)).padEnd(13)}   ` +
               `${fixed(held.report.latencyMs.median).padStart(7)} / ${fixed(held.report.latencyMs.p95).padEnd(8)}`
@@ -581,7 +592,9 @@ async function unwaitedSweep(): Promise<void> {
         }
         console.log(
           `  ${`${size}²`.padEnd(8)}  ${`${diameter} px`.padEnd(6)}  ${name.padEnd(12)}  ` +
-            `${cells.join("   ")}   ${String(readbacks).padStart(9)}`
+            `${cells.join("   ")}   ${String(readbacks).padStart(9)}   ` +
+            `${`${fixed(readbackBytes / 2 ** 20)} MiB`.padStart(16)}   ` +
+            `${fixed(middle(settled), 0).padStart(12)} / ${fixed(Math.max(...settled), 0)} ms`
         )
       }
   console.log()

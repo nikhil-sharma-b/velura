@@ -110,6 +110,67 @@ const noStructure = () => {
   throw new Error("This step should not have restored a structure.")
 }
 
+describe("a stroke that says which tiles it drew into", () => {
+  /** The fixture, with every tile asked of the bridge written down. */
+  function watched() {
+    const fixture = setup()
+    const asked: TileCoord[][] = []
+    const { readTiles } = fixture.bridge
+    fixture.bridge.readTiles = (surfaceId, coords) => {
+      asked.push([...coords])
+      return readTiles(surfaceId, coords)
+    }
+    return { fixture, asked }
+  }
+  const BOX = { x: 0, y: 0, width: TILE_SIZE * 3, height: TILE_SIZE * 3 }
+
+  test("reads back those tiles and no others of its bounding box", async () => {
+    const { fixture, asked } = watched()
+    const drawn = [
+      { x: 0, y: 0 },
+      { x: 2, y: 2 },
+    ]
+    for (const coord of drawn) fixture.paint("layer", coord, 7)
+    fixture.history.recordStroke("layer", BOX, drawn)
+    await fixture.history.settle()
+    expect(asked).toEqual([drawn])
+    expect(fixture.history.occupiedTiles("layer")).toEqual(drawn)
+  })
+
+  test("is taken back and put back as any stroke is", async () => {
+    const { fixture } = watched()
+    const drawn = [
+      { x: 0, y: 0 },
+      { x: 2, y: 2 },
+    ]
+    for (const coord of drawn) fixture.paint("layer", coord, 7)
+    fixture.history.recordStroke("layer", BOX, drawn)
+    await fixture.history.settle()
+    await fixture.history.undo(noStructure)
+    for (const coord of drawn) expect(fixture.read("layer", coord)).toBeNull()
+    await fixture.history.redo(noStructure)
+    for (const coord of drawn)
+      expect(fixture.read("layer", coord)).toEqual(
+        new Uint16Array(TILE_VALUES).fill(7)
+      )
+  })
+
+  test("with none named, the stroke asks for nothing and is no step", async () => {
+    const { fixture, asked } = watched()
+    fixture.history.recordStroke("layer", BOX, [])
+    await fixture.history.settle()
+    expect(asked).toEqual([])
+    expect(fixture.history.canUndo()).toBe(false)
+  })
+
+  test("without the tiles, the region's are read as before", async () => {
+    const { fixture, asked } = watched()
+    fixture.history.recordStroke("layer", wholeTile({ x: 1, y: 0 }))
+    await fixture.history.settle()
+    expect(asked).toEqual([[{ x: 1, y: 0 }]])
+  })
+})
+
 describe("which tiles a surface still holds", () => {
   test("follows painting, erasing back to nothing, and undo", async () => {
     const fixture = setup()

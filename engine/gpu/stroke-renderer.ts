@@ -1,4 +1,11 @@
-import type { PixelRect } from "../doc/tile-grid"
+import type { PixelRect, TileCoord } from "../doc/tile-grid"
+
+/**
+ * What a kept stroke left: the box round the whole mark, and the tiles its
+ * dabs drew into, along the rows. A scattering stroke's box is mostly tiles
+ * no dab reached, so history is given the tiles (live brushes 30).
+ */
+export type StrokeMark = { region: PixelRect; tiles: TileCoord[] }
 
 /**
  * One way of turning a stroke's dabs into pixels (§6.2). A stroke begins,
@@ -25,9 +32,9 @@ export interface StrokeRenderer<Opening> {
   /** Draws `count` dabs of the stroke in flight. */
   draw(dabs: Float32Array, count: number): void
   /**
-   * Ends the stroke. Kept, the surface holds the mark and the region it
-   * reached is returned, or null when it drew nothing; cancelled, the
-   * surface holds what it did before the stroke and null is returned.
+   * Ends the stroke. Kept, the surface holds the mark and what it reached
+   * is returned, or null when it drew nothing; cancelled, the surface holds
+   * what it did before the stroke and null is returned.
    */
-  end(keep: boolean): PixelRect | null
+  end(keep: boolean): StrokeMark | null
 }

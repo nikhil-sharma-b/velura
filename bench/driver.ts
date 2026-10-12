@@ -46,6 +46,18 @@ export type RunResult = {
    * page count for smudge and wet brushes, and never grows with the dabs.
    */
   allocations: number
+  /**
+   * The largest buffer mapped for reading over the run, in bytes: history's
+   * readback of a stroke, which is as large as the tiles it asks for (live
+   * brushes 30).
+   */
+  readbackBytes: number
+  /**
+   * Milliseconds from each pen-up to history having put that stroke away,
+   * where the pen waits for it: unwaited, the stroke after is being recorded
+   * by then and the two are not told apart, so there are none.
+   */
+  historySettledMs: number[]
   /** Wall-clock milliseconds the pen was down. */
   elapsedMs: number
   /**
@@ -83,6 +95,7 @@ function watchInteractivePath(): {
   count: () => number
   total: () => number
   allocations: () => number
+  readbackBytes: () => number
   /** Called as the pen goes down and comes up: what makes the path the interactive one. */
   setPenDown: (down: boolean) => void
   restore: () => void
@@ -90,6 +103,7 @@ function watchInteractivePath(): {
   let count = 0
   let total = 0
   let allocations = 0
+  let readbackBytes = 0
   let penDown = false
   const buffer = GPUBuffer.prototype
   const encoder = GPUCommandEncoder.prototype
@@ -118,12 +132,15 @@ function watchInteractivePath(): {
   }
   device.createBuffer = function (...args: Parameters<typeof createBuffer>) {
     if (penDown) allocations++
+    if (args[0].usage & GPUBufferUsage.MAP_READ)
+      readbackBytes = Math.max(readbackBytes, args[0].size)
     return createBuffer.apply(this, args)
   }
   return {
     count: () => count,
     total: () => total,
     allocations: () => allocations,
+    readbackBytes: () => readbackBytes,
     setPenDown(down) {
       penDown = down
     },
@@ -485,6 +502,7 @@ export async function runBenchmark(
   const pump = createPump()
   let dispatched = 0
   const strokeStarts: number[] = []
+  const settling: Promise<number>[] = []
   const started = performance.now()
 
   try {
@@ -523,10 +541,14 @@ export async function runBenchmark(
       })
       dispatch("pointerup", stroke.samples[stroke.samples.length - 1])
       watch.setPenDown(false)
+      const penUp = performance.now()
       // Two frames: one flushes the tail and composites the stroke, and the
       // loop has stopped by the end of the next.
       await nextFrame()
       await nextFrame()
+      // The stroke is with history by now, so this waits for it and no less.
+      if (!workload.options.unwaited)
+        settling.push(engine.save().then(() => performance.now() - penUp))
       await new Promise((resolve) => setTimeout(resolve, BETWEEN_STROKES))
     }
   } finally {
@@ -539,6 +561,7 @@ export async function runBenchmark(
   // The last frame's timing is resolved on a GPU fence, so it may land a task
   // after the stroke ended.
   await nextFrame()
+  const historySettledMs = await Promise.all(settling)
   const painted = engine.getSnapshot()
   return {
     frames,
@@ -551,6 +574,8 @@ export async function runBenchmark(
     readbacks: watch.count(),
     readbacksTotal: watch.total(),
     allocations: watch.allocations(),
+    readbackBytes: watch.readbackBytes(),
+    historySettledMs,
     elapsedMs: performance.now() - started,
     strokeStarts,
   }
