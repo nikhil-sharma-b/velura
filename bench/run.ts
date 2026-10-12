@@ -502,6 +502,7 @@ const WET_PAINTS = process.argv.includes("--blender")
  */
 async function wetSweep(): Promise<void> {
   if (process.argv.includes("--unwaited")) return unwaitedSweep()
+  if (process.argv.includes("--pause")) return pauseSweep()
   const paced = PASSES.find((entry) => entry.name === "paced")!
   const unpaced = PASSES.find((entry) => entry.name === "unpaced")!
   // The acceptance comparison for the first sampling stroke (live brushes
@@ -547,6 +548,41 @@ async function wetSweep(): Promise<void> {
         )
         if (readbacks > 0) process.exitCode = 1
       }
+  console.log()
+}
+
+/**
+ * What a pause before pen-down costs the frame a stroke opens in (live
+ * brushes 31): the 512 px rows at 8192², paced, each with no wait but
+ * history's and again with `--pause`'s milliseconds more, two seconds where
+ * none is given. Every stroke's opening frame is printed, since whether one
+ * misses the display's frame is in the worst of them and not the median.
+ */
+async function pauseSweep(): Promise<void> {
+  const paced = PASSES.find((entry) => entry.name === "paced")!
+  const given = Number(process.argv[process.argv.indexOf("--pause") + 1])
+  const pauseMs = Number.isFinite(given) && given > 0 ? given : 2000
+  console.log(
+    `\n  8192², 512 px, paced: pen-to-pixel of each stroke's first frame in ms, sorted` +
+      `\n  paint            pause      median / worst   each stroke`
+  )
+  for (const { name, ...paint } of WET_PAINTS)
+    for (const pause of [0, pauseMs]) {
+      const held = await measure(paced, {
+        ...BENCHMARK_WORKLOAD,
+        width: 8192,
+        height: 8192,
+        strokes: SWEEP_STROKES,
+        wet: { diameter: 512, ...paint },
+        ...(pause ? { pauseMs: pause } : {}),
+      })
+      const opening = openingFrames(held).sort((a, b) => a - b)
+      console.log(
+        `  ${name.padEnd(15)}  ${`${pause} ms`.padStart(7)}   ` +
+          `${fixed(middle(opening)).padStart(8)} / ${fixed(Math.max(...opening)).padEnd(6)}   ` +
+          opening.map((ms) => fixed(ms)).join("  ")
+      )
+    }
   console.log()
 }
 

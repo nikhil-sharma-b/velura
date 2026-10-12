@@ -512,6 +512,10 @@ export async function runBenchmark(
       // that prior mark's readback look like an interactive one. Unwaited,
       // it is one: the row is what history costs the stroke after it.
       if (dispatched > 0 && !workload.options.unwaited) await engine.save()
+      if (workload.options.pauseMs)
+        await new Promise((resolve) =>
+          setTimeout(resolve, workload.options.pauseMs)
+        )
       const [first] = stroke.samples
       watch.setPenDown(true)
       strokeStarts.push(frames.length)
