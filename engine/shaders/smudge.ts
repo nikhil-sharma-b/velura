@@ -154,7 +154,9 @@ fn tipCoverage(varyings: Varyings, local: vec2<f32>) -> f32 {
     disc = 1.0 - smoothstep(edge, 1.0, distance);
   }
   if (smudge.useTip > 0.0) {
-    return textureSampleLevel(tipTexture, tipSampler, local * 0.5 + 0.5, varyings.tipFrame, 0.0).r;
+    let tip = textureSampleLevel(tipTexture, tipSampler, local * 0.5 + 0.5, varyings.tipFrame, 0.0).r;
+    // Keep the run shader's blend arithmetic, including its rounding.
+    return mix(disc, tip, smudge.useTip);
   }
   return disc;
 }
