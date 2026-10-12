@@ -1265,7 +1265,8 @@ larger dab is still drawn by the render pass, so a large smudge and a small
 one now differ by that rounding, and a dab that grows past the limit in
 mid-stroke changes from one to the other. Giving the render pass the same
 worked-out position would close that, and would move every wet brush's
-pixels by the same rounding; it was not done here (live brushes 27).
+pixels by the same rounding; it was not done here, and live brushes 27,
+below, did it.
 
 **Blenders.** A blender's dabs drag as smudge's do and go the same way.
 Live brushes 23, above, gave a small blender smudge's spacing and recorded
@@ -1307,6 +1308,77 @@ spacing. The same Apple M4 smudge sweep, without browser-test load, measured:
 The 4 px row remains level with the default-size smudge. This validation
 preceded moving the unchanged compute shader body into a `.wgsl` file to
 follow D34; the arithmetic and workgroup size remain the same.
+
+## The run pass and the render pass are one smear (live brushes 27)
+
+Live brushes 22 left a small smudge and a large one differing by the
+rasteriser's rounding, and a few pixels by more with no account of why.
+
+**What moved them by more than a level.** The rasteriser snaps a quad's
+corners to its own grid before it draws, so what it interpolates across the
+quad is the position in a quad a fraction of a pixel away from the dab. On
+the suite's software rasteriser one hard-edged 16 px dab drawn each way
+disagreed over a pixel whose centre lay 0.01 px from the rim, and the render
+pass left out a pixel whose centre lay 0.01 px inside the quad's edge. Over most of a dab
+that is nothing. At the rim the default dab falls from covered to clear in
+one pixel, so a hundredth of a pixel of position is a level or more of
+coverage: of the 16 pixels one dab left different at 16 px, the 7 that
+differed by more than one level of 255 all lay between 0.95 and 0.98 of the
+radius, inside the ramp that starts at 0.94. Each dab reads what the one
+before wrote, so the smear carries those pixels along, which is the small
+clusters. Along the four legs, as the layer stores it, before this change:
+
+| dab | channels that differ, of 115,200 | by more than 1/255 | largest difference |
+|---|---:|---:|---:|
+| 16 px, rim of 1 px | 24,002 | 262 | 0.024 |
+| 16 px, rim of 12 px | 21,714 | 0 | 0.004 |
+| 16 px, hard edge | 21,941 | 620 | 0.80 |
+| 4 px, rim of 1 px | 7,233 | 137 | 0.029 |
+
+The softer the rim the smaller the difference, and with a hard edge a pixel
+is in the dab one way and out of it the other. (More channels differ here
+than in 22's table because these are the stored half floats, not the
+picture in 8 bits.)
+
+**The decision: the rounding is accepted, and the render pass is given the
+compute pass's position.** The position worked out from the pixel is the
+dab as the brush asked for it; the interpolated one was the dab moved to
+the rasteriser's grid. So `fragmentMain` now asks the same function the run
+does (`dabLocal`, `engine/shaders/dab-local.wgsl`), and the quad is drawn a
+pixel wide of the dab with the fragment saying where the dab ends, as the
+run's bounds test does, so the edge is not the rasteriser's either. A smudge
+of any size, a blender that grows past the run's limit in mid-stroke, and a
+wet brush are one arithmetic. Against what shipped before 22 a smudge has
+moved by the table above, and a wet brush's dabs now move by the same. The
+bar a smear is held to is that the two passes agree, not a golden image:
+`tests/browser/smudge-passes.spec.ts` draws the same dabs through each
+(discs of 2 to 40 px, a hard edge, a soft rim, a turned and narrowed tip,
+and a dab that grows past the run's limit along the stroke) and holds the
+layer to the same bits in every channel. A wet brush that lays paint has
+only the render pass, so nothing can be compared for it; it shares the
+fragment the test holds. The reservoir's
+pickup pass draws the tip itself, not a dab on the canvas, and still
+interpolates.
+
+**What it costs.** Every fragment of a dab the render pass draws now turns
+its own position back. `bun run bench/run.ts --wet`, Apple M4 (integrated),
+75 Hz display, Chrome/WebGPU, 2560 × 1440 window, six strokes, 2026-10-12,
+before and after on the same day, all frames median / p95:
+
+| document | brush | paint | before | after |
+|---|---|---|---:|---:|
+| 2048² | 64 px | Wet, pickup | 12.7 / 16.8 ms | 12.9 / 15.7 ms |
+| 2048² | 512 px | Wet, pickup | 12.5 / 15.4 ms | 12.4 / 14.6 ms |
+| 2048² | 512 px | Wet, densest | 13.1 / 17.4 ms | 12.7 / 15.3 ms |
+| 8192² | 64 px | Wet, pickup | 13.9 / 17.0 ms | 13.9 / 16.7 ms |
+| 8192² | 512 px | Wet, pickup | 13.2 / 16.2 ms | 13.4 / 15.6 ms |
+| 8192² | 512 px | Wet, densest | 14.4 / 17.7 ms | 14.3 / 17.5 ms |
+| 8192² | 512 px | Wet, scatter | 14.3 / 22.4 ms | 14.2 / 22.2 ms |
+
+Nothing that a run apart does not move. (A first run after the change read
+three 8192², 64 px rows at 14.7–15.5 / 22.2–24.7 ms with dab counts up to
+twice the row's own, while other work ran on the machine; the repeat above,
+with it idle, did not.)
 
 ## A stroke after a pause opened late: cold textures (live brushes 24)
 

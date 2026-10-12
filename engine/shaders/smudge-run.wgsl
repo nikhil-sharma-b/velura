@@ -1,7 +1,6 @@
 #include "run-workgroup"
 #include "pigment"
-
-const TAU = 6.283185307179586;
+#include "dab-local"
 
 struct RunDab {
   // Canvas size in pixels.
@@ -75,18 +74,10 @@ fn runMain(@builtin(global_invocation_id) id: vec3<u32>) {
   let here = textureLoad(state, vec2<i32>(id.xy), 0);
   // The pixel's centre on the canvas, as a fragment's position is.
   let position = dab.region + texel + vec2<f32>(0.5);
-  // The dab's quad, turned back: the rim is at length 1.
-  let offset = position - dab.center;
-  let turn = dab.angle * TAU;
-  let cosine = cos(turn);
-  let sine = sin(turn);
-  let local = vec2<f32>(
-    offset.x * cosine + offset.y * sine,
-    offset.y * cosine - offset.x * sine
-  ) / (dab.radius * vec2<f32>(1.0, dab.roundness));
+  let local = dabLocal(position, dab.center, dab.angle, dab.radius, dab.roundness);
   var result = here;
   if (all(position > dab.clip.xy) && all(position < dab.clip.zw)
-      && all(local >= vec2<f32>(-1.0)) && all(local < vec2<f32>(1.0))) {
+      && inDab(local)) {
     result = dragged(here, position, local);
   }
   // Every texel is written on, dragged or not: the next dab reads this one.
