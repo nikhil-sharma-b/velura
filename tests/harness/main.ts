@@ -1,3 +1,5 @@
+import { wetDepositionProbe } from "./wet-deposition-probe"
+import { wetDabProbe } from "./wet-dab-probe"
 import { mixPaintProbe } from "./pigment-probe"
 import { openBlendProbe, type BlendProbe } from "./blend-probe"
 import { smearProbe } from "./smudge-probe"
@@ -88,6 +90,8 @@ declare global {
     mixPaintProbe: typeof mixPaintProbe
     openBlendProbe: typeof openBlendProbe
     blendProbe: BlendProbe
+    wetDepositionProbe: typeof wetDepositionProbe
+    wetDabProbe: typeof wetDabProbe
     smearProbe: typeof smearProbe
     engine: Engine
     /** A fresh engine on the same canvas, optionally with a small history. */
@@ -365,6 +369,8 @@ window.createFakeCloud = (size) => {
 }
 
 window.openBlendProbe = openBlendProbe
+window.wetDepositionProbe = wetDepositionProbe
+window.wetDabProbe = wetDabProbe
 window.smearProbe = smearProbe
 window.encodePreview = encodePreview
 

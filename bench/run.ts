@@ -449,7 +449,9 @@ async function smudgeSweep(): Promise<void> {
 
 const WET_DIAMETERS = process.argv.includes("--blender")
   ? [4, 8, 16, 32]
-  : [64, 512]
+  : process.argv.includes("--large")
+    ? [512]
+    : [64, 512]
 const HEAVY_PICKUP = 0.8
 /**
  * The closest dabs a brush can be given: an imported preset's spacing goes
@@ -492,12 +494,17 @@ async function wetSweep(): Promise<void> {
   // 26), with the full sweep's workload and both of its passes unchanged.
   const openingOnly =
     process.argv.includes("--wet") && process.argv.includes("--opening")
-  const sizes = openingOnly ? [8192] : SMUDGE_SIZES
+  const sizes =
+    openingOnly || process.argv.includes("--large") ? [8192] : SMUDGE_SIZES
   const paints = openingOnly
     ? WET_PAINTS.filter(
         ({ name }) => name === "wet, pickup" || name === "wet, all layers"
       )
-    : WET_PAINTS
+    : process.argv.includes("--dab")
+      ? WET_PAINTS.filter(({ name }) =>
+          ["wet, pickup", "wet, densest", "wet, scatter"].includes(name)
+        )
+      : WET_PAINTS
   console.log(
     "\n                                    unpaced                    paced: pen-to-pixel in ms" +
       "\n  document  brush   paint         ms/frame   sustained fps   stroke's first frame (median / worst)   all frames (median / p95)   dabs    readbacks   allocations"
@@ -739,31 +746,47 @@ async function navigationSweep(): Promise<void> {
   }
 }
 
+async function wetDabDiagnostic(): Promise<void> {
+  const browser = await launch([])
+  try {
+    const page = await browser.newPage()
+    await page.goto(HARNESS)
+    await page.waitForFunction(() => !!window.wetDabProbe)
+    console.log(
+      JSON.stringify(await page.evaluate(() => window.wetDabProbe()), null, 2)
+    )
+  } finally {
+    await browser.close()
+  }
+}
+
 async function main(): Promise<void> {
   const workload = process.argv.includes("--colour")
     ? { ...BENCHMARK_WORKLOAD, colourDynamics: true }
     : BENCHMARK_WORKLOAD
   const stop = await serve()
-  const ladder = process.argv.includes("--sweep")
-    ? sweep
-    : process.argv.includes("--layers")
-      ? layerSweep
-      : process.argv.includes("--feather")
-        ? featherSweep
-        : process.argv.includes("--scatter")
-          ? scatterSweep
-          : process.argv.includes("--smudge")
-            ? smudgeSweep
-            : process.argv.includes("--wet") ||
-                process.argv.includes("--blender")
-              ? wetSweep
-              : process.argv.includes("--cold")
-                ? coldSweep
-                : process.argv.includes("--vector")
-                  ? vectorSweep
-                  : process.argv.includes("--navigate")
-                    ? navigationSweep
-                    : null
+  const ladder = process.argv.includes("--wet-dab")
+    ? wetDabDiagnostic
+    : process.argv.includes("--sweep")
+      ? sweep
+      : process.argv.includes("--layers")
+        ? layerSweep
+        : process.argv.includes("--feather")
+          ? featherSweep
+          : process.argv.includes("--scatter")
+            ? scatterSweep
+            : process.argv.includes("--smudge")
+              ? smudgeSweep
+              : process.argv.includes("--wet") ||
+                  process.argv.includes("--blender")
+                ? wetSweep
+                : process.argv.includes("--cold")
+                  ? coldSweep
+                  : process.argv.includes("--vector")
+                    ? vectorSweep
+                    : process.argv.includes("--navigate")
+                      ? navigationSweep
+                      : null
   if (ladder) {
     try {
       await ladder()

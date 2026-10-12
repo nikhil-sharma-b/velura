@@ -1611,3 +1611,61 @@ its pickup control; the 512 px row still costs 5.2 ms more than its pickup
 control. This removes the first-use spike, not every cost of sampling. The
 allocations include cancel pages and further frozen pages as the six strokes
 reach new chunks; preparation moves only the first four pages out of painting.
+
+
+## A large wet dab’s cost is deposition (live brushes 29)
+
+Apple M4, Chrome/WebGPU, 75 Hz display, 2026-10-12, over `954fb42`.
+The comparison uses warm textures. The old cold-texture one-variable table
+is not evidence for the cost of any of these passes.
+
+`bun run bench/run.ts --wet-dab` drives the renderer on an 8192² layer.
+Each submission draws sixteen 512 px dabs with flow 0.3 and pickup 0.8.
+Before each submission it restores the same painted ground and clean load,
+then waits for the queue; restoration, load clears, and first-use work are
+outside the measured interval. Four modes are interleaved for eighty rounds,
+with the first twenty rounds discarded. The time is CPU encoding through the
+GPU completion fence, divided by sixteen. Removing a render pass omits its
+whole submitted attachment load/store, not just its draw. The discarded pass
+is still encoded into an unsubmitted encoder, so its CPU encoding remains.
+The final control and ablations are reproducible with the same command.
+
+| submitted work omitted | before, median / p95 per dab | after, median / p95 per dab |
+|---|---:|---:|
+| Nothing | 0.625 / 0.713 ms | 0.169 / 0.200 ms |
+| Neighbourhood copy | 0.575 / 0.662 ms | 0.144 / 0.169 ms |
+| Layer deposition pass | 0.288 / 0.344 ms | 0.113 / 0.119 ms |
+| Reservoir pickup pass | 0.594 / 0.663 ms | 0.144 / 0.169 ms |
+
+Before the change the marginal savings are about 0.337 ms for deposition,
+0.050 ms for the copy and 0.031 ms for pickup. Deposition is the largest
+measured component. These deltas are not an additive GPU-pass decomposition:
+the fence also includes CPU work and copies of cancel tiles, and omitting
+work changes what later passes read. No rendering or benchmark readback is
+added to production painting. GPU timestamps were tried in a scratch probe,
+but summed pass intervals exceeded the entire submission fence on this
+adapter, so they were rejected rather than recorded as pass costs.
+
+The optimization changes where deposition renders. Consecutive dabs whose
+reads fit a 2048 px square share a bounded scratch run: one layer-to-scratch
+copy, each dab's pre-dab neighbourhood copied from scratch to carry, deposition
+into scratch and sequential reservoir pickup, then one copy back to the layer.
+The run's first copy seeds pixels outside the tip, so deposition keeps its
+original quad and discard. Dabs that overlap read earlier deposition correctly;
+independence is not required. The frame chooses the smallest scratch mip level
+that fits its runs. This probe's sixteen dabs share one 2048² attachment rather
+than sixteen 8192² layer attachments. The copy ablation removes the per-dab
+neighbourhood copy; the run's layer transfers remain in the final control.
+Sample-all-layers and smudge keep their previous paths. Independent scratch
+levels add 10.65625 MiB per renderer; no dab creates a texture or buffer.
+Scratch joins the existing warming passes.
+
+Rendering individual dabs into scratch first brought the control to 0.344 ms,
+but the full wet sweep still held the 8192² scattered row at 21.1 ms p95.
+Sharing the layer transfers is the retained change. The warm probe's control
+is now 0.169 ms, about 73% below its original 0.625 ms.
+
+The original 0.46 ms estimate and this 0.625 ms warm control are different
+workloads: this probe resets a coloured ground before every overlapping batch
+and includes encoding and cancel copies. The unchanged `--wet` workload is
+the acceptance measurement; the probe identifies which work to make cheaper.

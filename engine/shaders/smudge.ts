@@ -27,6 +27,8 @@ struct Smudge {
   grainScale: f32,
   grainDepth: f32,
   grainMovement: f32,
+  localTarget: f32,
+  targetSize: f32,
 }
 
 @group(0) @binding(0) var<uniform> smudge: Smudge;
@@ -126,7 +128,13 @@ fn vertexMain(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings
   // A rasteriser snaps a quad's corners to its own grid, so which pixels the
   // dab's edge takes is not left to it: the quad is drawn a pixel wide of
   // the dab and the fragment says where the dab ends.
-  return dabVertex(instance, index, 1.0);
+  var out = dabVertex(instance, index, 1.0);
+  if (smudge.localTarget > 0.0) {
+    let pixel = out.canvas - instance.origin;
+    out.position = vec4<f32>(pixel.x / smudge.targetSize * 2.0 - 1.0,
+      1.0 - pixel.y / smudge.targetSize * 2.0, 0.0, 1.0);
+  }
+  return out;
 }
 
 fn tipCoverage(varyings: Varyings, local: vec2<f32>) -> f32 {
@@ -143,16 +151,25 @@ fn tipCoverage(varyings: Varyings, local: vec2<f32>) -> f32 {
 
 @fragment
 fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
+  // The scratch target starts at the copied neighbourhood's integer origin.
+  // Recover document pixels before shape, selection, grain and paint reads.
+  let pixel = varyings.position.xy + select(vec2<f32>(0.0), varyings.origin, smudge.localTarget > 0.0);
+  // Paper uses implicit derivatives; sample it before any pixel returns.
+  var bite = 1.0;
+  if (smudge.wet > 0.0) {
+    bite = grainBite(grainTexture, grainSampler, pixel,
+      varyings.center, smudge.grainScale, smudge.grainMovement,
+      smudge.grainDepth * varyings.grainDepth);
+  }
   // As the run's compute pass has it, so the two are one smear.
-  let local = dabLocal(varyings.position.xy, varyings.center, varyings.angle,
+  let local = dabLocal(pixel, varyings.center, varyings.angle,
     varyings.radius, varyings.roundness);
+  let here = textureLoad(destination, vec2<i32>(pixel - varyings.origin), 0);
   if (!inDab(local)) { discard; }
   let shape = tipCoverage(varyings, local);
-
-  let here = textureLoad(destination, vec2<i32>(varyings.position.xy - varyings.origin), 0);
   // Between texels, since a dab's travel is rarely a whole pixel: without
   // the blend a slow drag would round to no travel and smear nothing.
-  let source = varyings.position.xy - varyings.travel;
+  let source = pixel - varyings.travel;
   let size = vec2<f32>(textureDimensions(carry));
   // Held to the canvas's own texel centres: the copy stops at the canvas, and
   // what the texture holds past it is some earlier dab's.
@@ -164,14 +181,12 @@ fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
   }
   var selected = 1.0;
   if (smudge.useSelection > 0.0) {
-    selected = textureLoad(selectionTexture, vec2<i32>(varyings.position.xy), 0).r;
+    selected = textureLoad(selectionTexture, vec2<i32>(pixel), 0).r;
   }
   let coverage = shape * selected;
   if (smudge.wet > 0.0) {
     let paint = textureSampleLevel(reservoir, carrySampler, (local * 0.5 + 0.5) * smudge.reservoirScale, 0.0);
-    let bite = grainBite(grainTexture, grainSampler, varyings.position.xy,
-      varyings.center, smudge.grainScale, smudge.grainMovement,
-      smudge.grainDepth * varyings.grainDepth);
+
     return mixPaint(here, paint, clamp(varyings.flow * coverage * bite, 0.0, 1.0));
   }
   let dragged = mixPaint(here, behind, clamp(varyings.strength * coverage, 0.0, 1.0));
