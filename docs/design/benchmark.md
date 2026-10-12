@@ -1668,11 +1668,17 @@ they are; a tile being compressed or read back from the compressed tiers
 is a message each way. The copy out of the mapped buffer stays on the
 main thread, where the buffer is, and is taken a millisecond at a time
 with the frame let in between. What is left on the main thread after a
-stroke is that copy, some ten tiles to the millisecond; moving the index
-onto the hashes, a map lookup a tile; and one 512 KiB copy for each tile
-sent to be compressed. Until the worker has said it loaded the work is
-done on the main thread as before, so a worker that cannot start costs
-frames and not pixels.
+stroke is that copy, some ten tiles to the millisecond, each into a
+512 KiB array made for it; moving the index onto the hashes, a map lookup
+a tile; and one 512 KiB copy for each tile sent to be compressed. Until
+the worker has said it loaded the work is done on the main thread as
+before, so a worker that cannot start costs frames and not pixels. One
+that stops after it started is another matter: a tile it was compressing
+or reading back is done on the main thread instead, having been sent as a
+copy, but tiles it was hashing went with it, and that stroke is reported
+as one that could not be recorded. That the worker starts is held by a
+test (`tests/browser/history.spec.ts`), and in the product's own build it
+was seen to.
 
 With it:
 
@@ -1692,9 +1698,9 @@ p95 it holds when history is waited for, to within 0.6 ms in every row,
 and opens as it does then. The waited columns are the table of live
 brushes 24 again: 22.7 ms for the 512 px "wet, scatter" row at 8192²,
 which is the sixteen dabs of a step in one frame (live brushes 29) and
-none of it history. No readback was begun with the pen down in either
-column: the one a stroke leaves starts on the frame after pen-up, and it
-is what follows it that the next stroke used to wait behind.
+none of it history. No readback was begun with the pen down in the
+unwaited runs: the one a stroke leaves starts on the frame after pen-up,
+and it is what follows it that the next stroke used to wait behind.
 
 **The benchmark gets the pass, as a flag and not in every run.** The
 recorded run and the sweeps go on waiting for history: their rows are a
@@ -1707,4 +1713,6 @@ or the store is what changed.
 box, of which a thrown stroke changed half to three quarters: the rest
 are read, hashed and found the same, on the worker now. The 160 to
 256 MiB buffer that takes is a mapped allocation between strokes and was
-not seen in a frame.
+not seen in a frame. That is live brushes 30's. Reading a tile back from
+the compressed tiers for an undo goes through the worker too, a message
+and a copy each way, and was not timed.

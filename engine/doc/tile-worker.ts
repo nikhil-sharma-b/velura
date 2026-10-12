@@ -16,10 +16,17 @@ export type TileWorkRequest =
   | { id: number; op: "digest"; tiles: ArrayBuffer[] }
   | { id: number; op: "deflate" | "inflate"; bytes: ArrayBuffer }
 
+type DigestReply = {
+  id: number
+  tiles: ArrayBuffer[]
+  hashes: (string | undefined)[]
+}
+type BytesReply = { id: number; bytes: ArrayBuffer }
+
 export type TileWorkReply =
   | { ready: true }
-  | { id: number; tiles: ArrayBuffer[]; hashes: (string | undefined)[] }
-  | { id: number; bytes: ArrayBuffer }
+  | DigestReply
+  | BytesReply
   | { id: number; error: string }
 
 type Pending = {
@@ -27,8 +34,8 @@ type Pending = {
   reject: (error: Error) => void
 }
 
-/** A copy that owns its buffer, so it can be transferred. */
-function detached(bytes: Uint8Array): ArrayBuffer {
+/** A copy in a buffer of its own, which can be transferred. */
+function copyToSend(bytes: Uint8Array): ArrayBuffer {
   return bytes.slice().buffer as ArrayBuffer
 }
 
@@ -73,6 +80,10 @@ export function createTileWorker(): TileWork {
     event.preventDefault()
     abandon("The tile worker stopped.")
   })
+  // A reply that cannot be read is a request that would wait for ever.
+  worker.addEventListener("messageerror", () =>
+    abandon("The tile worker's reply could not be read.")
+  )
 
   function ask<Reply extends TileWorkReply>(
     request: TileWorkRequest,
@@ -87,17 +98,22 @@ export function createTileWorker(): TileWork {
     })
   }
 
-  async function packed(
+  async function recode(
     op: "deflate" | "inflate",
     bytes: Uint8Array
   ): Promise<Uint8Array> {
     if (!ready) return inline[op](bytes)
-    const buffer = detached(bytes)
-    const reply = await ask<{ id: number; bytes: ArrayBuffer }>(
-      { id: next++, op, bytes: buffer },
-      [buffer]
-    )
-    return new Uint8Array(reply.bytes)
+    const buffer = copyToSend(bytes)
+    try {
+      const reply = await ask<BytesReply>({ id: next++, op, bytes: buffer }, [
+        buffer,
+      ])
+      return new Uint8Array(reply.bytes)
+    } catch {
+      // What was sent was a copy, so a worker that stopped has lost nothing:
+      // an undo reading a compressed tile still gets it.
+      return inline[op](bytes)
+    }
   }
 
   return {
@@ -110,18 +126,17 @@ export function createTileWorker(): TileWork {
       )
       if (!ready || !whole) return inline.digest(tiles)
       const buffers = tiles.map((tile) => tile.buffer as ArrayBuffer)
-      const reply = await ask<{
-        id: number
-        tiles: ArrayBuffer[]
-        hashes: (string | undefined)[]
-      }>({ id: next++, op: "digest", tiles: buffers }, buffers)
+      const reply = await ask<DigestReply>(
+        { id: next++, op: "digest", tiles: buffers },
+        buffers
+      )
       return {
         tiles: reply.tiles.map((buffer) => new Uint16Array(buffer)),
         hashes: reply.hashes,
       }
     },
-    deflate: (bytes) => packed("deflate", bytes),
-    inflate: (bytes) => packed("inflate", bytes),
+    deflate: (bytes) => recode("deflate", bytes),
+    inflate: (bytes) => recode("inflate", bytes),
     dispose() {
       abandon("The tile worker was disposed of.")
     },

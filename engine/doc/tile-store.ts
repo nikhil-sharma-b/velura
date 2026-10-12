@@ -281,9 +281,9 @@ export function createTileStore(options: TileStoreOptions): TileStore {
   }
 
   function schedule() {
-    settling = (settling ?? Promise.resolve()).then(demote)
     // Failures here cost memory, not pixels: the tile is still in the pool.
-    void settling.catch(() => {})
+    // Caught on the chain itself, so one does not stop every demotion after.
+    settling = (settling ?? Promise.resolve()).then(demote).catch(() => {})
   }
 
   /** Takes a reference on `hash`, storing what `texels` answers if it is new. */
@@ -303,9 +303,15 @@ export function createTileStore(options: TileStoreOptions): TileStore {
 
   return {
     tileBytes: TILE_BYTES,
-    put: (texels) => hold(hashTexels(texels), () => new Uint16Array(texels)),
-    digest: (tiles) => work.digest(tiles),
-    adopt: (texels, hash) => hold(hash, () => texels),
+    put(texels) {
+      return hold(hashTexels(texels), () => new Uint16Array(texels))
+    },
+    digest(tiles) {
+      return work.digest(tiles)
+    },
+    adopt(texels, hash) {
+      return hold(hash, () => texels)
+    },
     async get(hash) {
       const entry = entries.get(hash)
       if (!entry) throw new Error(`No tile is stored as ${hash}.`)

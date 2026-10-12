@@ -536,9 +536,9 @@ async function wetSweep(): Promise<void> {
  * What history costs the stroke after the one it is putting away (live
  * brushes 28): the scattering rows, whose strokes change the most tiles,
  * paced, each with the pen waiting for history between strokes and again
- * with it not waiting, as a person paints. Unwaited, the readback of the
- * stroke before falls while the pen is down, so readbacks are counted and
- * not failed on.
+ * with it not waiting, as a person paints. Unwaited, the readback of a
+ * stroke may begin with the pen down again, so readbacks are counted over
+ * both and not failed on.
  */
 async function unwaitedSweep(): Promise<void> {
   const paced = PASSES.find((entry) => entry.name === "paced")!
@@ -562,7 +562,7 @@ async function unwaitedSweep(): Promise<void> {
         for (const unwaited of [false, true]) {
           const held = await measure(paced, { ...workload, unwaited })
           const opening = openingFrames(held)
-          readbacks = held.readbacks
+          readbacks += held.readbacks
           cells.push(
             `${fixed(middle(opening)).padStart(12)} / ${fixed(Math.max(...opening)).padEnd(13)}   ` +
               `${fixed(held.report.latencyMs.median).padStart(7)} / ${fixed(held.report.latencyMs.p95).padEnd(8)}`

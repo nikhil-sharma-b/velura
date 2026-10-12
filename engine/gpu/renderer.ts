@@ -69,17 +69,25 @@ const BYTES_PER_TEXEL = TILE_CHANNELS * 2
  */
 const READBACK_SLICE_MS = 1
 
-/** Lets whatever else is waiting on this thread run: a frame, the pen. */
+/**
+ * Lets whatever else is waiting on this thread run: a frame, the pen. One
+ * channel for every wait, since a readback takes them between the frames of
+ * a stroke, where nothing is to be allocated that need not be (D30).
+ */
+let yieldChannel: MessageChannel | undefined
+const yielded: (() => void)[] = []
 function yieldToFrame(): Promise<void> {
+  if (!yieldChannel) {
+    yieldChannel = new MessageChannel()
+    yieldChannel.port1.onmessage = () => yielded.shift()?.()
+  }
+  const channel = yieldChannel
   return new Promise((resolve) => {
-    const channel = new MessageChannel()
-    channel.port1.onmessage = () => {
-      channel.port1.close()
-      resolve()
-    }
+    yielded.push(resolve)
     channel.port2.postMessage(null)
   })
 }
+
 /**
  * mat3x3 occupies three 16-byte columns, then one vec4 of background, then the
  * four floats the present pass needs to know about the stack it is showing,
