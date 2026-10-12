@@ -34,12 +34,14 @@ for (const radius of [12, 32, 128, 256, 513, 1024])
     })
 
 for (const [name, options] of [
+  [
+    "partial edge tiles and backup row transitions",
+    { radius: 256, large: true, spread: true, edge: true },
+  ],
+  ["pickup without deposition", { radius: 32, pickupOnly: true }],
   ["paper and a feathered selection", { radius: 32, decorated: true }],
   ["a large neighbourhood", { radius: 256, large: true }],
-  [
-    "dabs that need separate bounded runs",
-    { radius: 128, large: true, spread: true },
-  ],
+  ["widely scattered dabs", { radius: 128, large: true, spread: true }],
 ] as const)
   test(`wet deposition with ${name} matches the layer path`, async ({
     page,

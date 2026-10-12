@@ -37,6 +37,9 @@ export const SMUDGE = {
   ORIGIN_Y: 15,
 } as const
 
+/** Renderer-only atlas index: hue has already tinted the fresh load before packing. */
+export const SMUDGE_LOAD_INDEX = SMUDGE.HUE
+
 /** Floats per dab as the engine hands them over. */
 export const SMUDGE_STRIDE = 12
 

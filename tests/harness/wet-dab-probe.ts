@@ -1,10 +1,13 @@
+import { createScatterPlacer } from "../../engine/brush/scatter"
 import { createTiledLayer } from "../../engine/doc/tiled-layer"
 import { createRenderer } from "../../engine/gpu/renderer"
 import { SMUDGE, SMUDGE_STRIDE } from "../../engine/gpu/smudge-dab"
 
 /** Warm, one-variable ablation. Fence timings include CPU encoding and queue work;
  * omitted work deliberately changes paint, so these are diagnostics, not artwork. */
-export async function wetDabProbe() {
+export async function wetDabProbe(
+  options: { scatter?: boolean; layerTarget?: boolean } = {}
+) {
   const adapter = await navigator.gpu.requestAdapter()
   const device = await adapter!.requestDevice()
   const reservoirViews = new WeakSet<GPUTextureView>()
@@ -32,6 +35,7 @@ export async function wetDabProbe() {
     background: [1, 1, 1],
     ink: [0.1, 0.2, 0.7, 1],
     feather: 1,
+    directWetTarget: options.layerTarget ? "layer" : undefined,
   })
   const createEncoder = device.createCommandEncoder.bind(device)
   let omit = "none"
@@ -39,8 +43,15 @@ export async function wetDabProbe() {
     const encoder = createEncoder(descriptor)
     const copy = encoder.copyTextureToTexture.bind(encoder)
     encoder.copyTextureToTexture = (source, destination, size) => {
-      if (omit !== "copy" || destination.texture.label !== "smudge carry")
-        copy(source, destination, size)
+      if (
+        (omit === "copy" &&
+          ["smudge carry", "wet neighbourhoods"].includes(
+            destination.texture.label
+          )) ||
+        (omit === "backup" && destination.texture.label === "smudge backup")
+      )
+        return
+      copy(source, destination, size)
     }
     const begin = encoder.beginRenderPass.bind(encoder)
     encoder.beginRenderPass = (descriptor) => {
@@ -55,6 +66,12 @@ export async function wetDabProbe() {
         return createEncoder().beginRenderPass(descriptor)
       return begin(descriptor)
     }
+    const compute = encoder.beginComputePass.bind(encoder)
+    encoder.beginComputePass = (descriptor) => {
+      if (active && omit === "layer" && descriptor?.label === "wet deposition")
+        return createEncoder().beginComputePass(descriptor)
+      return compute(descriptor)
+    }
     return encoder
   }
   try {
@@ -65,17 +82,25 @@ export async function wetDabProbe() {
       [0.7, 0.1, 0.02, 1]
     )
     renderer.uploadLayer("layer", layer)
+    const offsets = new Float32Array(32)
+    const placer = createScatterPlacer()
+    placer.begin(42)
+    placer.place({ amount: 4, count: 16, axes: "both" }, 1, 256, 0, offsets)
     const dabs = new Float32Array(16 * SMUDGE_STRIDE)
     for (let i = 0; i < 16; i++) {
       const start = i * SMUDGE_STRIDE
-      dabs[start + SMUDGE.CENTER_X] = 1024 + (i % 4) * 256
-      dabs[start + SMUDGE.CENTER_Y] = 1024 + Math.floor(i / 4) * 256
+      dabs[start + SMUDGE.CENTER_X] = options.scatter
+        ? 2048 + offsets[i * 2]
+        : 1024 + (i % 4) * 256
+      dabs[start + SMUDGE.CENTER_Y] = options.scatter
+        ? 2048 + offsets[i * 2 + 1]
+        : 1024 + Math.floor(i / 4) * 256
       dabs[start + SMUDGE.RADIUS] = 256
       dabs[start + SMUDGE.ROUNDNESS] = 1
       dabs[start + SMUDGE.FLOW] = 0.3
       dabs[start + SMUDGE.STRENGTH] = 0.8
     }
-    const modes = ["none", "copy", "layer", "pickup"]
+    const modes = ["none", "copy", "layer", "pickup", "backup"]
     const times = modes.map(() => [] as number[])
     renderer.beginDirect("layer", [0.1, 0.2, 0.7, 1])
     // Interleave controls and ablations so GPU clock changes affect all rows.

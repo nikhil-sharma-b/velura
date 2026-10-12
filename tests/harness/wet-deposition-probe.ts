@@ -12,6 +12,8 @@ export async function wetDepositionProbe(options: {
   cancel: boolean
   decorated?: boolean
   large?: boolean
+  edge?: boolean
+  pickupOnly?: boolean
   spread?: boolean
 }) {
   const adapter = await navigator.gpu.requestAdapter()
@@ -29,8 +31,14 @@ export async function wetDepositionProbe(options: {
     directWetTarget: options.layerTarget ? "layer" : undefined,
   })
   try {
-    const width = options.spread ? 3072 : options.large ? 1024 : 240
-    const height = options.large ? 1024 : 120
+    const width = options.edge
+      ? 3031
+      : options.spread
+        ? 3072
+        : options.large
+          ? 1024
+          : 240
+    const height = options.edge ? 1007 : options.large ? 1024 : 120
     const offset = options.large ? 300 : 0
     renderer.resize(width, height)
     if (options.decorated) {
@@ -66,24 +74,27 @@ export async function wetDepositionProbe(options: {
       [0.02, 0.15, 0.3, 0.6]
     )
     renderer.uploadLayer("layer", layer)
-    const draw = (radius: number, y: number) => {
-      const dabs = new Float32Array(4 * SMUDGE_STRIDE)
-      for (let i = 0; i < 4; i++) {
+    const draw = (radius: number, y: number, flow = 0.3) => {
+      const count = options.edge ? 5 : 4
+      const dabs = new Float32Array(count * SMUDGE_STRIDE)
+      for (let i = 0; i < count; i++) {
         const start = i * SMUDGE_STRIDE
         dabs[start + SMUDGE.CENTER_X] =
           40.3 + offset + i * (options.spread ? 700 : 40)
-        dabs[start + SMUDGE.CENTER_Y] = y + offset
+        if (i === 4) dabs[start + SMUDGE.CENTER_X] = width - 16.3
+        dabs[start + SMUDGE.CENTER_Y] = i === 4 ? height - 16.6 : y + offset
         dabs[start + SMUDGE.RADIUS] = radius
         dabs[start + SMUDGE.ANGLE] = 0.13
         dabs[start + SMUDGE.ROUNDNESS] = 0.6
-        dabs[start + SMUDGE.FLOW] = 0.3
+        dabs[start + SMUDGE.FLOW] = flow
         dabs[start + SMUDGE.STRENGTH] = 0.8
         dabs[start + SMUDGE.GRAIN_DEPTH] = 0.75
       }
-      renderer.drawDirect(dabs, 4)
+      renderer.drawDirect(dabs, count)
     }
     renderer.beginDirect("layer", [0.1, 0.2, 0.7, 1], true)
     draw(options.radius, 50.6)
+    if (options.pickupOnly) draw(options.radius, 80.3, 0)
     renderer.endDirect(true)
     if (options.cancel) {
       // Automatic cleaning uses a different extent, then cancellation
@@ -101,6 +112,7 @@ export async function wetDepositionProbe(options: {
     const tiles = await renderer.readTiles("layer", [
       { x: options.large ? 1 : 0, y: options.large ? 1 : 0 },
       ...(options.spread ? [{ x: 9, y: 1 }] : []),
+      ...(options.edge ? [{ x: 11, y: 3 }] : []),
     ])
     if (errors.length) throw new Error(errors.join("\n"))
     const texels: number[] = []

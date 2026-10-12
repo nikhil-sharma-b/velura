@@ -19,6 +19,10 @@
  * a dense scattering brush against the same painting without; `--smudge`
  * smudges the painting against painting it (smudge 01); `--wet` paints over
  * it with wet brushes against the same brushes dry (live brushes 10);
+ * `--wet --dab --large` selects the 512 px pickup, densest and scattered
+ * rows at 8192² without changing their workload; `--wet-dab` measures warm
+ * sixteen-dab pass ablations (`--scatter-dabs` uses thrown centres and
+ * `--layer-target` selects original layer deposition);
  * `--blender` compares small blenders with wet brushes that have flow;
  * `--cold` times a draw into a texture left alone (live brushes 24);
  * `--vector` times
@@ -753,7 +757,14 @@ async function wetDabDiagnostic(): Promise<void> {
     await page.goto(HARNESS)
     await page.waitForFunction(() => !!window.wetDabProbe)
     console.log(
-      JSON.stringify(await page.evaluate(() => window.wetDabProbe()), null, 2)
+      JSON.stringify(
+        await page.evaluate((options) => window.wetDabProbe(options), {
+          scatter: process.argv.includes("--scatter-dabs"),
+          layerTarget: process.argv.includes("--layer-target"),
+        }),
+        null,
+        2
+      )
     )
   } finally {
     await browser.close()

@@ -1,7 +1,7 @@
 import { type PixelRect, TILE_SIZE } from "../doc/tile-grid"
 import type { LinearColor } from "../doc/tiled-layer"
 import { brushLoadShader } from "../shaders/brush-load"
-import { smudgeShader } from "../shaders/smudge"
+import { DIRECT_TARGET, smudgeShader } from "../shaders/smudge"
 import {
   RUN_DAB,
   RUN_DAB_BYTES,
@@ -14,6 +14,7 @@ import {
   MAX_SMUDGE_DABS_PER_DRAW,
   SMUDGE,
   SMUDGE_INSTANCE_STRIDE,
+  SMUDGE_LOAD_INDEX,
   SMUDGE_STRIDE,
 } from "./smudge-dab"
 import type { StrokeRenderer } from "./stroke-renderer"
@@ -143,6 +144,9 @@ const MAX_CARRY_SIZE = 2048
  * and by then a frame holds few.
  */
 const RUN_SIZE = 256
+/** Fixed atlas capacity, independent of the document and the submitted frame. */
+const WET_BATCH_DABS = 4
+const WET_BATCH_SIZE = 1024
 
 /**
  * The stroke that reads and writes its surface as it goes (D29, smudge 01):
@@ -198,10 +202,7 @@ export function createDirectStroke(
     label: "smudge carry",
     size: { width: MAX_CARRY_SIZE, height: MAX_CARRY_SIZE },
     format: LAYER_FORMAT,
-    usage:
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_DST |
-      GPUTextureUsage.COPY_SRC,
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   })
   // Sampled strokes read the live destination here. Active-layer wet
   // strokes use it as a local render target, avoiding a full-layer attachment
@@ -223,6 +224,32 @@ export function createDirectStroke(
       destinationCarry.createView({ baseMipLevel: level, mipLevelCount: 1 })
   )
   const destinationView = destinationViews[0]
+  // Four independent reads and incoming loads can share one deposition pass.
+  // Array layers keep the original filtering precision at each local origin.
+  const wetAtlases = ["wet neighbourhoods", "wet incoming loads"].map((label) =>
+    device.createTexture({
+      label,
+      size: [WET_BATCH_SIZE, WET_BATCH_SIZE, WET_BATCH_DABS],
+      format: LAYER_FORMAT,
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.RENDER_ATTACHMENT,
+    })
+  )
+  const wetAtlasViews = wetAtlases.map((texture) =>
+    texture.createView({ dimension: "2d-array" })
+  )
+  const wetAtlasWarmViews = wetAtlases.flatMap((texture) =>
+    Array.from({ length: WET_BATCH_DABS }, (_, layer) =>
+      texture.createView({
+        dimension: "2d",
+        baseArrayLayer: layer,
+        arrayLayerCount: 1,
+      })
+    )
+  )
+  const wetReadEnds = new Int32Array(MAX_SMUDGE_DABS_PER_DRAW)
   let samplingPrepared = false
   /**
    * What a run of dragging dabs is worked in (live brushes 22): its region
@@ -308,6 +335,11 @@ export function createDirectStroke(
           arrayStride: SMUDGE_INSTANCE_STRIDE * 4,
           stepMode: "instance",
           attributes: [
+            {
+              shaderLocation: 10,
+              offset: SMUDGE_LOAD_INDEX * 4,
+              format: "float32",
+            },
             {
               shaderLocation: 0,
               offset: SMUDGE.CENTER_X * 4,
@@ -396,6 +428,11 @@ export function createDirectStroke(
   })
   let dirty = false
   const reservoirViews = reservoirs.map((texture) => texture.createView())
+  const reservoirSampleViews = reservoirs.map((texture) =>
+    texture.createView({ dimension: "2d-array" })
+  )
+  let wetBatchLayer: GPUBindGroup
+  let wetBatchPickup: GPUBindGroup[] = []
   let reservoirExtent = 0
   let reservoirIndex = 0
   let reservoirBindings: { layer: GPUBindGroup; pickup: GPUBindGroup }[] = []
@@ -473,6 +510,11 @@ export function createDirectStroke(
     size: params.byteLength,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
+  const wetBatchUniform = device.createBuffer({
+    size: params.byteLength,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
+  const wetBatchParams = new Float32Array(params.length)
   const instances = device.createBuffer({
     size: MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_INSTANCE_STRIDE * 4,
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
@@ -487,8 +529,6 @@ export function createDirectStroke(
     MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_INSTANCE_STRIDE
   )
   const rects = new Int32Array(MAX_SMUDGE_DABS_PER_DRAW * DAB_RECT_STRIDE)
-  const wetRunEnds = new Int32Array(MAX_SMUDGE_DABS_PER_DRAW)
-  const wetRunRegions = new Int32Array(MAX_SMUDGE_DABS_PER_DRAW * 4)
 
   /** Draws the dabs of the stroke into its surface, one after another. */
   function drawDabs(dabs: Float32Array, count: number) {
@@ -532,33 +572,47 @@ export function createDirectStroke(
         !(stroke.source ?? stroke.target).empty
       const picksUp = stroke.lays && dabs[dab + SMUDGE.STRENGTH] > 0
       if (!drags && !(flow > 0) && !picksUp) continue
-      // Rotated textured quads fit inside sqrt(2) radii.
-      const reach = dabs[dab + SMUDGE.RADIUS] * Math.SQRT2
-      const left = Math.max(clipLeft, Math.floor(x - reach))
-      const top = Math.max(clipTop, Math.floor(y - reach))
-      const right = Math.min(clipRight, Math.ceil(x + reach))
-      const bottom = Math.min(clipBottom, Math.ceil(y + reach))
+      // Wet quads need their actual rotated bounds, not the square that
+      // covers every possible angle. A pixel guards f32 mapping at the rim;
+      // the copied read below adds the filtering border. The layer test
+      // control retains the old conservative bounds for pixel comparison.
+      const radius = dabs[dab + SMUDGE.RADIUS]
+      let reachX = radius * Math.SQRT2
+      let reachY = reachX
+      if (stroke.lays && !stroke.source && context.wetTarget !== "layer") {
+        const angle = dabs[dab + SMUDGE.ANGLE] * Math.PI * 2
+        const cosine = Math.abs(Math.cos(angle))
+        const sine = Math.abs(Math.sin(angle))
+        const roundness = dabs[dab + SMUDGE.ROUNDNESS]
+        reachX = radius * (cosine + roundness * sine) + 1
+        reachY = radius * (sine + roundness * cosine) + 1
+      }
+      const left = Math.max(clipLeft, Math.floor(x - reachX))
+      const top = Math.max(clipTop, Math.floor(y - reachY))
+      const right = Math.min(clipRight, Math.ceil(x + reachX))
+      const bottom = Math.min(clipBottom, Math.ceil(y + reachY))
       const writes = right > left && bottom > top && (drags || flow > 0)
       if (!writes && !picksUp) continue
       // Wet pickup reads the full tip, including outside selections. Smudge
       // also needs the pixels one travel behind. A texel borders the blend.
       const fromLeft = Math.max(
         0,
-        Math.floor(stroke.lays ? x - reach : Math.min(left, left - travelX)) - 1
+        Math.floor(stroke.lays ? x - reachX : Math.min(left, left - travelX)) -
+          1
       )
       const fromTop = Math.max(
         0,
-        Math.floor(stroke.lays ? y - reach : Math.min(top, top - travelY)) - 1
+        Math.floor(stroke.lays ? y - reachY : Math.min(top, top - travelY)) - 1
       )
       const fromRight = Math.min(
         width,
-        Math.ceil(stroke.lays ? x + reach : Math.max(right, right - travelX)) +
+        Math.ceil(stroke.lays ? x + reachX : Math.max(right, right - travelX)) +
           1
       )
       const fromBottom = Math.min(
         height,
         Math.ceil(
-          stroke.lays ? y + reach : Math.max(bottom, bottom - travelY)
+          stroke.lays ? y + reachY : Math.max(bottom, bottom - travelY)
         ) + 1
       )
       if (fromRight <= fromLeft || fromBottom <= fromTop) continue
@@ -606,29 +660,67 @@ export function createDirectStroke(
     params[9] = grain.movement
     const localTarget =
       stroke.lays && !stroke.source && context.wetTarget !== "layer"
-    params[10] = localTarget ? 1 : 0
+    params[10] = localTarget ? DIRECT_TARGET.BOUNDED : DIRECT_TARGET.LAYER
     let targetSpan = 64
-    if (localTarget) {
-      // A bounded wet run reads and writes scratch in order. Each dab copies
-      // only its own pre-dab neighbourhood to carry, at the run's coordinates.
-      // Overlapping dabs are safe: later copies see earlier deposition.
-      for (let start = 0; start < drawn;) {
-        const end = dabRunEnd(rects, start, drawn, MAX_CARRY_SIZE, runRegion)
-        wetRunEnds[start] = end
-        wetRunRegions.set(runRegion, start * 4)
-        targetSpan = Math.max(targetSpan, runRegion[2], runRegion[3])
-        for (let dab = start; dab < end; dab++) {
-          const instance = dab * SMUDGE_INSTANCE_STRIDE
-          drawnDabs[instance + SMUDGE.ORIGIN_X] = runRegion[0]
-          drawnDabs[instance + SMUDGE.ORIGIN_Y] = runRegion[1]
-        }
-        start = end
+    if (localTarget)
+      for (let dab = 0; dab < drawn; dab++) {
+        const rect = dab * DAB_RECT_STRIDE
+        targetSpan = Math.max(
+          targetSpan,
+          rects[rect + DAB_RECT.READ_WIDTH],
+          rects[rect + DAB_RECT.READ_HEIGHT]
+        )
+        const instance = dab * SMUDGE_INSTANCE_STRIDE
+        drawnDabs[instance + SMUDGE.ORIGIN_X] = rects[rect + DAB_RECT.READ_LEFT]
+        drawnDabs[instance + SMUDGE.ORIGIN_Y] = rects[rect + DAB_RECT.READ_TOP]
       }
-    }
     const targetLevel = localTarget
       ? Math.floor(Math.log2(MAX_CARRY_SIZE / targetSpan))
       : 0
-    params[11] = MAX_CARRY_SIZE >> targetLevel
+    for (let start = 0; start < drawn;) {
+      let end = start + 1
+      if (
+        localTarget &&
+        targetSpan <= WET_BATCH_SIZE &&
+        reservoirExtent < WET_BATCH_SIZE
+      ) {
+        for (; end < drawn && end - start < WET_BATCH_DABS; end++) {
+          const read = end * DAB_RECT_STRIDE
+          let independent = true
+          for (let prior = start; prior < end; prior++) {
+            const write = prior * DAB_RECT_STRIDE
+            if (
+              rects[write + DAB_RECT.WRITE_WIDTH] > 0 &&
+              rects[write + DAB_RECT.WRITE_HEIGHT] > 0 &&
+              rects[read + DAB_RECT.READ_LEFT] <
+                rects[write + DAB_RECT.WRITE_LEFT] +
+                  rects[write + DAB_RECT.WRITE_WIDTH] &&
+              rects[read + DAB_RECT.READ_LEFT] +
+                rects[read + DAB_RECT.READ_WIDTH] >
+                rects[write + DAB_RECT.WRITE_LEFT] &&
+              rects[read + DAB_RECT.READ_TOP] <
+                rects[write + DAB_RECT.WRITE_TOP] +
+                  rects[write + DAB_RECT.WRITE_HEIGHT] &&
+              rects[read + DAB_RECT.READ_TOP] +
+                rects[read + DAB_RECT.READ_HEIGHT] >
+                rects[write + DAB_RECT.WRITE_TOP]
+            ) {
+              independent = false
+              break
+            }
+          }
+          if (!independent) break
+        }
+      }
+      wetReadEnds[start] = end
+      for (let dab = start; dab < end; dab++)
+        drawnDabs[dab * SMUDGE_INSTANCE_STRIDE + SMUDGE_LOAD_INDEX] =
+          dab - start
+      start = end
+    }
+    wetBatchParams.set(params)
+    wetBatchParams[10] = DIRECT_TARGET.BATCH
+    device.queue.writeBuffer(wetBatchUniform, 0, wetBatchParams)
     device.queue.writeBuffer(uniform, 0, params)
     device.queue.writeBuffer(
       instances,
@@ -647,7 +739,7 @@ export function createDirectStroke(
           resource: tip.texture.createView({ dimension: "2d-array" }),
         },
         { binding: 3, resource: carrySampler },
-        { binding: 4, resource: carry.createView() },
+        { binding: 4, resource: carry.createView({ dimension: "2d-array" }) },
         {
           binding: 5,
           resource: (selection?.texture ?? context.noSelection).createView(),
@@ -657,7 +749,7 @@ export function createDirectStroke(
         { binding: 6, resource: grain.sampler },
         { binding: 7, resource: grain.texture.createView() }
       )
-      reservoirBindings = reservoirViews.map((resource) => ({
+      reservoirBindings = reservoirSampleViews.map((resource) => ({
         layer: device.createBindGroup({
           layout: pipeline.getBindGroupLayout(0),
           entries: [
@@ -665,7 +757,11 @@ export function createDirectStroke(
             { binding: 8, resource },
             {
               binding: 9,
-              resource: stroke.source ? destinationView : carry.createView(),
+              resource: (stroke.source ? destinationCarry : carry).createView({
+                dimension: "2d-array",
+                baseMipLevel: 0,
+                mipLevelCount: 1,
+              }),
             },
           ],
         }),
@@ -674,6 +770,27 @@ export function createDirectStroke(
           entries: [...entries.slice(0, 5), { binding: 8, resource }],
         }),
       }))
+      const batchEntries = entries.map((entry) =>
+        entry.binding === 0
+          ? { binding: 0, resource: { buffer: wetBatchUniform } }
+          : entry.binding === 4
+            ? { binding: 4, resource: wetAtlasViews[0] }
+            : entry
+      )
+      wetBatchLayer = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          ...batchEntries,
+          { binding: 8, resource: wetAtlasViews[1] },
+          { binding: 9, resource: wetAtlasViews[0] },
+        ],
+      })
+      wetBatchPickup = reservoirSampleViews.map((resource) =>
+        device.createBindGroup({
+          layout: reservoirPipeline.getBindGroupLayout(0),
+          entries: [...batchEntries.slice(0, 5), { binding: 8, resource }],
+        })
+      )
       bindGroup = reservoirBindings[0].layer
       runBindings = runTextures.map((texture, reads) =>
         device.createBindGroup({
@@ -702,12 +819,17 @@ export function createDirectStroke(
     // encoder holds the frame's worth in order.
     const encoder = device.createCommandEncoder()
     let anyRun = false
-    let wetEnd = 0
     let wetLeft = 0
     let wetTop = 0
     let wetWidth = 0
     let wetHeight = 0
     for (let i = 0; i < drawn; i++) {
+      if (localTarget && wetReadEnds[i] > i + 1) {
+        const end = wetReadEnds[i]
+        drawWetBatch(encoder, i, end)
+        i = end - 1
+        continue
+      }
       const runEnd = stroke.lays
         ? i
         : dabRunEnd(rects, i, drawn, runLimit, runRegion)
@@ -720,33 +842,15 @@ export function createDirectStroke(
       }
       const rect = i * DAB_RECT_STRIDE
       if (localTarget) {
-        if (i === wetEnd) {
-          wetEnd = wetRunEnds[i]
-          wetLeft = wetRunRegions[i * 4]
-          wetTop = wetRunRegions[i * 4 + 1]
-          wetWidth = wetRunRegions[i * 4 + 2]
-          wetHeight = wetRunRegions[i * 4 + 3]
-          for (let dab = i; dab < wetEnd; dab++) keepTiles(encoder, dab)
-          encoder.copyTextureToTexture(
-            {
-              texture: stroke.target.texture,
-              origin: { x: wetLeft, y: wetTop },
-            },
-            { texture: destinationCarry, mipLevel: targetLevel },
-            [wetWidth, wetHeight]
-          )
-        }
-        const origin = {
-          x: rects[rect + DAB_RECT.READ_LEFT] - wetLeft,
-          y: rects[rect + DAB_RECT.READ_TOP] - wetTop,
-        }
+        wetLeft = rects[rect + DAB_RECT.READ_LEFT]
+        wetTop = rects[rect + DAB_RECT.READ_TOP]
+        wetWidth = rects[rect + DAB_RECT.READ_WIDTH]
+        wetHeight = rects[rect + DAB_RECT.READ_HEIGHT]
+        keepTiles(encoder, i)
         encoder.copyTextureToTexture(
-          { texture: destinationCarry, mipLevel: targetLevel, origin },
-          { texture: carry, origin },
-          [
-            rects[rect + DAB_RECT.READ_WIDTH],
-            rects[rect + DAB_RECT.READ_HEIGHT],
-          ]
+          { texture: stroke.target.texture, origin: { x: wetLeft, y: wetTop } },
+          { texture: carry },
+          [wetWidth, wetHeight]
         )
       } else {
         keepTiles(encoder, i)
@@ -794,6 +898,7 @@ export function createDirectStroke(
           stroke.lays ? reservoirBindings[reservoirIndex].layer : bindGroup
         )
         pass.setVertexBuffer(0, instances)
+        if (localTarget) pass.setViewport(0, 0, wetWidth, wetHeight, 0, 1)
         pass.setScissorRect(
           rects[rect + DAB_RECT.WRITE_LEFT] - (localTarget ? wetLeft : 0),
           rects[rect + DAB_RECT.WRITE_TOP] - (localTarget ? wetTop : 0),
@@ -826,12 +931,26 @@ export function createDirectStroke(
         dirty = true
         reservoirIndex = next
       }
-      if (localTarget && i + 1 === wetEnd)
+      if (
+        localTarget &&
+        rects[rect + DAB_RECT.WRITE_WIDTH] > 0 &&
+        rects[rect + DAB_RECT.WRITE_HEIGHT] > 0
+      ) {
+        const x = rects[rect + DAB_RECT.WRITE_LEFT]
+        const y = rects[rect + DAB_RECT.WRITE_TOP]
         encoder.copyTextureToTexture(
-          { texture: destinationCarry, mipLevel: targetLevel },
-          { texture: stroke.target.texture, origin: { x: wetLeft, y: wetTop } },
-          [wetWidth, wetHeight]
+          {
+            texture: destinationCarry,
+            mipLevel: targetLevel,
+            origin: { x: x - wetLeft, y: y - wetTop },
+          },
+          { texture: stroke.target.texture, origin: { x, y } },
+          [
+            rects[rect + DAB_RECT.WRITE_WIDTH],
+            rects[rect + DAB_RECT.WRITE_HEIGHT],
+          ]
         )
+      }
     }
     if (anyRun)
       device.queue.writeBuffer(
@@ -859,14 +978,106 @@ export function createDirectStroke(
     const tilesAcross = Math.ceil(context.size().width / TILE_SIZE)
     const lastColumn = (left + width - 1) >> TILE_SHIFT
     const lastRow = (top + height - 1) >> TILE_SHIFT
-    for (let row = top >> TILE_SHIFT; row <= lastRow; row++)
-      for (let column = left >> TILE_SHIFT; column <= lastColumn; column++) {
+    for (let row = top >> TILE_SHIFT; row <= lastRow; row++) {
+      for (let column = left >> TILE_SHIFT; column <= lastColumn;) {
         const tile = row * tilesAcross + column
-        if (stroke.kept.has(tile)) continue
+        if (stroke.kept.has(tile)) {
+          column++
+          continue
+        }
         const slot = stroke.kept.size
-        stroke.kept.set(tile, slot)
-        copyBackupTile(encoder, stroke.target, tile, slot, "keep")
+        let count = 0
+        // One copy for adjacent new tiles in both the document row and the
+        // backup row. Never cross a kept tile, backup row or document edge.
+        const room = BACKUP_PAGE_TILES - (slot % BACKUP_PAGE_TILES)
+        while (
+          column <= lastColumn &&
+          count < room &&
+          !stroke.kept.has(row * tilesAcross + column)
+        ) {
+          stroke.kept.set(row * tilesAcross + column, slot + count)
+          column++
+          count++
+        }
+        copyBackupTile(encoder, stroke.target, tile, slot, "keep", count)
       }
+    }
+  }
+
+  /** Independent wet reads preserve each incoming load before sharing deposition. */
+  function drawWetBatch(encoder: GPUCommandEncoder, from: number, end: number) {
+    const stroke = session!
+    let hasWrites = false
+    for (let dab = from; dab < end; dab++) {
+      const slot = dab - from
+      const rect = dab * DAB_RECT_STRIDE
+      hasWrites ||=
+        rects[rect + DAB_RECT.WRITE_WIDTH] > 0 &&
+        rects[rect + DAB_RECT.WRITE_HEIGHT] > 0
+      keepTiles(encoder, dab)
+      encoder.copyTextureToTexture(
+        {
+          texture: stroke.target.texture,
+          origin: {
+            x: rects[rect + DAB_RECT.READ_LEFT],
+            y: rects[rect + DAB_RECT.READ_TOP],
+          },
+        },
+        { texture: wetAtlases[0], origin: { z: slot } },
+        [rects[rect + DAB_RECT.READ_WIDTH], rects[rect + DAB_RECT.READ_HEIGHT]]
+      )
+      encoder.copyTextureToTexture(
+        { texture: reservoirs[reservoirIndex] },
+        { texture: wetAtlases[1], origin: { z: slot } },
+        [reservoirExtent + 1, reservoirExtent + 1]
+      )
+      if (drawnDabs[dab * SMUDGE_INSTANCE_STRIDE + SMUDGE.STRENGTH] > 0) {
+        const next = 1 - reservoirIndex
+        const pickup = encoder.beginRenderPass({
+          colorAttachments: [
+            {
+              view: reservoirViews[next],
+              loadOp: "load",
+              storeOp: "store",
+            },
+          ],
+        })
+        pickup.setViewport(0, 0, reservoirExtent, reservoirExtent, 0, 1)
+        pickup.setPipeline(reservoirPipeline)
+        pickup.setBindGroup(0, wetBatchPickup[reservoirIndex])
+        pickup.setVertexBuffer(0, instances)
+        pickup.draw(6, 1, 0, dab)
+        pickup.end()
+        dirty = true
+        reservoirIndex = next
+      }
+    }
+    if (hasWrites) {
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          { view: stroke.target.view, loadOp: "load", storeOp: "store" },
+        ],
+      })
+      pass.setPipeline(pipeline)
+      pass.setBindGroup(0, wetBatchLayer)
+      pass.setVertexBuffer(0, instances)
+      for (let dab = from; dab < end; dab++) {
+        const rect = dab * DAB_RECT_STRIDE
+        if (
+          rects[rect + DAB_RECT.WRITE_WIDTH] <= 0 ||
+          rects[rect + DAB_RECT.WRITE_HEIGHT] <= 0
+        )
+          continue
+        pass.setScissorRect(
+          rects[rect + DAB_RECT.WRITE_LEFT],
+          rects[rect + DAB_RECT.WRITE_TOP],
+          rects[rect + DAB_RECT.WRITE_WIDTH],
+          rects[rect + DAB_RECT.WRITE_HEIGHT]
+        )
+        pass.draw(6, 1, 0, dab)
+      }
+      pass.end()
+    }
   }
 
   /**
@@ -958,7 +1169,8 @@ export function createDirectStroke(
     surface: Surface,
     tile: number,
     slot: number,
-    direction: "keep" | "restore"
+    direction: "keep" | "restore",
+    count = 1
   ) {
     const { width, height } = context.size()
     const page = Math.floor(slot / BACKUP_PAGE_SLOTS)
@@ -992,7 +1204,7 @@ export function createDirectStroke(
       direction === "keep" ? inSurface : inBackup,
       direction === "keep" ? inBackup : inSurface,
       {
-        width: Math.min(TILE_SIZE, width - x),
+        width: Math.min(TILE_SIZE * count, width - x),
         height: Math.min(TILE_SIZE, height - y),
       }
     )
@@ -1151,7 +1363,11 @@ export function createDirectStroke(
       samplingPrepared = true
     },
     warm(encoder) {
-      for (const view of [...destinationViews, ...reservoirViews])
+      for (const view of [
+        ...destinationViews,
+        ...reservoirViews,
+        ...wetAtlasWarmViews,
+      ])
         encoder
           .beginRenderPass({
             colorAttachments: [{ view, loadOp: "load", storeOp: "store" }],
@@ -1180,6 +1396,8 @@ export function createDirectStroke(
       reservoirBackup.destroy()
       carry.destroy()
       destinationCarry.destroy()
+      for (const texture of wetAtlases) texture.destroy()
+      wetBatchUniform.destroy()
       bindGroup = undefined
       runBindings = []
       for (const texture of runTextures) texture.destroy()
