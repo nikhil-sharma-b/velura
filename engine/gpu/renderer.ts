@@ -428,8 +428,12 @@ export interface Renderer {
    * left a second or two is slow the next time it is a pass's target, which
    * is the frame a stroke opens in; this is what keeps it from being left
    * (live brushes 24). Changes no pixel.
+   *
+   * With `sampling`, what a stroke sampling all layers reads as it opens is
+   * kept as well (live brushes 31): the other visible layers, the pages the
+   * picture is frozen into and the target a chunk of it is flattened in.
    */
-  keepWarm(): void
+  keepWarm(sampling?: boolean): void
   /** Ready a bounded set of sampled pages and the carry before pen-down. */
   prepareSampling(): void
   /**
@@ -2384,6 +2388,10 @@ export function createRenderer(
         renderItems(items, flat)
         return flat
       },
+      /** Keeps what `flatten` draws into from going cold (live brushes 31). */
+      warm(encoder: GPUCommandEncoder) {
+        if (flat) warmSurface(encoder, flat.view)
+      },
       compositeSurface,
       groupThumbnailSurface,
       apply,
@@ -2487,12 +2495,26 @@ export function createRenderer(
   /** Four chunks cover the opening neighbourhood of the wet sweep's brushes. */
   const FIRST_FROZEN_PAGES = 4
 
+  /** A pass that loads, stores and draws nothing: what keeps a texture warm. */
+  function warmSurface(encoder: GPUCommandEncoder, view: GPUTextureView) {
+    encoder
+      .beginRenderPass({
+        colorAttachments: [{ view, loadOp: "load", storeOp: "store" }],
+      })
+      .end()
+  }
+
   function createFrozenPage(): GPUTexture {
     return device.createTexture({
       label: "frozen artwork",
       size: { width: FREEZE_CHUNK, height: FREEZE_CHUNK },
       format: LAYER_FORMAT,
-      usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+      // Only ever copied, but a pass is what keeps a texture warm (live
+      // brushes 31).
+      usage:
+        GPUTextureUsage.COPY_SRC |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.RENDER_ATTACHMENT,
     })
   }
 
@@ -2561,6 +2583,34 @@ export function createRenderer(
     if (item.kind === "group") return (item.children ?? []).some(hasPixels)
     const surface = surfaces.get(item.id)
     return !!surface && !surface.empty
+  }
+
+  /**
+   * Keeps what a sampling stroke's opening frame reads from going cold (live
+   * brushes 31): every visible layer but the one painted and the masks over
+   * them, which a chunk is copied or flattened from; the pages the first chunks are frozen into;
+   * and the target they are flattened in. A layer left two seconds was half
+   * of that frame at 8192², read from as much as drawn into.
+   */
+  function warmSampling(encoder: GPUCommandEncoder) {
+    const warmItems = (items: readonly CompositeItem[]) => {
+      for (const item of items) {
+        if (item.opacity <= 0) continue
+        const ids =
+          item.kind === "group" ? [item.maskId] : [item.id, item.maskId]
+        for (const id of ids) {
+          const surface = id ? surfaces.get(id) : undefined
+          if (surface && surface !== paintTarget && !surface.empty)
+            warmSurface(encoder, surface.view)
+        }
+        if (item.kind === "group") warmItems(item.children ?? [])
+      }
+    }
+    warmItems(visibleStack())
+    // A stroke takes its pages from the end.
+    for (const page of frozenPages.slice(-FIRST_FROZEN_PAGES))
+      warmSurface(encoder, page.createView())
+    pickup.warm(encoder)
   }
 
   /**
@@ -3321,18 +3371,12 @@ export function createRenderer(
         buffer.destroy()
       }
     },
-    keepWarm() {
+    keepWarm(sampling = false) {
       const encoder = device.createCommandEncoder()
-      if (paintTarget)
-        encoder
-          .beginRenderPass({
-            colorAttachments: [
-              { view: paintTarget.view, loadOp: "load", storeOp: "store" },
-            ],
-          })
-          .end()
+      if (paintTarget) warmSurface(encoder, paintTarget.view)
       buffered.warm(encoder)
       direct.warm(encoder)
+      if (sampling) warmSampling(encoder)
       device.queue.submit([encoder.finish()])
     },
     render(view, overlay) {

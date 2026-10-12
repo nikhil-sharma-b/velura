@@ -945,6 +945,41 @@ for (const tool of ["brush", "smudge"] as const) {
   })
 }
 
+test("keeping what a sampling stroke reads warm changes no pixel", async ({
+  page,
+}) => {
+  // Live brushes 31: between strokes the other layers, the frozen pages and
+  // the target a chunk is flattened in each take a pass that draws nothing.
+  const errors: string[] = []
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text())
+  })
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await paintBar(page, origin)
+  await addLayer(page)
+  await setColour(page, BLUE)
+  await setWet(page, { pickup: 0.8 })
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setSampleAllLayers", enabled: true })
+  )
+  // One stroke first, so there are pages given back and a flattened chunk.
+  await stroke(page, origin, 60, 150)
+  const before = await pixels(page)
+  // Longer than the interval between warmings, with the pen over the canvas.
+  await page.waitForTimeout(1000)
+  await page.mouse.move(origin.x + 20, origin.y + 20)
+  await page.waitForTimeout(1000)
+  expect(await pixels(page)).toEqual(before)
+  // And the stroke after it still reads the ground under it.
+  await stroke(page, origin, 50, 20)
+  const after = await pixels(page)
+  expect(distance(rgba(after, 30), BLUE_PIXEL)).toBeGreaterThan(10)
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await pixels(page)).toEqual(before)
+  expect(errors).toEqual([])
+})
+
 test("sampled artwork is frozen chunk by chunk as the stroke reaches it", async ({
   page,
 }) => {

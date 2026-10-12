@@ -5308,7 +5308,13 @@ export function createEngine(
     warm() {
       if (frame !== undefined || stroking || snapshot.status !== "ready") return
       if (globalThis.document?.visibilityState === "hidden") return
-      renderer?.keepWarm()
+      // Only a direct stroke samples, so only its brushes pay for what it
+      // reads being kept (live brushes 31).
+      const opensDirect =
+        tool === "smudge" || (tool === "brush" && !!activeBrush().rendering.wet)
+      renderer?.keepWarm(
+        opensDirect && snapshot.sampleAllLayers && !snapshot.paintingMask
+      )
     },
     intervalMs: WARM_INTERVAL_MS,
     lifetimeMs: WARM_LIFETIME_MS,
