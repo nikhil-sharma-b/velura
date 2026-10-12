@@ -10,7 +10,7 @@ import {
   tileKey,
   tilesCoveringRect,
 } from "./tile-grid"
-import { createTileStore, type TileStore } from "./tile-store"
+import { createTileStore, isBlank, type TileStore } from "./tile-store"
 import type { SceneChange } from "./vector-scene"
 import {
   createUndoStack,
@@ -98,7 +98,10 @@ export type TileWrite = TileCoord & { texels: Uint16Array | null }
  * through the sparse CPU surfaces, which are only ever an upload source.
  */
 export interface SurfaceBridge {
-  /** Whole tiles, zero-filled outside the canvas, in the order asked for. */
+  /**
+   * Whole tiles, zero-filled outside the canvas, in the order asked for.
+   * They are history's to keep: it stores them as they are.
+   */
   readTiles(
     surfaceId: string,
     coords: readonly TileCoord[]
@@ -197,11 +200,6 @@ export const DEFAULT_WARM_BYTES = 128 * 1024 * 1024
 
 const TILE_VALUES = TILE_SIZE * TILE_SIZE * TILE_CHANNELS
 
-function isBlank(texels: Uint16Array): boolean {
-  for (let i = 0; i < texels.length; i++) if (texels[i] !== 0) return false
-  return true
-}
-
 /**
  * A tile as the GPU holds it: the part of it outside the canvas was never
  * written and reads back as zero, so a CPU tile has to be clipped the same way
@@ -281,7 +279,12 @@ export function createDocumentHistory(options: {
     const stillCurrent = () => queuedIn === generation
     queue = queue
       .then(() => (stillCurrent() ? work(stillCurrent) : undefined))
-      .catch((error) => options.onError?.(error))
+      // A step of a document that is gone was not going to be recorded, so
+      // failing to is nothing to tell the artist: its store's worker goes
+      // with it, and takes what it was hashing along.
+      .catch((error) => {
+        if (stillCurrent()) options.onError?.(error)
+      })
   }
 
   function tilesOf(surfaceId: string): Map<string, string> {
@@ -391,15 +394,20 @@ export function createDocumentHistory(options: {
   ): Promise<SurfaceChange | undefined> {
     const coords = tilesCoveringRect(region)
     if (coords.length === 0) return undefined
-    const texels = await bridge.readTiles(surfaceId, coords)
+    // Hashed before anything is stored, and not here: a thrown stroke reads
+    // back hundreds of tiles, and going over every byte of them on this
+    // thread is frames of the stroke after it (live brushes 28).
+    const { tiles: texels, hashes } = await store.digest(
+      await bridge.readTiles(surfaceId, coords)
+    )
     // The readback is a wait, and the document may have been replaced
     // during it.
     if (!stillCurrent()) return undefined
     const tiles = coords.flatMap((coord, position) => {
       const key = tileKey(coord.x, coord.y)
       const before = index.get(surfaceId)?.get(key)
-      const painted = texels[position]
-      const after = isBlank(painted) ? undefined : store.put(painted)
+      const hash = hashes[position]
+      const after = hash ? store.adopt(texels[position], hash) : undefined
       if (before === after) {
         if (after) store.release(after)
         return []

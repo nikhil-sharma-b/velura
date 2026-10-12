@@ -321,6 +321,7 @@ Evaluation is a pure function — `(brush, stampContext) → StampParams` — an
 - An entry is `{ layerId, tiles: [{x, y, beforeHash, afterHash}] }` — a list of hashes, not pixels.
 - Because tiles are content-addressed, undo shares storage with the flush cache at no extra cost.
 - Storage tiering (D21): the most recent tiles stay uncompressed in RAM; older ones are deflated in place (`CompressionStream`, so no dependency); the oldest spill to OPFS. Bound by bytes, not by step count.
+- Hashing a readback's tiles and deflating or inflating one are done on a worker (`engine/doc/tile-worker.ts`), and the copy out of the readback buffer is taken a millisecond at a time: a thrown stroke changes hundreds of tiles, and the artist is into the next stroke before they are put away (see the benchmark document, live brushes 28). Where the worker cannot start, the same work is done on the main thread.
 - An entry's "after" pixels are read back off the GPU once, on pen-up, and its "before" pixels come from a per-surface index of tile hashes the engine keeps in step with every upload, composite, duplicate and undo. That readback is the second sanctioned exception to D30, alongside `readPixels`: asynchronous, once per stroke, never inside a frame of drawing.
 - Undo is **session-scoped and local**. Cross-device history is served by version restore points (§9.4), not by the undo stack.
 

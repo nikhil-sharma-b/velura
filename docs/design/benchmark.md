@@ -1611,3 +1611,100 @@ its pickup control; the 512 px row still costs 5.2 ms more than its pickup
 control. This removes the first-use spike, not every cost of sampling. The
 allocations include cancel pages and further frozen pages as the six strokes
 reach new chunks; preparation moves only the first four pages out of painting.
+
+
+## History putting a stroke away, and the stroke after it (live brushes 28)
+
+Apple M4 (integrated, 16 GiB), 75 Hz display, Chrome/WebGPU, 2560 × 1440
+window, six strokes, 2026-10-12, on top of `954fb42`. The benchmark waits
+for history between strokes and an artist does not, so what history costs
+the stroke after the one it is putting away was in no row. It is now:
+`bun run bench/run.ts --wet --unwaited` runs the scattering rows paced,
+each with the wait and again without it, pen down 120 ms and two frames
+after pen up.
+
+**What history did on the main thread.** Timed in a scratch build, the
+strokes of the 512 px "wet, scatter" row at 8192², which read back 130 to
+480 tiles and found 95 to 347 of them changed:
+
+| step | where | a stroke of 300 to 480 tiles |
+|---|---|---:|
+| the readback, to the buffer being mapped | GPU, awaited | 35 to 155 ms |
+| each tile copied out of the mapped buffer | main thread, one task | 10 to 60 ms |
+| each tile checked for blank, hashed (two FNV passes in script), and copied into the store | main thread, one task | 185 to 425 ms |
+| each tile past the 64 MiB kept raw deflated, a `Blob` and a `CompressionStream` apiece, one after another | started and collected on the main thread | 1.6 to 2.0 s, some 5 to 8 ms a tile |
+
+The second and third are single tasks: nothing else ran on the thread
+until each was done, and the third alone is fifteen to thirty frames. The
+raw pool holds 128 tiles, so most of a thrown stroke is compressed as
+soon as it is stored. The compression's two seconds are wall time: how
+much of it was the main thread's own was not separated out.
+
+**What that cost.** One run before the change, the machine not otherwise
+idle (its waited column is itself above the table of live brushes 24 in
+places, the last row most of all, so read it for the difference and not
+the figures):
+
+| document | brush | paint | waited: first frame, median / worst | waited: all, median / p95 | unwaited: first frame, median / worst | unwaited: all, median / p95 |
+|---|---|---|---:|---:|---:|---:|
+| 2048² | 64 px | Dry, scatter | 1.9 / 14.0 ms | 12.4 / 14.8 ms | 5.5 / 20.0 ms | 13.9 / 19.2 ms |
+| 2048² | 64 px | Wet, scatter | 4.4 / 25.2 ms | 14.2 / 17.6 ms | 14.2 / 37.4 ms | 21.4 / 30.2 ms |
+| 2048² | 512 px | Dry, scatter | 3.1 / 7.2 ms | 13.1 / 15.5 ms | 4.3 / 8.6 ms | 13.2 / 20.4 ms |
+| 2048² | 512 px | Wet, scatter | 11.6 / 15.3 ms | 13.9 / 22.4 ms | 8.9 / 13.7 ms | 13.3 / 23.5 ms |
+| 8192² | 64 px | Dry, scatter | 2.6 / 15.1 ms | 13.6 / 18.4 ms | 4.4 / 19.1 ms | 14.1 / 18.3 ms |
+| 8192² | 64 px | Wet, scatter | 8.7 / 25.8 ms | 17.9 / 21.9 ms | 18.1 / 26.8 ms | 28.3 / 103.3 ms |
+| 8192² | 512 px | Dry, scatter | 3.5 / 12.2 ms | 14.0 / 16.5 ms | 12.1 / 23.5 ms | 15.0 / 22.0 ms |
+| 8192² | 512 px | Wet, scatter | 38.4 / 48.4 ms | 15.8 / 44.4 ms | 20.5 / 42.2 ms | 16.6 / 28.2 ms |
+
+The 64 px "wet, scatter" rows took it worst, a p95 of 30.2 ms against
+17.6 ms and of 103.3 ms against 21.9 ms: their strokes change as many
+tiles and draw more frames for history to be in the way of.
+
+**So the hashing and the compression are a worker's.** The tile store is
+given its work to do elsewhere (`engine/doc/tile-worker.ts`): a
+readback's tiles are transferred to the worker, checked for blank and
+hashed there, and handed back, so they are not copied and are stored as
+they are; a tile being compressed or read back from the compressed tiers
+is a message each way. The copy out of the mapped buffer stays on the
+main thread, where the buffer is, and is taken a millisecond at a time
+with the frame let in between. What is left on the main thread after a
+stroke is that copy, some ten tiles to the millisecond; moving the index
+onto the hashes, a map lookup a tile; and one 512 KiB copy for each tile
+sent to be compressed. Until the worker has said it loaded the work is
+done on the main thread as before, so a worker that cannot start costs
+frames and not pixels.
+
+With it:
+
+| document | brush | paint | waited: first frame, median / worst | waited: all, median / p95 | unwaited: first frame, median / worst | unwaited: all, median / p95 |
+|---|---|---|---:|---:|---:|---:|
+| 2048² | 64 px | Dry, scatter | 1.7 / 7.8 ms | 12.1 / 14.3 ms | 1.8 / 8.8 ms | 12.1 / 14.7 ms |
+| 2048² | 64 px | Wet, scatter | 4.1 / 19.7 ms | 13.4 / 17.0 ms | 3.9 / 18.4 ms | 13.1 / 16.4 ms |
+| 2048² | 512 px | Dry, scatter | 1.6 / 6.3 ms | 12.2 / 14.3 ms | 1.6 / 5.9 ms | 11.9 / 14.2 ms |
+| 2048² | 512 px | Wet, scatter | 4.9 / 12.6 ms | 12.6 / 16.9 ms | 4.7 / 11.7 ms | 12.6 / 16.9 ms |
+| 8192² | 64 px | Dry, scatter | 2.4 / 15.6 ms | 12.9 / 15.3 ms | 2.3 / 13.4 ms | 13.0 / 15.2 ms |
+| 8192² | 64 px | Wet, scatter | 5.1 / 25.1 ms | 15.5 / 18.8 ms | 5.5 / 24.3 ms | 15.8 / 19.4 ms |
+| 8192² | 512 px | Dry, scatter | 2.6 / 17.8 ms | 13.8 / 17.0 ms | 2.8 / 15.2 ms | 13.3 / 16.6 ms |
+| 8192² | 512 px | Wet, scatter | 11.7 / 28.9 ms | 14.2 / 22.7 ms | 10.8 / 24.7 ms | 14.5 / 23.1 ms |
+
+A stroke begun while history is putting the one before away holds the
+p95 it holds when history is waited for, to within 0.6 ms in every row,
+and opens as it does then. The waited columns are the table of live
+brushes 24 again: 22.7 ms for the 512 px "wet, scatter" row at 8192²,
+which is the sixteen dabs of a step in one frame (live brushes 29) and
+none of it history. No readback was begun with the pen down in either
+column: the one a stroke leaves starts on the frame after pen-up, and it
+is what follows it that the next stroke used to wait behind.
+
+**The benchmark gets the pass, as a flag and not in every run.** The
+recorded run and the sweeps go on waiting for history: their rows are a
+stroke alone, comparable with every run recorded before, and a row that
+also carried whatever history was doing would say less about either.
+`--wet --unwaited` is the pass a person's painting is, for when history
+or the store is what changed.
+
+**Not done.** The readback is still the tiles of the stroke's bounding
+box, of which a thrown stroke changed half to three quarters: the rest
+are read, hashed and found the same, on the worker now. The 160 to
+256 MiB buffer that takes is a mapped allocation between strokes and was
+not seen in a frame.
