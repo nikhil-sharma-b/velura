@@ -1800,3 +1800,18 @@ measured improvement while leaving ticket 29 incomplete. Batched deposition
 and eager initialization of four cancel pages did not close the gap and were
 removed, including their extra 48.189 MiB of batch arrays and 128 MiB of eager
 backup pages. Cancel pages continue to grow and be retained as before.
+
+Final paced and unpaced run of the split-kernel candidate (`ef296de`),
+`bun run bench/run.ts --wet --dab --large`, on an otherwise idle local host:
+
+| 8192², 512 px | unpaced ms/frame / sustained fps | opening median / worst | all frames median / p95 | dabs | painting readbacks / allocations |
+|---|---:|---:|---:|---:|---:|
+| Wet, pickup | 0.863 / 454.5 | 3.3 / 19.0 ms | 13.2 / 15.2 ms | 348 | 0 / 2 |
+| Wet, densest | 0.905 / 454.5 | 3.3 / 17.2 ms | 13.7 / 15.9 ms | 1376 | 0 / 2 |
+| Wet, scatter | 1.046 / 270.3 | 7.7 / 23.4 ms | 14.2 / 18.3 ms | 1424 | 0 / 6 |
+
+Scatter is cheaper than the ticket's recorded baseline, but its opening and
+p95 remain above these controls. The numbers support a partial improvement,
+not completion of the latency acceptance criterion. The six allocations are
+within the existing cancel-page growth and history behavior; no scratch,
+reservoir or compute resource is allocated per dab.
