@@ -1772,7 +1772,9 @@ read back would not be.
 
 **Not done.** The two seconds a thrown 512 px wet stroke takes to be put
 away are compression, a `CompressionStream` a tile on the worker, one
-after another (live brushes 32).
+after another. It is off the main thread and costs the next stroke no
+frames (live brushes 28), so it is left: what it could cost is an undo
+pressed inside those two seconds, which waits, and that was not measured.
 
 
 ## A large wet dab’s cost is deposition (live brushes 29)
