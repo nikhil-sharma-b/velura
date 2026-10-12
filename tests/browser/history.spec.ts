@@ -308,3 +308,87 @@ test("a stroke's tiles are hashed and compressed on a worker, which goes with th
   await page.evaluate(() => window.engine.dispose())
   await expect.poll(() => tileWorkers().length).toBe(0)
 })
+
+/** Four tiles by two, so a stroke corner to corner has a box of all eight. */
+const WIDE = { width: 1024, height: 512 }
+const TILE_BYTES = 256 * 256 * 8
+
+async function openWideCanvas(page: Page, wet: boolean) {
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.engine)
+  await page.evaluate(
+    async ([size, wet]) => {
+      window.remountEngine()
+      await window.engine.dispatch({
+        type: "resize",
+        ...(size as typeof WIDE),
+        devicePixelRatio: 1,
+      })
+      await window.engine.dispatch({ type: "initialize" })
+      await window.engine.dispatch({ type: "setStabilization", strength: 0 })
+      await window.engine.dispatch({
+        type: "setBrush",
+        radius: 6,
+        scatter: { amount: 8, count: 1, axes: "both" },
+        ...(wet ? { wet: { pickup: 0.5 }, flow: 0.5 } : {}),
+      })
+    },
+    [WIDE, wet] as const
+  )
+}
+
+/**
+ * Throws one scattered stroke corner to corner, answering how many tiles
+ * history read back for it: the size of the one buffer mapped for reading
+ * while the step was recorded, in tiles.
+ */
+async function scatteredStroke(page: Page): Promise<number> {
+  await page.evaluate(() => {
+    const { createBuffer } = GPUDevice.prototype
+    const mapped: number[] = []
+    GPUDevice.prototype.createBuffer = function (descriptor) {
+      if (descriptor.usage & GPUBufferUsage.MAP_READ)
+        mapped.push(descriptor.size)
+      return createBuffer.call(this, descriptor)
+    }
+    Object.assign(window, {
+      readbacks: () => {
+        GPUDevice.prototype.createBuffer = createBuffer
+        return mapped
+      },
+    })
+  })
+  const box = (await page.locator("canvas").boundingBox())!
+  await page.mouse.move(box.x + 40, box.y + 40)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 980, box.y + 480, { steps: 60 })
+  await page.mouse.up()
+  await page.waitForFunction(() => window.engine.historyUsage().steps > 0)
+  const mapped = await page.evaluate(() =>
+    (window as unknown as { readbacks: () => number[] }).readbacks()
+  )
+  expect(mapped).toHaveLength(1)
+  return mapped[0] / TILE_BYTES
+}
+
+for (const wet of [false, true])
+  test(`a scattered ${wet ? "wet" : "dry"} stroke reads back the tiles its dabs drew into, and is still undone exactly`, async ({
+    page,
+  }) => {
+    await openWideCanvas(page, wet)
+    const scene = await painted(page)
+    const tiles = await scatteredStroke(page)
+    // The stroke's box is all eight tiles; its dabs, thrown no further than
+    // 48 px from the diagonal, miss the two corners it does not pass through.
+    expect(tiles).toBeGreaterThan(1)
+    expect(tiles).toBeLessThanOrEqual(6)
+
+    // A tile drawn into and not read back would be left as the stroke made
+    // it by the undo, so every pixel is the check that none was missed.
+    const marked = await painted(page)
+    expect(marked).not.toEqual(scene)
+    await undo(page)
+    expect(await painted(page)).toEqual(scene)
+    await redo(page)
+    expect(await painted(page)).toEqual(marked)
+  })

@@ -1718,6 +1718,65 @@ the compressed tiers for an undo goes through the worker too, a message
 and a copy each way, and was not timed.
 
 
+## History reads back the tiles a stroke drew into (live brushes 30)
+
+Apple M4 (integrated, 16 GiB), 75 Hz display, Chrome/WebGPU, 2560 × 1440
+window, six strokes, 2026-10-12, on top of `3600b4b`. A stroke was read
+back as every tile of the box round it, in one buffer. The renderer now
+says which tiles its dabs drew into and history reads those alone: a
+direct stroke's are the tiles it kept for a cancel, each copied out as a
+dab first wrote to it, and a buffered stroke's are those under each dab's
+square out to √2 radii, which is as far as the stamp pass may write, of
+the region that was landed.
+
+`bun run bench/run.ts --wet --unwaited` gained two columns for it: the
+largest buffer mapped for reading over the row's two runs, at 512 KiB a
+tile, and the time from each pen-up to `engine.save()` resolving, median
+and worst of the six strokes, taken in the run that waits for history
+(unwaited, the stroke after is being recorded by then and the two are not
+told apart). The harness has nowhere to save to, so that is history: the
+two frames to the readback starting, the readback, the hashing, and the
+compression of what is past the 64 MiB kept raw. One run each:
+
+| document | brush | paint | largest readback, before | after | pen-up to history settled, median / worst, before | after |
+|---|---|---|---:|---:|---:|---:|
+| 2048² | 64 px | Dry, scatter | 12.0 MiB | 9.5 MiB | 26 / 28 ms | 23 / 27 ms |
+| 2048² | 64 px | Wet, scatter | 12.0 MiB | 8.5 MiB | 23 / 31 ms | 25 / 28 ms |
+| 2048² | 512 px | Dry, scatter | 32.0 MiB | 32.0 MiB | 125 / 131 ms | 131 / 134 ms |
+| 2048² | 512 px | Wet, scatter | 32.0 MiB | 32.0 MiB | 452 / 558 ms | 461 / 570 ms |
+| 8192² | 64 px | Dry, scatter | 101.5 MiB | 39.5 MiB | 190 / 300 ms | 102 / 156 ms |
+| 8192² | 64 px | Wet, scatter | 98.0 MiB | 35.5 MiB | 259 / 293 ms | 150 / 204 ms |
+| 8192² | 512 px | Dry, scatter | 240.0 MiB | 195.0 MiB | 620 / 641 ms | 485 / 552 ms |
+| 8192² | 512 px | Wet, scatter | 240.0 MiB | 169.5 MiB | 1996 / 2429 ms | 2010 / 2274 ms |
+
+The 64 px rows at 8192² read back some 200 tiles and now read 70 to 80,
+and settle in a little over half the time. The 2048² document is 64
+tiles, and a 512 px brush thrown across it draws into every one: nothing
+to leave out. The 512 px "wet, scatter" row at 8192² reads 339 tiles
+where it read 480, 70 MiB less to map and copy out, and settles no
+sooner: its two seconds are the compression of the tiles that changed,
+which are the same tiles as before; the hundred and forty left out
+were hashed, found the same and dropped, and were not where the time
+went. The dry
+row beside it settles in a third of the time with more tiles read, and
+does gain. The pen-to-pixel columns of the run are where
+they were, within its spread.
+
+That a stroke's readback is its dabs' tiles and no others is held by
+tests: `tests/unit/history.test.ts` for what history asks of the bridge,
+`tests/unit/tile-grid.test.ts` for the set, and
+`tests/browser/history.spec.ts`, where a scattered stroke, dry and wet,
+thrown corner to corner of a four by two tile canvas reads back six
+tiles at most and is undone to the pixel, which a tile drawn into and not
+read back would not be.
+
+**Not done.** The two seconds a thrown 512 px wet stroke takes to be put
+away are compression, a `CompressionStream` a tile on the worker, one
+after another. It is off the main thread and costs the next stroke no
+frames (live brushes 28), so it is left: what it could cost is an undo
+pressed inside those two seconds, which waits, and that was not measured.
+
+
 ## A large wet dab’s cost is deposition (live brushes 29)
 
 Apple M4, Chrome 153/WebGPU, 2026-10-12. The diagnostic uses warm textures;

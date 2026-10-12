@@ -5111,14 +5111,14 @@ export function createEngine(
       // already.
       const direct = directTargetId
       directTargetId = undefined
-      const region = direct ? renderer?.endDirect(true) : renderer?.endStroke()
+      const mark = direct ? renderer?.endDirect(true) : renderer?.endStroke()
       if (direct) publish({ brushDirty: renderer?.brushDirty() ?? false })
-      // One stroke, one step. The region the mark landed in is read back off
-      // the GPU after the frame, never during one.
-      if (region && doc) {
+      // One stroke, one step. The tiles the mark's dabs drew into are read
+      // back off the GPU after the frame, never during one.
+      if (mark && doc) {
         const target = direct ?? paintTargetId(doc)
-        history?.recordStroke(target, region)
-        contentBounds.grow(target, region)
+        history?.recordStroke(target, mark.region, mark.tiles)
+        contentBounds.grow(target, mark.region)
         invalidateThumbnailsOf(target)
       }
     }

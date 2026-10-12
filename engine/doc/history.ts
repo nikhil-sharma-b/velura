@@ -120,8 +120,17 @@ export interface DocumentHistory {
     tiles: readonly (TileCoord & { texels: Uint16Array })[],
     canvas: { width: number; height: number }
   ): void
-  /** One stroke, one step: reads back what the mark left in `region` (D27). */
-  recordStroke(surfaceId: string, region: PixelRect): void
+  /**
+   * One stroke, one step: reads back what the mark left in `region` (D27).
+   * Given the `tiles` its dabs drew into, those are read and no others: a
+   * thrown stroke's region is mostly tiles it never reached (live brushes
+   * 30).
+   */
+  recordStroke(
+    surfaceId: string,
+    region: PixelRect,
+    tiles?: readonly TileCoord[]
+  ): void
   /** One discrete layer operation, as the tree before and after it. */
   recordOperation(
     label: string,
@@ -380,7 +389,7 @@ export function createDocumentHistory(options: {
   }
 
   /**
-   * What a region of a surface holds now, as the step that put it there.
+   * What tiles of a surface hold now, as the step that put them there.
    *
    * The pixels are read back off the GPU rather than handed over, which is
    * what a stroke needs — the mark was drawn there, not computed here — and
@@ -389,10 +398,9 @@ export function createDocumentHistory(options: {
    */
   async function captureReadback(
     surfaceId: string,
-    region: PixelRect,
+    coords: readonly TileCoord[],
     stillCurrent: () => boolean
   ): Promise<SurfaceChange | undefined> {
-    const coords = tilesCoveringRect(region)
     if (coords.length === 0) return undefined
     // Hashed before anything is stored, and not here: a thrown stroke reads
     // back hundreds of tiles, and going over every byte of them on this
@@ -505,9 +513,13 @@ export function createDocumentHistory(options: {
         options.onCommit?.()
       })
     },
-    recordStroke(surfaceId, region) {
+    recordStroke(surfaceId, region, tiles) {
       enqueue(async (stillCurrent) => {
-        const change = await captureReadback(surfaceId, region, stillCurrent)
+        const change = await captureReadback(
+          surfaceId,
+          tiles ?? tilesCoveringRect(region),
+          stillCurrent
+        )
         if (!change) return
         pushEntry({ label: "stroke", surfaces: [change] })
       })
@@ -556,7 +568,7 @@ export function createDocumentHistory(options: {
         for (const surface of operation?.readback ?? []) {
           const change = await captureReadback(
             surface.surfaceId,
-            surface.region,
+            tilesCoveringRect(surface.region),
             stillCurrent
           )
           if (!change) return

@@ -102,7 +102,12 @@ type Pass = {
 }
 
 /** A pass with what is kept out of the recorded summary. */
-type Measured = Pass & { frames: FrameTiming[]; strokeStarts: number[] }
+type Measured = Pass & {
+  frames: FrameTiming[]
+  strokeStarts: number[]
+  readbackBytes: number
+  historySettledMs: number[]
+}
 
 type BenchRun = {
   version: 1
@@ -188,6 +193,8 @@ async function measure(
       }),
       frames: result.frames,
       strokeStarts: result.strokeStarts,
+      readbackBytes: result.readbackBytes,
+      historySettledMs: result.historySettledMs,
     }
   } finally {
     await browser.close()
@@ -495,6 +502,7 @@ const WET_PAINTS = process.argv.includes("--blender")
  */
 async function wetSweep(): Promise<void> {
   if (process.argv.includes("--unwaited")) return unwaitedSweep()
+  if (process.argv.includes("--pause")) return pauseSweep()
   const paced = PASSES.find((entry) => entry.name === "paced")!
   const unpaced = PASSES.find((entry) => entry.name === "unpaced")!
   // The acceptance comparison for the first sampling stroke (live brushes
@@ -544,6 +552,41 @@ async function wetSweep(): Promise<void> {
 }
 
 /**
+ * What a pause before pen-down costs the frame a stroke opens in (live
+ * brushes 31): the 512 px rows at 8192², paced, each with no wait but
+ * history's and again with `--pause`'s milliseconds more, two seconds where
+ * none is given. Every stroke's opening frame is printed, since whether one
+ * misses the display's frame is in the worst of them and not the median.
+ */
+async function pauseSweep(): Promise<void> {
+  const paced = PASSES.find((entry) => entry.name === "paced")!
+  const given = Number(process.argv[process.argv.indexOf("--pause") + 1])
+  const pauseMs = Number.isFinite(given) && given > 0 ? given : 2000
+  console.log(
+    `\n  8192², 512 px, paced: pen-to-pixel of each stroke's first frame in ms, sorted` +
+      `\n  paint            pause      median / worst   each stroke`
+  )
+  for (const { name, ...paint } of WET_PAINTS)
+    for (const pause of [0, pauseMs]) {
+      const held = await measure(paced, {
+        ...BENCHMARK_WORKLOAD,
+        width: 8192,
+        height: 8192,
+        strokes: SWEEP_STROKES,
+        wet: { diameter: 512, ...paint },
+        ...(pause ? { pauseMs: pause } : {}),
+      })
+      const opening = openingFrames(held).sort((a, b) => a - b)
+      console.log(
+        `  ${name.padEnd(15)}  ${`${pause} ms`.padStart(7)}   ` +
+          `${fixed(middle(opening)).padStart(8)} / ${fixed(Math.max(...opening)).padEnd(6)}   ` +
+          opening.map((ms) => fixed(ms)).join("  ")
+      )
+    }
+  console.log()
+}
+
+/**
  * What history costs the stroke after the one it is putting away (live
  * brushes 28): the scattering rows, whose strokes change the most tiles,
  * paced, each with the pen waiting for history between strokes and again
@@ -556,7 +599,7 @@ async function unwaitedSweep(): Promise<void> {
   const paints = WET_PAINTS.filter(({ name }) => name.endsWith("scatter"))
   console.log(
     "\n                                    paced, pen-to-pixel in ms: history waited for             history not waited for" +
-      "\n  document  brush   paint         first frame (median / worst)   all (median / p95)   first frame (median / worst)   all (median / p95)   readbacks"
+      "\n  document  brush   paint         first frame (median / worst)   all (median / p95)   first frame (median / worst)   all (median / p95)   readbacks   largest readback   pen-up to history settled (median / worst)"
   )
   for (const size of SMUDGE_SIZES)
     for (const diameter of WET_DIAMETERS)
@@ -570,10 +613,14 @@ async function unwaitedSweep(): Promise<void> {
         }
         const cells: string[] = []
         let readbacks = 0
+        let readbackBytes = 0
+        let settled: number[] = []
         for (const unwaited of [false, true]) {
           const held = await measure(paced, { ...workload, unwaited })
           const opening = openingFrames(held)
           readbacks += held.readbacks
+          readbackBytes = Math.max(readbackBytes, held.readbackBytes)
+          if (!unwaited) settled = held.historySettledMs
           cells.push(
             `${fixed(middle(opening)).padStart(12)} / ${fixed(Math.max(...opening)).padEnd(13)}   ` +
               `${fixed(held.report.latencyMs.median).padStart(7)} / ${fixed(held.report.latencyMs.p95).padEnd(8)}`
@@ -581,7 +628,9 @@ async function unwaitedSweep(): Promise<void> {
         }
         console.log(
           `  ${`${size}²`.padEnd(8)}  ${`${diameter} px`.padEnd(6)}  ${name.padEnd(12)}  ` +
-            `${cells.join("   ")}   ${String(readbacks).padStart(9)}`
+            `${cells.join("   ")}   ${String(readbacks).padStart(9)}   ` +
+            `${`${fixed(readbackBytes / 2 ** 20)} MiB`.padStart(16)}   ` +
+            `${fixed(middle(settled), 0).padStart(12)} / ${fixed(Math.max(...settled), 0)} ms`
         )
       }
   console.log()

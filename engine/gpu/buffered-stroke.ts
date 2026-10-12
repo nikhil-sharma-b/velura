@@ -1,10 +1,10 @@
 import type { Accumulation } from "../brush/round-brush"
-import type { PixelRect } from "../doc/tile-grid"
+import { createTouchedTiles, type PixelRect } from "../doc/tile-grid"
 import { clearRegionShader } from "../shaders/clear-region"
 import { stampShader } from "../shaders/stamp"
 import { STAMP, STAMP_STRIDE } from "./stamp-instance"
 import { createStampLog } from "./stamp-log"
-import type { StrokeRenderer } from "./stroke-renderer"
+import type { StrokeMark, StrokeRenderer } from "./stroke-renderer"
 import { LAYER_FORMAT, type Surface } from "./surface"
 
 /** Inverse coverage per stroke pixel (D27); the stamp and clear passes share it. */
@@ -263,12 +263,16 @@ export function createBufferedStroke(
   // Mutated rather than replaced: an empty region is one that has not been
   // grown yet, so the bounds start inverted.
   const painted = { left: 0, top: 0, right: 0, bottom: 0 }
+  // The tiles under each dab, for history: the region is one box, and a
+  // scattering stroke's is mostly tiles no dab reached (live brushes 30).
+  const paintedTiles = createTouchedTiles()
 
   function resetPainted() {
     painted.left = Infinity
     painted.top = Infinity
     painted.right = -Infinity
     painted.bottom = -Infinity
+    paintedTiles.clear()
   }
   resetPainted()
 
@@ -283,6 +287,15 @@ export function createBufferedStroke(
       painted.top = Math.min(painted.top, y - radius)
       painted.right = Math.max(painted.right, x + radius)
       painted.bottom = Math.max(painted.bottom, y + radius)
+      // As far as the stamp pass may write: a rotated tip's corners carry
+      // ink past the radius, and the region may hold them for another dab.
+      const reach = radius * Math.SQRT2
+      paintedTiles.include(
+        Math.floor(x - reach),
+        Math.floor(y - reach),
+        Math.ceil(x + reach),
+        Math.ceil(y + reach)
+      )
     }
   }
 
@@ -429,15 +442,16 @@ export function createBufferedStroke(
 
   /**
    * Composites the stroke buffer into the surface it lands on, once, at
-   * stroke opacity. Answers the region the mark landed in, or null when the
-   * stroke drew nothing.
+   * stroke opacity. Answers the region the mark landed in and the tiles of
+   * it a dab reached, or null when the stroke drew nothing.
    */
-  function land(): PixelRect | null {
+  function land(): StrokeMark | null {
     const buffer = context.buffer()
     const target = context.target()
     if (!buffer || !target)
       throw new Error("There is no active layer to paint into.")
     const region = paintedScissor()
+    const tiles = region ? paintedTiles.within(region) : []
     log.reset()
     resetPainted()
     if (!region) return null
@@ -448,7 +462,7 @@ export function createBufferedStroke(
     // Nothing between strokes should depend on the last stroke's opacity.
     writeStrokeOpacity(1)
     writeStrokeMode("paint")
-    return region
+    return { region, tiles }
   }
 
   return {

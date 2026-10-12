@@ -97,6 +97,12 @@ export type WorkloadOptions = {
    */
   unwaited?: boolean
   /**
+   * Milliseconds the pen waits before each pen-down, after history (live
+   * brushes 31): a person pauses between strokes, and what a stroke draws
+   * into may have gone cold by then. Absent, no wait but history's.
+   */
+  pauseMs?: number
+  /**
    * Paints the workload a second time over itself with a wet brush
    * `diameter` pixels across (live brushes 10, 11): the strokes are painted
    * once, untimed, so there is paint underneath, and then drawn again along

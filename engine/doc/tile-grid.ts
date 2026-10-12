@@ -81,6 +81,52 @@ export function tilesCoveringRect(rect: PixelRect): TileCoord[] {
   return tiles
 }
 
+export interface TouchedTiles {
+  /** A box in pixels, its right and bottom edges exclusive. */
+  include(left: number, top: number, right: number, bottom: number): void
+  /** The tiles touched that `region` reaches, along the rows. */
+  within(region: PixelRect): TileCoord[]
+  clear(): void
+}
+
+/** As many columns as a key keeps apart: more than any document is wide. */
+const TOUCHED_COLUMNS = 1 << 16
+
+/**
+ * The tiles a stroke's dabs drew into, each dab's own and not those of the
+ * box round them all: a thrown stroke's box is mostly tiles no dab reached,
+ * and history reads back every tile it is given (live brushes 30).
+ */
+export function createTouchedTiles(): TouchedTiles {
+  const touched = new Set<number>()
+  return {
+    include(left, top, right, bottom) {
+      if (right <= left || bottom <= top) return
+      const lastColumn = tileIndexForPixel(right - 1)
+      const lastRow = tileIndexForPixel(bottom - 1)
+      for (let row = Math.max(0, tileIndexForPixel(top)); row <= lastRow; row++)
+        for (
+          let column = Math.max(0, tileIndexForPixel(left));
+          column <= lastColumn;
+          column++
+        )
+          touched.add(row * TOUCHED_COLUMNS + column)
+    },
+    within(region) {
+      return [...touched]
+        .sort((a, b) => a - b)
+        .map((key) => ({
+          x: key % TOUCHED_COLUMNS,
+          y: Math.floor(key / TOUCHED_COLUMNS),
+        }))
+        .filter((coord) => intersectRect(tileBounds(coord), region))
+    },
+    clear() {
+      touched.clear()
+    },
+  }
+}
+
 export interface DirtyRegion {
   include(rect: PixelRect): void
   bounds(): PixelRect | null
