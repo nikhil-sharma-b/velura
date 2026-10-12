@@ -980,6 +980,10 @@ ground this brush had already covered opened in 3.2 ms dry and 3.7 ms wet
 with pickup. What the remaining 10 ms of a thrown, picking-up stroke's
 first frame is was not found.
 
+It was found later (live brushes 24, below): the wait before the stroke,
+which the changes in the table above each shortened. That table measures
+how long history took, and not what its rows name.
+
 ## Sample all layers (live brushes 15)
 
 Measured on 11 October 2026 on Apple M4 with `bun run bench/run.ts --wet`, at `596d4c7`. The added row first paints its ground, adds an empty layer above it, enables sampling and runs the same wet workload. Other rows retain the active-layer source. Browser regressions ran concurrently with the early 2048² rows; the 8192² rows ran after them. The display remains 75 Hz.
@@ -1302,3 +1306,160 @@ spacing. The same Apple M4 smudge sweep, without browser-test load, measured:
 The 4 px row remains level with the default-size smudge. This validation
 preceded moving the unchanged compute shader body into a `.wgsl` file to
 follow D34; the arithmetic and workgroup size remain the same.
+
+## A stroke after a pause opened late: cold textures (live brushes 24)
+
+Apple M4 (integrated, 16 GiB), 75 Hz display, Chrome/WebGPU, 2560 × 1440
+window, six strokes, 2026-10-12, on top of `0ed1d61`. The row live brushes
+20 left open, 8192², 512 px, wet with heavy pickup, count 16 thrown four
+radii, opened a stroke in 20.1 ms and held a p95 of 22.3 ms. They were two
+things, and neither was pickup. The first is fixed here.
+
+**The opening frame was the pause before it.** The frame's submissions were
+each given a fence of their own (a scratch build, not shipped), and after a
+thrown stroke the first of them, the two clears of the reservoir at
+pen-down, took 14.5 ms to come back where it takes 1.1 ms after an
+unscattered stroke, with the main thread free: the frame after it ran on
+time. The benchmark waits for history between strokes, and history takes
+about two seconds to put a thrown stroke's 300 to 500 patchwork tiles away,
+so that row and no other went down two seconds after the last frame. Giving
+the other rows the same wait gave them the same frame, 8192², paced, the
+median opening frame of six strokes:
+
+| row | waited for history only | and 500 ms | and 1000 ms | and 2000 ms |
+|---|---:|---:|---:|---:|
+| 512 px, wet, pickup | 3.0 ms | 5.0 ms | | 36.5 ms |
+| 512 px, dry, scatter | 2.7 ms | | 22.1 ms | 32.9 ms |
+| 512 px, wet, scatter | 20.6 ms | 39.4 ms | | 40.5 ms |
+
+On a 2048² document the first of those rows opened in 13.6 ms after two
+seconds. So it is any brush, it grows with the document, and it is the
+wait. That is why the one-variable table of live brushes 20 read as it
+did: laying a flat colour, laying no pickup, or throwing less each left
+tiles that compress quickly, a shorter wait, and a frame on time. None of
+those rows measured what it changed.
+
+**It is the texture, left alone.** With no engine in the way,
+`bun run bench/run.ts --cold` draws 512 px, scissored, into a texture the
+size of a layer after leaving it for a time, and times the draw to the
+GPU's fence, median of three:
+
+| texture | left for | ms |
+|---|---|---:|
+| 2048² | 0 ms | 0.5 |
+| 2048² | 500 ms | 2.2 |
+| 2048² | 1000 ms | 2.2 |
+| 2048² | 2000 ms | 6.9 |
+| 2048² | 4000 ms | 6.5 |
+| 2048² | 4100 ms, another texture drawn into every 800 ms | 2.1 |
+| 2048² | 4100 ms, a pass that draws nothing into it every 800 ms | 2.0 |
+| 8192² | 0 ms | 1.0 |
+| 8192² | 500 ms | 2.1 |
+| 8192² | 1000 ms | 2.3 |
+| 8192² | 2000 ms | 24.6 |
+| 8192² | 4000 ms | 24.4 |
+| 8192² | 4100 ms, another texture drawn into every 800 ms | 19.2 |
+| 8192² | 4100 ms, a pass that draws nothing into it every 800 ms | 1.8 |
+
+A texture that no pass has drawn into for between one and two seconds
+costs the next pass that does about 20 ms at 8192² rgba16float and 5 ms
+at 2048², once, and the pass after it nothing. At 2048² a draw into
+another texture meanwhile spared it; at 8192² it did not. Keeping the GPU busy does not prevent it: empty
+command buffers, a small pass, or a clear of another 8192² texture every
+16 ms each left the engine's opening frame where it was. A pass into the
+same texture that loads, stores and draws nothing does prevent it. A copy
+into or out of it pays the same on first use and leaves a draw still slow
+by 4 to 5 ms. What the driver does to a texture left alone was not looked
+into; the system compressed and swapped nothing during a run. It is this
+machine's GPU and driver that were measured, and no other.
+
+**So what a stroke draws into is kept warm**: every 800 ms while the artist
+is at the canvas and no frame is in flight, one pass each that draws
+nothing into the surface being painted, the stroke buffer and its coverage
+depth, and the reservoir textures (see the architecture document). Warming
+the surface alone took the thrown row's opening frame from 20 ms to 12 to
+14 ms; the depth texture was 4 ms of a dry stroke's opening frame after two
+seconds (9.5 ms with the two surfaces warm, 5 to 6.5 ms with it warm too).
+
+**The rest is sixteen dabs in one frame.** With everything warm the row
+opens in 10 to 12 ms and its p95 has not moved. By the dabs a frame drew,
+paced, and the fence of the submission that drew them:
+
+| frames that drew | frames | pen-to-pixel, median / p95 | the dabs' submission, median |
+|---|---:|---:|---:|
+| no dab | 362 | 14.0 / 16.3 ms | |
+| sixteen dabs | 94 | 20.8 / 27.4 ms | 7.4 ms |
+
+One frame in five draws a whole step, and the p95 of the row is inside
+those: the floor times the count holds the dabs of a frame on the whole
+and not in any one. Sixteen 512 px dabs with pickup are 7.4 ms of drawing,
+0.46 ms each.
+
+Holding a step's dabs and laying four a frame was tried and not kept. It
+read well: the row opened in 5.5 ms and its p95 was 19.0 ms. But
+pen-to-pixel is timed from the oldest sample a frame consumes, and a held
+dab is laid one to three frames after the sample that placed it, which
+the fence does not see. The paint was later and the number said earlier.
+The dab has to be cheaper, and that is live brushes 29.
+
+**The bench's unpaced mean now leaves out the pause between strokes.** It
+was a mean over every interval between frames, the pen being up among
+them, so a row's ms/frame carried however long history took: 3.65 ms for
+the thrown row where a frame of it costs 1.06 ms. `summarize` is given
+where each stroke began and drops the interval that ends there. The
+unpaced figures in this table are lower than their like in the tables
+above for that (0.31 ms against 0.52 ms at 2048², 0.86 ms against 1.3 ms
+at 8192²); sustained fps is the p95 interval and barely moves. The
+recorded history in `bench/results` compares runs made before and after
+this as if they were alike, and they are not.
+
+With the warming:
+
+| document | brush | paint | ms/frame, unpaced | sustained fps | stroke's first frame, median / worst | all frames, median / p95 | dabs | readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 64 px | Dry | 0.311 | 1428.6 | 1.7 / 6.8 ms | 11.7 / 14.6 ms | 617 | 0 | 0 |
+| 2048² | 64 px | Wet | 0.314 | 1428.6 | 1.9 / 15.8 ms | 12.4 / 15.4 ms | 617 | 0 | 1 |
+| 2048² | 64 px | Wet, pickup | 0.314 | 1428.6 | 2.0 / 15.5 ms | 12.8 / 15.8 ms | 615 | 0 | 1 |
+| 2048² | 64 px | Wet, all layers | 0.325 | 1428.6 | 2.5 / 24.4 ms | 12.7 / 15.4 ms | 614 | 0 | 6 |
+| 2048² | 64 px | Wet, densest | 0.321 | 1250.0 | 2.0 / 17.4 ms | 13.5 / 17.3 ms | 1,230 | 0 | 1 |
+| 2048² | 64 px | Dry, scatter | 0.317 | 1428.6 | 1.8 / 7.7 ms | 12.3 / 15.9 ms | 9,872 | 0 | 0 |
+| 2048² | 64 px | Wet, scatter | 0.322 | 1111.1 | 3.9 / 17.2 ms | 13.6 / 17.7 ms | 1,280 | 0 | 1 |
+| 2048² | 512 px | Dry | 0.310 | 1111.1 | 1.7 / 6.2 ms | 12.0 / 15.1 ms | 80 | 0 | 0 |
+| 2048² | 512 px | Wet | 0.312 | 1250.0 | 1.9 / 12.1 ms | 12.1 / 14.8 ms | 80 | 0 | 1 |
+| 2048² | 512 px | Wet, pickup | 0.317 | 1111.1 | 2.0 / 10.9 ms | 12.1 / 14.7 ms | 80 | 0 | 1 |
+| 2048² | 512 px | Wet, all layers | 0.323 | 1000.0 | 3.7 / 16.7 ms | 12.2 / 15.2 ms | 80 | 0 | 6 |
+| 2048² | 512 px | Wet, densest | 0.321 | 1428.6 | 2.0 / 13.2 ms | 12.8 / 16.3 ms | 311 | 0 | 1 |
+| 2048² | 512 px | Dry, scatter | 0.312 | 1111.1 | 1.9 / 4.8 ms | 12.1 / 15.2 ms | 1,280 | 0 | 0 |
+| 2048² | 512 px | Wet, scatter | 0.337 | 909.1 | 4.4 / 12.1 ms | 12.2 / 16.0 ms | 352 | 0 | 1 |
+| 8192² | 64 px | Dry | 0.861 | 476.2 | 2.6 / 11.6 ms | 13.2 / 16.0 ms | 2,744 | 0 | 0 |
+| 8192² | 64 px | Wet | 0.880 | 476.2 | 2.6 / 18.4 ms | 13.8 / 17.9 ms | 2,744 | 0 | 1 |
+| 8192² | 64 px | Wet, pickup | 0.883 | 500.0 | 2.8 / 20.0 ms | 13.8 / 17.8 ms | 2,751 | 0 | 1 |
+| 8192² | 64 px | Wet, all layers | 0.899 | 454.5 | 4.6 / 38.5 ms | 14.1 / 17.7 ms | 2,744 | 0 | 13 |
+| 8192² | 64 px | Wet, densest | 0.912 | 476.2 | 2.8 / 23.6 ms | 14.8 / 19.0 ms | 5,481 | 0 | 1 |
+| 8192² | 64 px | Dry, scatter | 0.857 | 500.0 | 3.6 / 16.8 ms | 13.0 / 15.8 ms | 44,016 | 0 | 0 |
+| 8192² | 64 px | Wet, scatter | 0.930 | 400.0 | 5.8 / 26.3 ms | 15.7 / 19.2 ms | 5,568 | 0 | 2 |
+| 8192² | 512 px | Dry | 0.840 | 476.2 | 2.3 / 9.9 ms | 13.1 / 15.8 ms | 348 | 0 | 0 |
+| 8192² | 512 px | Wet | 0.852 | 476.2 | 3.1 / 13.3 ms | 13.3 / 16.1 ms | 348 | 0 | 3 |
+| 8192² | 512 px | Wet, pickup | 0.866 | 476.2 | 4.9 / 13.6 ms | 13.1 / 15.9 ms | 348 | 0 | 3 |
+| 8192² | 512 px | Wet, all layers | 0.880 | 500.0 | 4.2 / 30.4 ms | 13.4 / 16.8 ms | 348 | 0 | 21 |
+| 8192² | 512 px | Wet, densest | 0.918 | 434.8 | 2.8 / 15.8 ms | 14.1 / 17.7 ms | 1,376 | 0 | 3 |
+| 8192² | 512 px | Dry, scatter | 0.846 | 500.0 | 3.3 / 12.5 ms | 13.1 / 16.3 ms | 5,568 | 0 | 0 |
+| 8192² | 512 px | Wet, scatter | 1.062 | 285.7 | 11.3 / 20.3 ms | 14.3 / 22.5 ms | 1,424 | 0 | 9 |
+
+The 512 px "wet, scatter" row at 8192² opens in 11.3 ms, from 20.1 ms:
+inside the panel's 13.3 ms frame, and not the 2.3 to 4.9 ms of the other
+512 px rows, since it opens on sixteen dabs where they open on one. Its
+p95 is 22.5 ms, where it was, against their 15.8 to 17.7 ms. The 64 px
+"wet, scatter" row at 8192² is the same shape smaller: 5.8 ms to open and
+a p95 of 19.2 ms. Both are the dabs of a step in one frame (live brushes
+29). The other rows are within their run-to-run spread of the tables
+above. The worst column is each row's first stroke, which no stroke before
+it has warmed the pipelines or the pages for.
+
+**History and the next stroke.** Waited for, history is out of the opening
+frame: the wait made the textures cold and nothing else of it reached the
+frame. An artist does not wait for it, and what history costs a stroke
+begun while it is still putting the one before away was not measured on
+what ships: a scratch run with the wait taken out of the driver, made
+while the dabs were held, opened in 5.8 to 9.6 ms against 5.5 ms and held
+a p95 of 21.6 ms against 19.0 ms. That is live brushes 28's.

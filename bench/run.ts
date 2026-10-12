@@ -20,6 +20,7 @@
  * smudges the painting against painting it (smudge 01); `--wet` paints over
  * it with wet brushes against the same brushes dry (live brushes 10);
  * `--blender` compares small blenders with wet brushes that have flow;
+ * `--cold` times a draw into a texture left alone (live brushes 24);
  * `--vector` times
  * redrawing a vector layer of many paths (19); `--navigate` times panning and
  * zooming a stack whose caches each step rebuilds (sharp-zoom 01). They are
@@ -175,7 +176,10 @@ async function measure(
       readbacks: result.readbacks,
       readbacksTotal: result.readbacksTotal,
       allocations: result.allocations,
-      report: summarize(result.frames, { warmupFrames: WARMUP_FRAMES }),
+      report: summarize(result.frames, {
+        warmupFrames: WARMUP_FRAMES,
+        strokeStarts: result.strokeStarts,
+      }),
       frames: result.frames,
       strokeStarts: result.strokeStarts,
     }
@@ -516,6 +520,128 @@ async function wetSweep(): Promise<void> {
 }
 
 /**
+ * What a texture left alone costs the next pass drawn into it (live brushes
+ * 24), with no engine in the way: a 512 px scissored draw into a layer-sized
+ * texture, timed to the GPU's fence after each length of idleness, and again
+ * with something done every 800 ms of the wait. It is why a stroke that
+ * opens after a pause opened late, and what the engine's warming is sized by.
+ */
+const COLD_SIZES = [2048, 8192]
+const COLD_IDLE_MS = [0, 500, 1000, 2000, 4000]
+
+async function coldSweep(): Promise<void> {
+  const browser = await launch([])
+  try {
+    const page = await browser.newPage()
+    page.on("pageerror", (error) => console.error("page error:", error.message))
+    await page.goto(HARNESS)
+    const rows = await page.evaluate(
+      async ({ sizes, idles }) => {
+        const adapter = await navigator.gpu.requestAdapter()
+        if (!adapter) throw new Error("No adapter.")
+        const device = await adapter.requestDevice({
+          requiredLimits: { maxTextureDimension2D: Math.max(...sizes) },
+        })
+        const sleep = (ms: number) =>
+          new Promise<void>((resolve) => setTimeout(resolve, ms))
+        const shader = device.createShaderModule({
+          code: `@vertex fn v(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+            var corners = array(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3));
+            return vec4f(corners[i], 0, 1);
+          }
+          @fragment fn f() -> @location(0) vec4f { return vec4f(0.5); }`,
+        })
+        const pipeline = device.createRenderPipeline({
+          layout: "auto",
+          vertex: { module: shader },
+          fragment: { module: shader, targets: [{ format: "rgba16float" }] },
+        })
+        const layer = (size: number) =>
+          device
+            .createTexture({
+              size: [size, size],
+              format: "rgba16float",
+              usage:
+                GPUTextureUsage.RENDER_ATTACHMENT |
+                GPUTextureUsage.TEXTURE_BINDING,
+            })
+            .createView()
+        /** A pass into `view`, with a dab's worth drawn or nothing drawn. */
+        const pass = (view: GPUTextureView, draws: boolean, clears = false) => {
+          const encoder = device.createCommandEncoder()
+          const drawn = encoder.beginRenderPass({
+            colorAttachments: [
+              { view, loadOp: clears ? "clear" : "load", storeOp: "store" },
+            ],
+          })
+          if (draws) {
+            drawn.setPipeline(pipeline)
+            drawn.setScissorRect(100, 100, 512, 512)
+            drawn.draw(3)
+          }
+          drawn.end()
+          device.queue.submit([encoder.finish()])
+        }
+        const timedDab = async (view: GPUTextureView) => {
+          const start = performance.now()
+          pass(view, true)
+          await device.queue.onSubmittedWorkDone()
+          return performance.now() - start
+        }
+        const middle = (values: number[]) =>
+          [...values].sort((a, b) => a - b)[values.length >> 1]
+        const rows: { size: number; wait: string; ms: number }[] = []
+        for (const size of sizes) {
+          const view = layer(size)
+          const other = layer(size)
+          pass(view, false, true)
+          pass(other, false, true)
+          await timedDab(view)
+          const measure = async (wait: string, idle: () => Promise<void>) => {
+            const times: number[] = []
+            for (let i = 0; i < 3; i++) {
+              await idle()
+              times.push(await timedDab(view))
+            }
+            rows.push({ size, wait, ms: middle(times) })
+          }
+          for (const idle of idles)
+            await measure(`${idle} ms, untouched`, () => sleep(idle))
+          const kept = (touch: () => void) => async () => {
+            for (let i = 0; i < 5; i++) {
+              await sleep(800)
+              touch()
+            }
+            await sleep(100)
+          }
+          await measure(
+            "4100 ms, another texture drawn into every 800 ms",
+            kept(() => pass(other, false, true))
+          )
+          await measure(
+            "4100 ms, nothing drawn into it every 800 ms",
+            kept(() => pass(view, false))
+          )
+        }
+        return rows
+      },
+      { sizes: COLD_SIZES, idles: COLD_IDLE_MS }
+    )
+    console.log(
+      "\n  a 512 px draw into a texture after a wait, ms to GPU done (median of 3)" +
+        "\n  texture   wait                                                 ms"
+    )
+    for (const row of rows)
+      console.log(
+        `  ${`${row.size}²`.padEnd(7)}   ${row.wait.padEnd(50)}   ${fixed(row.ms).padStart(5)}`
+      )
+    console.log()
+  } finally {
+    await browser.close()
+  }
+}
+
+/**
  * Redrawing a vector layer (19), on the real GPU, at a ladder of path counts:
  * the first draw of the whole scene, an edit spanning the layer (every path
  * redrawn), and an edit to one path (only its region redrawn). Re-rasterising
@@ -621,11 +747,13 @@ async function main(): Promise<void> {
             : process.argv.includes("--wet") ||
                 process.argv.includes("--blender")
               ? wetSweep
-              : process.argv.includes("--vector")
-                ? vectorSweep
-                : process.argv.includes("--navigate")
-                  ? navigationSweep
-                  : null
+              : process.argv.includes("--cold")
+                ? coldSweep
+                : process.argv.includes("--vector")
+                  ? vectorSweep
+                  : process.argv.includes("--navigate")
+                    ? navigationSweep
+                    : null
   if (ladder) {
     try {
       await ladder()

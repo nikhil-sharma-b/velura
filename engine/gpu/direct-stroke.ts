@@ -98,6 +98,11 @@ export interface DirectStroke extends StrokeRenderer<DirectOpening> {
   /** Whether the brush has picked up paint, including transparency. */
   brushDirty(): boolean
   /**
+   * Keeps what a wet stroke's first dab draws into from going cold (live
+   * brushes 24): the load, which pen-down clears and the dab picks up into.
+   */
+  warm(encoder: GPUCommandEncoder): void
+  /**
    * The tip, the grain or the selection was replaced: the views held of them
    * are stale.
    */
@@ -1009,6 +1014,14 @@ export function createDirectStroke(
     end,
     cleanBrush: () => clearReservoir(),
     brushDirty: () => dirty,
+    warm(encoder) {
+      for (const view of reservoirViews)
+        encoder
+          .beginRenderPass({
+            colorAttachments: [{ view, loadOp: "load", storeOp: "store" }],
+          })
+          .end()
+    },
     invalidateBinding() {
       bindGroup = undefined
       reservoirBindings = []
