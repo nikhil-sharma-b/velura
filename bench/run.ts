@@ -488,13 +488,23 @@ const WET_PAINTS = process.argv.includes("--blender")
 async function wetSweep(): Promise<void> {
   const paced = PASSES.find((entry) => entry.name === "paced")!
   const unpaced = PASSES.find((entry) => entry.name === "unpaced")!
+  // The acceptance comparison for the first sampling stroke (live brushes
+  // 26), with the full sweep's workload and both of its passes unchanged.
+  const openingOnly =
+    process.argv.includes("--wet") && process.argv.includes("--opening")
+  const sizes = openingOnly ? [8192] : SMUDGE_SIZES
+  const paints = openingOnly
+    ? WET_PAINTS.filter(
+        ({ name }) => name === "wet, pickup" || name === "wet, all layers"
+      )
+    : WET_PAINTS
   console.log(
     "\n                                    unpaced                    paced: pen-to-pixel in ms" +
       "\n  document  brush   paint         ms/frame   sustained fps   stroke's first frame (median / worst)   all frames (median / p95)   dabs    readbacks   allocations"
   )
-  for (const size of SMUDGE_SIZES)
+  for (const size of sizes)
     for (const diameter of WET_DIAMETERS)
-      for (const { name, ...paint } of WET_PAINTS) {
+      for (const { name, ...paint } of paints) {
         const workload = {
           ...BENCHMARK_WORKLOAD,
           width: size,

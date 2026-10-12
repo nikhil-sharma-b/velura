@@ -1762,6 +1762,8 @@ export function createEngine(
    * the artist can see they are holding.
    */
   let brushTurn: Promise<void> | undefined
+  /** A later sampling toggle supersedes one still waiting for GPU preparation. */
+  let samplingTurn = 0
 
   async function resolveBrushTextures(ids: (string | null | undefined)[]) {
     const missing = ids.filter((id): id is string => !!id && !textures.get(id))
@@ -2165,6 +2167,7 @@ export function createEngine(
     resetSelection()
     uploadLayers()
     syncComposition()
+    if (snapshot.sampleAllLayers) renderer?.prepareSampling()
     publish({
       width: size.width,
       height: size.height,
@@ -6109,6 +6112,11 @@ export function createEngine(
       if (error) throw new Error(error.message)
       // The host may have resized the canvas while validation was pending.
       render()
+      if (snapshot.sampleAllLayers) {
+        renderer.prepareSampling()
+        await acquired.queue.onSubmittedWorkDone()
+        if (disposed || device !== acquired) return
+      }
       publish({ status: "ready" })
       // Validation may outlast the entire background tail. Start that tail
       // only after the canvas is usable, so loading never delays readiness.
@@ -7871,10 +7879,19 @@ export function createEngine(
           cancelStroke()
           cleanBrush()
           break
-        case "setSampleAllLayers":
+        case "setSampleAllLayers": {
+          const turn = ++samplingTurn
+          cancelStroke()
+          if (command.enabled && renderer && device) {
+            renderer.prepareSampling()
+            await device.queue.onSubmittedWorkDone()
+          }
+          if (disposed || turn !== samplingTurn) break
+          // A pointer may have started another stroke while preparation waited.
           cancelStroke()
           publish({ sampleAllLayers: command.enabled })
           break
+        }
         case "setCleanBrushAfterStroke":
           cancelStroke()
           if (command.enabled) cleanBrush()
@@ -8161,6 +8178,7 @@ export function createEngine(
         if (bytes) assets.set(ref.id, Object.freeze({ ...ref, bytes }))
       }
       renderer.resize(imported.manifest.width, imported.manifest.height)
+      if (snapshot.sampleAllLayers) renderer.prepareSampling()
       drawnScenes.clear()
       const size = {
         width: imported.manifest.width,

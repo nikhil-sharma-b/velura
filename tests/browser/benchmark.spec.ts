@@ -157,6 +157,55 @@ test("the wet benchmark paints over the workload without reading back or allocat
   expect(result.allocations).toBe(1)
 })
 
+test("disabling sampling supersedes an enable whose GPU preparation is pending", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.engine)
+  const enabled = await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "resize",
+      width: 64,
+      height: 64,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    const preparing = window.engine.dispatch({
+      type: "setSampleAllLayers",
+      enabled: true,
+    })
+    await window.engine.dispatch({ type: "setSampleAllLayers", enabled: false })
+    await preparing
+    return window.engine.getSnapshot().sampleAllLayers
+  })
+  expect(enabled).toBe(false)
+})
+
+test("enabling sampled artwork prepares its pages before the first wet stroke", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.runBenchmark)
+  const result = await page.evaluate(
+    (workload) =>
+      window.runBenchmark({
+        ...workload,
+        wet: { diameter: 64, pickup: 0.8, sampleAllLayers: true },
+      }),
+    WORKLOAD
+  )
+  expect(result.dispatched).toBe(result.requested)
+  expect(result.strokeStarts).toHaveLength(WORKLOAD.strokes)
+  expect(
+    result.frames.reduce((sum, frame) => sum + frame.stamps, 0)
+  ).toBeGreaterThan(50)
+  expect(result.readbacks).toBe(0)
+  // A 512-square document fits one frozen chunk. Only its cancel page may
+  // be made with the pen down: the sampled page and compositor are ready.
+  expect(result.allocations).toBe(1)
+})
+
 test("a wet stroke thrown wide keeps its cancel pages for the stroke after it", async ({
   page,
 }) => {

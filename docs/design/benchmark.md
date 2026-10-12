@@ -19,6 +19,7 @@ bun run bench/run.ts --layers  # the layer-count ladder, for the compositor
 bun run bench/run.ts --scatter # a dense scattering brush against none
 bun run bench/run.ts --smudge  # smudging the workload against painting it
 bun run bench/run.ts --wet     # wet brushes over the workload against dry ones
+bun run bench/run.ts --wet --opening # 8192² sampling openings against active-layer pickup
 bun run bench/run.ts --vector  # redrawing a vector layer of many paths (19)
 bun run bench/run.ts --navigate # panning and zooming a stack (sharp-zoom 01)
 ```
@@ -1089,7 +1090,7 @@ The repeat:
 
 **The opening frame is held at the median.** On 8192² a stroke sampling all layers opens in 3.4–3.5 ms at 64 px and 5.5–5.7 ms at 512 px, against 16.6 and 16.4 ms before, and 2.7–4.2 ms for active-layer pickup beside it. On 2048² it is 2.2–3.0 ms. The 512 px brush pays more than the 64 px one because its first dab reaches up to four chunks, each a clear, a pass per visible layer over a megapixel and an 8 MiB copy; a 64 px dab reaches one. Neither is a cost of the document's size: the same brushes on 2048² open within the same few milliseconds.
 
-**The worst opening frame is not level with the other rows.** It is 32.8–37.9 ms on 8192² against 14.8–22.7 ms for the wet rows beside it (40.8–42.1 ms before). It is one stroke in six, the first to sample: on 2048² the same row's worst is 18.4–23.6 ms against 10.9–20.5 ms. What that stroke does that the others do not was not separated here; it is the stroke that allocates the first pages and the window compositor's targets. Follow-up 26 owns it.
+**The worst opening frame is not level with the other rows.** It is 32.8–37.9 ms on 8192² against 14.8–22.7 ms for the wet rows beside it (40.8–42.1 ms before). It is one stroke in six, the first to sample: on 2048² the same row's worst is 18.4–23.6 ms against 10.9–20.5 ms. What that stroke does that the others do not was not separated here; it is the stroke that allocates the first pages and the window compositor's targets. Follow-up 26 owns it; see [the initialization measurements below](#the-first-sampling-stroke-readying-its-textures-live-brushes-26).
 
 Throughput and steady frames are where they were: 434.8–454.5 fps at 8192², median/p95 latency 13.9–14.1 / 16.9–17.5 ms at 64 px and 13.5 / 15.8–16.2 ms at 512 px, with zero painting readbacks. The other rows are within their run-to-run spread of the tables above; the "wet, scatter" 512 px row at 8192² still opens in 19.5–20.8 ms, which is ticket 24's.
 
@@ -1535,3 +1536,78 @@ begun while it is still putting the one before away was not measured on
 what ships: a scratch run with the wait taken out of the driver, made
 while the dabs were held, opened in 5.8 to 9.6 ms against 5.5 ms and held
 a p95 of 21.6 ms against 19.0 ms. That is live brushes 28's.
+
+
+## The first sampling stroke: readying its textures (live brushes 26)
+
+Apple M4, Chrome 153/WebGPU (Metal), measured 75 Hz display, 2560 × 1440
+viewport, 12 October 2026, working tree over `0172b20` (including live
+brushes 24's texture warming). The first 64 px stroke sampling all layers
+still opened in 37.6 ms; the second in 5.2 ms, in a focused two-stroke run
+of the wet workload.
+
+**First GPU use, not just texture creation.** The first stroke copies the
+single painted ground directly, so it does not flatten through the window
+compositor and cannot be waiting for that compositor's first pipeline.
+Temporary submission fences showed the first ground-to-page copy finishing
+9.3 ms after submission, followed by 8.8 ms to finish the first direct-dab
+submission. Its main-thread work was 1.0 ms. The later page copy finished in
+1.9 ms. These fences are diagnostic timings, not GPU timestamp queries.
+
+The initialization probes used the same focused two-stroke workload on
+8192² with a 64 px brush. Each waited for setup's GPU queue before enabling
+sampling returned, to compare like with like. The page probes prepared
+sixteen pages; the shipped change prepares only four.
+
+| preparation before pen-down | first stroke's opening frame |
+|---|---:|
+| setup fence alone | 29.4 ms |
+| create frozen pages, without filling them | 31.1 ms |
+| create and fill frozen pages | 25.0 ms |
+| initialize the destination carry | 25.0 ms |
+| initialize both | 19.7 ms |
+
+Creating the objects alone does not remove the cost. Filling both resources
+with transparent pixels moves their first GPU use out of the opening frame.
+The shipped four-page preparation opened in 21.3 ms in the focused run,
+against 37.6 ms before, with zero painting readbacks. Diagnostic code is
+not shipped; the acceptance repeat below uses the full sweep’s workload and metrics.
+
+**What enabling sampling does.** It initializes the already-allocated
+32 MiB destination carry once per renderer, using a temporary clear target,
+and prepares up to four 8 MiB frozen pages and the 8 MiB window target. It
+waits for that work before publishing the enabled setting. On documents
+with fewer than four chunks it prepares only that many pages. Larger or
+scattered opening neighbourhoods may still need more pages; the existing
+sixteen-page retention cap is unchanged. No artwork is captured early and
+no retained paint is cleared. Resize, import and initialization also prepare
+the pages if sampling is already enabled.
+
+The browser benchmark regression drives engine commands and counts actual
+WebGPU entry points: on a 512² document, painting allocates only its cancel
+page (one allocation), against three before (cancel page, frozen page,
+window target). Existing sampling pixel tests hold the chunk boundary,
+hidden layers, opacity, masks, groups, clipping, undo and retained loads.
+
+The under-10-ms paced target still needs ticket 25's 120 Hz display.
+
+**Acceptance measurement.** `VELURA_BENCH_PORT=3105 bun run bench/run.ts
+--wet --opening`, with no other benchmark or browser suite running. The
+optional filter runs the four rows below with the full wet sweep’s six
+strokes, unpaced pass and paced pass unchanged. The preceding complete
+`--wet` sweep shared the machine with a software-GPU browser suite; its
+37.0 / 28.4 ms worst sampling openings are a loaded run, not this comparison.
+
+| 8192² brush | paint | opening median / worst | all frames median / p95 | painting readbacks | allocations |
+|---|---|---:|---:|---:|---:|
+| 64 px | Wet, pickup | 2.7 / 21.9 ms | 14.1 / 16.6 ms | 0 | 1 |
+| 64 px | Wet, all layers | 3.9 / 21.5 ms | 14.2 / 17.5 ms | 0 | 8 |
+| 512 px | Wet, pickup | 3.5 / 14.9 ms | 13.3 / 16.5 ms | 0 | 3 |
+| 512 px | Wet, all layers | 5.4 / 20.1 ms | 13.9 / 17.2 ms | 0 | 16 |
+
+The sampling worst openings are now within the other wet rows’ 14.8–22.7 ms
+range recorded by the ticket, instead of 32.8–37.9 ms. The 64 px row matches
+its pickup control; the 512 px row still costs 5.2 ms more than its pickup
+control. This removes the first-use spike, not every cost of sampling. The
+allocations include cancel pages and further frozen pages as the six strokes
+reach new chunks; preparation moves only the first four pages out of painting.
