@@ -58,6 +58,11 @@ export type RunResult = {
    * by then and the two are not told apart, so there are none.
    */
   historySettledMs: number[]
+  /**
+   * Milliseconds from undo being pressed after each stroke to the step
+   * having been taken back, where the workload presses it (live brushes 32).
+   */
+  undoMs: number[]
   /** Wall-clock milliseconds the pen was down. */
   elapsedMs: number
   /**
@@ -503,6 +508,7 @@ export async function runBenchmark(
   let dispatched = 0
   const strokeStarts: number[] = []
   const settling: Promise<number>[] = []
+  const undoMs: number[] = []
   const started = performance.now()
 
   try {
@@ -550,8 +556,18 @@ export async function runBenchmark(
       // loop has stopped by the end of the next.
       await nextFrame()
       await nextFrame()
+      const undoAfter = workload.options.undoAfter
+      if (undoAfter !== undefined) {
+        if (undoAfter === "settled") await engine.save()
+        else await new Promise((resolve) => setTimeout(resolve, undoAfter))
+        const pressed = performance.now()
+        await engine.dispatch({ type: "undo" })
+        undoMs.push(performance.now() - pressed)
+        // Put back, so the stroke after paints over what this one left.
+        await engine.dispatch({ type: "redo" })
+      }
       // The stroke is with history by now, so this waits for it and no less.
-      if (!workload.options.unwaited)
+      else if (!workload.options.unwaited)
         settling.push(engine.save().then(() => performance.now() - penUp))
       await new Promise((resolve) => setTimeout(resolve, BETWEEN_STROKES))
     }
@@ -580,6 +596,7 @@ export async function runBenchmark(
     allocations: watch.allocations(),
     readbackBytes: watch.readbackBytes(),
     historySettledMs,
+    undoMs,
     elapsedMs: performance.now() - started,
     strokeStarts,
   }
