@@ -1,3 +1,4 @@
+import dabLocalShader from "./dab-local.wgsl"
 import { grainShader } from "./grain"
 import { pigmentShader } from "./pigment"
 
@@ -10,8 +11,7 @@ import { pigmentShader } from "./pigment"
 export const smudgeShader = /* wgsl */ `
 ${grainShader}
 ${pigmentShader}
-
-const TAU = 6.283185307179586;
+${dabLocalShader}
 
 struct Smudge {
   // Canvas size in pixels, for the pixel -> clip space mapping.
@@ -66,7 +66,9 @@ struct Instance {
 
 struct Varyings {
   @builtin(position) position: vec4<f32>,
-  // Position within the dab, where the rim is at length 1.
+  // Position within the dab, where the rim is at length 1, interpolated
+  // across the quad. The reservoir's, whose quad is the tip itself; a dab on
+  // the canvas works its own out (\`dabLocal\`).
   @location(0) local: vec2<f32>,
   @location(1) @interpolate(flat) radius: f32,
   @location(2) @interpolate(flat) strength: f32,
@@ -77,15 +79,18 @@ struct Varyings {
   @location(7) canvas: vec2<f32>,
   @location(8) @interpolate(flat) grainDepth: f32,
   @location(9) @interpolate(flat) center: vec2<f32>,
+  @location(10) @interpolate(flat) angle: f32,
+  @location(11) @interpolate(flat) roundness: f32,
 }
 
-fn dabVertex(instance: Instance, index: u32) -> Varyings {
+// \`margin\` widens the quad by so many canvas pixels to a side.
+fn dabVertex(instance: Instance, index: u32, margin: f32) -> Varyings {
   let corner = vec2<f32>(
     f32(index == 1u || index == 2u || index == 4u),
     f32(index == 2u || index == 4u || index == 5u)
   );
   let local = corner * 2.0 - 1.0;
-  let shaped = local * instance.radius * vec2<f32>(1.0, instance.roundness);
+  let shaped = local * (instance.radius * vec2<f32>(1.0, instance.roundness) + vec2<f32>(margin));
   let turn = instance.angle * TAU;
   let cosine = cos(turn);
   let sine = sin(turn);
@@ -111,29 +116,38 @@ fn dabVertex(instance: Instance, index: u32) -> Varyings {
   out.flow = instance.flow;
   out.grainDepth = instance.grainDepth;
   out.center = instance.center;
+  out.angle = instance.angle;
+  out.roundness = instance.roundness;
   return out;
 }
 
 @vertex
 fn vertexMain(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings {
-  return dabVertex(instance, index);
+  // A rasteriser snaps a quad's corners to its own grid, so which pixels the
+  // dab's edge takes is not left to it: the quad is drawn a pixel wide of
+  // the dab and the fragment says where the dab ends.
+  return dabVertex(instance, index, 1.0);
 }
 
-fn tipCoverage(varyings: Varyings) -> f32 {
-  let distance = length(varyings.local);
+fn tipCoverage(varyings: Varyings, local: vec2<f32>) -> f32 {
+  let distance = length(local);
   let edge = max(0.0, 1.0 - smudge.feather / max(varyings.radius, 1.0));
   // A hard tip must not call smoothstep with identical endpoints.
   var disc = 1.0 - step(1.0, distance);
   if (smudge.feather > 0.0) {
     disc = 1.0 - smoothstep(edge, 1.0, distance);
   }
-  let tip = textureSample(tipTexture, tipSampler, varyings.local * 0.5 + 0.5, varyings.tipFrame).r;
+  let tip = textureSampleLevel(tipTexture, tipSampler, local * 0.5 + 0.5, varyings.tipFrame, 0.0).r;
   return mix(disc, tip, smudge.useTip);
 }
 
 @fragment
 fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
-  let shape = tipCoverage(varyings);
+  // As the run's compute pass has it, so the two are one smear.
+  let local = dabLocal(varyings.position.xy, varyings.center, varyings.angle,
+    varyings.radius, varyings.roundness);
+  if (!inDab(local)) { discard; }
+  let shape = tipCoverage(varyings, local);
 
   let here = textureLoad(destination, vec2<i32>(varyings.position.xy - varyings.origin), 0);
   // Between texels, since a dab's travel is rarely a whole pixel: without
@@ -154,7 +168,7 @@ fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
   }
   let coverage = shape * selected;
   if (smudge.wet > 0.0) {
-    let paint = textureSampleLevel(reservoir, carrySampler, (varyings.local * 0.5 + 0.5) * smudge.reservoirScale, 0.0);
+    let paint = textureSampleLevel(reservoir, carrySampler, (local * 0.5 + 0.5) * smudge.reservoirScale, 0.0);
     let bite = grainBite(grainTexture, grainSampler, varyings.position.xy,
       varyings.center, smudge.grainScale, smudge.grainMovement,
       smudge.grainDepth * varyings.grainDepth);
@@ -167,14 +181,14 @@ fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
 // Geometry changes where each bristle samples, never the stored paint.
 @vertex
 fn reservoirVertex(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings {
-  var out = dabVertex(instance, index);
+  var out = dabVertex(instance, index, 0.0);
   out.position = vec4<f32>(out.local.x, -out.local.y, 0.0, 1.0);
   return out;
 }
 
 @fragment
 fn reservoirFragment(varyings: Varyings) -> @location(0) vec4<f32> {
-  let shape = tipCoverage(varyings);
+  let shape = tipCoverage(varyings, varyings.local);
   let uv = (varyings.local * 0.5 + 0.5) * smudge.reservoirScale;
   let paint = textureSampleLevel(reservoir, carrySampler, uv, 0.0);
   let pixel = varyings.canvas;

@@ -1,4 +1,5 @@
 import template from "./smudge-run.wgsl"
+import dabLocalShader from "./dab-local.wgsl"
 import { pigmentShader } from "./pigment"
 import { preprocess } from "./preprocess"
 
@@ -47,12 +48,12 @@ export const RUN_WORKGROUP = 8
  * every dispatch. The run's region is copied out of the surface once, each
  * dab is a dispatch that reads the region as the dab before left it and
  * writes the whole of it on, dragged where the dab lies, and the last is
- * copied back. The drag is `fragmentMain`'s in `smudge.ts`, with one
- * difference: where a pixel lies in the dab is worked out from the pixel and
- * not interpolated across a quad, so the two agree to the rasteriser's
- * rounding and no closer.
+ * copied back. The drag is `fragmentMain`'s in `smudge.ts`, and
+ * both work out where a pixel lies in the dab from the pixel (`dabLocal`),
+ * so a dab is the same through either (live brushes 27).
  */
 export const smudgeRunShader = preprocess(template, {
   pigment: pigmentShader,
+  "dab-local": dabLocalShader,
   "run-workgroup": `#define RUN_WORKGROUP ${RUN_WORKGROUP}`,
 })

@@ -1,5 +1,6 @@
 import { mixPaintProbe } from "./pigment-probe"
 import { openBlendProbe, type BlendProbe } from "./blend-probe"
+import { smearProbe } from "./smudge-probe"
 import {
   buildLayerStack,
   clientMapper,
@@ -87,6 +88,7 @@ declare global {
     mixPaintProbe: typeof mixPaintProbe
     openBlendProbe: typeof openBlendProbe
     blendProbe: BlendProbe
+    smearProbe: typeof smearProbe
     engine: Engine
     /** A fresh engine on the same canvas, optionally with a small history. */
     remountEngine(options?: EngineOptions): void
@@ -363,6 +365,7 @@ window.createFakeCloud = (size) => {
 }
 
 window.openBlendProbe = openBlendProbe
+window.smearProbe = smearProbe
 window.encodePreview = encodePreview
 
 const canvas = document.querySelector("canvas")!

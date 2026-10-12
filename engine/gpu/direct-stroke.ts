@@ -46,6 +46,12 @@ export type DirectStrokeContext = {
   selection(): { texture: GPUTexture; bounds: PixelRect } | undefined
   /** Bound for the selection while nothing is selected; the shader skips it. */
   noSelection: GPUTexture
+  /**
+   * The widest region a run of dragging dabs may share, where the default is
+   * not wanted: zero sends every dab to a pass of its own, which is how a
+   * test holds the two to the same smear (live brushes 27).
+   */
+  runSize?: number
 }
 
 /**
@@ -212,6 +218,7 @@ export function createDirectStroke(
         GPUTextureUsage.COPY_DST,
     })
   )
+  const runLimit = Math.min(context.runSize ?? RUN_SIZE, RUN_SIZE)
   // A block per dab, picked by a dynamic offset: filled per call, not
   // allocated per call.
   const runParams = new Float32Array(MAX_SMUDGE_DABS_PER_DRAW * RUN_DAB_FLOATS)
@@ -649,7 +656,7 @@ export function createDirectStroke(
     for (let i = 0; i < drawn; i++) {
       const runEnd = stroke.lays
         ? i
-        : dabRunEnd(rects, i, drawn, RUN_SIZE, runRegion)
+        : dabRunEnd(rects, i, drawn, runLimit, runRegion)
       if (runEnd > i) {
         drawRun(encoder, i, runEnd)
         anyRun = true

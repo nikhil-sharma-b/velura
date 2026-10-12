@@ -453,6 +453,8 @@ export function createRenderer(
     /** Premultiplied linear-light ink, and the dab rim falloff in pixels. */
     ink: readonly [number, number, number, number]
     feather: number
+    /** See `DirectStrokeContext.runSize`; a test's, and absent otherwise. */
+    directRunSize?: number
   }
 ): Renderer {
   const presentPipelines = new Map<BlendMode, GPURenderPipeline>()
@@ -1564,6 +1566,7 @@ export function createRenderer(
     grain: () => grainSurface,
     selection: () => selection,
     noSelection,
+    runSize: options.directRunSize,
   })
 
   /**
