@@ -2007,3 +2007,111 @@ The "wet, scatter" rows lay the dabs of their "wet, densest" rows, thrown,
 and are within a millisecond of them on both figures everywhere but the
 512 px row at 8192², which opens 1.2 ms later and held 17.9 ms in this run
 against 17.0 ms.
+
+## A sampling stroke after a pause opened a frame late: cold layers (live brushes 31)
+
+Apple M4 (integrated, 16 GiB), 75 Hz display, Chrome/WebGPU, 2560 × 1440
+window, six strokes, 2026-10-12, on top of `a471e03`.
+`bun run bench/run.ts --wet --pause 2000` waits two seconds more before each
+pen-down of the 512 px rows at 8192², paced. Before this change, the
+pen-to-pixel of the frame each stroke opens in, median / worst, one run:
+
+| paint | no pause | 2000 ms pause |
+|---|---:|---:|
+| dry | 2.5 / 15.6 ms | 6.2 / 6.5 ms |
+| wet | 3.4 / 18.1 ms | 8.7 / 23.8 ms |
+| wet, pickup | 3.2 / 18.9 ms | 7.6 / 20.1 ms |
+| wet, all layers | 5.2 / 18.2 ms | 24.2 / 28.4 ms |
+| wet, densest | 3.1 / 19.4 ms | 7.6 / 17.6 ms |
+| dry, scatter | 2.5 / 16.1 ms | 6.6 / 6.7 ms |
+| wet, scatter | 4.0 / 19.6 ms | 8.9 / 18.1 ms |
+
+Every row opens 4 to 5 ms later after the pause and stays under one 75 Hz
+frame. That is measured and left: it is no path's own, and may be the GPU's
+clock falling when it idles. "Wet, all layers" alone missed a frame, on
+every stroke.
+
+**It was the other layers, left alone.** The row paints on an empty layer
+over a painted one with sampling on. A sampling stroke freezes the picture
+under its first dab as it opens: a chunk of 1024² copied out of the one
+other layer, or with more to show flattened from all of them, into a page.
+The warming of live brushes 24 keeps the layer painted and nothing the
+picture is read from. The row alone, two seconds' pause, with more given the
+same empty pass every 800 ms (a scratch build; the last line is what
+shipped), median / worst of six strokes, one run each:
+
+| also kept warm | opening frame |
+|---|---:|
+| nothing more | 25.7 / 29.2 ms |
+| the other visible layers | 13.2 / 19.9 ms |
+| those and the target a chunk is flattened in | 11.2 / 18.5 ms |
+| those and the frozen pages a stroke takes first | 10.0 / 18.3 ms |
+| those and the dab's carry | 12.8 / 17.6 ms |
+| all four | 10.2 / 17.6 ms, 10.8 / 16.8 ms |
+| layers, pages and flatten target | 11.2 / 23.2 ms |
+
+Twelve of the 24 ms were the layer the picture is read from: a texture left
+two seconds is as slow to be sampled or copied out of as to be drawn into.
+The pages, which are only copied into and out of, were some 3 ms and the
+flatten target 1 to 2 ms, each near the spread of a run, which is about a
+millisecond. The carry was nothing, as live brushes 24 found. So with a wet
+brush or smudge in hand and sampling on, `keepWarm` gives its pass to every
+visible layer but the one painted, to the four pages the next stroke takes
+first and to the flatten target; the pages carry the render-attachment usage
+for that and nothing else. A brush that does not sample is given none of it.
+
+After, the whole of `--wet --pause 2000`, one run:
+
+| paint | no pause | 2000 ms pause |
+|---|---:|---:|
+| dry | 2.3 / 15.9 ms | 6.4 / 7.0 ms |
+| wet | 3.4 / 17.6 ms | 8.3 / 15.5 ms |
+| wet, pickup | 3.3 / 19.2 ms | 7.8 / 19.5 ms |
+| wet, all layers | 4.7 / 19.5 ms | 11.2 / 23.2 ms |
+| wet, densest | 3.2 / 18.2 ms | 7.8 / 19.0 ms |
+| dry, scatter | 2.6 / 16.5 ms | 6.3 / 6.8 ms |
+| wet, scatter | 4.3 / 19.7 ms | 9.3 / 15.6 ms |
+
+The row opens in 10.1 to 12.4 ms for five of its six strokes, from 17.0 to
+28.4 ms: inside a 75 Hz frame, and not under the 10 ms the ticket asked for.
+The sixth is the one late frame every row has with or without the pause.
+The other rows are where they were.
+
+**What is left is the pause every brush pays, on a frame that does more.**
+The pause does not add the same to each row; it multiplies. In the run
+above the opening frame after two seconds is 2.8 times the unpaused one for
+dry, 2.4 for wet, wet with pickup, wet densest and dry scatter, 2.2 for wet
+scatter, and 2.4 for wet, all layers. That row's unpaused opening frame is
+the longest, 4.7 ms against 3.2 to 3.4 ms, because it freezes up to four
+chunks before its first dab, each a flatten and a copy submitted on its
+own, and so it is the longest after the pause. Under 10 ms after a pause
+would take an unpaused opening frame of about 4 ms, which is the freezing's
+cost and not the pause's, or the every-brush factor gone, which is not
+chased. Neither was tried here.
+
+That reading is from the ratios of one run of six strokes and is not a
+measurement of the frame: its submissions were not fenced one by one. Read
+as a sum instead, the row pays 6.5 ms for the pause where the others pay
+3.7 to 5.0 ms, and 2 ms of it are then unaccounted for; a cache the chunk
+compositor keeps, or something else not found, may still be cold. The masks
+over the layers read are given the pass too, as the same kind of texture,
+unmeasured: the benchmark has none. Nor was the warming's own cost measured
+beyond one other layer, where the sweep below holds; it is one empty pass
+per visible layer every 800 ms, and a stack of many 8192² layers was not
+run.
+
+`bun run bench/run.ts --wet`, the 512 px rows at 8192² after, one run,
+against the table of live brushes 30 above:
+
+| paint | stroke's first frame, median / worst | all frames, median / p95 |
+|---|---:|---:|
+| Dry | 2.3 / 15.0 ms | 13.0 / 15.2 ms |
+| Wet | 3.1 / 21.6 ms | 13.1 / 15.5 ms |
+| Wet, pickup | 3.1 / 19.2 ms | 13.2 / 15.5 ms |
+| Wet, all layers | 4.7 / 18.4 ms | 13.3 / 16.2 ms |
+| Wet, densest | 3.1 / 18.9 ms | 13.5 / 16.2 ms |
+| Dry, scatter | 2.7 / 14.7 ms | 13.3 / 15.8 ms |
+| Wet, scatter | 4.1 / 23.2 ms | 14.3 / 17.3 ms |
+
+Medians and p95 are within 0.3 ms and 0.9 ms of that table's, most of them
+lower.
