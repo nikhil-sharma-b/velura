@@ -1,6 +1,8 @@
 #include "composite"
 #include "stroke"
 #include "transfer"
+#include "pigment"
+#include "wet"
 
 struct Present {
   // Working (linear Display P3) -> output primaries. Identity when the swap
@@ -45,6 +47,9 @@ struct Present {
 // mips: minification past a half is a preview of the whole piece, not a
 // surface anyone judges an edge on.
 @group(0) @binding(5) var viewSampler: sampler;
+// What is wet on the active layer (D42), or placeholders where nothing is.
+@group(0) @binding(6) var wetSlots: texture_2d<u32>;
+@group(0) @binding(7) var wetPigment: texture_2d<f32>;
 
 /** Premultiplied "over", in linear light. */
 fn over(source: vec4<f32>, destination: vec3<f32>) -> vec3<f32> {
@@ -83,7 +88,14 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
   // The stroke buffer sits above the active layer's own pixels and is shown at
   // the stroke's opacity, so the mark on screen matches the one that will be
   // composited into the layer when the pen lifts.
-  let painted = textureSampleLevel(activeLayer, viewSampler, uv, 0.0);
+  // Wet paint is the layer's own, glazed onto its pixels before anything
+  // else is done with them.
+  let painted = glazeWet(
+    textureSampleLevel(activeLayer, viewSampler, uv, 0.0),
+    wetSlots,
+    wetPigment,
+    (present.toDoc * vec3<f32>(position.xy, 1.0)).xy
+  );
   // The layer's opacity applies to the mark in flight as well as to what is
   // already there: a stroke on a half-opaque layer is drawn on that layer.
   let composited = applyStroke(

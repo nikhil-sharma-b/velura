@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test"
 
-import { type Brush, DEFAULT_BRUSH } from "../../engine/brush/brush"
+import {
+  type Brush,
+  DEFAULT_BRUSH,
+  DEFAULT_FLUID,
+} from "../../engine/brush/brush"
 import { type Modulator, validateDynamics } from "../../engine/brush/dynamics"
 import {
   brushCommand,
@@ -104,6 +108,7 @@ describe("the working brush an editor holds", () => {
       color: null,
       scatter: null,
       wet: null,
+      fluid: null,
       dynamics: [],
     })
   })
@@ -121,6 +126,18 @@ describe("the working brush an editor holds", () => {
     expect("wet" in dry.rendering).toBe(false)
     expect(isBrushEdited(saved(), dry)).toBe(false)
     expect(brushCommand(dry).wet).toBe(null)
+  })
+
+  test("a fluid brush reaches the engine fluid, and a plain one says it is not", () => {
+    const fluid = { ...DEFAULT_FLUID, water: 0.7 }
+    const brush = saved()
+    brush.rendering.fluid = fluid
+    expect(brushCommand(brush).fluid).toEqual(fluid)
+    // Another control's edit leaves it fluid.
+    expect(
+      editBrush(brush, { rendering: { flow: 0.2 } }).rendering.fluid
+    ).toEqual(fluid)
+    expect(brushCommand(saved()).fluid).toBe(null)
   })
 
   test("scatter travels with the brush, and a brush without it clears it", () => {

@@ -1,4 +1,4 @@
-import { DEFAULT_BRUSH } from "../../engine/brush/brush"
+import { DEFAULT_BRUSH, DEFAULT_FLUID } from "../../engine/brush/brush"
 import { describe, expect, test } from "bun:test"
 
 import { validateDynamics } from "@/engine/brush/dynamics"
@@ -130,6 +130,50 @@ describe("a stored brush definition", () => {
       expect(() =>
         normaliseBrushDefinition({ ...round, scatter: bad })
       ).toThrow(/scatter/)
+  })
+
+  test("a fluid brush round-trips, and a brush with neither setting is unchanged", () => {
+    const fluid = {
+      water: 0.4,
+      drying: 0.5,
+      bleed: 0.3,
+      edge: 0.2,
+      granulation: 0.1,
+    }
+    const stored = normaliseBrushDefinition(
+      JSON.parse(
+        JSON.stringify({
+          ...round,
+          rendering: { ...round.rendering, fluid: { ...fluid, extra: 1 } },
+        })
+      )
+    )
+    expect(stored.rendering.fluid).toEqual(fluid)
+    expect(normaliseBrushDefinition(stored)).toEqual(stored)
+    const plain = normaliseBrushDefinition(JSON.parse(JSON.stringify(round)))
+    expect(plain.rendering).not.toHaveProperty("fluid")
+    expect(plain.rendering).not.toHaveProperty("wet")
+  })
+
+  test("refuses a fluid setting out of range, and fluid with wet", () => {
+    const fluid = { ...DEFAULT_FLUID }
+    for (const field of Object.keys(fluid) as (keyof typeof fluid)[])
+      for (const bad of [-0.1, 1.1, Number.NaN, undefined])
+        expect(() =>
+          normaliseBrushDefinition({
+            ...round,
+            rendering: {
+              ...round.rendering,
+              fluid: { ...fluid, [field]: bad },
+            },
+          })
+        ).toThrow(field)
+    expect(() =>
+      normaliseBrushDefinition({
+        ...round,
+        rendering: { ...round.rendering, fluid, wet: { pickup: 0.5 } },
+      })
+    ).toThrow(/wet or fluid/)
   })
 })
 

@@ -46,6 +46,14 @@ fn readDocument(surface: texture_2d<f32>, position: vec2<f32>) -> vec4<f32> {
   return textureSampleLevel(surface, docSampler, point / composite.docSize, 0.0);
 }
 
+/** The document point under this target pixel. */
+fn documentPoint(position: vec2<f32>) -> vec2<f32> {
+  if (composite.resample < 0.5) {
+    return vec2<f32>(vec2<i32>(position) + vec2<i32>(composite.toDoc[2].xy)) + 0.5;
+  }
+  return (composite.toDoc * vec3<f32>(position, 1.0)).xy;
+}
+
 /** A surface drawn in this target, or a document one read through the view. */
 fn readSurface(surface: texture_2d<f32>, position: vec2<f32>, inDocument: f32) -> vec4<f32> {
   if (inDocument > 0.5) {
