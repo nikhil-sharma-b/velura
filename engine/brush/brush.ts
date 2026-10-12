@@ -211,16 +211,18 @@ export function thrownScatter(brush: Brush): BrushScatter | undefined {
 }
 
 /**
- * Distance between a wet brush's spacing steps in canvas pixels, for a dab
- * of the given radius: the brush's own spacing, held at the floor D30 sets
- * where overlap permits it (live brushes 23).
- * Scatter lays `count` dabs a step, each a copy and a draw of its own, so
- * the floor is that many times wider and a frame holds the dabs it did.
+ * Distance between a wet brush's dabs in canvas pixels, for a dab of the
+ * given radius: the brush's own spacing, held at the floor D30 sets where
+ * overlap permits it (live brushes 23).
+ * Scatter lays `count` dabs a step, each a copy and a draw of its own, and a
+ * wet brush lays them one at a time along the step rather than all where it
+ * begins (live brushes 29): a dab every `count`th of the step, never closer
+ * than the floor, so no frame is handed a whole step's dabs.
  */
 export function wetDabSpacing(brush: Brush, radius: number): number {
   const spacing = Math.max(
-    wetSpacingFloor(radius) * (thrownScatter(brush)?.count ?? 1),
-    dabSpacing(brush, radius)
+    wetSpacingFloor(radius),
+    dabSpacing(brush, radius) / (thrownScatter(brush)?.count ?? 1)
   )
   // A blender hands on the pixel behind: uneven overlap leaves a comb.
   // Cap its pitch at smudge's, even when a preset requests wider spacing

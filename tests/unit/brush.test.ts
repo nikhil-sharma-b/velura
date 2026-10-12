@@ -116,7 +116,7 @@ describe("brush definition", () => {
     expect(brushSpacing(blender)).toBe(1)
   })
 
-  test("a wet brush that scatters is held to a floor as many times wider as its count", () => {
+  test("a wet brush that scatters lays its step's dabs one at a time along it", () => {
     const wet = {
       ...PENCIL,
       rendering: { ...PENCIL.rendering, wet: { pickup: 0.5 } },
@@ -125,24 +125,26 @@ describe("brush definition", () => {
       ...wet,
       scatter: { amount: 2, count: 4, axes: "both" },
     }
-    // Four dabs a step, each a copy and a draw: the steps are a quarter as
-    // many, so a frame holds the dabs it did.
-    expect(brushSpacing(thrown)).toBe(WET_SPACING_FLOOR * 4)
-    // A brush whose own spacing is already wider keeps it.
+    // Four dabs a step, each a copy and a draw: a dab is never closer to the
+    // last than the floor, so a frame holds the dabs it did.
+    expect(brushSpacing(thrown)).toBe(WET_SPACING_FLOOR)
+    // A brush whose own spacing is wider lays its four along the step, a
+    // quarter of it apart, and not all four where the step begins.
     const open = {
       ...thrown,
       shape: { ...thrown.shape, radius: 40, spacing: 0.5 },
     }
-    expect(brushSpacing(open)).toBeCloseTo(40, 6)
+    expect(brushSpacing(open)).toBeCloseTo(10, 6)
     // The count is the dabs laid, whatever the amount comes to.
     const stacked: Brush = {
       ...wet,
+      shape: { ...wet.shape, spacing: 3 },
       scatter: { amount: 0, count: 3, axes: "across" },
     }
-    expect(wetDabSpacing(stacked, 4)).toBe(WET_SPACING_FLOOR * 3)
+    expect(wetDabSpacing(stacked, 4)).toBeCloseTo(8, 6)
   })
 
-  test("a blender does not scatter, so its count does not widen its floor", () => {
+  test("a blender does not scatter, so its count does not narrow its spacing", () => {
     const blender: Brush = {
       ...PENCIL,
       rendering: { ...PENCIL.rendering, flow: 0, wet: { pickup: 0.5 } },

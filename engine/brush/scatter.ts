@@ -29,6 +29,7 @@ export type BrushScatter = {
    * Dabs laid per spacing step. They are laid even where the amount comes to
    * nothing, stacked on the path: under coverage that is one pass, and under
    * buildup it is `count` passes, which is what a dense brush is (D27).
+   * A wet brush lays them one at a time along the step (live brushes 29).
    */
   count: number
   axes: ScatterAxes
@@ -64,14 +65,17 @@ export interface ScatterPlacer {
    * Writes one spacing step's dabs into `out` as `[dx, dy]` pairs in canvas
    * pixels, and returns how many there are. `scale` is what the dynamics graph
    * made of the `scatter` target; `direction` is the heading of travel, as a
-   * turn clockwise from +x.
+   * turn clockwise from +x. `count` is how many to place where that is not
+   * the brush's own: a wet brush lays a step's dabs one at a time (live
+   * brushes 29), and each draws from the stream as it would in its step.
    */
   place(
     scatter: BrushScatter | undefined,
     scale: number,
     radius: number,
     direction: number,
-    out: Float32Array
+    out: Float32Array,
+    count?: number
   ): number
 }
 
@@ -82,8 +86,9 @@ export function createScatterPlacer(): ScatterPlacer {
     begin(seed) {
       random = createRandom((seed ^ STREAM) >>> 0)
     },
-    place(scatter, scale, radius, direction, out) {
-      const { amount, count, axes } = scatter ?? NO_SCATTER
+    place(scatter, scale, radius, direction, out, placed) {
+      const { amount, axes } = scatter ?? NO_SCATTER
+      const count = placed ?? (scatter ?? NO_SCATTER).count
       const reach = amount * scale * radius
       if (reach === 0) {
         // Exactly on the path, and without drawing from the stream: a brush

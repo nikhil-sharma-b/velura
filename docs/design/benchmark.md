@@ -1795,11 +1795,10 @@ The acceptance run is `bun run bench/run.ts --wet --dab --large`: the same
 unpaced passes, selected from the complete wet sweep without changing samples,
 spacing, scattering, pressure, stroke count or sample-to-fence attribution.
 
-The latency acceptance criterion remains open. The user requested a PR for the
-measured improvement while leaving ticket 29 incomplete. Batched deposition
-and eager initialization of four cancel pages did not close the gap and were
-removed, including their extra 48.189 MiB of batch arrays and 128 MiB of eager
-backup pages. Cancel pages continue to grow and be retained as before.
+Batched deposition and eager initialization of four cancel pages did not
+close the gap and were removed, including their extra 48.189 MiB of batch
+arrays and 128 MiB of eager backup pages. Cancel pages continue to grow and be
+retained as before.
 
 Final paced and unpaced run of the split-kernel candidate (`ef296de`),
 `bun run bench/run.ts --wet --dab --large`, on an otherwise idle local host:
@@ -1811,7 +1810,141 @@ Final paced and unpaced run of the split-kernel candidate (`ef296de`),
 | Wet, scatter | 1.046 / 270.3 | 7.7 / 23.4 ms | 14.2 / 18.3 ms | 1424 | 0 / 6 |
 
 Scatter is cheaper than the ticket's recorded baseline, but its opening and
-p95 remain above these controls. The numbers support a partial improvement,
-not completion of the latency acceptance criterion. The six allocations are
-within the existing cancel-page growth and history behavior; no scratch,
-reservoir or compute resource is allocated per dab.
+p95 remain above these controls: the dab is some three times cheaper and a
+step is still sixteen of them. The six allocations are within the existing
+cancel-page growth and history behavior; no scratch, reservoir or compute
+resource is allocated per dab.
+
+### A step's dabs are laid along the path
+
+Same machine and day, over `3cb4345`. What follows is why the dab was not
+made cheaper again, and what was done instead.
+
+**Where the rest of a dab is.** The probe's scratch path was given each part
+to omit in turn (`--wet-dab --scatter-dabs`; "all" submits none of a dab's
+work, leaving the encoding and the fence). With eight modes interleaved the
+GPU idles more between submissions than it did for the four above and every
+figure is higher for it, the control included, so read the table within
+itself. Two runs:
+
+| submitted work omitted | median per dab |
+|---|---:|
+| Nothing | 0.34 to 0.39 ms |
+| Deposition dispatch | 0.24 to 0.30 ms |
+| Pickup dispatch | 0.26 to 0.28 ms |
+| Cancel-tile backup copies | 0.26 to 0.29 ms |
+| Copy back into the layer | 0.29 ms |
+| Both dispatches | 0.14 to 0.15 ms |
+| All of it | 0.05 ms |
+
+The same in the paced `--wet` row itself, with a scratch switch in the direct
+stroke (not shipped), the 512 px "wet, scatter" row at 8192²:
+
+| omitted from every dab | opening, median | frames that drew sixteen dabs, median / p95 | all frames, median / p95 |
+|---|---:|---:|---:|
+| Nothing | 7.7 ms | 17.1 / 20.4 ms | 14.1 / 18.6 ms |
+| Cancel-tile backup copies | 6.3 ms | 16.7 / 19.9 ms | 14.1 / 18.4 ms |
+| Deposition and the copy back | 4.0 ms | 13.7 / 17.7 ms | 13.5 / 16.2 ms |
+| Pickup | 4.8 ms | 15.2 / 18.6 ms | 13.5 / 16.7 ms |
+| All of it | 2.7 ms | 12.8 / 16.3 ms | 12.9 / 15.3 ms |
+
+No part is most of it. A 512 px dab reads its 514² of the layer and its load
+and writes scratch, reads both again and writes the next load, copies scratch
+back, and the first time it reaches them copies nine tiles out: 6.3, 6.3, 4.2
+and 9.4 MB, some 26 MB a dab and 420 MB for a step, in the 4.3 to 5.0 ms the
+last row says a step costs. That is 80 to 100 GB/s on a machine whose memory
+moves 120 GB/s at the most. A dab that read each texture once and wrote the
+layer where it stands would still move 8 MB before its tiles were kept, and
+that is not on offer: a pass cannot read what it writes. Sixteen such dabs do not fit beside a frame
+however they are arranged, which is what the batches, atlases and read-write
+storage above each found.
+
+**Starting the step's work as its sample arrives** was tried and not kept: a
+wet stroke's dabs drawn from the input handler, ahead of the frame that
+presents them, and timed from their sample as before. The sixteen-dab frames
+went from 17.0 / 20.3 ms to 14.0 / 18.9 ms and the row's p95 from 18.8 to
+17.7 ms; the opening frame, which follows its sample at once, stayed at
+7.6 ms. It is also the stroke pipeline drawing outside the frame.
+
+**So a step is not sixteen dabs in one frame.** A scattering wet brush now
+lays its dabs one at a time, one every `count`th of its spacing step and
+never closer than the wet floor, each thrown from where the pen has got to;
+the throws are the ones the step would have made, in the same order (see the
+architecture document). Over a length of path it is the dabs the floor times
+the count allowed, 1,376 where the row laid 1,424. No dab is held: each is
+placed by the sample that reaches it and drawn in that sample's frame, so
+pen-to-pixel means what it did. This changes what a scattering wet brush
+paints: no clumps of `count` thrown from one point.
+
+`bun run bench/run.ts --wet --dab --large`, two runs:
+
+| 8192², 512 px | unpaced ms/frame / sustained fps | opening median / worst | all frames median / p95 | dabs | painting readbacks / allocations |
+|---|---:|---:|---:|---:|---:|
+| Wet, pickup | 0.863 / 454.5 | 3.2 / 17.9 ms | 13.1 / 15.4 ms | 348 | 0 / 2 |
+| Wet, densest | 0.910 / 434.8 | 3.0 / 18.6 ms | 13.7 / 16.1 ms | 1,376 | 0 / 2 |
+| Wet, scatter | 1.060 / 312.5 | 4.2 / 20.8 ms | 14.0 / 17.2 ms | 1,376 | 0 / 6 |
+| Wet, pickup | 0.865 / 434.8 | 3.0 / 18.6 ms | 13.1 / 15.5 ms | 348 | 0 / 2 |
+| Wet, densest | 0.908 / 454.5 | 3.0 / 18.7 ms | 13.7 / 16.3 ms | 1,377 | 0 / 2 |
+| Wet, scatter | 1.068 / 303.0 | 4.2 / 20.5 ms | 14.2 / 17.1 ms | 1,377 | 0 / 6 |
+
+The row opens in 4.2 ms, from 7.7 ms and from the ticket's 11.3 ms, and holds
+a p95 of 17.1 to 17.2 ms, from 18.3 to 18.8 ms and from 22.5 ms. The ticket
+recorded 2.3 to 4.9 ms to open and a p95 of 15.8 to 17.7 ms for the other
+512 px rows: the opening is inside that, and the p95 is inside it in these
+runs and at its edge over the day, 17.0 to 17.9 ms. Against the same run's
+unscattered rows it is still about a millisecond over on each; over the day
+their p95 ranged from 15.2 to 16.9 ms (pickup) and 15.9 to 17.2 ms (densest).
+What is left of the p95 was not run down.
+
+**What is left is not the step.** Each opening frame draws one dab in all
+three rows. With the row's brush throwing one dab a step instead of sixteen
+(count 1, four radii, a scratch run) it opens in 3.2 ms and holds 16.7 ms,
+and with sixteen thrown a quarter of a radius it opens in 3.1 ms and holds
+16.6 ms: a thrown dab costs what a dab on the path does. What differs is the
+stroke before. History takes 1.4 to 3.0 s to put one of this row's strokes
+away, which reach some hundreds of tiles, and 0.2 to 1.0 s for the others,
+and the benchmark waits for it. Not waiting does not help (`--wet --unwaited`: 4.4 ms
+waited, 4.0 ms not; history is then at work under the stroke instead). With
+every row waiting two seconds more before each pen-down the three open
+alike, and late: 8.3, 8.2 and 9.3 ms. `dev` does the same (8.3 and 9.1 ms
+for the first two, at `db418f4`), so it is not this change's path. That
+pause is live brushes 31's, and the tiles history reads back for a thrown
+stroke are live brushes 30's.
+
+The whole sweep, `bun run bench/run.ts --wet`, one run:
+
+| document | brush | paint | ms/frame, unpaced | sustained fps | stroke's first frame, median / worst | all frames, median / p95 | dabs | readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 64 px | Dry | 0.311 | 1428.6 | 1.7 / 8.1 ms | 11.9 / 14.5 ms | 615 | 0 | 0 |
+| 2048² | 64 px | Wet | 0.314 | 1428.6 | 2.6 / 18.9 ms | 12.1 / 14.9 ms | 615 | 0 | 1 |
+| 2048² | 64 px | Wet, pickup | 0.314 | 1250.0 | 2.5 / 13.6 ms | 12.2 / 14.8 ms | 615 | 0 | 1 |
+| 2048² | 64 px | Wet, all layers | 0.324 | 1250.0 | 2.9 / 11.4 ms | 13.0 / 15.8 ms | 619 | 0 | 1 |
+| 2048² | 64 px | Wet, densest | 0.313 | 1250.0 | 2.5 / 14.9 ms | 12.3 / 15.1 ms | 1,226 | 0 | 1 |
+| 2048² | 64 px | Dry, scatter | 0.311 | 1428.6 | 1.8 / 8.7 ms | 11.8 / 14.0 ms | 9,840 | 0 | 0 |
+| 2048² | 64 px | Wet, scatter | 0.322 | 1250.0 | 2.6 / 13.9 ms | 12.8 / 16.1 ms | 1,226 | 0 | 1 |
+| 2048² | 512 px | Dry | 0.343 | 1111.1 | 1.6 / 6.2 ms | 12.2 / 14.4 ms | 80 | 0 | 0 |
+| 2048² | 512 px | Wet | 0.316 | 1000.0 | 2.5 / 11.1 ms | 12.2 / 14.4 ms | 80 | 0 | 1 |
+| 2048² | 512 px | Wet, pickup | 0.355 | 1000.0 | 2.7 / 8.2 ms | 12.1 / 14.5 ms | 80 | 0 | 1 |
+| 2048² | 512 px | Wet, all layers | 0.326 | 1000.0 | 3.5 / 15.8 ms | 12.2 / 15.5 ms | 80 | 0 | 1 |
+| 2048² | 512 px | Wet, densest | 0.362 | 1250.0 | 2.7 / 8.3 ms | 12.4 / 14.8 ms | 311 | 0 | 1 |
+| 2048² | 512 px | Dry, scatter | 0.342 | 1111.1 | 1.5 / 6.7 ms | 12.5 / 14.8 ms | 1,280 | 0 | 0 |
+| 2048² | 512 px | Wet, scatter | 0.337 | 1111.1 | 2.3 / 9.8 ms | 12.6 / 15.5 ms | 310 | 0 | 1 |
+| 8192² | 64 px | Dry | 0.860 | 500.0 | 2.4 / 14.8 ms | 12.8 / 15.3 ms | 2,749 | 0 | 0 |
+| 8192² | 64 px | Wet | 0.857 | 500.0 | 3.3 / 22.8 ms | 13.6 / 16.1 ms | 2,755 | 0 | 1 |
+| 8192² | 64 px | Wet, pickup | 0.852 | 454.5 | 3.1 / 17.4 ms | 13.2 / 15.6 ms | 2,749 | 0 | 1 |
+| 8192² | 64 px | Wet, all layers | 0.892 | 454.5 | 4.9 / 18.3 ms | 14.0 / 17.4 ms | 2,749 | 0 | 8 |
+| 8192² | 64 px | Wet, densest | 0.854 | 476.2 | 3.0 / 17.7 ms | 13.5 / 16.4 ms | 5,507 | 0 | 1 |
+| 8192² | 64 px | Dry, scatter | 0.856 | 500.0 | 2.3 / 14.8 ms | 12.8 / 15.7 ms | 43,984 | 0 | 0 |
+| 8192² | 64 px | Wet, scatter | 0.887 | 454.5 | 3.1 / 22.6 ms | 13.5 / 16.6 ms | 5,494 | 0 | 2 |
+| 8192² | 512 px | Dry | 0.839 | 476.2 | 2.3 / 13.5 ms | 13.1 / 15.6 ms | 348 | 0 | 0 |
+| 8192² | 512 px | Wet | 0.853 | 476.2 | 3.1 / 18.5 ms | 13.1 / 16.0 ms | 348 | 0 | 2 |
+| 8192² | 512 px | Wet, pickup | 0.863 | 454.5 | 4.6 / 17.4 ms | 12.9 / 15.9 ms | 348 | 0 | 2 |
+| 8192² | 512 px | Wet, all layers | 0.875 | 454.5 | 4.8 / 17.8 ms | 13.5 / 16.8 ms | 348 | 0 | 16 |
+| 8192² | 512 px | Wet, densest | 0.905 | 434.8 | 3.0 / 22.7 ms | 13.6 / 17.0 ms | 1,377 | 0 | 2 |
+| 8192² | 512 px | Dry, scatter | 0.843 | 476.2 | 2.7 / 14.7 ms | 13.2 / 16.4 ms | 5,568 | 0 | 0 |
+| 8192² | 512 px | Wet, scatter | 1.064 | 312.5 | 4.2 / 22.7 ms | 14.1 / 17.9 ms | 1,377 | 0 | 6 |
+
+The "wet, scatter" rows lay the dabs of their "wet, densest" rows, thrown,
+and are within a millisecond of them on both figures everywhere but the
+512 px row at 8192², which opens 1.2 ms later and held 17.9 ms in this run
+against 17.0 ms.

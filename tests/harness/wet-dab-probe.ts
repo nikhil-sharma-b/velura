@@ -4,7 +4,8 @@ import { createRenderer } from "../../engine/gpu/renderer"
 import { SMUDGE, SMUDGE_STRIDE } from "../../engine/gpu/smudge-dab"
 
 /** Warm, one-variable ablation. Fence timings include CPU encoding and queue work;
- * omitted work deliberately changes paint, so these are diagnostics, not artwork. */
+ * omitted work deliberately changes paint, so these are diagnostics, not artwork.
+ * "all" submits none of a dab's work: what is left is encoding and the fence. */
 export async function wetDabProbe(
   options: { scatter?: boolean; layerTarget?: boolean } = {}
 ) {
@@ -48,7 +49,11 @@ export async function wetDabProbe(
           ["smudge carry", "wet neighbourhoods"].includes(
             destination.texture.label
           )) ||
-        (omit === "backup" && destination.texture.label === "smudge backup")
+        (omit === "backup" && destination.texture.label === "smudge backup") ||
+        (active &&
+          (omit === "copyback" || omit === "all") &&
+          source.texture.label === "direct destination carry") ||
+        (active && omit === "all")
       )
         return
       copy(source, destination, size)
@@ -76,7 +81,20 @@ export async function wetDabProbe(
             ["wet dab", "wet step"].includes(descriptor?.label ?? "")))
       )
         return createEncoder().beginComputePass(descriptor)
-      return compute(descriptor)
+      if (active && omit === "all")
+        return createEncoder().beginComputePass(descriptor)
+      const pass = compute(descriptor)
+      // The scratch path's one pass holds two dispatches: deposition into
+      // scratch, then pickup into the next reservoir.
+      if (active && (omit === "layer" || omit === "pickup")) {
+        const dispatch = pass.dispatchWorkgroups.bind(pass)
+        let dispatched = 0
+        pass.dispatchWorkgroups = (...size) => {
+          if ((dispatched++ === 0 ? "layer" : "pickup") !== omit)
+            dispatch(...size)
+        }
+      }
+      return pass
     }
     return encoder
   }
@@ -108,7 +126,7 @@ export async function wetDabProbe(
     }
     const modes = options.layerTarget
       ? ["none", "copy", "layer", "pickup", "backup"]
-      : ["none", "copy", "dab", "backup"]
+      : ["none", "copy", "dab", "layer", "pickup", "backup", "copyback", "all"]
     const times = modes.map(() => [] as number[])
     renderer.beginDirect("layer", [0.1, 0.2, 0.7, 1])
     // Interleave controls and ablations so GPU clock changes affect all rows.

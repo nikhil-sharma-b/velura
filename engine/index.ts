@@ -4670,7 +4670,8 @@ export function createEngine(
    * graph scales its radius, flow, pickup and grain depth and turns and
    * squashes its tip as it does a dry dab's. Colour tints the clean reservoir
    * load at the first dab only. Scatter throws it off the path as it does a
-   * dry dab (live brushes 12): the dabs of one spacing step go to the
+   * dry dab (live brushes 12), one dab at a time along the spacing step and
+   * not the step's count where it begins (live brushes 29); they go to the
    * renderer in the order placed and trade paint with the one reservoir in
    * that order. A blender has no reservoir and drags from the dab behind it,
    * which a thrown dab does not have, so it keeps to the path. A tip of
@@ -4723,12 +4724,14 @@ export function createEngine(
     const hue = params.hue * (brush.color?.hue ?? 1)
     const saturation = params.saturation * (brush.color?.saturation ?? 1)
     const lightness = params.lightness * (brush.color?.lightness ?? 1)
+    // One dab of the step, the rest following it along the path.
     const count = scatterPlacer.place(
       thrownScatter(brush),
       params.scatter,
       radius,
       context.direction,
-      scatterOffsets
+      scatterOffsets,
+      1
     )
     for (let i = 0; i < count; i++) {
       if (directCount === MAX_SMUDGE_DABS_PER_DRAW) flushStamps()

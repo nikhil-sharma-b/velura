@@ -175,7 +175,8 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
   // last by its flow: there is no stroke opacity to apply and no coverage to
   // take, whatever the brush still holds for when it is dry again. Nor is a
   // wet dab's colour moved, so the preview leaves that out; it is thrown as
-  // a dry one is, unless the brush is a blender, which keeps to the path.
+  // a dry one is, one dab at a time along the step (live brushes 29), unless
+  // the brush is a blender, which keeps to the path.
   const wet = !!brush.rendering.wet
   // A blender lays nothing, and a stroke of nothing says nothing about it. It
   // is shown by what it would drag instead: its pickup, as the graph moves it.
@@ -212,7 +213,8 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
       params.scatter,
       dab.radius,
       context.direction,
-      offsets
+      offsets,
+      wet ? 1 : undefined
     )
     for (let i = 0; i < thrown; i++)
       dabs.push({
