@@ -116,6 +116,11 @@ export type FluidStrokeContext = {
   feather(): number
   /** The paper every fluid brush paints on, a texel a document pixel. */
   paper(): GPUTextureView
+  /**
+   * The selection's coverage, a texel a document pixel, or nothing with
+   * none selected. `selectionChanged` says when this is another texture.
+   */
+  selection(): GPUTextureView | undefined
   /** A layer became wet or dry: whatever shows it has to bind it again. */
   wetChanged(): void
   /**
@@ -125,13 +130,18 @@ export type FluidStrokeContext = {
   wetMoved(): void
 }
 
-/** What shows wet paint reads: each tile's slot, and the two pigment fields. */
+/**
+ * What shows wet paint reads: each tile's slot, the two pigment fields, and
+ * the selection that holds the paint in.
+ */
 export type WetViews = {
   /** Which copy of the fields these are of, from one. */
   key: number
   slots: GPUTextureView
   deposited: GPUTextureView
   suspended: GPUTextureView
+  /** The selection's coverage, or a texel of full coverage with none. */
+  selection: GPUTextureView
 }
 
 /**
@@ -192,6 +202,11 @@ export interface FluidStroke extends StrokeRenderer<FluidOpening> {
   restore(copy: WetCopy, surface: Surface): void
   /** Frees a copy. */
   release(copy: WetCopy): void
+  /**
+   * The selection is another texture, or none: whatever reads it binds it
+   * again. What it covers changing is not this, and is read as it is.
+   */
+  selectionChanged(): void
   destroy(): void
 }
 
@@ -326,6 +341,8 @@ export function createFluidStroke(
         read(8),
         read(9),
         read(10),
+        read(11),
+        { binding: 12, visibility: GPUShaderStage.COMPUTE, sampler: {} },
       ],
     })
     const simModule = device.createShaderModule({ code: fluidSimShader })
@@ -366,6 +383,29 @@ export function createFluidStroke(
   const simTiles = new Int32Array(simData, SIM_TILES_OFFSET)
 
   const uniformValues = new Float32Array(8)
+
+  /**
+   * Read in the selection's place while nothing is selected: one texel of
+   * full coverage, which is what every read of it finds wherever it looks.
+   */
+  const unselected = device.createTexture({
+    size: { width: 1, height: 1 },
+    format: "r8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  })
+  device.queue.writeTexture(
+    { texture: unselected },
+    new Uint8Array([255]),
+    {},
+    { width: 1, height: 1 }
+  )
+  const unselectedView = unselected.createView()
+  const selectionView = () => context.selection() ?? unselectedView
+  /** A cell's coverage is the mean of its pixels': a filtered read. */
+  const selectionSampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+  })
 
   /**
    * The wet fields, a slot per wet tile, held from the first fluid brush
@@ -567,6 +607,8 @@ export function createFluidStroke(
         { binding: 8, resource: fields!.laidWater },
         { binding: 9, resource: fields!.laidPigment },
         { binding: 10, resource: context.paper() },
+        { binding: 11, resource: selectionView() },
+        { binding: 12, resource: selectionSampler },
       ],
     })
     const pass = encoder.beginComputePass()
@@ -792,6 +834,7 @@ export function createFluidStroke(
         { binding: 2, resource: views.deposited.view },
         { binding: 3, resource: views.suspended.view },
         { binding: 4, resource: context.paper() },
+        { binding: 5, resource: selectionView() },
       ],
     })
     const box = {
@@ -879,6 +922,7 @@ export function createFluidStroke(
         slots: slots!.view,
         deposited: views.deposited.view,
         suspended: views.suspended.view,
+        selection: selectionView(),
       })
     },
     isWet: () => !!tiles && tiles.count() > 0,
@@ -1056,6 +1100,12 @@ export function createFluidStroke(
     copy: keepFields,
     restore: (copy, onto) => putBack(copy as KeptFields, onto),
     release: (copy) => release(copy as KeptFields),
+    selectionChanged() {
+      shown = []
+      settleBindings = []
+      simBindings = []
+      if (surface) context.wetChanged()
+    },
     advance(steps) {
       const marks: StrokeMark[] = []
       if (!tiles) return marks
@@ -1086,6 +1136,7 @@ export function createFluidStroke(
       for (const kept of [...copies]) release(kept)
       for (const texture of fields?.textures ?? []) texture.destroy()
       slots?.texture.destroy()
+      unselected.destroy()
       uniform.destroy()
       simUniform.destroy()
       instanceBuffer.destroy()

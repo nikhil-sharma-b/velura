@@ -9,8 +9,9 @@
 @group(0) @binding(8) var wetDeposited: texture_2d<f32>;
 @group(0) @binding(9) var wetSuspended: texture_2d<f32>;
 @group(0) @binding(10) var wetPaper: texture_2d<f32>;
+@group(0) @binding(11) var wetSelection: texture_2d<f32>;
 
 // A layer's pixel with whatever is wet over that document point glazed on.
 fn withWet(under: vec4<f32>, point: vec2<f32>) -> vec4<f32> {
-  return glazeWet(under, wetSlots, wetDeposited, wetSuspended, wetPaper, point);
+  return glazeWet(under, wetSlots, wetDeposited, wetSuspended, wetPaper, wetSelection, point);
 }

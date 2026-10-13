@@ -420,9 +420,10 @@ const FILTER_PASSTHROUGH: ReadonlySet<EngineCommand["type"]> = new Set([
 
 /**
  * What may be sent with paint wet and leave it wet (D42): settings, the
- * view, the selection's outline, how the layer is shown, and the commands
- * that deal with wet paint themselves. Anything else needs the layer's
- * pixels to be final, or moves the active layer, and dries it first.
+ * view, how the layer is shown, and the commands that deal with wet paint
+ * themselves. Anything else needs the layer's pixels to be final, moves the
+ * active layer, or changes the selection that holds the paint in, and dries
+ * it first.
  */
 const WET_PASSTHROUGH: ReadonlySet<EngineCommand["type"]> = new Set([
   "initialize",
@@ -462,14 +463,7 @@ const WET_PASSTHROUGH: ReadonlySet<EngineCommand["type"]> = new Set([
   "fitView",
   "resetView",
   "setWandOptions",
-  "selectShape",
-  "selectLasso",
-  "selectAll",
-  "deselect",
   "abandonSelectionGesture",
-  "invertSelection",
-  "featherSelection",
-  "moveSelection",
   "undo",
   "redo",
   "dryNow",
@@ -2894,7 +2888,7 @@ export function createEngine(
     if (lifted) {
       renderer.openSelectionImage(imageId, id, region)
       // The outline is put down with the pixels, so it is not shown behind.
-      renderer.setSelection(null)
+      holdSelection(null)
     } else renderer.openLayerImage(imageId, id, region)
     const start = layerStartPlacement(region)
     const before = captureStructure(document)
@@ -2949,7 +2943,7 @@ export function createEngine(
             showSelection(mask, false)
           },
           cancel: (_start, moved) => {
-            if (lifted) renderer?.setSelection(lifted.mask)
+            if (lifted) holdSelection(lifted.mask)
             if (!moved) return
             renderer?.restoreLayerImage(imageId, id)
             invalidateThumbnailsOf(id)
@@ -3004,7 +2998,7 @@ export function createEngine(
         layerImageId(session.layerId),
         session.layerId
       )
-      renderer?.setSelection(selection)
+      holdSelection(selection)
     }
     renderer?.closePlacedImage(layerImageId(session.layerId))
     publish({ layerTransform: null })
@@ -3037,7 +3031,7 @@ export function createEngine(
   function abandonLayerTransform() {
     if (!layerTransform) return
     renderer?.closePlacedImage(layerImageId(layerTransform.layerId))
-    if (layerTransform.lifted) renderer?.setSelection(selection)
+    if (layerTransform.lifted) holdSelection(selection)
     layerTransform = undefined
     publish({ layerTransform: null })
   }
@@ -4212,9 +4206,7 @@ export function createEngine(
     notifyVectorControls()
     if (isBand(drag)) {
       const band = boxSelection(drag.anchor, drag.point)
-      renderer?.setSelection(
-        Array.isArray(band) ? lassoSelection(document, band) : null
-      )
+      holdSelection(Array.isArray(band) ? lassoSelection(document, band) : null)
     }
     try {
       if (snapshot.status === "ready") render()
@@ -4498,6 +4490,21 @@ export function createEngine(
   let antsTimer: ReturnType<typeof setInterval> | undefined
   const ANTS_INTERVAL_MS = 120
 
+  /** The selection as the renderer was last given it. */
+  let heldSelection: SelectionMask | null = null
+
+  /**
+   * Gives the renderer the selection to clip to, which a gesture's preview
+   * does as well as a selection made. Wet paint is held in by the selection
+   * it was laid under (fluid brushes 09), so it dries, as that selection
+   * left it, before the renderer is given any other.
+   */
+  function holdSelection(mask: SelectionMask | null) {
+    if (mask !== heldSelection && wetTargetId) dryFluid()
+    heldSelection = mask
+    renderer?.setSelection(mask)
+  }
+
   /**
    * What the screen and the snapshot show; history is not touched. `draw`
    * is off where the caller is mid-way through replacing the document and
@@ -4505,7 +4512,7 @@ export function createEngine(
    */
   function showSelection(mask: SelectionMask | null, draw = true) {
     selection = mask
-    renderer?.setSelection(mask)
+    holdSelection(mask)
     publish({
       selection: mask ? Object.freeze({ bounds: mask.bounds }) : null,
     })
@@ -4535,6 +4542,9 @@ export function createEngine(
       return
     }
     const document = requireDocument()
+    // Before the step is recorded, so the paint's settle is the step under
+    // it: a gesture that previewed nothing comes here with paint still wet.
+    if (wetTargetId) dryFluid()
     const key = mask ? `selection-${++nextSelectionKey}` : null
     if (mask) selections.set(key!, mask)
     history?.recordOperation(
@@ -4563,6 +4573,8 @@ export function createEngine(
     marquee = undefined
     selection = null
     selectionKey = null
+    // The renderer it was given to is gone, or is about to be told.
+    heldSelection = null
     selections.clear()
     if (antsTimer) clearInterval(antsTimer)
     antsTimer = undefined
@@ -5404,7 +5416,7 @@ export function createEngine(
     }
     // Until the gesture outlines something, what is selected stays shown.
     // A moved outline has nowhere to be shown once it is off the canvas.
-    renderer?.setSelection(
+    holdSelection(
       marqueeShape() || drag.shape === "move" ? marqueeMask() : selection
     )
     try {
@@ -6020,8 +6032,7 @@ export function createEngine(
       frame = undefined
       samples.clear()
       // Back to what was selected before the drag began.
-      if (marquee)
-        renderer?.setSelection(marqueeShape() ? marqueeMask() : selection)
+      if (marquee) holdSelection(marqueeShape() ? marqueeMask() : selection)
       else showSelection(selection)
       if (marquee && snapshot.status === "ready") render()
       return

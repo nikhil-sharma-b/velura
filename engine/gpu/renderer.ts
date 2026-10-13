@@ -1000,6 +1000,8 @@ export function createRenderer(
   let selection:
     | {
         texture: GPUTexture
+        /** As the fluid stroke reads it: one view, asked for often. */
+        view: GPUTextureView
         bindGroup: GPUBindGroup
         /** The coverage each tile was last written from, by identity. */
         tiles: Map<string, Uint8Array>
@@ -1678,6 +1680,7 @@ export function createRenderer(
           { binding: 8, resource: wet.deposited },
           { binding: 9, resource: wet.suspended },
           { binding: 10, resource: paperView },
+          { binding: 11, resource: wet.selection },
         ]
       : []
 
@@ -1686,6 +1689,7 @@ export function createRenderer(
     size: () => documentSize,
     feather: () => feather,
     paper: () => paperView,
+    selection: () => selection?.view,
     wetChanged() {
       for (const compositor of compositors) compositor.refreshWet()
     },
@@ -2829,6 +2833,7 @@ export function createRenderer(
     resize(nextWidth, nextHeight) {
       releaseSelection()
       fluid.drop()
+      fluid.selectionChanged()
       direct.invalidateBinding()
       direct.drop()
       for (const page of frozenPages.splice(0)) page.destroy()
@@ -3351,6 +3356,7 @@ export function createRenderer(
         // Dabs stop being clipped once nothing is selected.
         if (stampBindGroup) refreshStampBindGroup()
         direct.invalidateBinding()
+        fluid.selectionChanged()
         return
       }
       if (!selection) {
@@ -3364,13 +3370,15 @@ export function createRenderer(
             GPUTextureUsage.COPY_DST |
             GPUTextureUsage.COPY_SRC,
         })
+        const view = texture.createView()
         selection = {
           texture,
+          view,
           bindGroup: device.createBindGroup({
             layout: antsPipeline.getBindGroupLayout(0),
             entries: [
               { binding: 0, resource: { buffer: screen.presentUniform } },
-              { binding: 1, resource: texture.createView() },
+              { binding: 1, resource: view },
               { binding: 2, resource: { buffer: antsUniform } },
             ],
           }),
@@ -3380,6 +3388,7 @@ export function createRenderer(
         // From the next dab on, the stroke is clipped to the new texture.
         refreshStampBindGroup()
         direct.invalidateBinding()
+        fluid.selectionChanged()
       }
       const canvas = { x: 0, y: 0, width, height }
       const write = (coord: TileCoord, coverage: Uint8Array) => {

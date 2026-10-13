@@ -55,17 +55,30 @@ fn glaze(under: vec4<f32>, paint: vec4<f32>) -> vec4<f32> {
   return mixPaint(under, vec4<f32>(paint.rgb / paint.a, 1.0), amount);
 }
 
+// Whether the selection leaves a document pixel out altogether. `selection`
+// is its coverage, a texel a document pixel, or a single texel of full
+// coverage while nothing is selected: every pixel reads that one.
+fn selectedOut(selection: texture_2d<f32>, pixel: vec2<i32>) -> bool {
+  let last = vec2<i32>(textureDimensions(selection)) - 1;
+  return textureLoad(selection, clamp(pixel, vec2<i32>(0), last), 0).r <= 0.0;
+}
+
 // A layer's pixel with whatever is wet over that document point glazed onto
 // it: the pigment the paper has taken first, more of it showing in the
-// paper's valleys, and what is still in the water over it.
+// paper's valleys, and what is still in the water over it. A pixel the
+// selection leaves out shows none: the fields are filtered between cells, and
+// a cell is wider than a pixel, so paint held in by the selection's edge
+// would otherwise show a pixel past it.
 fn glazeWet(
   under: vec4<f32>,
   slots: texture_2d<u32>,
   deposited: texture_2d<f32>,
   suspended: texture_2d<f32>,
   paper: texture_2d<f32>,
+  selection: texture_2d<f32>,
   point: vec2<f32>
 ) -> vec4<f32> {
+  if (selectedOut(selection, vec2<i32>(floor(point)))) { return under; }
   let height = paperHeight(paper, vec2<i32>(floor(point)));
   let grain = 1.0 + PAPER_GRAIN * (1.0 - 2.0 * height);
   return glaze(
