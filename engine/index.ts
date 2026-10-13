@@ -5971,6 +5971,7 @@ export function createEngine(
         water: fluid.water,
         drying: fluid.drying,
         bleed: fluid.bleed,
+        edge: fluid.edge,
       })
       fluidTargetId = target
     } else {

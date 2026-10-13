@@ -669,8 +669,9 @@ test("dried paint under a later wash does not move", async ({ page }) => {
   const alone = await washed(false)
   const { ground, glazed } = await washed(true)
 
-  // The overlap mixed, and the blue the wash never reached is untouched.
-  const [r, g, b] = rgba(glazed, 95)
+  // The overlap mixed, read at the wash's rim where its yellow has gathered,
+  // and the blue the wash never reached is untouched.
+  const [r, g, b] = rgba(glazed, 95, ROW - 11)
   expect(g).toBeGreaterThan(r + 20)
   expect(g).toBeGreaterThan(b + 20)
   expect(rgba(glazed, 30)).toEqual(rgba(ground, 30))
@@ -908,4 +909,132 @@ test("a stroke goes on painting after its paint is dried under the pen", async (
     expect(distance(rgba(image, x), rgba(empty, x))).toBeGreaterThan(200)
   await dryNow(page)
   expect(differing(await pixels(page), image, WIDTH)).toBe(null)
+})
+
+// ── Edge darkening (fluid brushes 06) ──
+
+/** A wash drawn along the stroke row, and what it is drawn with. */
+const WASH = { from: 70, to: 170, radius: 30, flow: 0.1 }
+
+/** How much paint a pixel shows: what has been taken out of white paper. */
+const darkness = (pixel: number[]) => 765 - pixel[0] - pixel[1] - pixel[2]
+
+/** The darkest of the pixels from one point to another, both counted. */
+function darkest(
+  image: number[],
+  from: [number, number],
+  to: [number, number]
+) {
+  const count = Math.max(Math.abs(to[0] - from[0]), Math.abs(to[1] - from[1]))
+  let most = 0
+  for (let i = 0; i <= count; i++) {
+    const t = count === 0 ? 0 : i / count
+    const x = Math.round(from[0] + (to[0] - from[0]) * t)
+    const y = Math.round(from[1] + (to[1] - from[1]) * t)
+    most = Math.max(most, darkness(rgba(image, x, y)))
+  }
+  return most
+}
+
+/** A wash laid on the active layer at a brush's `edge`, and left to dry. */
+async function leftToDry(page: Page, origin: Origin, edge: number) {
+  await setColour(page, BLUE)
+  await setFluid(page, { ...FLUID, edge })
+  await setTip(page, WASH.radius, WASH.flow)
+  await wash(page, origin, WASH.from, WASH.to)
+  await untilSettled(page)
+  return pixels(page)
+}
+
+const MIDDLE = (WASH.from + WASH.to) / 2
+/** How far either side of a wash's outline its rim is looked for. */
+const BAND = 6
+const centre = (image: number[]) => darkness(rgba(image, MIDDLE))
+/** The rim along the wash's upper side, in one column. */
+const side = (image: number[], x = MIDDLE) =>
+  darkest(image, [x, ROW - WASH.radius - BAND], [x, ROW - WASH.radius + BAND])
+/** The rim round the wash's rounded end, and the wash just inside it. */
+const END = WASH.to + WASH.radius
+const end = (image: number[]) =>
+  darkest(image, [END - BAND, ROW], [END + BAND, ROW])
+const insideEnd = (image: number[]) => darkness(rgba(image, END - 3 * BAND))
+
+test("a wash left to dry is darker at its rim than at its centre", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  const image = await leftToDry(page, origin, 1)
+  expect(centre(image)).toBeGreaterThan(30)
+  expect(side(image)).toBeGreaterThan(centre(image) * 1.5)
+  // The rounded ends of a stroke rim as its sides do, the one it began with
+  // and the one it ended with.
+  const START = WASH.from - WASH.radius
+  expect(
+    darkest(image, [START - BAND, ROW], [START + BAND, ROW])
+  ).toBeGreaterThan(darkness(rgba(image, START + 3 * BAND)) * 1.5)
+  expect(end(image)).toBeGreaterThan(insideEnd(image) * 1.5)
+})
+
+test("with edge at zero a wash dries flat", async ({ page }) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  const image = await leftToDry(page, origin, 0)
+  expect(centre(image)).toBeGreaterThan(30)
+  expect(Math.abs(side(image) - centre(image))).toBeLessThan(
+    centre(image) * 0.1
+  )
+  // A stroke's end is laid thinner than its middle, and stays so.
+  expect(end(image)).toBeLessThan(insideEnd(image) * 1.03)
+})
+
+test("the rim follows the wash's own outline, not that of dried paint under it", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  // Dried paint under the left of where the wash goes, ending in its middle.
+  await setColour(page, YELLOW)
+  await setTip(page, 60, 1)
+  await stroke(page, origin, 0, 50)
+  const ground = await pixels(page)
+  // Where it ends along the stroke row: inside the wash, short of its middle.
+  let border = 0
+  while (darkness(rgba(ground, border + 1)) > 0) border++
+  expect(border).toBeGreaterThan(WASH.from + 2 * BAND)
+  expect(border).toBeLessThan(MIDDLE - 2 * BAND)
+  const image = await leftToDry(page, origin, 1)
+
+  // Along the wash's middle, where the dried paint ends: no rim on the paper
+  // side of it, the wash being as it is further along.
+  const flat = centre(image)
+  for (let x = border + BAND; x < MIDDLE; x++)
+    expect(Math.abs(darkness(rgba(image, x)) - flat)).toBeLessThan(flat * 0.05)
+  // The wash's own outline rims over dried paint as over paper.
+  const under = darkness(rgba(ground, 80))
+  expect(side(image, 150)).toBeGreaterThan(flat * 1.5)
+  expect(side(ground, 80)).toBe(under)
+  // Less of it shows there: paint over paint darkens less than over paper.
+  expect(side(image, 80) - under).toBeGreaterThan(
+    (darkness(rgba(image, 80)) - under) * 1.25
+  )
+})
+
+test("a wash that runs off the canvas has no rim along the canvas's edge", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await addLayer(page)
+  await setColour(page, BLUE)
+  await setFluid(page, { ...FLUID, edge: 1 })
+  await setTip(page, WASH.radius, WASH.flow)
+  // From close enough to the left edge that the stroke's end is off it.
+  await wash(page, origin, 4, 120)
+  await untilSettled(page)
+  const image = await pixels(page)
+  expect(darkest(image, [0, ROW], [BAND, ROW])).toBeLessThan(
+    darkness(rgba(image, 3 * BAND)) * 1.1
+  )
+  // Its sides rim all the same.
+  expect(side(image, 60)).toBeGreaterThan(darkness(rgba(image, 60)) * 1.5)
 })

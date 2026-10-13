@@ -63,10 +63,16 @@ const evaporation = (drying: number) => 0.0002 * 50 ** drying
  */
 const MAX_BLEED = 0.05
 
+/**
+ * How many times faster water evaporates at the very edge of the damp area
+ * than in the middle of it, less one, at a brush's full `edge`.
+ */
+const MAX_EDGE = 12
+
 /** Steps a body is kept past when its water and dampness should be gone. */
 const DRYING_MARGIN = 20
 
-/** Bytes of the simulation's uniform: two rates, then a row for each slot. */
+/** Bytes of the simulation's uniform: its rates, then a row for each slot. */
 const SIM_TILES_OFFSET = 16
 const SIM_UNIFORM_SIZE = SIM_TILES_OFFSET + WET_SLOTS * 16
 
@@ -84,6 +90,8 @@ export type FluidOpening = {
   drying: number
   /** How far pigment spreads into paint that is still wet, in [0, 1]. */
   bleed: number
+  /** How much faster the edge of a wash dries than its middle, in [0, 1]. */
+  edge: number
 }
 
 /** What the fluid stroke reads of, and asks of, the renderer it draws for. */
@@ -195,7 +203,7 @@ type KeptFields = WetCopy & {
   grid: object
   reached: Float64Array
   clock: number
-  rates: [number, number]
+  rates: [number, number, number]
   lifetime: number
 }
 
@@ -334,7 +342,7 @@ export function createFluidStroke(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
   const simData = new ArrayBuffer(SIM_UNIFORM_SIZE)
-  const simRates = new Float32Array(simData, 0, 2)
+  const simRates = new Float32Array(simData, 0, 3)
   const simTiles = new Int32Array(simData, SIM_TILES_OFFSET)
 
   const uniformValues = new Float32Array(8)
@@ -581,7 +589,7 @@ export function createFluidStroke(
       grid,
       reached: reached.slice(),
       clock,
-      rates: [simRates[0], simRates[1]],
+      rates: [simRates[0], simRates[1], simRates[2]],
       lifetime,
     }
     copies.add(kept)
@@ -819,6 +827,7 @@ export function createFluidStroke(
       const slower = evaporation(opening.drying) < simRates[0]
       simRates[0] = evaporation(opening.drying)
       simRates[1] = MAX_BLEED * opening.bleed
+      simRates[2] = MAX_EDGE * opening.edge
       device.queue.writeBuffer(simUniform, 0, simData)
       lifetime =
         Math.ceil(FLUID_MAX_WATER / simRates[0]) +
