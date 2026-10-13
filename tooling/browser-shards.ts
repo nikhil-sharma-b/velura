@@ -17,7 +17,7 @@ import { join, resolve } from "node:path"
 
 import { shardOf, weighFromLog, type Weights } from "./browser-shards/split"
 
-const ROOT = resolve(import.meta.dirname, "..")
+const ROOT = resolve(import.meta.dir, "..")
 const SPECS = "tests/browser"
 const WEIGHTS = join(ROOT, SPECS, "shard-weights.json")
 
@@ -37,10 +37,19 @@ if (first === "weigh") {
   writeFileSync(WEIGHTS, JSON.stringify(sorted, null, 2) + "\n")
   console.log(`Weighed ${Object.keys(sorted).length} specs.`)
 } else {
-  const files = readdirSync(join(ROOT, SPECS)).filter((file) =>
-    file.endsWith(".spec.ts")
-  )
+  // Every file Playwright would take for a test, wherever under the specs
+  // it is: one this missed would be run by no shard.
+  const files = readdirSync(join(ROOT, SPECS), { recursive: true })
+    .map(String)
+    .filter((file) => /\.(spec|test)\.[cm]?[jt]sx?$/.test(file))
   const weights: Weights = JSON.parse(readFileSync(WEIGHTS, "utf8"))
   const shard = shardOf(files, weights, Number(first), Number(rest[0]))
+  // To the log and not the list: a new spec is dealt as a mean one until
+  // it is weighed, which a slow one is not.
+  const unweighed = files.filter((file) => weights[file] === undefined)
+  if (unweighed.length > 0)
+    console.error(`Not weighed yet: ${unweighed.join(", ")}`)
+  // Given no specs, Playwright would run them all.
+  if (shard.length === 0) throw new Error("There are more shards than specs.")
   console.log(shard.map((file) => `${SPECS}/${file}`).join("\n"))
 }
