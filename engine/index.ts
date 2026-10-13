@@ -1494,6 +1494,10 @@ export interface Engine {
    */
   historyUsage(): {
     steps: number
+    /** How many of those steps are fluid strokes whose paint is still wet. */
+    wetSteps: number
+    /** GPU memory the wet strokes' copies of the wet fields take (D42). */
+    wetBytes: number
     heldBytes: number
     residentBytes: number
     spilledBytes: number
@@ -1580,6 +1584,8 @@ function validateGrain(grain: BrushGrain): void {
  */
 export type HistoryBudget = {
   budgetBytes?: number
+  /** GPU memory for the copies fluid strokes take of wet paint (D42). */
+  wetBudgetBytes?: number
   hotBytes?: number
   warmBytes?: number
 }
@@ -4933,12 +4939,15 @@ export function createEngine(
     if (snapshot.wet !== wet && !stroking) publish({ wet })
   }
 
-  /** Wet paint settled into its layer: each settle is one step (D42). */
+  /**
+   * Wet paint settled into its layer: each settle is one step, and the wet
+   * strokes before it are steps no longer (D42).
+   */
   function recordSettled(marks: readonly StrokeMark[]) {
     const target = wetTargetId
     if (target)
       for (const mark of marks) {
-        history?.recordStroke(target, mark.region, mark.tiles)
+        history?.recordSettle(target, mark.region, mark.tiles)
         contentBounds.grow(target, mark.region)
         invalidateThumbnailsOf(target)
       }
@@ -4952,7 +4961,10 @@ export function createEngine(
 
   /** Settles everything wet at once. Nothing on screen changes. */
   function dryFluid() {
+    const wet = renderer?.fluidWet()
     const mark = renderer?.dryFluid()
+    // Paint that dried onto nothing still took its strokes' fields with it.
+    if (wet && !mark) history?.forgetWetStrokes()
     recordSettled(mark ? [mark] : [])
   }
 
@@ -5311,11 +5323,16 @@ export function createEngine(
       const fluid = fluidTargetId
       fluidTargetId = undefined
       // A fluid stroke leaves no mark yet: its paint is still wet, and no
-      // pixel of the layer changes until it settles.
+      // pixel of the layer changes until it settles. Its step is the wet
+      // fields as they were at pen-down, which stay on the GPU.
       let mark: StrokeMark | null | undefined
       if (direct) mark = renderer?.endDirect(true)
       else if (fluid) {
-        renderer?.endFluid(true)
+        const before = renderer?.endFluid(true)
+        if (before) {
+          if (history) history.recordWetStroke(fluid, before)
+          else renderer?.releaseFluid(before)
+        }
         syncWet()
       } else mark = renderer?.endStroke()
       if (direct) publish({ brushDirty: renderer?.brushDirty() ?? false })
@@ -6018,8 +6035,7 @@ export function createEngine(
     samples.clear()
     renderer?.cancelStroke()
     if (fluidTargetId) {
-      // A stroke that found the layer dry leaves it dry. Paint laid into a
-      // wash already wet stays in it.
+      // The wet fields go back to what they were at pen-down.
       fluidTargetId = undefined
       renderer?.endFluid(false)
       syncWet()
@@ -6206,6 +6222,16 @@ export function createEngine(
       const work = createTileWorker()
       tileWork = work
       history = createDocumentHistory({
+        wet: {
+          capture: () => target.copyFluid(),
+          restore(copy, id) {
+            target.restoreFluid(copy, id)
+            wetTargetId = id
+            syncWet()
+          },
+          release: (copy) => target.releaseFluid(copy),
+        },
+        wetBudgetBytes: options.history?.wetBudgetBytes,
         bridge: {
           readTiles: (id, coords) => target.readTiles(id, coords),
           writeTiles: (id, tiles) => {
@@ -7927,7 +7953,8 @@ export function createEngine(
           }
           // A direct stroke in flight is already in its surface, so undo takes
           // back the stroke rather than writing an older step underneath it.
-          if (directTargetId) {
+          // A fluid one is in the wet fields the same way.
+          if (directTargetId || fluidTargetId) {
             if (command.type === "undo") cancelStroke()
             break
           }
@@ -7942,9 +7969,19 @@ export function createEngine(
             await cancelLayerTransform()
             break
           }
-          // Wet paint is in no step yet, so it dries first: undo then takes
-          // back that passage, and redo finds nothing to put over it.
-          if (wetTargetId) dryFluid()
+          // Whether the next step is a wet stroke is known once every settle
+          // has been recorded.
+          await history.recorded()
+          // While a wet stroke is still a step, undo goes step by step and
+          // the paint stays wet. Wet paint with no such step left dries
+          // first, and undo takes back that passage, whole (D42). Redo never
+          // has to: nothing it could put back was recorded over wet paint.
+          if (
+            command.type === "undo" &&
+            wetTargetId &&
+            history.wetSteps() === 0
+          )
+            dryFluid()
           const document = requireDocument()
           const previous = structureSurfaceIds(captureStructure(document))
           let restoredSelection: string | null | undefined
@@ -7961,6 +7998,9 @@ export function createEngine(
               applySceneChanges(document, changes, direction)
           )
           if (!applied) break
+          // A wet stroke put back on a layer the artist has since left: wet
+          // paint is only ever on the layer being painted, so it dries there.
+          if (wetTargetId && wetTargetId !== paintTargetId(document)) dryFluid()
           const remaining = structureSurfaceIds(captureStructure(document))
           for (const id of previous) if (!remaining.has(id)) releaseSurface(id)
           if (restoredSelection !== undefined) {
@@ -8357,6 +8397,8 @@ export function createEngine(
     cloudMetrics: () => cloudSync?.metrics() ?? null,
     historyUsage: () => ({
       steps: history?.stepsBack() ?? 0,
+      wetSteps: history?.wetSteps() ?? 0,
+      wetBytes: history?.wetBytes() ?? 0,
       heldBytes: history?.bytes() ?? 0,
       residentBytes: history?.residentBytes() ?? 0,
       spilledBytes: history?.spilledBytes() ?? 0,

@@ -15,6 +15,12 @@ export const WET_CELL_SIZE = TILE_SIZE / WET_CELLS
  */
 export const WET_SLOTS = 64
 
+/** Which tiles were wet at one moment, each one's slot, and its deadline. */
+export type WetTilesState = {
+  readonly held: readonly (TileCoord | undefined)[]
+  readonly deadline: Float64Array
+}
+
 export interface WetTiles {
   /**
    * A dab reached this tile: gives it a slot if it has none. Answers the
@@ -44,6 +50,10 @@ export interface WetTiles {
    * for a tile that is dry. What a shader finds a wet tile's slot through.
    */
   map(): Uint8Array
+  /** What is wet now, to be put back later: undo is what wants it (D42). */
+  save(): WetTilesState
+  /** Puts back what `save` kept: the same tiles in the same slots. */
+  restore(state: WetTilesState): void
 }
 
 /**
@@ -140,5 +150,18 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
       held.flatMap((tile, slot) => (tile === undefined ? [] : [slot])),
     count: () => count,
     map: () => map,
+    save: () => ({ held: [...held], deadline: deadline.slice() }),
+    restore(state) {
+      map.fill(0)
+      count = 0
+      for (let slot = 0; slot < WET_SLOTS; slot++) {
+        const tile = state.held[slot]
+        held[slot] = tile
+        if (!tile) continue
+        map[tile.y * columns + tile.x] = slot + 1
+        count++
+      }
+      deadline.set(state.deadline)
+    },
   }
 }

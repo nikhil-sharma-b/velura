@@ -113,8 +113,16 @@ function differing(a: number[], b: number[], until: number) {
   return box.right < 0 ? null : box
 }
 
+/**
+ * The undo steps that are in the layers' own pixels. A fluid stroke whose
+ * paint is still wet is a step too, but one that holds no tile (fluid
+ * brushes 04), and it gives way to the settle's.
+ */
 const steps = (page: Page) =>
-  page.evaluate(() => window.engine.historyUsage().steps)
+  page.evaluate(() => {
+    const { steps, wetSteps } = window.engine.historyUsage()
+    return steps - wetSteps
+  })
 
 const setColour = (page: Page, hex: string) =>
   page.evaluate((hex) => window.engine.dispatch({ type: "setColor", hex }), hex)
@@ -141,7 +149,7 @@ async function penDown(
   await page.mouse.move(origin.x + to, origin.y + row, { steps: 30 })
 }
 
-/** A drag with a fluid brush: its paint is wet, and in no undo step yet. */
+/** A drag with a fluid brush: its paint is wet, and in no tile yet. */
 async function wash(
   page: Page,
   origin: Origin,
@@ -181,7 +189,10 @@ async function dryNow(page: Page) {
   const before = await steps(page)
   await page.evaluate(() => window.engine.dispatch({ type: "dryNow" }))
   await page.waitForFunction(
-    (n) => window.engine.historyUsage().steps > n,
+    (n) =>
+      window.engine.historyUsage().steps -
+        window.engine.historyUsage().wetSteps >
+      n,
     before
   )
 }
@@ -201,7 +212,10 @@ async function stroke(
   await wash(page, origin, from, to, row)
   await page.evaluate(() => window.engine.dispatch({ type: "dryNow" }))
   await page.waitForFunction(
-    (n) => window.engine.historyUsage().steps > n,
+    (n) =>
+      window.engine.historyUsage().steps -
+        window.engine.historyUsage().wetSteps >
+      n,
     before
   )
 }
@@ -602,7 +616,10 @@ test("a wash left alone settles by itself, into the picture it last showed", asy
 
   // The settle is one step: one undo takes the passage back.
   await page.waitForFunction(
-    (n) => window.engine.historyUsage().steps > n,
+    (n) =>
+      window.engine.historyUsage().steps -
+        window.engine.historyUsage().wetSteps >
+      n,
     before
   )
   expect(await steps(page)).toBe(before + 1)
@@ -667,7 +684,7 @@ test("dried paint under a later wash does not move", async ({ page }) => {
   expect(await pixels(page)).toEqual(ground)
 })
 
-test("undo with paint still wet dries it first and takes that passage back", async ({
+test("undo with paint still wet takes back the stroke, and redo puts it back wet", async ({
   page,
 }) => {
   const origin = await openCanvas(page)
@@ -677,10 +694,12 @@ test("undo with paint still wet dries it first and takes that passage back", asy
   await wash(page, origin, 40, 180)
   await advance(page, 30)
   const wet = await pixels(page)
+  // The stroke found the layer dry, and undone it leaves it so.
   await undo(page)
   expect(await isWet(page)).toBe(false)
   expect(await pixels(page)).toEqual(empty)
   await page.evaluate(() => window.engine.dispatch({ type: "redo" }))
+  expect(await isWet(page)).toBe(true)
   expect(differing(await pixels(page), wet, WIDTH)).toBe(null)
 })
 
@@ -780,7 +799,9 @@ test("with nothing wet no step runs and no frame is asked for", async ({
   await page.waitForFunction(
     (n) =>
       !window.engine.getSnapshot().wet &&
-      window.engine.historyUsage().steps > n,
+      window.engine.historyUsage().steps -
+        window.engine.historyUsage().wetSteps >
+        n,
     before
   )
   await frames(page)

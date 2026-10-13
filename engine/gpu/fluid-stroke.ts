@@ -5,6 +5,7 @@ import {
   TILE_SIZE,
   type TileCoord,
 } from "../doc/tile-grid"
+import type { WetCopy } from "../doc/undo-stack"
 import {
   FLUID_DAMP_STEPS,
   FLUID_MAX_WATER,
@@ -21,6 +22,7 @@ import {
   WET_CELLS,
   WET_SLOTS,
   type WetTiles,
+  type WetTilesState,
 } from "./wet-tiles"
 
 /** Slots along one side of a field texture; see `wet.wgsl`. */
@@ -137,14 +139,54 @@ export interface FluidStroke extends StrokeRenderer<FluidOpening> {
    * gone. With a surface, only if that is the one that is wet.
    */
   drop(surface?: Surface): void
+  /**
+   * The copy of the wet fields the stroke last ended took at pen-down, handed
+   * over once and the taker's to release: what undoing that stroke restores.
+   * Null where the stroke was cancelled or laid nothing.
+   */
+  takeCopy(): WetCopy | null
+  /**
+   * Copies the wet fields of every wet tile as they now are, GPU to GPU:
+   * nothing is read back (D30).
+   */
+  copy(): WetCopy
+  /**
+   * Makes a copy the wet fields again, on `surface`, and the simulation
+   * carries on from there. The copy is still its holder's.
+   */
+  restore(copy: WetCopy, surface: Surface): void
+  /** Frees a copy. */
+  release(copy: WetCopy): void
   destroy(): void
 }
 
+/** The wet fields, in the order a kept copy's layers hold them. */
+const FIELD_NAMES = ["water", "suspended", "deposited"] as const
+
 /** One copy of the wet fields; a step reads one and writes the other. */
 type Fields = Record<
-  "water" | "suspended" | "deposited",
+  (typeof FIELD_NAMES)[number],
   { texture: GPUTexture; view: GPUTextureView }
 >
+
+/**
+ * The wet fields as they were at one moment: the cells of every tile that
+ * was wet, side by side in a texture of their own with a layer for each
+ * field, and what was known of those tiles off the GPU.
+ */
+type KeptFields = WetCopy & {
+  /** The cells; none with nothing wet. */
+  texture?: GPUTexture
+  /** The slot each tile's cells were copied out of, in the order kept. */
+  slots: number[]
+  tiles: WetTilesState
+  /** The grid the tiles were on: a copy does not outlive a resize. */
+  grid: object
+  reached: Float64Array
+  clock: number
+  rates: [number, number]
+  lifetime: number
+}
 
 /**
  * The third stroke renderer (D42, §6.2): a fluid brush's dabs lay water and
@@ -319,9 +361,19 @@ export function createFluidStroke(
 
   /** The layer that is wet, while any tile of it is. */
   let surface: Surface | undefined
-  /** The layer the stroke in flight paints, and whether it found it dry. */
+  /** The layer the stroke in flight paints. */
   let painting: Surface | undefined
-  let openedDry = false
+  /**
+   * The wet fields as the stroke in flight found them, and whether it has
+   * laid anything on them since: what a cancel restores, and what the stroke
+   * hands history when it is kept.
+   */
+  let penDown: KeptFields | undefined
+  let laid = false
+  /** The last kept stroke's pen-down copy, until it is taken. */
+  let handover: KeptFields | undefined
+  /** Every copy not yet released. */
+  const copies = new Set<KeptFields>()
   let load = 1
   /** Steps run since the fields were made: what deadlines are counted in. */
   let clock = 0
@@ -349,9 +401,12 @@ export function createFluidStroke(
     const rows = Math.ceil(height / TILE_SIZE)
     pipelines ??= compile()
     if (!fields) {
-      // A step writes a copy whole, and a freed slot is copied over.
+      // A step writes a copy whole, a freed slot is copied over, and undo
+      // copies the wet slots out and back.
       const simulated =
-        GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST
+        GPUTextureUsage.STORAGE_BINDING |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.COPY_SRC
       const copy = (): Fields => ({
         water: field(simulated),
         suspended: field(simulated),
@@ -454,29 +509,127 @@ export function createFluidStroke(
     current = 1 - current
   }
 
+  /** Where the `index`th slot's cells are in a texture of slots in rows. */
+  const slotOrigin = (index: number) => ({
+    x: (index % FIELD_COLUMNS) * WET_CELLS,
+    y: Math.floor(index / FIELD_COLUMNS) * WET_CELLS,
+  })
+  const SLOT_EXTENT = { width: WET_CELLS, height: WET_CELLS }
+
   /**
-   * Frees slots and empties them in both copies of the fields, so the next
-   * tile to take one starts dry whichever copy is current by then.
+   * Empties slots in both copies of the fields, so the next tile to take
+   * one starts dry whichever copy is current by then.
    */
-  function free(freed: readonly number[]) {
-    const encoder = device.createCommandEncoder()
-    for (const slot of freed) {
-      const origin = {
-        x: (slot % FIELD_COLUMNS) * WET_CELLS,
-        y: Math.floor(slot / FIELD_COLUMNS) * WET_CELLS,
-      }
+  function blank(encoder: GPUCommandEncoder, emptied: readonly number[]) {
+    for (const slot of emptied)
       for (const copy of fields!.copies)
         for (const field of Object.values(copy))
           encoder.copyTextureToTexture(
             { texture: fields!.blank },
-            { texture: field.texture, origin },
-            { width: WET_CELLS, height: WET_CELLS }
+            { texture: field.texture, origin: slotOrigin(slot) },
+            SLOT_EXTENT
           )
-      tiles!.release(slot)
-    }
+  }
+
+  /** Frees slots and empties them. */
+  function free(freed: readonly number[]) {
+    const encoder = device.createCommandEncoder()
+    blank(encoder, freed)
+    for (const slot of freed) tiles!.release(slot)
     device.queue.submit([encoder.finish()])
     writeSlots()
     if (tiles!.count() === 0) surface = undefined
+  }
+
+  /**
+   * Copies the wet fields of every wet tile, GPU to GPU, with what is known
+   * of those tiles off it. Only the wet slots are kept, so a copy costs what
+   * the wash it is of does.
+   */
+  function keepFields(): KeptFields {
+    prepare()
+    const held = tiles!.slots()
+    const size = {
+      width: Math.min(held.length, FIELD_COLUMNS) * WET_CELLS,
+      height: Math.ceil(held.length / FIELD_COLUMNS) * WET_CELLS,
+    }
+    const kept: KeptFields = {
+      // Half floats, four to a cell, in each of the fields.
+      bytes: size.width * size.height * FIELD_NAMES.length * 8,
+      slots: held,
+      tiles: tiles!.save(),
+      grid,
+      reached: reached.slice(),
+      clock,
+      rates: [simRates[0], simRates[1]],
+      lifetime,
+    }
+    copies.add(kept)
+    if (held.length === 0) return kept
+    const texture = device.createTexture({
+      size: { ...size, depthOrArrayLayers: FIELD_NAMES.length },
+      format: LAYER_FORMAT,
+      usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+    })
+    kept.texture = texture
+    const from = fields!.copies[current]
+    const encoder = device.createCommandEncoder()
+    held.forEach((slot, index) =>
+      FIELD_NAMES.forEach((name, layer) =>
+        encoder.copyTextureToTexture(
+          { texture: from[name].texture, origin: slotOrigin(slot) },
+          { texture, origin: { ...slotOrigin(index), z: layer } },
+          SLOT_EXTENT
+        )
+      )
+    )
+    device.queue.submit([encoder.finish()])
+    return kept
+  }
+
+  function release(kept: KeptFields | undefined) {
+    if (!kept || !copies.delete(kept)) return
+    kept.texture?.destroy()
+  }
+
+  /**
+   * Makes a kept copy the wet fields again, on `onto`: the tiles that were
+   * wet then are wet now, in the slots they had, and every other is dry.
+   */
+  function putBack(kept: KeptFields, onto: Surface) {
+    // Released, or of a grid the document no longer has: nothing to put back.
+    if (!copies.has(kept) || kept.grid !== grid || !tiles) return
+    const stays = new Set(kept.slots)
+    const encoder = device.createCommandEncoder()
+    blank(
+      encoder,
+      tiles.slots().filter((slot) => !stays.has(slot))
+    )
+    // Into the current copy alone: a pass writes the other whole wherever a
+    // slot is held.
+    const to = fields!.copies[current]
+    kept.slots.forEach((slot, index) =>
+      FIELD_NAMES.forEach((name, layer) =>
+        encoder.copyTextureToTexture(
+          {
+            texture: kept.texture!,
+            origin: { ...slotOrigin(index), z: layer },
+          },
+          { texture: to[name].texture, origin: slotOrigin(slot) },
+          SLOT_EXTENT
+        )
+      )
+    )
+    device.queue.submit([encoder.finish()])
+    tiles.restore(kept.tiles)
+    reached.set(kept.reached)
+    clock = kept.clock
+    simRates.set(kept.rates)
+    lifetime = kept.lifetime
+    // The rates go with the slots.
+    writeSlots()
+    surface = kept.slots.length > 0 ? onto : undefined
+    context.wetChanged()
   }
 
   /** Lets go of everything wet, unsettled. */
@@ -581,6 +734,14 @@ export function createFluidStroke(
     device.queue.submit([encoder.finish()])
     free(settling)
     context.wetChanged()
+    // The stroke in flight's copy holds paint that is in the layer now, and
+    // restoring it would lay that paint twice: the stroke starts over from
+    // what is left wet.
+    if (penDown) {
+      release(penDown)
+      penDown = keepFields()
+      laid = false
+    }
 
     const x = Math.max(0, Math.floor(box.left))
     const y = Math.max(0, Math.floor(box.top))
@@ -623,7 +784,10 @@ export function createFluidStroke(
       if (surface && surface !== opening.surface)
         throw new Error("Another layer is still wet.")
       painting = opening.surface
-      openedDry = tiles!.count() === 0
+      // Before the brush's rates are put to the wash: they are undone too.
+      release(penDown)
+      penDown = keepFields()
+      laid = false
       load = opening.load
       uniformValues.set(opening.ink)
       uniformValues[4] = FIELD_SIZE
@@ -718,6 +882,7 @@ export function createFluidStroke(
       }
       drawInstances(filled)
       if (touched.size === 0) return
+      laid = true
       if (surface === painting) context.wetMoved()
       else {
         // Wet from its first dab, and again if all of it dried under the pen.
@@ -727,12 +892,27 @@ export function createFluidStroke(
     },
     end(keep) {
       if (!painting) return null
+      const onto = painting
       painting = undefined
-      // Cancelled, a stroke that found the layer dry leaves it dry.
-      if (!keep && openedDry) discard()
+      const kept = penDown
+      penDown = undefined
+      release(handover)
+      handover = undefined
+      // Cancelled, the wet fields are what they were at pen-down.
+      if (!keep && kept) putBack(kept, onto)
+      if (keep && laid) handover = kept
+      else release(kept)
       // No tile changed: there is no mark for history until paint settles.
       return null
     },
+    takeCopy() {
+      const kept = handover
+      handover = undefined
+      return kept ?? null
+    },
+    copy: keepFields,
+    restore: (copy, onto) => putBack(copy as KeptFields, onto),
+    release: (copy) => release(copy as KeptFields),
     advance(steps) {
       const marks: StrokeMark[] = []
       if (!tiles) return marks
@@ -755,9 +935,12 @@ export function createFluidStroke(
     drop(of) {
       if (of && of !== surface && of !== painting) return
       painting = undefined
+      release(penDown)
+      penDown = undefined
       discard()
     },
     destroy() {
+      for (const kept of [...copies]) release(kept)
       for (const texture of fields?.textures ?? []) texture.destroy()
       slots?.texture.destroy()
       uniform.destroy()
