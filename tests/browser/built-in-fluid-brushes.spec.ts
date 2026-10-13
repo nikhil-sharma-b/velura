@@ -266,15 +266,18 @@ test.describe("through the engine", () => {
   const advance = (page: Page, steps: number) =>
     dispatch(page, { type: "advanceFluid", steps })
 
-  /** Runs the simulation on until nothing is wet. */
-  async function untilDry(page: Page) {
-    for (let i = 0; i < 400 && (await isWet(page)); i++) {
-      await advance(page, 40)
-      // History reads the settled tiles back after the frame.
-      await frames(page)
-    }
-    expect(await isWet(page)).toBe(false)
+  /**
+   * Runs the simulation on by so many steps, then dries what is still wet by
+   * command: left to dry by itself a flooded wash is thousands of steps,
+   * which is minutes where the GPU is software.
+   */
+  async function dried(page: Page, steps: number) {
+    await advance(page, steps)
+    await dispatch(page, { type: "dryNow" })
+    await expect.poll(() => isWet(page)).toBe(false)
+    // History reads the settled tiles back after the frame.
     await frames(page)
+    return pixels(page)
   }
 
   /** A wash with no rim and no grain, so what moves it is the water brush. */
@@ -298,8 +301,7 @@ test.describe("through the engine", () => {
     await drag(page, origin, [60, ROW], [180, ROW])
     expect(await isWet(page)).toBe(true)
     expect(await pixels(page)).toEqual(empty)
-    await untilDry(page)
-    expect(await pixels(page)).toEqual(empty)
+    expect(await dried(page, 60)).toEqual(empty)
   })
 
   test("the water brush softens a wet edge", async ({ page }) => {
@@ -308,7 +310,7 @@ test.describe("through the engine", () => {
     /** Past the bar's rounded end, where the wash laid nothing. */
     const BEYOND = BAR.to + 24 + 8
     /** A wet bar, with or without water laid across its end, dried. */
-    const dried = async (water: boolean) => {
+    const bar = async (water: boolean) => {
       const origin = await openCanvas(page)
       await dispatch(page, WASH)
       await drag(page, origin, [BAR.from, ROW], [BAR.to, ROW])
@@ -322,11 +324,11 @@ test.describe("through the engine", () => {
           [BAR.to + 14, ROW + 30]
         )
       }
-      await untilDry(page)
-      return pixels(page)
+      // The paint runs out for as long as water stands on the damp paper.
+      return dried(page, 900)
     }
-    const plain = await dried(false)
-    const softened = await dried(true)
+    const plain = await bar(false)
+    const softened = await bar(true)
     // By itself the wash keeps the edge the brush gave it.
     expect(darkness(plain, BEYOND)).toBeLessThanOrEqual(3)
     // Given damp paper to run into, its paint goes on past that edge, and
@@ -346,7 +348,7 @@ test.describe("through the engine", () => {
     /** The drop the brush lays at the pressure a mouse has. */
     const DROP = 15
     /** A wide wash part dried, with or without a drop let into it. */
-    const dried = async (drop: boolean) => {
+    const wash = async (drop: boolean) => {
       const origin = await openCanvas(page)
       await dispatch(page, { ...WASH, radius: 60 } as Command)
       await drag(page, origin, [BAR.from, ROW], [BAR.to, ROW])
@@ -360,11 +362,10 @@ test.describe("through the engine", () => {
         await page.mouse.up()
         await frames(page)
       }
-      await untilDry(page)
-      return pixels(page)
+      return dried(page, 400)
     }
-    const plain = await dried(false)
-    const bloomed = await dried(true)
+    const plain = await wash(false)
+    const bloomed = await wash(true)
     // Where the drop fell the wash is lighter than it would have dried.
     expect(darkness(bloomed, MIDDLE)).toBeLessThan(
       darkness(plain, MIDDLE) * 0.75
@@ -382,10 +383,8 @@ test.describe("through the engine", () => {
     expect(most).toBeGreaterThan(darkness(plain, MIDDLE) * 0.1)
   })
 
-  test("the three that lay paint keep the edge the brush gave them", async ({
-    page,
-  }) => {
-    for (const name of NAMES.filter((name) => name !== "Water brush")) {
+  for (const name of NAMES.filter((name) => name !== "Water brush"))
+    test(`${name} keeps the edge the brush gave it`, async ({ page }) => {
       const origin = await openCanvas(page)
       await dispatch(page, inHand(named(name)))
       await drag(page, origin, [70, ROW], [170, ROW])
@@ -397,12 +396,12 @@ test.describe("through the engine", () => {
         return count
       }
       const laid = width(await pixels(page))
-      expect(laid, name).toBeGreaterThan(4)
-      await untilDry(page)
-      const dried = width(await pixels(page))
+      expect(laid).toBeGreaterThan(4)
+      // Long enough for a bloom to have run: a flooded stroke is cells wider
+      // well inside this.
+      const after = width(await dried(page, 300))
       // To a cell either side: thin paint runs out to the rim of the damp
-      // paper its own dabs left, and no further. A bloom goes on for cells.
-      expect(Math.abs(dried - laid), name).toBeLessThanOrEqual(4)
-    }
-  })
+      // paper its own dabs left, and no further.
+      expect(Math.abs(after - laid)).toBeLessThanOrEqual(4)
+    })
 })
