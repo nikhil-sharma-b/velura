@@ -375,6 +375,9 @@ for (const wet of [false, true])
   test(`a scattered ${wet ? "wet" : "dry"} stroke reads back the tiles its dabs drew into, and is still undone exactly`, async ({
     page,
   }) => {
+    // On CI's software GPU this has run to within a quarter of the minute an
+    // ordinary test is given there, or past it.
+    test.slow()
     await openWideCanvas(page, wet)
     const scene = await painted(page)
     const tiles = await scatteredStroke(page)

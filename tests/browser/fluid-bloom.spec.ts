@@ -189,6 +189,9 @@ test("a stroke with ordinary water keeps the edge the brush gave it", async ({
 })
 
 test("a flooded stroke ends wider than it was laid", async ({ page }) => {
+  // On CI's software GPU this has run to within a quarter of the minute an
+  // ordinary test is given there, or past it.
+  test.slow()
   const { laid, dried } = await laidAndDried(page, FLOODED)
   for (const x of [STROKE.from, MIDDLE, STROKE.to])
     expect(painted(dried, x), `column ${x}`).toBeGreaterThan(
@@ -199,6 +202,9 @@ test("a flooded stroke ends wider than it was laid", async ({ page }) => {
 test("water laid into a drying wash leaves a lighter centre and pigment pushed outward", async ({
   page,
 }) => {
+  // On CI's software GPU this has run to within a quarter of the minute an
+  // ordinary test is given there, or past it.
+  test.slow()
   const DROP = { radius: 8, reach: 30 }
   /** A wash part dried, with or without a drop of water let into it. */
   const dried = async (drop: boolean) => {
@@ -242,6 +248,9 @@ const above = (line: number, radius: number) => line - radius - 3
 test("a bloom beside a tile border crosses it with no wall and no seam, and is undone with its stroke", async ({
   page,
 }) => {
+  // On CI's software GPU this has run to within a quarter of the minute an
+  // ordinary test is given there, or past it.
+  test.slow()
   const radius = 30
   // Slow to dry, so the water stands deeper than the paper holds for long
   // enough to carry the damp edge well past the border.

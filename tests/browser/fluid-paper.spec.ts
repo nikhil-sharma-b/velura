@@ -208,6 +208,9 @@ async function leftToDry(page: Page, granulation: number) {
 test("a dried wash with granulation up shows more pigment in the paper's valleys than on its peaks", async ({
   page,
 }) => {
+  // On CI's software GPU this has run to within a quarter of the minute an
+  // ordinary test is given there, or past it.
+  test.slow()
   const granulated = await leftToDry(page, 1)
   const flat = await leftToDry(page, 0)
   // The glaze shows the grain in any paint the paper has taken; granulation
@@ -232,6 +235,9 @@ test("with granulation at zero a wash dries without speckle from the simulation"
 test("two washes from two different fluid brushes granulate into the same paper", async ({
   page,
 }) => {
+  // On CI's software GPU this has run to within a quarter of the minute an
+  // ordinary test is given there, or past it.
+  test.slow()
   const origin = await openCanvas(page)
   // Two brushes of different sizes, colours and rates, one after the other
   // and apart: each gathers in the valleys of the one paper, which is where
