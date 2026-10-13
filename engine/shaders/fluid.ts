@@ -123,6 +123,7 @@ export const fluidSettleShader = preprocess(
 @group(0) @binding(2) var wetDeposited: texture_2d<f32>;
 @group(0) @binding(3) var wetSuspended: texture_2d<f32>;
 @group(0) @binding(4) var paper: texture_2d<f32>;
+@group(0) @binding(5) var selection: texture_2d<f32>;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -141,6 +142,7 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
     wetDeposited,
     wetSuspended,
     paper,
+    selection,
     position.xy
   );
 }
@@ -157,7 +159,8 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
  *
  * `stepMain` is one step of the clock. `pourMain` moves nothing: it pours
  * what a batch of dabs laid into the fields, water up to the depth the brush
- * carries.
+ * carries. Both read the selection: the pour lays only what it covers, and
+ * the step lets nothing cross what it does not.
  *
  * The water field holds standing water in x and the paper's dampness in y,
  * with the water that crossed the cell's right and bottom faces in z and w.
@@ -224,6 +227,8 @@ const CELL_SIZE: i32 = ${WET_CELL_SIZE};
 @group(0) @binding(8) var laidWater: texture_2d<f32>;
 @group(0) @binding(9) var laidPigment: texture_2d<f32>;
 @group(0) @binding(10) var paper: texture_2d<f32>;
+@group(0) @binding(11) var selection: texture_2d<f32>;
+@group(0) @binding(12) var selectionSampler: sampler;
 
 // Where a slot's cell is in a field texture.
 fn slotTexel(slot: u32, cell: vec2<u32>) -> vec2<i32> {
@@ -236,14 +241,29 @@ fn cellPaper(cell: vec2<i32>) -> f32 {
   return paperHeight(paper, cell * CELL_SIZE + CELL_SIZE / 2);
 }
 
+// How much of a cell the selection covers (fluid brushes 09): the mean over
+// the document pixels of it, which is what a filtered read at its middle
+// gives, and all of it while nothing is selected. Paper the selection does
+// not cover is masked: the pour lays nothing on it and nothing crosses it.
+fn selected(cell: vec2<i32>) -> f32 {
+  let middle = vec2<f32>(cell * CELL_SIZE + CELL_SIZE / 2);
+  return textureSampleLevel(
+    selection,
+    selectionSampler,
+    middle / vec2<f32>(textureDimensions(selection)),
+    0.0
+  ).r;
+}
+
 // Water crossing the face from a to b in a step. It follows the difference
 // in the height of the water's surface, which is the water's depth and a
 // little of the paper's relief under it, and moves only between two cells of
-// damp paper, which is what keeps the edge of a wash where the brush put it.
-// Both cells work the same number out for the face they share, so none is
-// made or lost.
-fn faceFlow(a: vec4<f32>, b: vec4<f32>, paperA: f32, paperB: f32) -> f32 {
-  let damp = smoothstep(0.02, 0.3, min(a.y, b.y));
+// damp paper, which is what keeps the edge of a wash where the brush put it,
+// and only as far as the selection leaves the face between them open. Both
+// cells work the same number out for the face they share, so none is made or
+// lost.
+fn faceFlow(a: vec4<f32>, b: vec4<f32>, paperA: f32, paperB: f32, open: f32) -> f32 {
+  let damp = open * smoothstep(0.02, 0.3, min(a.y, b.y));
   let fall = a.x - b.x + RELIEF * (paperA - paperB);
   return clamp(FLOW * fall * damp, -FACE_SHARE * b.x, FACE_SHARE * a.x);
 }
@@ -279,9 +299,10 @@ fn creep(beside: vec4<f32>, own: f32) -> f32 {
   return max(beside.y - own, 0.0) * smoothstep(HOLDS, HOLDS + SPILL, beside.x);
 }
 
-// How freely pigment diffuses between two cells: both have to hold water.
-fn bleedGate(a: vec4<f32>, b: vec4<f32>) -> f32 {
-  return sim.bleed * smoothstep(0.0, 0.25, min(a.x, b.x));
+// How freely pigment diffuses between two cells: both have to hold water,
+// and the selection to leave the face between them open.
+fn bleedGate(a: vec4<f32>, b: vec4<f32>, open: f32) -> f32 {
+  return sim.bleed * open * smoothstep(0.0, 0.25, min(a.x, b.x));
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -320,10 +341,14 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   // the water that flows out to replace it is what darkens a wash's rim.
   let height = cellPaper(cell);
   let relief = vec4<f32>(cellPaper(right), cellPaper(left), cellPaper(down), cellPaper(up));
-  let toRight = faceFlow(c, r, height, relief.x);
-  let fromLeft = faceFlow(l, c, relief.y, height);
-  let toDown = faceFlow(c, d, height, relief.z);
-  let fromUp = faceFlow(u, c, relief.w, height);
+  // The selection is in every gate: how open each face is to what crosses
+  // it is the coverage of the cells either side, multiplied.
+  let open = selected(cell)
+    * vec4<f32>(selected(right), selected(left), selected(down), selected(up));
+  let toRight = faceFlow(c, r, height, relief.x, open.x);
+  let fromLeft = faceFlow(l, c, relief.y, height, open.y);
+  let toDown = faceFlow(c, d, height, relief.z, open.z);
+  let fromUp = faceFlow(u, c, relief.w, height, open.w);
   let level = c.x - toRight + fromLeft - toDown + fromUp;
   // Only a cell with water to lose looks for the edge: most of a wet tile
   // has none, and the looking is eight more cells read.
@@ -332,7 +357,10 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   let w = clamp(level - lost, 0.0, MAX_WATER);
   // Paper under water is damp, and dries out once the water has gone. Dry
   // paper beside water it cannot hold back is made damp by it.
-  let soaked = c.y + ABSORB * (creep(l, c.y) + creep(r, c.y) + creep(u, c.y) + creep(d, c.y));
+  let soaked = c.y + ABSORB * dot(
+    open,
+    vec4<f32>(creep(r, c.y), creep(l, c.y), creep(d, c.y), creep(u, c.y))
+  );
   let dampness = select(max(0.0, soaked - DAMP_FADE), min(1.0, soaked + 0.2), w > 0.001);
 
   // Suspended pigment rides the water: the share of a cell's water crossing
@@ -346,10 +374,10 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   let inLeft = max(fromLeft, 0.0) / max(l.x, 0.0001);
   let inDown = max(-toDown, 0.0) / max(d.x, 0.0001);
   let inUp = max(fromUp, 0.0) / max(u.x, 0.0001);
-  let bleedRight = bleedGate(c, r);
-  let bleedLeft = bleedGate(c, l);
-  let bleedDown = bleedGate(c, d);
-  let bleedUp = bleedGate(c, u);
+  let bleedRight = bleedGate(c, r, open.x);
+  let bleedLeft = bleedGate(c, l, open.y);
+  let bleedDown = bleedGate(c, d, open.z);
+  let bleedUp = bleedGate(c, u, open.w);
   // At most a fifth by each face and the brush's bleed by each again: a
   // cell never gives away more than it has, so none is made or lost.
   let leaving = min(
@@ -377,17 +405,21 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
 
 @compute @workgroup_size(8, 8, 1)
 fn pourMain(@builtin(global_invocation_id) id: vec3<u32>) {
-  if (sim.tiles[id.z].z == 0) { return; }
+  let tile = sim.tiles[id.z];
+  if (tile.z == 0) { return; }
   let texel = slotTexel(id.z, id.xy);
   let c = textureLoad(water, texel, 0);
-  let laid = textureLoad(laidWater, texel, 0);
+  // The selection clips what a dab lays, water, dampness and pigment alike:
+  // a cell takes the share of each that the selection covers of it.
+  let share = selected(tile.xy * WET_CELLS + vec2<i32>(id.xy));
+  let laid = textureLoad(laidWater, texel, 0) * share;
   textureStore(
     waterOut,
     texel,
     // The brush fills a cell to its own depth of water, however many of its
     // dabs overlap there, and takes none from a cell that stands deeper.
     vec4<f32>(
-      max(c.x, min(c.x + laid.x, sim.level * MAX_WATER)),
+      max(c.x, min(c.x + laid.x, sim.level * MAX_WATER * share)),
       max(c.y, min(1.0, laid.y)),
       c.zw
     )
@@ -395,7 +427,7 @@ fn pourMain(@builtin(global_invocation_id) id: vec3<u32>) {
   textureStore(
     suspendedOut,
     texel,
-    addPaint(textureLoad(suspended, texel, 0), textureLoad(laidPigment, texel, 0))
+    addPaint(textureLoad(suspended, texel, 0), textureLoad(laidPigment, texel, 0) * share)
   );
   textureStore(depositedOut, texel, textureLoad(deposited, texel, 0));
 }
