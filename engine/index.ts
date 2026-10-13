@@ -4916,10 +4916,11 @@ export function createEngine(
     }
     if (stampCount === 0) return
     if (fluidTargetId) {
-      renderer?.drawFluid(stamps, stampCount)
+      const settled = renderer?.drawFluid(stamps, stampCount) ?? []
       // Wet from the stroke's dabs, and again if it was dried under the pen.
       wetTargetId = fluidTargetId
-      syncWet()
+      // A wash past the wet tile limit settled a body to make room.
+      recordSettled(settled)
     } else renderer?.stamp(stamps, stampCount)
     stampCount = 0
   }

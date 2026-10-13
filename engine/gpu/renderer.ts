@@ -423,8 +423,11 @@ export interface Renderer {
    * one surface is wet at a time: another's wet paint is dried first.
    */
   beginFluid(surfaceId: string, stroke: Omit<FluidOpening, "surface">): void
-  /** Draws `count` dabs (see `STAMP`) into the wet surface. */
-  drawFluid(dabs: Float32Array, count: number): void
+  /**
+   * Draws `count` dabs (see `STAMP`) into the wet surface. Answers what was
+   * written by each body settled early to make room, past the wet tile limit.
+   */
+  drawFluid(dabs: Float32Array, count: number): readonly StrokeMark[]
   /**
    * Ends the fluid stroke. Kept, its paint stays wet, and the wet fields as
    * they were at pen-down are answered, the caller's to release: null where
@@ -3441,9 +3444,7 @@ export function createRenderer(
     beginFluid(surfaceId, opening) {
       fluid.begin({ surface: ensureSurface(surfaceId), ...opening })
     },
-    drawFluid(dabs, count) {
-      fluid.draw(dabs, count)
-    },
+    drawFluid: (dabs, count) => fluid.draw(dabs, count),
     endFluid(keep) {
       fluid.end(keep)
       return fluid.takeCopy()
