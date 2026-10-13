@@ -839,12 +839,13 @@ test("paint bleeds across a tile border as it does within a tile", async ({
   const within = await bled(64)
   // It has bled over the column border.
   expect(distance(across(262, 256), across(340, 256))).toBeGreaterThan(12)
-  // And the picture is the one painted where there is no border to cross.
+  // And the picture is the one painted where there is no border to cross,
+  // to the paper's grain: a quarter tile on is other paper (fluid brushes 07).
   let worst = 0
   for (let y = 216; y < 296; y++)
     for (let x = 206; x < 290; x++)
       worst = Math.max(worst, distance(across(x, y), within(x, y)))
-  expect(worst).toBeLessThanOrEqual(2)
+  expect(worst).toBeLessThanOrEqual(6)
 })
 
 test("a body of wet tiles settles as a whole, and apart from another", async ({
@@ -981,8 +982,9 @@ test("with edge at zero a wash dries flat", async ({ page }) => {
   await addLayer(page)
   const image = await leftToDry(page, origin, 0)
   expect(centre(image)).toBeGreaterThan(30)
+  // To the paper's grain (fluid brushes 07), which a rim is well over.
   expect(Math.abs(side(image) - centre(image))).toBeLessThan(
-    centre(image) * 0.1
+    centre(image) * 0.25
   )
   // A stroke's end is laid thinner than its middle, and stays so.
   expect(end(image)).toBeLessThan(insideEnd(image) * 1.03)
@@ -1006,10 +1008,10 @@ test("the rim follows the wash's own outline, not that of dried paint under it",
   const image = await leftToDry(page, origin, 1)
 
   // Along the wash's middle, where the dried paint ends: no rim on the paper
-  // side of it, the wash being as it is further along.
+  // side of it, the wash being as it is further along, to the paper's grain.
   const flat = centre(image)
   for (let x = border + BAND; x < MIDDLE; x++)
-    expect(Math.abs(darkness(rgba(image, x)) - flat)).toBeLessThan(flat * 0.05)
+    expect(Math.abs(darkness(rgba(image, x)) - flat)).toBeLessThan(flat * 0.2)
   // The wash's own outline rims over dried paint as over paper.
   const under = darkness(rgba(ground, 80))
   expect(side(image, 150)).toBeGreaterThan(flat * 1.5)

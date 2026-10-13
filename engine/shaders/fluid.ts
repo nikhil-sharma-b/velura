@@ -1,4 +1,4 @@
-import { WET_SLOTS } from "../gpu/wet-tiles"
+import { WET_CELL_SIZE, WET_SLOTS } from "../gpu/wet-tiles"
 import { pigmentShader } from "./pigment"
 import { preprocess } from "./preprocess"
 import wet from "./wet.wgsl"
@@ -107,6 +107,7 @@ export const fluidSettleShader = preprocess(
 @group(0) @binding(1) var wetSlots: texture_2d<u32>;
 @group(0) @binding(2) var wetDeposited: texture_2d<f32>;
 @group(0) @binding(3) var wetSuspended: texture_2d<f32>;
+@group(0) @binding(4) var paper: texture_2d<f32>;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -124,6 +125,7 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
     wetSlots,
     wetDeposited,
     wetSuspended,
+    paper,
     position.xy
   );
 }
@@ -157,6 +159,9 @@ struct Sim {
   // How many times faster water evaporates at the very edge of the damp
   // area than in the middle of it, less one.
   edge: f32,
+  // How much faster the paper takes pigment in its deepest valley than at
+  // its middle height, less one; on its peaks it takes that much less.
+  granulation: f32,
   // Each slot's tile in xy, and in z whether one holds it.
   tiles: array<vec4<i32>, ${WET_SLOTS}>,
 }
@@ -177,6 +182,11 @@ const EDGE_REACH: i32 = 6;
 // pigment that lifts back while water stands on it.
 const DEPOSIT: f32 = 0.0003;
 const LIFT: f32 = 0.001;
+// How much water the paper's relief is worth, from its deepest valley to its
+// highest peak: water sits a little deeper in the valleys.
+const RELIEF: f32 = 0.03;
+// Document pixels along one side of a cell.
+const CELL_SIZE: i32 = ${WET_CELL_SIZE};
 
 @group(0) @binding(0) var<uniform> sim: Sim;
 @group(0) @binding(1) var wetSlots: texture_2d<u32>;
@@ -188,6 +198,7 @@ const LIFT: f32 = 0.001;
 @group(0) @binding(7) var depositedOut: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(8) var laidWater: texture_2d<f32>;
 @group(0) @binding(9) var laidPigment: texture_2d<f32>;
+@group(0) @binding(10) var paper: texture_2d<f32>;
 
 // Where a slot's cell is in a field texture.
 fn slotTexel(slot: u32, cell: vec2<u32>) -> vec2<i32> {
@@ -195,13 +206,21 @@ fn slotTexel(slot: u32, cell: vec2<u32>) -> vec2<i32> {
   return vec2<i32>(at % WET_FIELD_COLUMNS, at / WET_FIELD_COLUMNS) * WET_CELLS + vec2<i32>(cell);
 }
 
+// The paper's height under a cell, read at one document pixel of it.
+fn cellPaper(cell: vec2<i32>) -> f32 {
+  return paperHeight(paper, cell * CELL_SIZE + CELL_SIZE / 2);
+}
+
 // Water crossing the face from a to b in a step. It follows the difference
-// in height and moves only between two cells of damp paper, which is what
-// keeps the edge of a wash where the brush put it. Both cells work the same
-// number out for the face they share, so none is made or lost.
-fn faceFlow(a: vec4<f32>, b: vec4<f32>) -> f32 {
+// in the height of the water's surface, which is the water's depth and a
+// little of the paper's relief under it, and moves only between two cells of
+// damp paper, which is what keeps the edge of a wash where the brush put it.
+// Both cells work the same number out for the face they share, so none is
+// made or lost.
+fn faceFlow(a: vec4<f32>, b: vec4<f32>, paperA: f32, paperB: f32) -> f32 {
   let damp = smoothstep(0.02, 0.3, min(a.y, b.y));
-  return clamp(FLOW * (a.x - b.x) * damp, -FACE_SHARE * b.x, FACE_SHARE * a.x);
+  let fall = a.x - b.x + RELIEF * (paperA - paperB);
+  return clamp(FLOW * fall * damp, -FACE_SHARE * b.x, FACE_SHARE * a.x);
 }
 
 // How damp the paper is at a cell, for one looking for the edge of the damp
@@ -252,10 +271,18 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
 
   // Water levels, then evaporates, faster near the edge of the damp area:
   // the water that flows out to replace it is what darkens a wash's rim.
-  let toRight = faceFlow(c, r);
-  let fromLeft = faceFlow(l, c);
-  let toDown = faceFlow(c, d);
-  let fromUp = faceFlow(u, c);
+  // Only where there is water does the paper under it matter: most of a wet
+  // tile has none, and the paper is five more cells read.
+  var height = 0.5;
+  var relief = vec4<f32>(0.5);
+  if (max(max(c.x, l.x), max(max(r.x, u.x), d.x)) > 0.0) {
+    height = cellPaper(cell);
+    relief = vec4<f32>(cellPaper(right), cellPaper(left), cellPaper(down), cellPaper(up));
+  }
+  let toRight = faceFlow(c, r, height, relief.x);
+  let fromLeft = faceFlow(l, c, relief.y, height);
+  let toDown = faceFlow(c, d, height, relief.z);
+  let fromUp = faceFlow(u, c, relief.w, height);
   let level = c.x - toRight + fromLeft - toDown + fromUp;
   // Only a cell with water to lose looks for the edge: most of a wet tile
   // has none, and the looking is eight more cells read.
@@ -292,10 +319,12 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   s = addPaint(s, wetCell(wetSlots, suspended, down) * (inDown + bleedDown));
   s = addPaint(s, wetCell(wetSlots, suspended, up) * (inUp + bleedUp));
 
-  // The paper takes pigment slowly while water stands on it and all of it
-  // once the water has gone; a little lifts back while it is under water.
+  // The paper takes pigment slowly while water stands on it, faster in its
+  // valleys than on its peaks by the brush's granulation, and all of it once
+  // the water has gone; a little lifts back while it is under water.
   let p = textureLoad(deposited, texel, 0);
-  let taken = s * clamp(DEPOSIT + 1.0 - smoothstep(0.0, 0.05, w), 0.0, 1.0);
+  let settling = DEPOSIT * max(1.0 + sim.granulation * (1.0 - 2.0 * height), 0.0);
+  let taken = s * clamp(settling + 1.0 - smoothstep(0.0, 0.05, w), 0.0, 1.0);
   let lifted = p * (LIFT * smoothstep(0.0, 0.25, w));
 
   textureStore(waterOut, texel, vec4<f32>(w, dampness, toRight, toDown));

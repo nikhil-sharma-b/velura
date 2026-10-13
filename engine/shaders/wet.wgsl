@@ -34,6 +34,18 @@ fn wetField(slots: texture_2d<u32>, field: texture_2d<f32>, point: vec2<f32>) ->
   );
 }
 
+// How much more of the pigment it has taken the paper shows in its deepest
+// valley, and how much less on its highest peak. The fields hold a cell to
+// two document pixels, coarser than the paper's grain, so the grain is put
+// back here, at the document's resolution.
+const PAPER_GRAIN: f32 = 0.15;
+
+// The paper's height at a document pixel, from none in its deepest valley to
+// one on its highest peak. It is one paper, tiled across the document.
+fn paperHeight(paper: texture_2d<f32>, pixel: vec2<i32>) -> f32 {
+  return textureLoad(paper, pixel & (vec2<i32>(textureDimensions(paper)) - 1), 0).r;
+}
+
 // Paint of some density over what is beneath it: a transparent film. Alpha in
 // `paint` is pigment density, not coverage, and its colour is premultiplied
 // by it.
@@ -44,17 +56,20 @@ fn glaze(under: vec4<f32>, paint: vec4<f32>) -> vec4<f32> {
 }
 
 // A layer's pixel with whatever is wet over that document point glazed onto
-// it: the pigment the paper has taken first, and what is still in the water
-// over it.
+// it: the pigment the paper has taken first, more of it showing in the
+// paper's valleys, and what is still in the water over it.
 fn glazeWet(
   under: vec4<f32>,
   slots: texture_2d<u32>,
   deposited: texture_2d<f32>,
   suspended: texture_2d<f32>,
+  paper: texture_2d<f32>,
   point: vec2<f32>
 ) -> vec4<f32> {
+  let height = paperHeight(paper, vec2<i32>(floor(point)));
+  let grain = 1.0 + PAPER_GRAIN * (1.0 - 2.0 * height);
   return glaze(
-    glaze(under, wetField(slots, deposited, point)),
+    glaze(under, wetField(slots, deposited, point) * grain),
     wetField(slots, suspended, point)
   );
 }

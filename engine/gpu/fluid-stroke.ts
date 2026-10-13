@@ -69,6 +69,12 @@ const MAX_BLEED = 0.05
  */
 const MAX_EDGE = 12
 
+/**
+ * How much faster the paper takes pigment in its deepest valley than at its
+ * middle height, less one, at a brush's full `granulation`.
+ */
+const MAX_GRANULATION = 16
+
 /** Steps a body is kept past when its water and dampness should be gone. */
 const DRYING_MARGIN = 20
 
@@ -92,6 +98,8 @@ export type FluidOpening = {
   bleed: number
   /** How much faster the edge of a wash dries than its middle, in [0, 1]. */
   edge: number
+  /** How much pigment settles into the paper's valleys, in [0, 1]. */
+  granulation: number
 }
 
 /** What the fluid stroke reads of, and asks of, the renderer it draws for. */
@@ -100,6 +108,8 @@ export type FluidStrokeContext = {
   size(): { width: number; height: number }
   /** The brush's rim falloff, in document pixels. */
   feather(): number
+  /** The paper every fluid brush paints on, a texel a document pixel. */
+  paper(): GPUTextureView
   /** A layer became wet or dry: whatever shows it has to bind it again. */
   wetChanged(): void
   /**
@@ -203,7 +213,7 @@ type KeptFields = WetCopy & {
   grid: object
   reached: Float64Array
   clock: number
-  rates: [number, number, number]
+  rates: [number, number, number, number]
   lifetime: number
 }
 
@@ -308,6 +318,7 @@ export function createFluidStroke(
         write(7),
         read(8),
         read(9),
+        read(10),
       ],
     })
     const simModule = device.createShaderModule({ code: fluidSimShader })
@@ -342,7 +353,7 @@ export function createFluidStroke(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
   const simData = new ArrayBuffer(SIM_UNIFORM_SIZE)
-  const simRates = new Float32Array(simData, 0, 3)
+  const simRates = new Float32Array(simData, 0, 4)
   const simTiles = new Int32Array(simData, SIM_TILES_OFFSET)
 
   const uniformValues = new Float32Array(8)
@@ -527,6 +538,7 @@ export function createFluidStroke(
         { binding: 7, resource: to.deposited.view },
         { binding: 8, resource: fields!.laidWater },
         { binding: 9, resource: fields!.laidPigment },
+        { binding: 10, resource: context.paper() },
       ],
     })
     const pass = encoder.beginComputePass()
@@ -589,7 +601,7 @@ export function createFluidStroke(
       grid,
       reached: reached.slice(),
       clock,
-      rates: [simRates[0], simRates[1], simRates[2]],
+      rates: [simRates[0], simRates[1], simRates[2], simRates[3]],
       lifetime,
     }
     copies.add(kept)
@@ -719,6 +731,7 @@ export function createFluidStroke(
         { binding: 1, resource: slots!.view },
         { binding: 2, resource: views.deposited.view },
         { binding: 3, resource: views.suspended.view },
+        { binding: 4, resource: context.paper() },
       ],
     })
     const box = {
@@ -828,6 +841,7 @@ export function createFluidStroke(
       simRates[0] = evaporation(opening.drying)
       simRates[1] = MAX_BLEED * opening.bleed
       simRates[2] = MAX_EDGE * opening.edge
+      simRates[3] = MAX_GRANULATION * opening.granulation
       device.queue.writeBuffer(simUniform, 0, simData)
       lifetime =
         Math.ceil(FLUID_MAX_WATER / simRates[0]) +
