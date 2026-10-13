@@ -112,6 +112,37 @@ describe("createWorkload", () => {
     expect(workload.strokes).toEqual(createWorkload(options).strokes)
     expect(workload.options.wet).toEqual(wet)
   })
+
+  test("painting the workload fluid changes the brush and not the strokes", () => {
+    const fluid = { diameter: 512, spacing: 0.01, tip: true }
+    const workload = createWorkload({ ...options, fluid })
+    expect(workload.strokes).toEqual(createWorkload(options).strokes)
+    expect(workload.options.fluid).toEqual(fluid)
+  })
+
+  test("a fluid workload needs a brush it can paint with, and no other medium", () => {
+    const fluid = { diameter: 64 }
+    expect(() =>
+      createWorkload({ ...options, fluid: { diameter: 0 } })
+    ).toThrow()
+    expect(() =>
+      createWorkload({ ...options, fluid: { ...fluid, spacing: 0 } })
+    ).toThrow()
+    expect(() =>
+      createWorkload({
+        ...options,
+        fluid: { ...fluid, scatter: { amount: 2, count: 17, axes: "both" } },
+      })
+    ).toThrow()
+    expect(() => createWorkload({ ...options, fluid, smudge: true })).toThrow()
+    expect(() =>
+      createWorkload({
+        ...options,
+        fluid,
+        wet: { diameter: 64, pickup: 0.8 },
+      })
+    ).toThrow()
+  })
 })
 
 describe("workloadStats", () => {

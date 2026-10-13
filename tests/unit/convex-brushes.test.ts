@@ -148,6 +148,25 @@ describe("brushes on the account", () => {
     ).rejects.toThrow("wet or fluid")
   })
 
+  test("a mapping onto water comes back as it was saved", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const dynamics = [
+      {
+        source: "pressure" as const,
+        target: "water" as const,
+        range: [0.2, 1] as [number, number],
+        mix: "multiply" as const,
+      },
+    ]
+    await artist.mutation(api.brushes.save, {
+      name: "Wash",
+      definition: { ...pencil, dynamics },
+    })
+    const [wash] = await artist.query(api.brushes.list, {})
+    expect(wash.definition.dynamics).toEqual(dynamics)
+  })
+
   test("signing out leaves the shelf empty rather than throwing", async () => {
     const t = setup()
     expect(await t.query(api.brushes.list, {})).toEqual([])

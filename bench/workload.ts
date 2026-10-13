@@ -132,6 +132,22 @@ export type WorkloadOptions = {
     sampleAllLayers?: boolean
     scatter?: BrushScatter
   }
+  /**
+   * Paints the workload with a fluid brush `diameter` pixels across (fluid
+   * brushes 10), the simulation running under it. A frame's dabs are one
+   * batch drawn into the wet surface and one pour, however many there are.
+   * `spacing` is the brush's, as a fraction of its diameter; absent, an
+   * eighth. `tip` gives it a tip of several frames and `scatter` throws its
+   * dabs. `dry` paints with the same brush not fluid: what it is weighed
+   * against.
+   */
+  fluid?: {
+    diameter: number
+    spacing?: number
+    tip?: boolean
+    scatter?: BrushScatter
+    dry?: boolean
+  }
 }
 
 /**
@@ -275,6 +291,14 @@ export function createWorkload(options: WorkloadOptions): Workload {
       throw new Error("A workload's flow must be in [0, 1].")
     if (options.smudge)
       throw new Error("A workload is smudged or painted wet, not both.")
+  }
+  if (options.fluid !== undefined) {
+    const { diameter, spacing, scatter } = options.fluid
+    positive(diameter, "brush diameter")
+    if (spacing !== undefined) positive(spacing, "brush spacing")
+    if (scatter !== undefined) validateScatter(scatter)
+    if (options.smudge || options.wet)
+      throw new Error("A workload is smudged, painted wet or fluid: one.")
   }
   if (options.smudgeRadius !== undefined) {
     positive(options.smudgeRadius, "smudge radius")

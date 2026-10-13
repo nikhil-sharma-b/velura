@@ -12,8 +12,8 @@ import { type Curve, LINEAR_CURVE, sampleCurve } from "./curve"
  * brush editor (D32) show a live preview without a canvas.
  *
  * What the graph produces is a *modulation*, not a finished dab: `size`,
- * `flow`, `opacity`, `roundness`, `scatter` and `pickup` scale the brush's
- * own values and `angle` and `hue` offset them. That is what lets one
+ * `flow`, `opacity`, `roundness`, `scatter`, `pickup` and `water` scale the
+ * brush's own values and `angle` and `hue` offset them. That is what lets one
  * dynamics list be shared between brushes of different sizes and read the
  * same on each.
  */
@@ -72,6 +72,13 @@ export type DynamicsTarget =
    * (D41). A dry brush has none, and draws the same however this is driven.
    */
   | "pickup"
+  /**
+   * How much water a fluid brush's dab carries, as a multiple of the brush's
+   * own water (D42). It scales down and never up: the brush's water is the
+   * deepest a stroke fills a cell, and what its paint's drying is counted
+   * from. A brush that is not fluid draws the same however this is driven.
+   */
+  | "water"
   /** Hue rotation, as a turn. */
   | "hue"
   | "saturation"
@@ -117,6 +124,7 @@ export type StampParams = {
   grainDepth: number
   scatter: number
   pickup: number
+  water: number
   hue: number
   saturation: number
   lightness: number
@@ -135,6 +143,7 @@ export const NEUTRAL_STAMP_PARAMS: StampParams = Object.freeze({
   grainDepth: 1,
   scatter: 1,
   pickup: 1,
+  water: 1,
   hue: 0,
   saturation: 0,
   lightness: 0,
@@ -187,6 +196,7 @@ const LIMITS: Readonly<
   grainDepth: [0, 1],
   scatter: [0, 16],
   pickup: [0, 1],
+  water: [0, 1],
   saturation: [-1, 1],
   lightness: [-1, 1],
 })

@@ -27,6 +27,8 @@
  * sixteen-dab pass ablations (`--scatter-dabs` uses thrown centres and
  * `--layer-target` selects original layer deposition);
  * `--blender` compares small blenders with wet brushes that have flow;
+ * `--fluid` paints with fluid brushes against the same brushes dry (fluid
+ * brushes 10);
  * `--cold` times a draw into a texture left alone (live brushes 24);
  * `--vector` times
  * redrawing a vector layer of many paths (19); `--navigate` times panning and
@@ -555,6 +557,57 @@ async function wetSweep(): Promise<void> {
   console.log()
 }
 
+const FLUID_PAINTS = [
+  { name: "dry", dry: true },
+  { name: "fluid" },
+  // Many times the dabs over the same wash: what a dab adds to a frame.
+  { name: "fluid, densest", spacing: DENSEST_SPACING },
+  { name: "fluid, tip", tip: true },
+  { name: "dry, scatter", dry: true, scatter: DENSE_SCATTER },
+  { name: "fluid, scatter", scatter: DENSE_SCATTER },
+]
+
+/**
+ * Fluid brushes (fluid brushes 10), against the same brush dry. A frame's
+ * fluid dabs are one batch drawn into the wet surface and one pour of it
+ * into the fields, as a dry brush's are one draw into the stroke buffer; the
+ * simulation steps under both. The brush is run at an eighth of its diameter
+ * between dabs and at the closest a brush can ask for, which lays many times
+ * the dabs into the same wash, with a tip of several frames, and with the
+ * densest scatter. Both passes, as a recorded run makes.
+ */
+async function fluidSweep(): Promise<void> {
+  const paced = PASSES.find((entry) => entry.name === "paced")!
+  const unpaced = PASSES.find((entry) => entry.name === "unpaced")!
+  console.log(
+    "\n                                      unpaced                               paced: pen-to-pixel in ms" +
+      "\n  document  brush   paint           ms/frame   sustained fps   dabs/frame   all frames (median / p95)   dabs    readbacks   allocations"
+  )
+  for (const size of SMUDGE_SIZES)
+    for (const diameter of [64, 512])
+      for (const { name, ...paint } of FLUID_PAINTS) {
+        const workload = {
+          ...BENCHMARK_WORKLOAD,
+          width: size,
+          height: size,
+          strokes: SWEEP_STROKES,
+          fluid: { diameter, ...paint },
+        }
+        const free = await measure(unpaced, workload)
+        const held = await measure(paced, workload)
+        const readbacks = free.readbacks + held.readbacks
+        const allocations = Math.max(free.allocations, held.allocations)
+        console.log(
+          `  ${`${size}²`.padEnd(8)}  ${`${diameter} px`.padEnd(6)}  ${name.padEnd(14)}  ` +
+            `${fixed(free.report.frameIntervalMs.mean, 3).padStart(9)}   ${fixed(free.report.frameRate.sustained).padStart(13)}   ` +
+            `${fixed(held.report.stamps.total / Math.max(1, held.report.frames)).padStart(10)}   ` +
+            `${fixed(held.report.latencyMs.median).padStart(12)} / ${fixed(held.report.latencyMs.p95).padEnd(8)}   ` +
+            `${String(held.report.stamps.total).padStart(6)}   ${String(readbacks).padStart(9)}   ${String(allocations).padStart(11)}`
+        )
+      }
+  console.log()
+}
+
 /**
  * What a pause before pen-down costs the frame a stroke opens in (live
  * brushes 31): the 512 px rows at 8192², paced, each with no wait but
@@ -930,16 +983,18 @@ async function main(): Promise<void> {
             ? scatterSweep
             : process.argv.includes("--smudge")
               ? smudgeSweep
-              : process.argv.includes("--wet") ||
-                  process.argv.includes("--blender")
-                ? wetSweep
-                : process.argv.includes("--cold")
-                  ? coldSweep
-                  : process.argv.includes("--vector")
-                    ? vectorSweep
-                    : process.argv.includes("--navigate")
-                      ? navigationSweep
-                      : null
+              : process.argv.includes("--fluid")
+                ? fluidSweep
+                : process.argv.includes("--wet") ||
+                    process.argv.includes("--blender")
+                  ? wetSweep
+                  : process.argv.includes("--cold")
+                    ? coldSweep
+                    : process.argv.includes("--vector")
+                      ? vectorSweep
+                      : process.argv.includes("--navigate")
+                        ? navigationSweep
+                        : null
   if (ladder) {
     try {
       await ladder()

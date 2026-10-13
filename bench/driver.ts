@@ -15,6 +15,7 @@ import {
   type FrameTiming,
   type SceneCommand,
 } from "../engine"
+import { DEFAULT_FLUID } from "../engine/brush/brush"
 import {
   createVectorWorkload,
   type VectorWorkloadOptions,
@@ -95,6 +96,32 @@ const BETWEEN_STROKES = 120
  * so what is underneath shows through and mixes.
  */
 const WET_BRUSH = { spacing: 0.125, flow: 0.3 }
+
+/** Frames in the fluid sweep's tip, and its size along a side. */
+const FLUID_TIP_FRAMES = 4
+const FLUID_TIP_SIZE = 64
+
+/**
+ * The fluid sweep's tip (fluid brushes 10): soft blobs off the middle, a
+ * different one each frame, so a dab's shape is a texture read and its frame
+ * changes from dab to dab.
+ */
+function fluidTip() {
+  const size = FLUID_TIP_SIZE
+  const data = new Uint8Array(FLUID_TIP_FRAMES * size * size)
+  for (let frame = 0; frame < FLUID_TIP_FRAMES; frame++) {
+    const turn = (frame / FLUID_TIP_FRAMES) * Math.PI * 2
+    const cx = size / 2 + Math.cos(turn) * size * 0.15
+    const cy = size / 2 + Math.sin(turn) * size * 0.15
+    for (let y = 0; y < size; y++)
+      for (let x = 0; x < size; x++) {
+        const reach = Math.hypot(x + 0.5 - cx, y + 0.5 - cy) / (size * 0.3)
+        data[(frame * size + y) * size + x] =
+          255 * Math.max(0, 1 - reach * reach)
+      }
+  }
+  return { width: size, height: size, frameCount: FLUID_TIP_FRAMES, data }
+}
 
 const nextFrame = () =>
   new Promise<number>((resolve) => requestAnimationFrame(resolve))
@@ -523,6 +550,24 @@ export async function runBenchmark(
           radius: workload.options.smudgeRadius,
         })
     }
+  }
+  const fluid = workload.options.fluid
+  if (fluid) {
+    if (fluid.tip)
+      await engine.dispatch({
+        type: "registerTexture",
+        id: "bench-fluid-tip",
+        texture: fluidTip(),
+      })
+    await engine.dispatch({
+      type: "setBrush",
+      radius: fluid.diameter / 2,
+      spacing: fluid.spacing ?? WET_BRUSH.spacing,
+      flow: WET_BRUSH.flow,
+      ...(fluid.tip ? { tipTextureId: "bench-fluid-tip" } : {}),
+      ...(fluid.scatter ? { scatter: fluid.scatter } : {}),
+      ...(fluid.dry ? {} : { fluid: DEFAULT_FLUID }),
+    })
   }
   const detachThumbnails = attachThumbnails(engine)
 

@@ -4734,8 +4734,11 @@ export function createEngine(
     )
     const radius = brush.shape.radius * params.size
     // Flow: the dab's own opacity, not the stroke's, which is applied once
-    // when the buffer is composited (D27).
-    const flow = brush.rendering.flow * params.flow
+    // when the buffer is composited (D27). A fluid stroke has no buffer to
+    // composite (D42), so the opacity the graph gives this dab is in the
+    // pigment it carries, with its flow.
+    const flow =
+      brush.rendering.flow * params.flow * (fluidTargetId ? params.opacity : 1)
     // Angle offsets the brush's own rotation and roundness scales its own
     // squash, which is what lets one dynamics list read the same on any tip.
     const angle = brush.shape.angle + params.angle
@@ -4766,6 +4769,7 @@ export function createEngine(
       stamps[offset + STAMP.SATURATION] = saturation
       stamps[offset + STAMP.LIGHTNESS] = lightness
       stamps[offset + STAMP.TIP_FRAME] = nextTipFrame(brush, context)
+      stamps[offset + STAMP.WATER] = params.water
       stampCount++
       frameStamps++
     }
@@ -5969,7 +5973,8 @@ export function createEngine(
     )
     scatterPlacer.begin(strokeSeed)
     // A fluid brush lays into the layer's wet surface (D42), with its
-    // opacity in the pigment each dab carries. On a mask, and as the eraser,
+    // opacity in the pigment each dab carries: the brush's own here, and
+    // what the graph makes of it dab by dab. On a mask, and as the eraser,
     // it paints as the brush otherwise is.
     const fluid =
       tool === "brush" && !doc.paintingMask ? brush.rendering.fluid : undefined
@@ -5979,7 +5984,7 @@ export function createEngine(
       if (wetTargetId && wetTargetId !== target) dryFluid()
       renderer?.beginFluid(target, {
         ink,
-        load: brush.rendering.opacity * strokeParams.opacity,
+        load: brush.rendering.opacity,
         water: fluid.water,
         drying: fluid.drying,
         bleed: fluid.bleed,

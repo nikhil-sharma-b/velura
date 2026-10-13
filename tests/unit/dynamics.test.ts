@@ -32,6 +32,7 @@ describe("dynamics graph evaluation", () => {
       grainDepth: 1,
       scatter: 1,
       pickup: 1,
+      water: 1,
       hue: 0,
       saturation: 0,
       lightness: 0,
@@ -176,6 +177,17 @@ describe("dynamics graph evaluation", () => {
       })
       expect(evaluateDynamics([add(1), add(1)], context()).pickup).toBe(1)
       expect(evaluateDynamics([add(-4)], context()).pickup).toBe(0)
+    })
+
+    test("water stays in [0, 1]: a dab carries no more than its brush", () => {
+      const add = (amount: number): Modulator => ({
+        source: "pressure",
+        target: "water",
+        range: [amount, amount],
+        mix: "add",
+      })
+      expect(evaluateDynamics([add(1), add(1)], context()).water).toBe(1)
+      expect(evaluateDynamics([add(-4)], context()).water).toBe(0)
     })
 
     test("a negative range cannot produce a negative radius", () => {
@@ -341,6 +353,22 @@ describe("dynamics for a device without a pressure sensor", () => {
         context({ pressure: 0.25 })
       ).pickup
     ).toBeCloseTo(0.25)
+  })
+
+  test("pressure on water scales the water a dab lays, and no sensor leaves the brush's own", () => {
+    const graph: Modulator[] = [
+      { source: "pressure", target: "water", range: [0, 1], mix: "multiply" },
+    ]
+    expect(() => validateDynamics(graph)).not.toThrow()
+    expect(
+      evaluateDynamics(
+        dynamicsForDevice(graph, true),
+        context({ pressure: 0.25 })
+      ).water
+    ).toBeCloseTo(0.25)
+    expect(
+      evaluateDynamics(dynamicsForDevice(graph, false), context()).water
+    ).toBe(1)
   })
 
   test("tilt, velocity and randomness still reach the dab", () => {

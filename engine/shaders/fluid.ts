@@ -1,4 +1,5 @@
 import { WET_CELL_SIZE, WET_SLOTS } from "../gpu/wet-tiles"
+import { hslShader } from "./hsl"
 import { pigmentShader } from "./pigment"
 import { preprocess } from "./preprocess"
 import wet from "./wet.wgsl"
@@ -36,19 +37,48 @@ export const FLUID_DAMP_STEPS = 50
  * reaches, and each is cut to its own slot here. Where a cell lies in the dab
  * is worked out from the cell, as a direct dab's is, so the two instances of
  * a dab either side of a border lay the same paint and leave no seam.
+ *
+ * It is the brush's own dab (fluid brushes 10): turned and squashed, its
+ * shape the tip's where the brush has one, and its ink shifted by the dab's
+ * colour offsets, as the stamp pass draws a dry one.
  */
 export const fluidDabShader = /* wgsl */ `
+${hslShader}
+
+const TAU = 6.283185307179586;
+
 struct Fluid {
   // Premultiplied linear ink.
   ink: vec4<f32>,
   // The field textures' size in cells.
   fieldSize: vec2<f32>,
-  // Rim falloff and water per dab, the first in cells.
+  // Rim falloff and the brush's water, the first in cells.
   feather: f32,
   water: f32,
+  // One when the tip texture is the dab's shape, zero for the disc.
+  useTip: f32,
 }
 
 @group(0) @binding(0) var<uniform> fluid: Fluid;
+@group(0) @binding(1) var tipSampler: sampler;
+@group(0) @binding(2) var tipTexture: texture_2d_array<f32>;
+
+struct Instance {
+  // The dab's centre and radius in cells of the field texture.
+  @location(0) center: vec2<f32>,
+  @location(1) radius: f32,
+  @location(2) load: f32,
+  // The slot's first cell, and the one past its last.
+  @location(3) slot: vec4<f32>,
+  // Rotation of the tip, as a turn clockwise, and its width against its
+  // length.
+  @location(4) angle: f32,
+  @location(5) roundness: f32,
+  // The share of the brush's water this dab carries.
+  @location(6) water: f32,
+  @location(7) tipFrame: f32,
+  @location(8) colorOffsets: vec3<f32>,
+}
 
 struct Varyings {
   @builtin(position) position: vec4<f32>,
@@ -56,21 +86,21 @@ struct Varyings {
   @location(1) @interpolate(flat) radius: f32,
   @location(2) @interpolate(flat) load: f32,
   @location(3) @interpolate(flat) slot: vec4<f32>,
+  // The cosine and sine of the dab's turn.
+  @location(4) @interpolate(flat) turn: vec2<f32>,
+  @location(5) @interpolate(flat) roundness: f32,
+  @location(6) @interpolate(flat) water: f32,
+  @location(7) @interpolate(flat) tipFrame: i32,
+  @location(8) @interpolate(flat) ink: vec4<f32>,
 }
 
 @vertex
-fn vertexMain(
-  @builtin(vertex_index) index: u32,
-  // The dab's centre and radius in cells of the field texture.
-  @location(0) center: vec2<f32>,
-  @location(1) radius: f32,
-  @location(2) load: f32,
-  // The slot's first cell, and the one past its last.
-  @location(3) slot: vec4<f32>,
-) -> Varyings {
+fn vertexMain(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings {
   let corner = vec2<f32>(f32(index & 1u), f32((index >> 1u) & 1u)) * 2.0 - 1.0;
-  // A cell past the rim, so one the rim only grazes is still drawn.
-  let cell = center + corner * (radius + 1.0);
+  // A turned tip's corners carry ink past the radius. And a cell past the
+  // rim, so one the rim only grazes is still drawn.
+  let reach = instance.radius * mix(1.0, sqrt(2.0), fluid.useTip) + 1.0;
+  let cell = instance.center + corner * reach;
   var out: Varyings;
   out.position = vec4<f32>(
     cell.x / fluid.fieldSize.x * 2.0 - 1.0,
@@ -78,10 +108,19 @@ fn vertexMain(
     0.0,
     1.0
   );
-  out.center = center;
-  out.radius = radius;
-  out.load = load;
-  out.slot = slot;
+  out.center = instance.center;
+  out.radius = instance.radius;
+  out.load = instance.load;
+  out.slot = instance.slot;
+  out.turn = vec2<f32>(cos(instance.angle * TAU), sin(instance.angle * TAU));
+  out.roundness = instance.roundness;
+  out.water = instance.water;
+  out.tipFrame = i32(instance.tipFrame);
+  out.ink = fluid.ink;
+  // As the stamp pass: a dab with no offsets lays the ink untouched.
+  if (any(instance.colorOffsets != vec3<f32>(0.0)) && fluid.ink.a > 0.0) {
+    out.ink = vec4<f32>(adjustHsl(fluid.ink.rgb / fluid.ink.a, instance.colorOffsets) * fluid.ink.a, fluid.ink.a);
+  }
   return out;
 }
 
@@ -94,16 +133,42 @@ struct Fields {
 fn fragmentMain(varyings: Varyings) -> Fields {
   let cell = varyings.position.xy;
   if (any(cell < varyings.slot.xy) || any(cell >= varyings.slot.zw)) { discard; }
-  // A plain round tip. Its rim is never narrower than a cell, which is as
-  // fine as a field can hold an edge.
+  // Where the cell lies in the dab, in cells: turned back, and stretched
+  // across the tip's length so its squashed rim is a circle's again.
+  let offset = cell - varyings.center;
+  let across = vec2<f32>(
+    offset.x * varyings.turn.x + offset.y * varyings.turn.y,
+    (offset.y * varyings.turn.x - offset.x * varyings.turn.y) / varyings.roundness
+  );
+  // The disc's rim is no narrower than a cell along the tip's length, which
+  // is as fine as a field can hold an edge; across it, it is squashed as
+  // the dab is.
   let feather = max(fluid.feather, 1.0);
-  let shape = 1.0 - smoothstep(varyings.radius - feather, varyings.radius, distance(cell, varyings.center));
+  var shape = 1.0 - smoothstep(varyings.radius - feather, varyings.radius, length(across));
+  if (fluid.useTip > 0.0) {
+    // A tip replaces the disc, as on a dry dab: read in stamp space, where
+    // the rim is at length one, and nothing past its square.
+    let local = across / varyings.radius;
+    let within = all(abs(local) <= vec2<f32>(1.0));
+    shape = select(
+      0.0,
+      textureSampleLevel(tipTexture, tipSampler, local * 0.5 + 0.5, varyings.tipFrame, 0.0).r,
+      within
+    );
+  }
   var out: Fields;
   // A dab leaves the paper damp well out to its rim, where it lays little
-  // water: dampness is what lets water move there at all.
-  out.water = vec4<f32>(fluid.water * shape, 4.0 * shape, 0.0, 0.0);
+  // water: dampness is what lets water move there at all. In alpha, the
+  // share of the brush's water the dab carries: the deepest of a batch's
+  // dabs at a cell is kept, and the pour fills the cell no deeper.
+  out.water = vec4<f32>(
+    fluid.water * varyings.water * shape,
+    4.0 * shape,
+    0.0,
+    select(0.0, varyings.water, shape > 0.0)
+  );
   // Density is the pigment's alpha, and its colour is premultiplied by it.
-  out.pigment = fluid.ink * (varyings.load * shape);
+  out.pigment = varyings.ink * (varyings.load * shape);
   return out;
 }
 `
@@ -181,7 +246,8 @@ struct Sim {
   // How much faster the paper takes pigment in its deepest valley than at
   // its middle height, less one; on its peaks it takes that much less.
   granulation: f32,
-  // The depth of water the brush fills a cell to, and no deeper.
+  // The depth of water the brush fills a cell to at a dab's full share, and
+  // no deeper.
   level: f32,
   // Each slot's tile in xy, and in z whether one holds it.
   tiles: array<vec4<i32>, ${WET_SLOTS}>,
@@ -412,14 +478,16 @@ fn pourMain(@builtin(global_invocation_id) id: vec3<u32>) {
   // The selection clips what a dab lays, water, dampness and pigment alike:
   // a cell takes the share of each that the selection covers of it.
   let share = selected(tile.xy * WET_CELLS + vec2<i32>(id.xy));
-  let laid = textureLoad(laidWater, texel, 0) * share;
+  let batch = textureLoad(laidWater, texel, 0);
+  let laid = batch * share;
   textureStore(
     waterOut,
     texel,
-    // The brush fills a cell to its own depth of water, however many of its
-    // dabs overlap there, and takes none from a cell that stands deeper.
+    // The brush fills a cell to the depth of water its dabs there carry,
+    // however many of them overlap, and takes none from a cell that stands
+    // deeper. A dab carries the brush's own water or a share of it.
     vec4<f32>(
-      max(c.x, min(c.x + laid.x, sim.level * MAX_WATER * share)),
+      max(c.x, min(c.x + laid.x, sim.level * batch.a * MAX_WATER * share)),
       max(c.y, min(1.0, laid.y)),
       c.zw
     )

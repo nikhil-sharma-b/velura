@@ -100,7 +100,7 @@ export async function openBlendProbe(): Promise<BlendProbe> {
           mode: "paint",
         })
         renderer.stamp(
-          new Float32Array([40, 40, 12, 1, 0, 1, 1, 0, 0, 0, 0]),
+          new Float32Array([40, 40, 12, 1, 0, 1, 1, 0, 0, 0, 0, 1]),
           1
         )
       }

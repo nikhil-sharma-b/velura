@@ -76,6 +76,22 @@ describe("brushes kept in this browser", () => {
     expect(reopened.brush.rendering.wet).toEqual({ pickup: 0.4 })
   })
 
+  test("a mapping onto water is still on the brush after a reload", async () => {
+    const storage = fakeStorage()
+    const dynamics = [
+      {
+        source: "pressure" as const,
+        target: "water" as const,
+        range: [0.2, 1] as [number, number],
+        mix: "multiply" as const,
+      },
+    ]
+    await createLocalBrushes(storage).save("Wash", "", { ...pencil, dynamics })
+
+    const [reopened] = createLocalBrushes(storage).read().brushes
+    expect(reopened.brush.dynamics).toEqual(dynamics)
+  })
+
   test("a brush stored before brushes could be wet loads dry, as it was", () => {
     const stored = {
       id: "local:1",
