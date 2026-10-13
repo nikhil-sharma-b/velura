@@ -271,11 +271,18 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
 
   // Water levels, then evaporates, faster near the edge of the damp area:
   // the water that flows out to replace it is what darkens a wash's rim.
-  let height = cellPaper(cell);
-  let toRight = faceFlow(c, r, height, cellPaper(right));
-  let fromLeft = faceFlow(l, c, cellPaper(left), height);
-  let toDown = faceFlow(c, d, height, cellPaper(down));
-  let fromUp = faceFlow(u, c, cellPaper(up), height);
+  // Only where there is water does the paper under it matter: most of a wet
+  // tile has none, and the paper is five more cells read.
+  var height = 0.5;
+  var relief = vec4<f32>(0.5);
+  if (max(max(c.x, l.x), max(max(r.x, u.x), d.x)) > 0.0) {
+    height = cellPaper(cell);
+    relief = vec4<f32>(cellPaper(right), cellPaper(left), cellPaper(down), cellPaper(up));
+  }
+  let toRight = faceFlow(c, r, height, relief.x);
+  let fromLeft = faceFlow(l, c, relief.y, height);
+  let toDown = faceFlow(c, d, height, relief.z);
+  let fromUp = faceFlow(u, c, relief.w, height);
   let level = c.x - toRight + fromLeft - toDown + fromUp;
   // Only a cell with water to lose looks for the edge: most of a wet tile
   // has none, and the looking is eight more cells read.
