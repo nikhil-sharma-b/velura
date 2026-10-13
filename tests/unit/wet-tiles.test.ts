@@ -161,3 +161,63 @@ describe("the wet tile limit", () => {
     expect(Math.max(...tiles.map())).toBeLessThanOrEqual(WET_SLOTS)
   })
 })
+
+describe("the ring of tiles about a wet one", () => {
+  test("a tile's eight neighbours are given slots, and it keeps its own", () => {
+    const tiles = createWetTiles(5, 5)
+    const slot = tiles.touch(2, 2)
+    expect(tiles.surround(2, 2)).toBe(8)
+    expect(tiles.count()).toBe(9)
+    expect(tiles.touch(2, 2)).toBe(slot)
+    for (let y = 1; y <= 3; y++)
+      for (let x = 1; x <= 3; x++)
+        expect(tiles.map()[y * 5 + x]).toBeGreaterThan(0)
+    // Asked again, there is nothing left to take.
+    expect(tiles.surround(2, 2)).toBe(0)
+  })
+
+  test("at the grid's corner the ring is the neighbours there are", () => {
+    const tiles = createWetTiles(5, 5)
+    tiles.touch(0, 0)
+    expect(tiles.surround(0, 0)).toBe(3)
+    expect(tiles.count()).toBe(4)
+  })
+
+  test("the ring is one body with its tile: it dries with it and is freed with it", () => {
+    const tiles = createWetTiles(8, 8)
+    tiles.touch(1, 1)
+    tiles.surround(1, 1)
+    // A second body, its ring clear of the first's.
+    tiles.touch(6, 6)
+    tiles.surround(6, 6)
+    tiles.refresh(1, 1, 40)
+    tiles.refresh(6, 6, 90)
+    const due = tiles.expired(40)
+    expect(due).toHaveLength(9)
+    for (const slot of due) tiles.release(slot)
+    expect(tiles.count()).toBe(9)
+    expect([...tiles.map()].filter((slot) => slot > 0)).toHaveLength(9)
+    for (const slot of tiles.expired(90)) tiles.release(slot)
+    expect(tiles.count()).toBe(0)
+  })
+
+  test("two tiles whose rings touch are one body", () => {
+    const tiles = createWetTiles(8, 3)
+    tiles.touch(1, 1)
+    tiles.surround(1, 1)
+    tiles.touch(4, 1)
+    tiles.surround(4, 1)
+    tiles.refresh(4, 1, 70)
+    expect(tiles.expired(69)).toEqual([])
+    expect(tiles.expired(70)).toHaveLength(18)
+  })
+
+  test("the ring takes what slots are free and no more", () => {
+    const tiles = createWetTiles(WET_SLOTS, 3)
+    for (let x = 0; x < WET_SLOTS - 2; x++) tiles.touch(x, 0)
+    // Two slots left for a ring of five.
+    expect(tiles.surround(0, 1)).toBe(2)
+    expect(tiles.count()).toBe(WET_SLOTS)
+    expect(tiles.surround(10, 1)).toBe(0)
+  })
+})

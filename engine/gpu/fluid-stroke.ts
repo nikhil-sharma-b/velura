@@ -8,7 +8,9 @@ import {
 import type { WetCopy } from "../doc/undo-stack"
 import {
   FLUID_DAMP_STEPS,
+  FLUID_HOLDS,
   FLUID_MAX_WATER,
+  FLUID_RELIEF,
   fluidDabShader,
   fluidSettleShader,
   fluidSimShader,
@@ -51,8 +53,8 @@ const INSTANCE_STRIDE = 8
 const MAX_INSTANCES_PER_DRAW = 4096
 
 /**
- * Water a cell loses in a step, from a brush's `drying`: a wash a dab has
- * filled is gone in five thousand steps at zero and a hundred at one.
+ * Water a cell loses in a step, from a brush's `drying`: a wash laid at
+ * half `water` is gone in five thousand steps at zero and a hundred at one.
  */
 const evaporation = (drying: number) => 0.0002 * 50 ** drying
 
@@ -78,8 +80,12 @@ const MAX_GRANULATION = 16
 /** Steps a body is kept past when its water and dampness should be gone. */
 const DRYING_MARGIN = 20
 
-/** Bytes of the simulation's uniform: its rates, then a row for each slot. */
-const SIM_TILES_OFFSET = 16
+/**
+ * Bytes of the simulation's uniform: its rates and the brush's water, then a
+ * row for each slot.
+ */
+const SIM_LEVEL_OFFSET = 16
+const SIM_TILES_OFFSET = 32
 const SIM_UNIFORM_SIZE = SIM_TILES_OFFSET + WET_SLOTS * 16
 
 /** What a fluid stroke is told as it opens. */
@@ -212,6 +218,7 @@ type KeptFields = WetCopy & {
   /** The grid the tiles were on: a copy does not outlive a resize. */
   grid: object
   reached: Float64Array
+  flooded: Uint8Array
   clock: number
   rates: [number, number, number, number]
   lifetime: number
@@ -354,6 +361,8 @@ export function createFluidStroke(
   })
   const simData = new ArrayBuffer(SIM_UNIFORM_SIZE)
   const simRates = new Float32Array(simData, 0, 4)
+  /** The depth of water the brush in hand fills a cell to. */
+  const simLevel = new Float32Array(simData, SIM_LEVEL_OFFSET, 1)
   const simTiles = new Int32Array(simData, SIM_TILES_OFFSET)
 
   const uniformValues = new Float32Array(8)
@@ -413,6 +422,14 @@ export function createFluidStroke(
   // What the dabs laid into each slot reached, in document pixels: settling
   // tells history the box round a mark, not the tiles it lies in.
   const reached = new Float64Array(WET_SLOTS * 4)
+  /**
+   * The slots of bodies a brush has laid more water into than the paper
+   * holds: their paint may have bloomed past what the dabs reached, into any
+   * of their tiles.
+   */
+  const flooded = new Uint8Array(WET_SLOTS)
+  /** Whether the stroke in flight lays that much water. */
+  let flooding = false
   /** The slots a frame's dabs landed in; kept, so a frame allocates none. */
   const touched = new Set<number>()
   const noMarks: readonly StrokeMark[] = []
@@ -424,6 +441,16 @@ export function createFluidStroke(
       tiles!.refresh(tile.x, tile.y, clock + lifetime)
     }
   }
+
+  /** A slot with no tile: no dab has reached it, and no water flooded it. */
+  function forget(slot: number) {
+    reached[slot * 4] = Infinity
+    reached[slot * 4 + 1] = Infinity
+    reached[slot * 4 + 2] = -Infinity
+    reached[slot * 4 + 3] = -Infinity
+    flooded[slot] = 0
+  }
+  for (let slot = 0; slot < WET_SLOTS; slot++) forget(slot)
 
   function field(usage: number, format = LAYER_FORMAT) {
     const texture = device.createTexture({
@@ -495,6 +522,7 @@ export function createFluidStroke(
     })
     slots = { texture, view: texture.createView() }
     tiles = createWetTiles(columns, rows)
+    for (let slot = 0; slot < WET_SLOTS; slot++) forget(slot)
     span = 0
     shown = []
     settleBindings = []
@@ -575,7 +603,10 @@ export function createFluidStroke(
   function free(freed: readonly number[]) {
     const encoder = device.createCommandEncoder()
     blank(encoder, freed)
-    for (const slot of freed) tiles!.release(slot)
+    for (const slot of freed) {
+      tiles!.release(slot)
+      forget(slot)
+    }
     device.queue.submit([encoder.finish()])
     writeSlots()
     if (tiles!.count() === 0) surface = undefined
@@ -600,6 +631,7 @@ export function createFluidStroke(
       tiles: tiles!.save(),
       grid,
       reached: reached.slice(),
+      flooded: flooded.slice(),
       clock,
       rates: [simRates[0], simRates[1], simRates[2], simRates[3]],
       lifetime,
@@ -663,6 +695,7 @@ export function createFluidStroke(
     device.queue.submit([encoder.finish()])
     tiles.restore(kept.tiles)
     reached.set(kept.reached)
+    flooded.set(kept.flooded)
     clock = kept.clock
     simRates.set(kept.rates)
     lifetime = kept.lifetime
@@ -713,6 +746,33 @@ export function createFluidStroke(
   }
 
   /**
+   * Which of the slots settling are in a body a brush has flooded, by slot.
+   * Bodies settle whole, so the tiles of one are those that touch among the
+   * slots given.
+   */
+  function floodedBodies(settling: readonly number[]) {
+    const within = new Uint8Array(WET_SLOTS)
+    const settlingAt = new Map<string, number>()
+    for (const slot of settling) {
+      const tile = tiles!.tile(slot)!
+      settlingAt.set(`${tile.x},${tile.y}`, slot)
+    }
+    const reach = settling.filter((slot) => flooded[slot] === 1)
+    for (const slot of reach) within[slot] = 1
+    while (reach.length > 0) {
+      const tile = tiles!.tile(reach.pop()!)!
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const next = settlingAt.get(`${tile.x + dx},${tile.y + dy}`)
+          if (next === undefined || within[next]) continue
+          within[next] = 1
+          reach.push(next)
+        }
+    }
+    return within
+  }
+
+  /**
    * Glazes the wet paint in `settling` onto the layer, a tile at a time, and
    * frees those slots. They are whole bodies, so no tile is settled beside
    * one still wet. Answers what was written, or null when none of it is on
@@ -741,17 +801,30 @@ export function createFluidStroke(
       bottom: -Infinity,
     }
     const written: TileCoord[] = []
+    // Bodies settle whole, so a slot of one that was flooded says its paint
+    // may lie anywhere in the tiles settling: the box is theirs.
+    const anywhere = floodedBodies(settling)
     const encoder = device.createCommandEncoder()
     for (const slot of settling) {
       const tile = tiles!.tile(slot)!
       // Edge tiles hang past the canvas; only what is on it is settled.
       const visible = intersectRect(tileBounds(tile), canvas)
       if (!visible) continue
+      // A tile of the ring that no water could have bloomed into is as dry
+      // as it was taken: there is nothing in it to settle.
+      if (!anywhere[slot] && reached[slot * 4] === Infinity) continue
       written.push(tile)
-      box.left = Math.min(box.left, reached[slot * 4])
-      box.top = Math.min(box.top, reached[slot * 4 + 1])
-      box.right = Math.max(box.right, reached[slot * 4 + 2])
-      box.bottom = Math.max(box.bottom, reached[slot * 4 + 3])
+      if (anywhere[slot]) {
+        box.left = Math.min(box.left, visible.x)
+        box.top = Math.min(box.top, visible.y)
+        box.right = Math.max(box.right, visible.x + visible.width)
+        box.bottom = Math.max(box.bottom, visible.y + visible.height)
+      } else {
+        box.left = Math.min(box.left, reached[slot * 4])
+        box.top = Math.min(box.top, reached[slot * 4 + 1])
+        box.right = Math.max(box.right, reached[slot * 4 + 2])
+        box.bottom = Math.max(box.bottom, reached[slot * 4 + 3])
+      }
       // A pass cannot read the layer it draws into, so the tile is copied
       // out first and glazed back from the copy.
       encoder.copyTextureToTexture(
@@ -842,17 +915,23 @@ export function createFluidStroke(
       simRates[1] = MAX_BLEED * opening.bleed
       simRates[2] = MAX_EDGE * opening.edge
       simRates[3] = MAX_GRANULATION * opening.granulation
+      simLevel[0] = opening.water
+      const depth = opening.water * FLUID_MAX_WATER
+      flooding = depth > FLUID_HOLDS
       device.queue.writeBuffer(simUniform, 0, simData)
-      lifetime =
-        Math.ceil(FLUID_MAX_WATER / simRates[0]) +
-        FLUID_DAMP_STEPS +
-        DRYING_MARGIN
+      /** Steps for water so deep to be gone, and the paper dry after it. */
+      const outlasting = (water: number) =>
+        Math.ceil(water / simRates[0]) + FLUID_DAMP_STEPS + DRYING_MARGIN
+      // The brush fills a cell no deeper than its own water, and levelling
+      // raises it by no more than the paper's relief is worth.
+      lifetime = outlasting(Math.min(depth + FLUID_RELIEF, FLUID_MAX_WATER))
       // Paint already wet dries more slowly from here on, so it is given
-      // the time: a deadline is not to pass with water still standing.
+      // the time, as for the deepest water there may be: a deadline is not
+      // to pass with water still standing.
       if (slower)
         for (const slot of tiles!.slots()) {
           const tile = tiles!.tile(slot)!
-          tiles!.refresh(tile.x, tile.y, clock + lifetime)
+          tiles!.refresh(tile.x, tile.y, clock + outlasting(FLUID_MAX_WATER))
         }
       return true
     },
@@ -907,14 +986,12 @@ export function createFluidStroke(
               held = tiles!.count()
               slot = tiles!.touch(column, row)
             }
-            // A slot just taken starts with nothing reached.
-            if (tiles!.count() > held) {
-              fresh++
-              reached[slot * 4] = Infinity
-              reached[slot * 4 + 1] = Infinity
-              reached[slot * 4 + 2] = -Infinity
-              reached[slot * 4 + 3] = -Infinity
-            }
+            if (tiles!.count() > held) fresh++
+            // And the ring about it (D42), where there are slots to spare:
+            // a bloom may cross into a tile no dab reaches. Only water past
+            // what the paper holds blooms, so only a brush that lays it
+            // takes a ring: any other wets the tiles its dabs reach alone.
+            if (flooding) fresh += tiles!.surround(column, row)
             touched.add(slot)
             reached[slot * 4] = Math.min(reached[slot * 4], x - reach)
             reached[slot * 4 + 1] = Math.min(reached[slot * 4 + 1], y - reach)
@@ -944,6 +1021,7 @@ export function createFluidStroke(
       if (fresh > 0) writeSlots()
       // Every dab pushes back the drying of the body it landed in.
       refreshTouched()
+      if (flooding) for (const slot of touched) flooded[slot] = 1
       drawInstances(filled)
       if (touched.size === 0) return marks ?? noMarks
       laid = true
