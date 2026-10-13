@@ -339,6 +339,161 @@ test("wet swaps the stroke's controls for pickup, and a saved wet brush keeps it
   await expect(page.getByRole("option", { name: "Pickup" })).toHaveCount(0)
 })
 
+/**
+ * Whether the palette offers Dry now, which it does only over wet paint. It
+ * reads that as it opens, and a stroke's end reaches it a frame later, so
+ * callers poll.
+ */
+async function canDryNow(page: Page): Promise<boolean> {
+  await page.keyboard.press("ControlOrMeta+k")
+  const search = page.getByRole("combobox", { name: "Search commands" })
+  await search.fill("dry now")
+  const option = page.getByRole("option", { name: "Dry now" })
+  await expect(option).toBeVisible()
+  const disabled = await option.getAttribute("aria-disabled")
+  await page.keyboard.press("Escape")
+  await expect(search).toBeHidden()
+  return disabled !== "true"
+}
+
+async function strokeLeftOfEditor(page: Page) {
+  const box = (await page.locator("canvas").first().boundingBox())!
+  const y = box.y + box.height / 2
+  await page.mouse.move(box.x + 100, y)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 180, y, { steps: 20 })
+  await page.mouse.up()
+}
+
+test("a brush is made fluid on the Rendering tab, paints fluid, and off paints as it did", async ({
+  page,
+}) => {
+  await openEditor(page)
+  const panel = editor(page)
+  await panel.getByRole("tab", { name: "Rendering" }).click()
+  const fluid = panel.getByRole("switch", { name: "Fluid" })
+  await expect(fluid).toHaveAttribute("aria-checked", "false")
+
+  await strokeLeftOfEditor(page)
+  await expect.poll(() => canDryNow(page)).toBe(false)
+
+  await fluid.click()
+  await expect(fluid).toHaveAttribute("aria-checked", "true")
+  await expect(panel.getByText("Unsaved changes")).toBeVisible()
+  // Slow to dry, so the wash is still wet when it is asked about.
+  const drying = panel.locator('input[aria-label="Drying"]')
+  await drying.fill("0")
+  await drying.press("Enter")
+  await strokeLeftOfEditor(page)
+  await expect.poll(() => canDryNow(page)).toBe(true)
+
+  // Off again is the brush that was saved, and its stroke leaves nothing wet.
+  await fluid.click()
+  await expect(fluid).toHaveAttribute("aria-checked", "false")
+  await expect(panel.getByText("No changes")).toBeVisible()
+  await strokeLeftOfEditor(page)
+  await expect.poll(() => canDryNow(page)).toBe(false)
+})
+
+test("fluid shows its five settings in place of wet and accumulation, and a saved fluid brush keeps them", async ({
+  page,
+}) => {
+  await openEditor(page)
+  const panel = editor(page)
+  await panel.getByRole("tab", { name: "Rendering" }).click()
+  const fluid = panel.getByRole("switch", { name: "Fluid" })
+  const wet = panel.getByRole("switch", { name: "Wet" })
+  const accumulation = panel.getByRole("combobox", { name: "Accumulation" })
+  const opacity = panel.getByRole("slider", { name: "Opacity", exact: true })
+  const settings = ["Water", "Drying", "Bleed", "Edge", "Granulation"]
+  const setting = (name: string) =>
+    panel.getByRole("slider", { name, exact: true })
+
+  for (const name of settings) await expect(setting(name)).toHaveCount(0)
+  await accumulation.click()
+  await page.getByRole("option", { name: /^Buildup/ }).click()
+
+  // Wet and fluid are never both on: making a wet brush fluid dries it, and
+  // fluid off again finds it wet as it was.
+  await wet.click()
+  await expect(wet).toHaveAttribute("aria-checked", "true")
+  await fluid.click()
+  await expect(wet).toHaveCount(0)
+  await fluid.click()
+  await expect(wet).toHaveAttribute("aria-checked", "true")
+  await expect(panel.getByRole("slider", { name: "Pickup" })).toHaveAttribute(
+    "aria-valuenow",
+    "0.5"
+  )
+  await wet.click()
+  await fluid.click()
+  await expect(wet).toHaveCount(0)
+  await expect(panel.getByRole("slider", { name: "Pickup" })).toHaveCount(0)
+  await expect(accumulation).toHaveCount(0)
+  await expect(opacity).toBeVisible()
+  await expect(
+    panel.getByRole("slider", { name: "Flow", exact: true })
+  ).toBeVisible()
+  for (const name of settings) {
+    await expect(setting(name)).toHaveAttribute("aria-valuemin", "0")
+    await expect(setting(name)).toHaveAttribute("aria-valuemax", "1")
+    await expect(setting(name)).toHaveAttribute("aria-valuenow", "0.5")
+  }
+
+  // Each setting is its own: one moved leaves the other four.
+  const values = [0.9, 0.2, 0.7, 0.3, 0.1]
+  for (const [index, name] of settings.entries()) {
+    const typed = panel.locator(`input[aria-label="${name}"]`)
+    await typed.fill(String(values[index] * 100))
+    await typed.press("Enter")
+  }
+  for (const [index, name] of settings.entries())
+    await expect(setting(name)).toHaveAttribute(
+      "aria-valuenow",
+      String(values[index])
+    )
+
+  // Water is something to map onto while the brush is fluid.
+  await panel.getByRole("tab", { name: "Dynamics" }).click()
+  const existing = await panel.getByTestId(/^mapping-/).count()
+  await panel.getByRole("button", { name: "Add mapping" }).click()
+  const parameter = panel.getByRole("combobox", {
+    name: `Mapping ${existing + 1} parameter`,
+  })
+  await parameter.click()
+  await expect(page.getByRole("option", { name: "Pickup" })).toHaveCount(0)
+  await page.getByRole("option", { name: "Water" }).click()
+  await expect(parameter).toContainText("Water")
+
+  await panel.getByRole("button", { name: "Save brush" }).click()
+  await expect(panel.getByText("No changes")).toBeVisible()
+  // The store writes once the hand has settled, so the reload waits for it.
+  await page.waitForTimeout(1_500)
+  await page.reload()
+  await expect(page.getByRole("main")).toHaveAttribute(
+    "data-engine-status",
+    "ready"
+  )
+  await page.getByRole("button", { name: "Brush editor" }).click()
+  await panel.getByRole("tab", { name: "Rendering" }).click()
+  await expect(fluid).toHaveAttribute("aria-checked", "true")
+  for (const [index, name] of settings.entries())
+    await expect(setting(name)).toHaveAttribute(
+      "aria-valuenow",
+      String(values[index])
+    )
+  await expect(panel.getByText("No changes")).toBeVisible()
+  await panel.getByRole("tab", { name: "Dynamics" }).click()
+  await expect(parameter).toContainText("Water")
+  await panel.getByRole("tab", { name: "Rendering" }).click()
+
+  // Fluid off, the wet section and accumulation are back, as they were left.
+  await fluid.click()
+  for (const name of settings) await expect(setting(name)).toHaveCount(0)
+  await expect(wet).toHaveAttribute("aria-checked", "false")
+  await expect(accumulation).toContainText("Buildup")
+})
+
 test("a wet brush taken to no flow is named as the blender it has become", async ({
   page,
 }) => {
@@ -407,13 +562,9 @@ test("the editor stays open beside the canvas while a stroke is painted", async 
   const box = (await canvas.boundingBox())!
   const panelBox = (await panel.boundingBox())!
   expect(panelBox.x - box.x).toBeGreaterThan(200)
-  const y = box.y + box.height / 2
   const undo = page.getByRole("button", { name: "Undo" })
   await expect(undo).toBeDisabled()
-  await page.mouse.move(box.x + 100, y)
-  await page.mouse.down()
-  await page.mouse.move(box.x + 180, y, { steps: 20 })
-  await page.mouse.up()
+  await strokeLeftOfEditor(page)
   await expect(undo).toBeEnabled()
   await expect(panel).toBeVisible()
 })

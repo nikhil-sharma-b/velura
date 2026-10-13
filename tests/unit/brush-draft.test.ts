@@ -4,6 +4,7 @@ import {
   type Brush,
   DEFAULT_BRUSH,
   DEFAULT_FLUID,
+  validateBrushMedium,
 } from "../../engine/brush/brush"
 import { type Modulator, validateDynamics } from "../../engine/brush/dynamics"
 import {
@@ -138,6 +139,47 @@ describe("the working brush an editor holds", () => {
       editBrush(brush, { rendering: { flow: 0.2 } }).rendering.fluid
     ).toEqual(fluid)
     expect(brushCommand(saved()).fluid).toBe(null)
+  })
+
+  test("fluid is turned on and off, and off is the brush it was", () => {
+    const original = editBrush(saved(), {
+      rendering: { opacity: 0.6, accumulation: "buildup" },
+    })
+    const fluid = editBrush(original, {
+      rendering: { fluid: { ...DEFAULT_FLUID } },
+    })
+    expect(fluid.rendering.fluid).toEqual(DEFAULT_FLUID)
+    expect(fluid.rendering.fluid).not.toBe(DEFAULT_FLUID)
+    // One setting moves and the other four stay.
+    const wetter = editBrush(fluid, {
+      rendering: { fluid: { ...fluid.rendering.fluid!, water: 0.9 } },
+    })
+    expect(wetter.rendering.fluid).toEqual({ ...DEFAULT_FLUID, water: 0.9 })
+    expect(brushCommand(wetter).fluid).toEqual({ ...DEFAULT_FLUID, water: 0.9 })
+
+    const plain = editBrush(wetter, { rendering: { fluid: null } })
+    expect("fluid" in plain.rendering).toBe(false)
+    expect(isBrushEdited(original, plain)).toBe(false)
+    expect(brushCommand(plain).fluid).toBe(null)
+  })
+
+  test("a brush made fluid is no longer wet, and one made wet no longer fluid", () => {
+    const wet = editBrush(saved(), { rendering: { wet: { pickup: 0.5 } } })
+    const fluid = editBrush(wet, { rendering: { fluid: { ...DEFAULT_FLUID } } })
+    expect("wet" in fluid.rendering).toBe(false)
+    expect(fluid.rendering.fluid).toEqual(DEFAULT_FLUID)
+    expect(() => validateBrushMedium(fluid.rendering)).not.toThrow()
+
+    const wetAgain = editBrush(fluid, { rendering: { wet: { pickup: 0.3 } } })
+    expect("fluid" in wetAgain.rendering).toBe(false)
+    expect(wetAgain.rendering.wet).toEqual({ pickup: 0.3 })
+    expect(() => validateBrushMedium(wetAgain.rendering)).not.toThrow()
+
+    // Fluid off and wet back in one edit, as the editor restores a wet brush.
+    const restored = editBrush(fluid, {
+      rendering: { fluid: null, wet: { pickup: 0.5 } },
+    })
+    expect(isBrushEdited(wet, restored)).toBe(false)
   })
 
   test("scatter travels with the brush, and a brush without it clears it", () => {

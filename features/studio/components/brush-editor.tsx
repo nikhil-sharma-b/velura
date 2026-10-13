@@ -17,7 +17,14 @@ import {
 } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { type Brush, DEFAULT_WET_PICKUP, isBlender } from "@/engine/brush/brush"
+import {
+  type Brush,
+  type BrushFluid,
+  type BrushWet,
+  DEFAULT_FLUID,
+  DEFAULT_WET_PICKUP,
+  isBlender,
+} from "@/engine/brush/brush"
 import {
   TIP_SELECTION_MODES,
   type TipSelectionMode,
@@ -129,6 +136,46 @@ function targetsFor(
     target === "pickup" ? wet : target === "water" ? fluid : true
   return (Object.keys(TARGETS) as DynamicsTarget[]).filter(
     (target) => offered(target) || target === current
+  )
+}
+
+/**
+ * A fluid brush's five settings (D42), in the order paint meets them: what a
+ * dab carries, how long it stays wet, how far it runs, and what drying leaves.
+ */
+const FLUID_SETTINGS: readonly { field: keyof BrushFluid; label: string }[] = [
+  { field: "water", label: "Water" },
+  { field: "drying", label: "Drying" },
+  { field: "bleed", label: "Bleed" },
+  { field: "edge", label: "Edge" },
+  { field: "granulation", label: "Granulation" },
+]
+
+/** One of the Rendering tab's switches: what it turns on, and what that does. */
+function MediumSwitch({
+  label,
+  summary,
+  checked,
+  onToggle,
+}: {
+  label: string
+  summary: string
+  checked: boolean
+  onToggle(): void
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={onToggle}
+      className="flex w-full flex-col rounded-lg border border-studio-edge px-2.5 py-2 text-left transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary aria-checked:border-primary/50 aria-checked:bg-primary/5"
+    >
+      <span className="text-xs text-foreground">{label}</span>
+      <span className="text-[11px] leading-tight text-muted-foreground">
+        {summary}
+      </span>
+    </button>
   )
 }
 
@@ -433,6 +480,7 @@ export function BrushEditor({
   const scatter = brush.scatter ?? NO_SCATTER
   const color = brush.color ?? UNIT_COLOR
   const wet = brush.rendering.wet
+  const fluid = brush.rendering.fluid
   const blender = isBlender(brush)
   const laying = wet
     ? "Lays colour and drags the paint under it along"
@@ -440,6 +488,22 @@ export function BrushEditor({
   const wetSummary = blender ? "Drags the paint under it and lays none" : laying
   const legacyScatter = legacyScatterMappings(brush)
   const [importProblem, setImportProblem] = useState<string | null>(null)
+  /**
+   * The wet setting a brush had when it was made fluid. A brush is one or the
+   * other (D42), so fluid takes wet off the brush; it is kept here, by brush,
+   * for fluid going off again to put back.
+   */
+  const [dried, setDried] = useState<{ id: string; wet: BrushWet } | null>(null)
+  const toggleFluid = () => {
+    if (!fluid) {
+      setDried(wet ? { id: brush.id, wet } : null)
+      apply({ rendering: { fluid: { ...DEFAULT_FLUID } } })
+      return
+    }
+    const restored = dried?.id === brush.id ? dried.wet : null
+    setDried(null)
+    apply({ rendering: { fluid: null, wet: restored } })
+  }
   const own = textures.filter((id) => !shipped.has(id))
 
   /**
@@ -829,29 +893,53 @@ export function BrushEditor({
         </TabsContent>
 
         <TabsContent value="rendering" className="space-y-3">
-          <button
-            type="button"
-            role="switch"
-            aria-checked={!!wet}
-            onClick={() =>
-              apply({
-                rendering: {
-                  wet: wet ? null : { pickup: DEFAULT_WET_PICKUP },
-                },
-              })
+          <MediumSwitch
+            label="Fluid"
+            summary={
+              fluid
+                ? "Lays water and pigment that run until they dry"
+                : "Lays paint that stays where it is put"
             }
-            className="flex w-full flex-col rounded-lg border border-studio-edge px-2.5 py-2 text-left transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary aria-checked:border-primary/50 aria-checked:bg-primary/5"
-          >
-            <span className="text-xs text-foreground">Wet</span>
-            <span className="text-[11px] leading-tight text-muted-foreground">
-              {wetSummary}
-            </span>
-          </button>
+            checked={!!fluid}
+            onToggle={toggleFluid}
+          />
+          {/* A fluid brush lays into the wet surface (D42) and is never wet
+              as well, so the wet section goes while fluid is on. */}
+          {!fluid && (
+            <MediumSwitch
+              label="Wet"
+              summary={wetSummary}
+              checked={!!wet}
+              onToggle={() =>
+                apply({
+                  rendering: {
+                    wet: wet ? null : { pickup: DEFAULT_WET_PICKUP },
+                  },
+                })
+              }
+            />
+          )}
+          {fluid &&
+            FLUID_SETTINGS.map(({ field, label }) => (
+              <SliderSetting
+                key={field}
+                label={label}
+                value={fluid[field]}
+                min={0}
+                max={1}
+                step={0.01}
+                scale={100}
+                unit="%"
+                onChange={(value) =>
+                  apply({ rendering: { fluid: { ...fluid, [field]: value } } })
+                }
+              />
+            ))}
           {/* A wet stroke is written straight to the layer (D41), so what the
               stroke buffer provides cannot apply to it. Those controls are
               hidden and their values left on the brush, where turning wet
               off finds them again. */}
-          {wet ? (
+          {wet && (
             <SliderSetting
               label="Pickup"
               value={wet.pickup}
@@ -862,44 +950,47 @@ export function BrushEditor({
               unit="%"
               onChange={(pickup) => apply({ rendering: { wet: { pickup } } })}
             />
-          ) : (
-            <>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Dabs within a stroke</Label>
-                <Select
-                  value={brush.rendering.accumulation}
-                  onValueChange={(accumulation) =>
-                    apply({
-                      rendering: {
-                        accumulation: accumulation as "coverage" | "buildup",
-                      },
-                    })
-                  }
-                >
-                  <SelectTrigger className="w-full" aria-label="Accumulation">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="coverage">
-                      Coverage — a crossing stays flat
-                    </SelectItem>
-                    <SelectItem value="buildup">
-                      Buildup — a crossing darkens
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <SliderSetting
-                label="Opacity"
-                value={brush.rendering.opacity}
-                min={0}
-                max={1}
-                step={0.01}
-                scale={100}
-                unit="%"
-                onChange={(opacity) => apply({ rendering: { opacity } })}
-              />
-            </>
+          )}
+          {/* A fluid brush has no use for accumulation, and keeps its opacity:
+              that is pigment a dab carries. */}
+          {!wet && !fluid && (
+            <div className="space-y-1.5">
+              <Label className="text-xs">Dabs within a stroke</Label>
+              <Select
+                value={brush.rendering.accumulation}
+                onValueChange={(accumulation) =>
+                  apply({
+                    rendering: {
+                      accumulation: accumulation as "coverage" | "buildup",
+                    },
+                  })
+                }
+              >
+                <SelectTrigger className="w-full" aria-label="Accumulation">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="coverage">
+                    Coverage — a crossing stays flat
+                  </SelectItem>
+                  <SelectItem value="buildup">
+                    Buildup — a crossing darkens
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          {!wet && (
+            <SliderSetting
+              label="Opacity"
+              value={brush.rendering.opacity}
+              min={0}
+              max={1}
+              step={0.01}
+              scale={100}
+              unit="%"
+              onChange={(opacity) => apply({ rendering: { opacity } })}
+            />
           )}
           <SliderSetting
             label={wet ? "Flow (colour laid)" : "Flow"}
@@ -939,7 +1030,7 @@ export function BrushEditor({
               index={index}
               modulator={modulator}
               wet={!!wet}
-              fluid={!!brush.rendering.fluid}
+              fluid={!!fluid}
               onChange={(next) =>
                 apply({
                   dynamics: dynamics.map((existing, at) =>
