@@ -47,6 +47,16 @@ export type RunResult = {
    */
   allocations: number
   /**
+   * Textures and buffers created from each pen-down to the frame the stroke's
+   * tail lands in, the pen by then up. A frame that needs a page is counted
+   * in `allocations` only if it is drawn before the pen lifts, which is a speed: a slow
+   * GPU draws a short stroke whole in the frame after, and counts none of its
+   * pages. This counts them wherever the frame fell, so it is the number to
+   * ask how many pages a run made. History's readback buffer is made as that
+   * frame ends and is not among them: `readbacksTotal` counts it.
+   */
+  strokeAllocations: number
+  /**
    * The largest buffer mapped for reading over the run, in bytes: history's
    * readback of a stroke, which is as large as the tiles it asks for (live
    * brushes 30).
@@ -92,7 +102,8 @@ const nextFrame = () =>
 /**
  * Counts every call that could pull pixels back across the bus, for as long as
  * the run lasts, and separately those that happen while the pen is down; and,
- * while it is down, every texture and buffer created.
+ * while it is down, every texture and buffer created, and again until the
+ * stroke has landed.
  * Patched rather than inspected: the claim is about what the engine does while
  * painting, and only running it can settle that.
  */
@@ -100,16 +111,21 @@ function watchInteractivePath(): {
   count: () => number
   total: () => number
   allocations: () => number
+  strokeAllocations: () => number
   readbackBytes: () => number
   /** Called as the pen goes down and comes up: what makes the path the interactive one. */
   setPenDown: (down: boolean) => void
+  /** Called once the frame a stroke's tail lands in has been drawn. */
+  strokeLanded: () => void
   restore: () => void
 } {
   let count = 0
   let total = 0
   let allocations = 0
+  let strokeAllocations = 0
   let readbackBytes = 0
   let penDown = false
+  let landing = false
   const buffer = GPUBuffer.prototype
   const encoder = GPUCommandEncoder.prototype
   const device = GPUDevice.prototype
@@ -133,21 +149,30 @@ function watchInteractivePath(): {
   }
   device.createTexture = function (...args: Parameters<typeof createTexture>) {
     if (penDown) allocations++
+    if (landing) strokeAllocations++
     return createTexture.apply(this, args)
   }
   device.createBuffer = function (...args: Parameters<typeof createBuffer>) {
     if (penDown) allocations++
     if (args[0].usage & GPUBufferUsage.MAP_READ)
       readbackBytes = Math.max(readbackBytes, args[0].size)
+    // History's readback of the stroke is made as its tail lands, and is
+    // not the stroke's own.
+    else if (landing) strokeAllocations++
     return createBuffer.apply(this, args)
   }
   return {
     count: () => count,
     total: () => total,
     allocations: () => allocations,
+    strokeAllocations: () => strokeAllocations,
     readbackBytes: () => readbackBytes,
     setPenDown(down) {
       penDown = down
+      if (down) landing = true
+    },
+    strokeLanded() {
+      landing = false
     },
     restore() {
       buffer.mapAsync = mapAsync
@@ -555,6 +580,8 @@ export async function runBenchmark(
       // Two frames: one flushes the tail and composites the stroke, and the
       // loop has stopped by the end of the next.
       await nextFrame()
+      // The engine asked for its frame before this one was, so the tail is in.
+      watch.strokeLanded()
       await nextFrame()
       const undoAfter = workload.options.undoAfter
       if (undoAfter !== undefined) {
@@ -594,6 +621,7 @@ export async function runBenchmark(
     readbacks: watch.count(),
     readbacksTotal: watch.total(),
     allocations: watch.allocations(),
+    strokeAllocations: watch.strokeAllocations(),
     readbackBytes: watch.readbackBytes(),
     historySettledMs,
     undoMs,
