@@ -3,8 +3,23 @@ import { pigmentShader } from "./pigment"
 import { preprocess } from "./preprocess"
 import wet from "./wet.wgsl"
 
-/** The most water a cell holds. */
-export const FLUID_MAX_WATER = 1
+/**
+ * The most water a cell holds, which is the depth a brush at full `water`
+ * fills it to; a brush at less fills it to that share of this.
+ */
+export const FLUID_MAX_WATER = 2
+
+/**
+ * The water the paper holds: only beside water standing deeper than this
+ * does dampness advance into dry paper, which is a bloom.
+ */
+export const FLUID_HOLDS = 1.2
+
+/**
+ * How much water the paper's relief is worth, from its deepest valley to its
+ * highest peak: water sits a little deeper in the valleys.
+ */
+export const FLUID_RELIEF = 0.03
 
 /** Steps for damp paper to dry out once its water has gone. */
 export const FLUID_DAMP_STEPS = 50
@@ -141,7 +156,8 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
  * map, so a body of water is simulated as one sheet.
  *
  * `stepMain` is one step of the clock. `pourMain` moves nothing: it pours
- * what a batch of dabs laid into the fields.
+ * what a batch of dabs laid into the fields, water up to the depth the brush
+ * carries.
  *
  * The water field holds standing water in x and the paper's dampness in y,
  * with the water that crossed the cell's right and bottom faces in z and w.
@@ -162,6 +178,8 @@ struct Sim {
   // How much faster the paper takes pigment in its deepest valley than at
   // its middle height, less one; on its peaks it takes that much less.
   granulation: f32,
+  // The depth of water the brush fills a cell to, and no deeper.
+  level: f32,
   // Each slot's tile in xy, and in z whether one holds it.
   tiles: array<vec4<i32>, ${WET_SLOTS}>,
 }
@@ -173,6 +191,13 @@ const FLOW: f32 = 0.2;
 const FACE_SHARE: f32 = 0.2;
 // The most water a cell holds.
 const MAX_WATER: f32 = ${FLUID_MAX_WATER.toFixed(1)};
+// The water the paper holds. Beside water standing deeper than this, and
+// wholly so a little deeper still, dampness advances into dry paper.
+const HOLDS: f32 = ${FLUID_HOLDS.toFixed(2)};
+const SPILL: f32 = 0.4;
+// The share of a damper neighbour's dampness dry paper takes up in a step,
+// where that neighbour's water spills.
+const ABSORB: f32 = 0.1;
 // How fast paper loses its dampness once no water stands on it.
 const DAMP_FADE: f32 = ${(1 / FLUID_DAMP_STEPS).toFixed(4)};
 // How far out a cell looks for the edge of the damp area, in cells: the rim
@@ -184,7 +209,7 @@ const DEPOSIT: f32 = 0.0003;
 const LIFT: f32 = 0.001;
 // How much water the paper's relief is worth, from its deepest valley to its
 // highest peak: water sits a little deeper in the valleys.
-const RELIEF: f32 = 0.03;
+const RELIEF: f32 = ${FLUID_RELIEF.toFixed(2)};
 // Document pixels along one side of a cell.
 const CELL_SIZE: i32 = ${WET_CELL_SIZE};
 
@@ -247,6 +272,13 @@ fn edgeNearness(cell: vec2<i32>, own: f32) -> f32 {
   return 1.0 - 0.125 * damp;
 }
 
+// The dampness a cell's paper takes up from a neighbour's in a step: none
+// unless the neighbour is damper and its water stands deeper than the paper
+// holds. This is the only way the damp area grows, and it is a bloom.
+fn creep(beside: vec4<f32>, own: f32) -> f32 {
+  return max(beside.y - own, 0.0) * smoothstep(HOLDS, HOLDS + SPILL, beside.x);
+}
+
 // How freely pigment diffuses between two cells: both have to hold water.
 fn bleedGate(a: vec4<f32>, b: vec4<f32>) -> f32 {
   return sim.bleed * smoothstep(0.0, 0.25, min(a.x, b.x));
@@ -269,16 +301,25 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   let u = wetCell(wetSlots, water, up);
   let d = wetCell(wetSlots, water, down);
 
+  // A cell with no water on it or beside it: nothing flows, its paper dries
+  // out, and it takes whatever pigment was left in it. Most of a wet tile is
+  // so, and all of one in the ring about a stroke until a bloom reaches it;
+  // what follows would work out the same, with nine more cells read.
+  if (max(max(c.x, l.x), max(max(r.x, u.x), d.x)) <= 0.0) {
+    textureStore(waterOut, texel, vec4<f32>(0.0, max(0.0, c.y - DAMP_FADE), 0.0, 0.0));
+    textureStore(suspendedOut, texel, vec4<f32>(0.0));
+    textureStore(
+      depositedOut,
+      texel,
+      addPaint(textureLoad(deposited, texel, 0), textureLoad(suspended, texel, 0))
+    );
+    return;
+  }
+
   // Water levels, then evaporates, faster near the edge of the damp area:
   // the water that flows out to replace it is what darkens a wash's rim.
-  // Only where there is water does the paper under it matter: most of a wet
-  // tile has none, and the paper is five more cells read.
-  var height = 0.5;
-  var relief = vec4<f32>(0.5);
-  if (max(max(c.x, l.x), max(max(r.x, u.x), d.x)) > 0.0) {
-    height = cellPaper(cell);
-    relief = vec4<f32>(cellPaper(right), cellPaper(left), cellPaper(down), cellPaper(up));
-  }
+  let height = cellPaper(cell);
+  let relief = vec4<f32>(cellPaper(right), cellPaper(left), cellPaper(down), cellPaper(up));
   let toRight = faceFlow(c, r, height, relief.x);
   let fromLeft = faceFlow(l, c, relief.y, height);
   let toDown = faceFlow(c, d, height, relief.z);
@@ -289,8 +330,10 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   var lost = sim.evaporation;
   if (level > 0.0 && sim.edge > 0.0) { lost *= 1.0 + sim.edge * edgeNearness(cell, c.y); }
   let w = clamp(level - lost, 0.0, MAX_WATER);
-  // Paper under water is damp, and dries out once the water has gone.
-  let dampness = select(max(0.0, c.y - DAMP_FADE), min(1.0, c.y + 0.2), w > 0.001);
+  // Paper under water is damp, and dries out once the water has gone. Dry
+  // paper beside water it cannot hold back is made damp by it.
+  let soaked = c.y + ABSORB * (creep(l, c.y) + creep(r, c.y) + creep(u, c.y) + creep(d, c.y));
+  let dampness = select(max(0.0, soaked - DAMP_FADE), min(1.0, soaked + 0.2), w > 0.001);
 
   // Suspended pigment rides the water: the share of a cell's water crossing
   // a face carries the same share of its pigment. It also diffuses.
@@ -341,7 +384,13 @@ fn pourMain(@builtin(global_invocation_id) id: vec3<u32>) {
   textureStore(
     waterOut,
     texel,
-    vec4<f32>(min(MAX_WATER, c.x + laid.x), max(c.y, min(1.0, laid.y)), c.zw)
+    // The brush fills a cell to its own depth of water, however many of its
+    // dabs overlap there, and takes none from a cell that stands deeper.
+    vec4<f32>(
+      max(c.x, min(c.x + laid.x, sim.level * MAX_WATER)),
+      max(c.y, min(1.0, laid.y)),
+      c.zw
+    )
   );
   textureStore(
     suspendedOut,

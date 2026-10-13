@@ -29,6 +29,13 @@ export interface WetTiles {
    */
   touch(x: number, y: number): number
   /**
+   * Gives each of this tile's eight neighbours a slot, where one is on the
+   * grid, has none and there is one free: a bloom may cross into a tile no
+   * dab reached (D42). They join the tile's body, and are freed with it.
+   * Answers how many slots that took.
+   */
+  surround(x: number, y: number): number
+  /**
    * The slots of the body to settle so that this tile can take one, in slot
    * order: the body due first, and the lower slot of two due together. A
    * body the tile would join, or one holding a slot of `painted`, is being
@@ -114,18 +121,27 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
     return count
   }
 
+  function touch(x: number, y: number) {
+    if (x < 0 || y < 0 || x >= columns || y >= rows) return -1
+    const have = map[y * columns + x]
+    if (have > 0) return have - 1
+    const slot = held.indexOf(undefined)
+    if (slot < 0) return -1
+    held[slot] = { x, y }
+    deadline[slot] = 0
+    map[y * columns + x] = slot + 1
+    count++
+    return slot
+  }
+
   return {
-    touch(x, y) {
-      if (x < 0 || y < 0 || x >= columns || y >= rows) return -1
-      const have = map[y * columns + x]
-      if (have > 0) return have - 1
-      const slot = held.indexOf(undefined)
-      if (slot < 0) return -1
-      held[slot] = { x, y }
-      deadline[slot] = 0
-      map[y * columns + x] = slot + 1
-      count++
-      return slot
+    touch,
+    surround(x, y) {
+      const before = count
+      for (let dy = -1; dy <= 1 && count < WET_SLOTS; dy++)
+        for (let dx = -1; dx <= 1 && count < WET_SLOTS; dx++)
+          touch(x + dx, y + dy)
+      return count - before
     },
     crowding(x, y, painted) {
       if (count < WET_SLOTS || x < 0 || y < 0 || x >= columns || y >= rows)
