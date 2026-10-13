@@ -319,21 +319,18 @@ test("after a wash settles, one undo removes the whole dried passage and one red
 test("when one body settles while another is wet, the next undo dries the rest and removes that passage", async ({
   page,
 }) => {
-  // Five tiles across and no wider: a picture is slow to read back where
-  // the GPU is software. A wash wets the tiles about its own (fluid brushes
-  // 08), so two that are to stay apart have a dry tile between those.
-  const width = 1250
-  // The window is as wide as the canvas, for the pen to reach its far end.
-  await page.setViewportSize({ width: 1300, height: 720 })
+  // Three tiles across and no wider: a picture is slow to read back where
+  // the GPU is software.
+  const width = 700
   const origin = await openCanvas(page, { width })
   const at = (image: number[], x: number) => rgba(image, x, ROW, width)
   const empty = await pixels(page)
   await setFluid(page, QUICK)
   const dry = await drySteps(page)
-  // One wash, and later one three tiles clear of it.
+  // One wash, and later one a tile's width clear of it.
   await wash(page, origin, 60, 160)
   await advance(page, 100)
-  await wash(page, origin, 1090, 1170)
+  await wash(page, origin, 570, 650)
   expect(await wetSteps(page)).toBe(2)
 
   // The first dries on its own deadline with the second still wet.
@@ -351,7 +348,7 @@ test("when one body settles while another is wet, the next undo dries the rest a
   await undo(page)
   expect(await isWet(page)).toBe(false)
   const first = await pixels(page)
-  expect(at(first, 1130)).toEqual(at(empty, 1130))
+  expect(at(first, 610)).toEqual(at(empty, 610))
   expect(distance(at(first, 110), at(empty, 110))).toBeGreaterThan(200)
   expect(await drySteps(page)).toBe(dry + 1)
   // And the next takes back the passage that dried first.

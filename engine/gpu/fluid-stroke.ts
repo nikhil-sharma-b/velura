@@ -988,8 +988,10 @@ export function createFluidStroke(
             }
             if (tiles!.count() > held) fresh++
             // And the ring about it (D42), where there are slots to spare:
-            // a bloom may cross into a tile no dab reaches.
-            fresh += tiles!.surround(column, row)
+            // a bloom may cross into a tile no dab reaches. Only water past
+            // what the paper holds blooms, so only a brush that lays it
+            // takes a ring: any other wets the tiles its dabs reach alone.
+            if (flooding) fresh += tiles!.surround(column, row)
             touched.add(slot)
             reached[slot * 4] = Math.min(reached[slot * 4], x - reach)
             reached[slot * 4 + 1] = Math.min(reached[slot * 4 + 1], y - reach)

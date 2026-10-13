@@ -851,20 +851,16 @@ test("paint bleeds across a tile border as it does within a tile", async ({
 test("a body of wet tiles settles as a whole, and apart from another", async ({
   page,
 }) => {
-  // A wash wets the tiles about its own (fluid brushes 08), so two that are
-  // to stay apart have a dry tile between those.
-  const width = 1500
-  // The window is as wide as the canvas, for the pen to reach its far end.
-  await page.setViewportSize({ width: 1550, height: 720 })
-  const origin = await openCanvas(page, width, 200)
+  const width = 1100
+  const origin = await openCanvas(page, width, 300)
   await addLayer(page)
   const empty = await pixels(page)
   await setFluid(page, QUICK)
   const before = await steps(page)
-  // One wash over two tiles, and later one three tiles clear of it.
+  // One wash over two tiles, and later one a tile's width clear of it.
   await wash(page, origin, 200, 310, 100)
   await advance(page, 100)
-  await wash(page, origin, 1340, 1440, 100)
+  await wash(page, origin, 850, 950, 100)
   const at = (image: number[], x: number, y: number) => rgba(image, x, y, width)
 
   // The first dries on its own deadline, whole, with the second still wet.
@@ -879,7 +875,7 @@ test("a body of wet tiles settles as a whole, and apart from another", async ({
   // One undo takes back the second and none of the first.
   await undo(page)
   const first = await pixels(page)
-  expect(at(first, 1390, 100)).toEqual(at(empty, 1390, 100))
+  expect(at(first, 900, 100)).toEqual(at(empty, 900, 100))
   for (const [x, y] of [
     [220, 100],
     [250, 100],
