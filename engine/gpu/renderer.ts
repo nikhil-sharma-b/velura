@@ -64,6 +64,7 @@ import {
   type WetViews,
 } from "./fluid-stroke"
 import { createFreezeLedger, FREEZE_CHUNK } from "./freeze-ledger"
+import { createPaper } from "./paper"
 import type { StrokeMark } from "./stroke-renderer"
 import { LAYER_FORMAT, type Surface } from "./surface"
 
@@ -1662,6 +1663,13 @@ export function createRenderer(
     legacyPickup: options.directLegacyPickup,
   })
 
+  /**
+   * The paper every fluid brush paints on (D42): made once, with the
+   * renderer, and read by the simulation, the screen and settle alike.
+   */
+  const paper = createPaper(device)
+  const paperView = paper.createView()
+
   /** What a wet layer's pipeline binds of its wet paint; a dry one's, nothing. */
   const wetEntries = (wet: WetViews | undefined): GPUBindGroupEntry[] =>
     wet
@@ -1669,6 +1677,7 @@ export function createRenderer(
           { binding: 7, resource: wet.slots },
           { binding: 8, resource: wet.deposited },
           { binding: 9, resource: wet.suspended },
+          { binding: 10, resource: paperView },
         ]
       : []
 
@@ -1676,6 +1685,7 @@ export function createRenderer(
   const fluid = createFluidStroke(device, {
     size: () => documentSize,
     feather: () => feather,
+    paper: () => paperView,
     wetChanged() {
       for (const compositor of compositors) compositor.refreshWet()
     },
@@ -3580,6 +3590,7 @@ export function createRenderer(
       releaseSelection()
       direct.destroy()
       fluid.destroy()
+      paper.destroy()
       for (const page of frozenPages.splice(0)) page.destroy()
       vector?.textures.forEach((texture) => texture.destroy())
       vector?.uniform.destroy()

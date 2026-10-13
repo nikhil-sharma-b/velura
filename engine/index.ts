@@ -5972,6 +5972,7 @@ export function createEngine(
         drying: fluid.drying,
         bleed: fluid.bleed,
         edge: fluid.edge,
+        granulation: fluid.granulation,
       })
       fluidTargetId = target
     } else {
