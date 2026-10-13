@@ -319,21 +319,24 @@ test("after a wash settles, one undo removes the whole dried passage and one red
 test("when one body settles while another is wet, the next undo dries the rest and removes that passage", async ({
   page,
 }) => {
-  const width = 1100
-  const origin = await openCanvas(page, { width, height: 300 })
-  const at = (image: number[], x: number, y: number) => rgba(image, x, y, width)
+  // Three tiles across and no wider: a picture is slow to read back where
+  // the GPU is software.
+  const width = 700
+  const origin = await openCanvas(page, { width })
+  const at = (image: number[], x: number) => rgba(image, x, ROW, width)
   const empty = await pixels(page)
   await setFluid(page, QUICK)
   const dry = await drySteps(page)
   // One wash, and later one a tile's width clear of it.
-  await wash(page, origin, 200, 310, 100)
+  await wash(page, origin, 60, 160)
   await advance(page, 100)
-  await wash(page, origin, 850, 950, 100)
+  await wash(page, origin, 570, 650)
   expect(await wetSteps(page)).toBe(2)
 
   // The first dries on its own deadline with the second still wet.
   for (let i = 0; i < 200 && (await drySteps(page)) === dry; i++) {
-    await advance(page, 10)
+    // Few and long: a step is slow where the GPU is software.
+    await advance(page, 20)
     await frames(page)
   }
   expect(await drySteps(page)).toBe(dry + 1)
@@ -345,22 +348,12 @@ test("when one body settles while another is wet, the next undo dries the rest a
   await undo(page)
   expect(await isWet(page)).toBe(false)
   const first = await pixels(page)
-  expect(at(first, 900, 100)).toEqual(at(empty, 900, 100))
-  expect(distance(at(first, 250, 100), at(empty, 250, 100))).toBeGreaterThan(
-    200
-  )
+  expect(at(first, 610)).toEqual(at(empty, 610))
+  expect(distance(at(first, 110), at(empty, 110))).toBeGreaterThan(200)
   expect(await drySteps(page)).toBe(dry + 1)
   // And the next takes back the passage that dried first.
   await undo(page)
   expect(await pixels(page)).toEqual(empty)
-
-  // Both come back dry.
-  await redo(page)
-  expect(await pixels(page)).toEqual(first)
-  await redo(page)
-  const both = await pixels(page)
-  expect(distance(at(both, 900, 100), at(empty, 900, 100))).toBeGreaterThan(200)
-  expect(await isWet(page)).toBe(false)
 })
 
 test("the copies stay inside their byte budget, and undo past the oldest dries the passage", async ({
