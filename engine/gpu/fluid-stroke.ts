@@ -36,14 +36,18 @@ const FIELD_COLUMNS = 8
 const FIELD_WIDTH = FIELD_COLUMNS * WET_CELLS
 const FIELD_HEIGHT = Math.ceil(WET_SLOTS / FIELD_COLUMNS) * WET_CELLS
 
-/** What a batch of dabs lays its water and dampness into: two channels. */
-const LAID_WATER_FORMAT: GPUTextureFormat = "rg16float"
+/**
+ * What a batch of dabs lays its water and dampness into, with the share of
+ * the brush's water its dabs carry in alpha.
+ */
+const LAID_WATER_FORMAT: GPUTextureFormat = LAYER_FORMAT
 
 /**
  * One dab in one wet tile, as the dab pass takes it: the centre and radius
- * in cells of the field texture, the pigment it carries, and its slot's box.
+ * in cells of the field texture, the pigment it carries and its slot's box,
+ * then its turn, squash, share of water, tip frame and colour offsets.
  */
-const INSTANCE_STRIDE = 8
+const INSTANCE_STRIDE = 16
 
 /**
  * Instances drawn in one pass. A dab is one for each tile it reaches, which
@@ -114,6 +118,8 @@ export type FluidStrokeContext = {
   size(): { width: number; height: number }
   /** The brush's rim falloff, in document pixels. */
   feather(): number
+  /** The brush's tip: its texture, and whether that is the dab's shape. */
+  tip(): { texture: GPUTexture; sampler: GPUSampler; usesTip: boolean }
   /** The paper every fluid brush paints on, a texel a document pixel. */
   paper(): GPUTextureView
   /**
@@ -256,7 +262,7 @@ export function createFluidStroke(
   context: FluidStrokeContext
 ): FluidStroke {
   const uniform = device.createBuffer({
-    size: 32,
+    size: 48,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
   /**
@@ -268,6 +274,12 @@ export function createFluidStroke(
     const add: GPUBlendState = {
       color: { srcFactor: "one", dstFactor: "one" },
       alpha: { srcFactor: "one", dstFactor: "one" },
+    }
+    // Water and dampness add up; the share of the brush's water is the
+    // deepest any dab of the batch carries there.
+    const addWater: GPUBlendState = {
+      color: add.color,
+      alpha: { operation: "max", srcFactor: "one", dstFactor: "one" },
     }
     const dabModule = device.createShaderModule({ code: fluidDabShader })
     const dabPipeline = device.createRenderPipeline({
@@ -285,6 +297,11 @@ export function createFluidStroke(
               { shaderLocation: 1, offset: 8, format: "float32" },
               { shaderLocation: 2, offset: 12, format: "float32" },
               { shaderLocation: 3, offset: 16, format: "float32x4" },
+              { shaderLocation: 4, offset: 32, format: "float32" },
+              { shaderLocation: 5, offset: 36, format: "float32" },
+              { shaderLocation: 6, offset: 40, format: "float32" },
+              { shaderLocation: 7, offset: 44, format: "float32" },
+              { shaderLocation: 8, offset: 48, format: "float32x3" },
             ],
           },
         ],
@@ -293,7 +310,7 @@ export function createFluidStroke(
         module: dabModule,
         entryPoint: "fragmentMain",
         targets: [
-          { format: LAID_WATER_FORMAT, blend: add },
+          { format: LAID_WATER_FORMAT, blend: addWater },
           { format: LAYER_FORMAT, blend: add },
         ],
       },
@@ -352,13 +369,8 @@ export function createFluidStroke(
         layout: device.createPipelineLayout({ bindGroupLayouts: [simLayout] }),
         compute: { module: simModule, entryPoint },
       })
-    const dabBinding = device.createBindGroup({
-      layout: dabPipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: uniform } }],
-    })
     return {
       dab: dabPipeline,
-      dabBinding,
       settle: settlePipeline,
       simLayout,
       step: simPipeline("stepMain"),
@@ -382,7 +394,31 @@ export function createFluidStroke(
   const simLevel = new Float32Array(simData, SIM_LEVEL_OFFSET, 1)
   const simTiles = new Int32Array(simData, SIM_TILES_OFFSET)
 
-  const uniformValues = new Float32Array(8)
+  const uniformValues = new Float32Array(12)
+  /** The dab pass's binding, and the tip texture it was made over. */
+  let dabBinding: GPUBindGroup | undefined
+  let boundTip: GPUTexture | undefined
+  /** How far past its radius a dab may lay: a turned tip's corners carry ink. */
+  let tipReach = 1
+
+  /** The brush's tip is replaced as the brush is: the binding follows it. */
+  function bindDabs() {
+    const tip = context.tip()
+    if (dabBinding && boundTip === tip.texture) return dabBinding
+    boundTip = tip.texture
+    dabBinding = device.createBindGroup({
+      layout: pipelines!.dab.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: uniform } },
+        { binding: 1, resource: tip.sampler },
+        {
+          binding: 2,
+          resource: tip.texture.createView({ dimension: "2d-array" }),
+        },
+      ],
+    })
+    return dabBinding
+  }
 
   /**
    * Read in the selection's place while nothing is selected: one texel of
@@ -779,7 +815,7 @@ export function createFluidStroke(
       ),
     })
     pass.setPipeline(pipelines!.dab)
-    pass.setBindGroup(0, pipelines!.dabBinding)
+    pass.setBindGroup(0, bindDabs())
     pass.setVertexBuffer(0, instanceBuffer)
     pass.draw(4, count)
     pass.end()
@@ -952,6 +988,9 @@ export function createFluidStroke(
       uniformValues[5] = FIELD_HEIGHT
       uniformValues[6] = context.feather() / WET_CELL_SIZE
       uniformValues[7] = opening.water
+      const usesTip = context.tip().usesTip
+      uniformValues[8] = usesTip ? 1 : 0
+      tipReach = usesTip ? Math.SQRT2 : 1
       device.queue.writeBuffer(uniform, 0, uniformValues)
       // The whole wet surface runs at the rates of the brush last put to it.
       const slower = evaporation(opening.drying) < simRates[0]
@@ -979,7 +1018,7 @@ export function createFluidStroke(
         }
       return true
     },
-    /** Dabs are laid out as `STAMP` says; only a round tip is drawn so far. */
+    /** Dabs are laid out as `STAMP` says. */
     draw(dabs, count) {
       if (!painting || count <= 0) return noMarks
       touched.clear()
@@ -992,8 +1031,9 @@ export function createFluidStroke(
         const x = dabs[offset + STAMP.CENTER_X]
         const y = dabs[offset + STAMP.CENTER_Y]
         const radius = dabs[offset + STAMP.RADIUS]
-        // As far as the dab pass may write: the rim, and the cell past it.
-        const reach = radius + WET_CELL_SIZE
+        // As far as the dab pass may write: the rim, or a turned tip's
+        // corners, and the cell past it.
+        const reach = radius * tipReach + WET_CELL_SIZE
         const lastColumn = tileIndexForPixel(x + reach)
         const lastRow = tileIndexForPixel(y + reach)
         for (let row = tileIndexForPixel(y - reach); row <= lastRow; row++)
@@ -1059,6 +1099,13 @@ export function createFluidStroke(
             instances[at + 5] = slotY
             instances[at + 6] = slotX + WET_CELLS
             instances[at + 7] = slotY + WET_CELLS
+            instances[at + 8] = dabs[offset + STAMP.ANGLE]
+            instances[at + 9] = dabs[offset + STAMP.ROUNDNESS]
+            instances[at + 10] = dabs[offset + STAMP.WATER]
+            instances[at + 11] = dabs[offset + STAMP.TIP_FRAME]
+            instances[at + 12] = dabs[offset + STAMP.HUE]
+            instances[at + 13] = dabs[offset + STAMP.SATURATION]
+            instances[at + 14] = dabs[offset + STAMP.LIGHTNESS]
           }
       }
       // A slot the shaders cannot find is paint that does not show.

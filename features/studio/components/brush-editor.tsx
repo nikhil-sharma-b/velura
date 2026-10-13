@@ -108,6 +108,7 @@ const TARGETS: Record<DynamicsTarget, { label: string; drawn: boolean }> = {
   grainDepth: { label: "Grain depth", drawn: true },
   scatter: { label: "Scatter", drawn: true },
   pickup: { label: "Pickup", drawn: true },
+  water: { label: "Water", drawn: true },
   hue: { label: "Hue", drawn: true },
   saturation: { label: "Saturation", drawn: true },
   lightness: { label: "Lightness", drawn: true },
@@ -115,12 +116,19 @@ const TARGETS: Record<DynamicsTarget, { label: string; drawn: boolean }> = {
 
 /**
  * The targets a mapping may be moved onto. Pickup is a wet brush's alone
- * (D41), so a dry brush is not offered it; a mapping already on it keeps it
- * listed, since the mapping stays on the brush while wet is off.
+ * (D41) and water a fluid brush's (D42), so a brush that is neither is not
+ * offered them; a mapping already on one keeps it listed, since the mapping
+ * stays on the brush while wet or fluid is off.
  */
-function targetsFor(wet: boolean, current: DynamicsTarget): DynamicsTarget[] {
+function targetsFor(
+  wet: boolean,
+  fluid: boolean,
+  current: DynamicsTarget
+): DynamicsTarget[] {
+  const offered = (target: DynamicsTarget) =>
+    target === "pickup" ? wet : target === "water" ? fluid : true
   return (Object.keys(TARGETS) as DynamicsTarget[]).filter(
-    (target) => target !== "pickup" || wet || current === "pickup"
+    (target) => offered(target) || target === current
   )
 }
 
@@ -238,6 +246,7 @@ function Mapping({
   modulator,
   index,
   wet,
+  fluid,
   onChange,
   onRemove,
 }: {
@@ -245,6 +254,8 @@ function Mapping({
   index: number
   /** Whether the brush is wet, and so has a pickup to map onto. */
   wet: boolean
+  /** Whether the brush is fluid, and so has water to map onto. */
+  fluid: boolean
   onChange(next: Modulator): void
   onRemove(): void
 }) {
@@ -307,7 +318,7 @@ function Mapping({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {targetsFor(wet, modulator.target).map((target) => (
+            {targetsFor(wet, fluid, modulator.target).map((target) => (
               <SelectItem key={target} value={target}>
                 {targetLabel(target)}
               </SelectItem>
@@ -928,6 +939,7 @@ export function BrushEditor({
               index={index}
               modulator={modulator}
               wet={!!wet}
+              fluid={!!brush.rendering.fluid}
               onChange={(next) =>
                 apply({
                   dynamics: dynamics.map((existing, at) =>

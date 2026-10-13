@@ -1688,6 +1688,7 @@ export function createRenderer(
   const fluid = createFluidStroke(device, {
     size: () => documentSize,
     feather: () => feather,
+    tip: () => tipShape,
     paper: () => paperView,
     selection: () => selection?.view,
     wetChanged() {

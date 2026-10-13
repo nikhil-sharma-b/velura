@@ -19,6 +19,7 @@
   "filters.spec.ts": 70.5,
   "fluid-bloom.spec.ts": 89.3,
   "fluid-brush.spec.ts": 412.2,
+  "fluid-dabs.spec.ts": 60,
   "fluid-paper.spec.ts": 201.4,
   "fluid-settle.spec.ts": 134.3,
   "fluid-tile-limit.spec.ts": 162,

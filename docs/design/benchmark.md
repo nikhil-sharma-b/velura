@@ -20,6 +20,7 @@ bun run bench/run.ts --scatter # a dense scattering brush against none
 bun run bench/run.ts --smudge  # smudging the workload against painting it
 bun run bench/run.ts --wet     # wet brushes over the workload against dry ones
 bun run bench/run.ts --wet --opening # 8192² sampling openings against active-layer pickup
+bun run bench/run.ts --fluid   # fluid brushes against the same brushes dry
 bun run bench/run.ts --vector  # redrawing a vector layer of many paths (19)
 bun run bench/run.ts --navigate # panning and zooming a stack (sharp-zoom 01)
 ```
@@ -2187,3 +2188,65 @@ into. Frames were not re-measured: nothing a stroke does was changed.
 That an undo does not wait for compression, and that a stroke landing
 while it waits for recording is still the step it takes back, are held by
 `tests/unit/history.test.ts`.
+
+## Fluid dabs: one batch and one pour a frame (fluid brushes 10)
+
+A fluid dab is the brush's whole dab now: turned, squashed, shaped by its
+tip, thrown by scatter and tinted by colour jitter, with the graph driving
+the pigment and the water it carries. A frame's dabs are still one batch,
+instanced into the two targets a batch lays into, and one pour of that into
+the wet fields, so what a dab adds to a frame is an instance for each wet
+tile it reaches. `--fluid` paints the workload with a fluid brush against
+the same brush dry: at an eighth of its diameter between dabs, at the
+closest a brush can ask for (a hundredth, which is twelve times the dabs
+into the same wash), with a tip of four frames, and with the densest scatter
+(count 16). The simulation runs under every fluid row, on its own clock.
+
+Apple GPU (Metal 3), Chrome/WebGPU, 2560 × 1440 window, six strokes,
+2026-10-13, on top of `2719388`, the second of two runs that agree:
+
+| document | brush | paint | ms/frame, unpaced | sustained fps | dabs/frame, paced | all frames, median / p95 | dabs | readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 64 px | Dry | 0.319 | 1250.0 | 6.0 | 12.0 / 14.1 ms | 622 | 0 | 0 |
+| 2048² | 64 px | Fluid | 0.414 | 625.0 | 5.9 | 13.1 / 15.7 ms | 620 | 0 | 0 |
+| 2048² | 64 px | Fluid, densest | 0.414 | 625.0 | 74.3 | 13.0 / 16.3 ms | 7,727 | 0 | 0 |
+| 2048² | 64 px | Fluid, tip | 0.413 | 625.0 | 6.0 | 13.0 / 15.7 ms | 620 | 0 | 0 |
+| 2048² | 64 px | Dry, scatter | 0.320 | 1428.6 | 94.5 | 12.1 / 14.6 ms | 9,920 | 0 | 0 |
+| 2048² | 64 px | Fluid, scatter | 0.418 | 769.2 | 94.5 | 13.4 / 16.0 ms | 9,920 | 0 | 0 |
+| 2048² | 512 px | Dry | 0.316 | 1111.1 | 0.8 | 12.2 / 14.8 ms | 81 | 0 | 0 |
+| 2048² | 512 px | Fluid | 0.421 | 526.3 | 0.8 | 13.4 / 15.7 ms | 81 | 0 | 0 |
+| 2048² | 512 px | Fluid, densest | 0.428 | 526.3 | 9.3 | 13.7 / 17.2 ms | 963 | 0 | 0 |
+| 2048² | 512 px | Fluid, tip | 0.420 | 526.3 | 0.8 | 13.5 / 16.3 ms | 81 | 0 | 0 |
+| 2048² | 512 px | Dry, scatter | 0.316 | 1000.0 | 12.2 | 12.6 / 14.7 ms | 1,280 | 0 | 0 |
+| 2048² | 512 px | Fluid, scatter | 0.446 | 454.5 | 12.2 | 16.2 / 19.2 ms | 1,296 | 0 | 0 |
+| 8192² | 64 px | Dry | 0.875 | 500.0 | 6.3 | 13.2 / 15.4 ms | 2,744 | 0 | 0 |
+| 8192² | 64 px | Fluid | 1.105 | 312.5 | 6.3 | 14.4 / 16.6 ms | 2,744 | 0 | 0 |
+| 8192² | 64 px | Fluid, densest | 1.100 | 312.5 | 78.2 | 14.3 / 16.9 ms | 34,330 | 0 | 0 |
+| 8192² | 64 px | Fluid, tip | 1.099 | 322.6 | 6.3 | 14.3 / 16.5 ms | 2,744 | 0 | 0 |
+| 8192² | 64 px | Dry, scatter | 0.873 | 476.2 | 100.3 | 13.1 / 15.2 ms | 44,016 | 0 | 0 |
+| 8192² | 64 px | Fluid, scatter | 1.118 | 312.5 | 100.7 | 14.9 / 17.7 ms | 43,904 | 130 | 1 |
+| 8192² | 512 px | Dry | 0.853 | 476.2 | 0.8 | 13.3 / 15.3 ms | 347 | 0 | 0 |
+| 8192² | 512 px | Fluid | 1.115 | 294.1 | 0.8 | 15.1 / 18.3 ms | 347 | 390 | 3 |
+| 8192² | 512 px | Fluid, densest | 1.149 | 303.0 | 9.8 | 15.2 / 18.3 ms | 4,286 | 390 | 3 |
+| 8192² | 512 px | Fluid, tip | 1.123 | 294.1 | 0.8 | 14.8 / 18.2 ms | 347 | 780 | 6 |
+| 8192² | 512 px | Dry, scatter | 0.858 | 476.2 | 12.7 | 13.4 / 15.6 ms | 5,552 | 0 | 0 |
+| 8192² | 512 px | Fluid, scatter | 1.530 | 256.4 | 18.8 | 88.7 / 245.1 ms | 5,264 | 3,698 | 189 |
+
+**The dab is not the cost.** Twelve times the dabs into the same wash moves
+the frame by nothing that can be read at either size of brush or document
+(1.105 against 1.100 ms at 8192² and 64 px, 0.421 against 0.428 ms at
+2048² and 512 px), and neither does the tip, nor sixteen dabs a step at
+64 px. A hundred dabs in a frame are one draw. What a fluid frame costs over a dry one, a tenth to a quarter of a
+millisecond unpaced and one to two milliseconds of pen-to-pixel paced, is
+there at six dabs a frame as at a hundred: it is the pour and the simulation
+stepping under the pen, not the deposit. The wet spacing floor is not put to
+a fluid brush, and nothing here asks for it.
+
+**Left for fluid brushes 13.** The rows with readbacks and allocations are
+the ones whose wash outgrows the wet tile limit under the pen: a body
+settles to make room, history reads back what it wrote, and the stroke's
+pen-down copy is taken again. That is not the deposit, and it was not looked
+into here. A 512 px brush at 8192² does it with the pen down in every row,
+twice as often with a tip, whose turned corners reach tiles the disc's rim
+does not; thrown sixteen a step it misses the bar outright (88.7 / 245.1 ms).
+The cause is read from what the code does at the limit, not measured.
