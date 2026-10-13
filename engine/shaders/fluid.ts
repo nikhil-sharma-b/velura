@@ -154,6 +154,9 @@ struct Sim {
   evaporation: f32,
   // The share of its pigment a cell trades with each neighbour holding water.
   bleed: f32,
+  // How many times faster water evaporates at the very edge of the damp
+  // area than in the middle of it, less one.
+  edge: f32,
   // Each slot's tile in xy, and in z whether one holds it.
   tiles: array<vec4<i32>, ${WET_SLOTS}>,
 }
@@ -167,6 +170,9 @@ const FACE_SHARE: f32 = 0.2;
 const MAX_WATER: f32 = ${FLUID_MAX_WATER.toFixed(1)};
 // How fast paper loses its dampness once no water stands on it.
 const DAMP_FADE: f32 = ${(1 / FLUID_DAMP_STEPS).toFixed(4)};
+// How far out a cell looks for the edge of the damp area, in cells: the rim
+// that dries first is a band this wide, not one cell.
+const EDGE_REACH: i32 = 6;
 // The share of suspended pigment the paper takes in a step, and of deposited
 // pigment that lifts back while water stands on it.
 const DEPOSIT: f32 = 0.0003;
@@ -198,6 +204,30 @@ fn faceFlow(a: vec4<f32>, b: vec4<f32>) -> f32 {
   return clamp(FLOW * (a.x - b.x) * damp, -FACE_SHARE * b.x, FACE_SHARE * a.x);
 }
 
+// How damp the paper is at a cell, for one looking for the edge of the damp
+// area. Past the document there is no paper to be dry: it counts as being as
+// damp as the cell that looks, so a wash that runs off the canvas has no rim
+// along the canvas's edge.
+fn dampAt(cell: vec2<i32>, own: f32) -> f32 {
+  if (any(cell < vec2<i32>(0))) { return own; }
+  if (any(cell / WET_CELLS >= vec2<i32>(textureDimensions(wetSlots)))) { return own; }
+  return wetCell(wetSlots, water, cell).y;
+}
+
+// How near a cell is to the edge of the damp area, from none in the middle of
+// it to one where nothing about is damp. It looks next door and EDGE_REACH
+// cells out, each way: an eighth for each of the eight.
+fn edgeNearness(cell: vec2<i32>, own: f32) -> f32 {
+  var damp = 0.0;
+  for (var reach = 1; reach <= EDGE_REACH; reach += EDGE_REACH - 1) {
+    damp += dampAt(cell + vec2<i32>(-reach, 0), own);
+    damp += dampAt(cell + vec2<i32>(reach, 0), own);
+    damp += dampAt(cell + vec2<i32>(0, -reach), own);
+    damp += dampAt(cell + vec2<i32>(0, reach), own);
+  }
+  return 1.0 - 0.125 * damp;
+}
+
 // How freely pigment diffuses between two cells: both have to hold water.
 fn bleedGate(a: vec4<f32>, b: vec4<f32>) -> f32 {
   return sim.bleed * smoothstep(0.0, 0.25, min(a.x, b.x));
@@ -220,13 +250,18 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   let u = wetCell(wetSlots, water, up);
   let d = wetCell(wetSlots, water, down);
 
-  // Water levels, then evaporates.
+  // Water levels, then evaporates, faster near the edge of the damp area:
+  // the water that flows out to replace it is what darkens a wash's rim.
   let toRight = faceFlow(c, r);
   let fromLeft = faceFlow(l, c);
   let toDown = faceFlow(c, d);
   let fromUp = faceFlow(u, c);
   let level = c.x - toRight + fromLeft - toDown + fromUp;
-  let w = clamp(level - sim.evaporation, 0.0, MAX_WATER);
+  // Only a cell with water to lose looks for the edge: most of a wet tile
+  // has none, and the looking is eight more cells read.
+  var lost = sim.evaporation;
+  if (level > 0.0 && sim.edge > 0.0) { lost *= 1.0 + sim.edge * edgeNearness(cell, c.y); }
+  let w = clamp(level - lost, 0.0, MAX_WATER);
   // Paper under water is damp, and dries out once the water has gone.
   let dampness = select(max(0.0, c.y - DAMP_FADE), min(1.0, c.y + 0.2), w > 0.001);
 
