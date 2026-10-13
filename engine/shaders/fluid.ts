@@ -257,7 +257,10 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   let toDown = faceFlow(c, d);
   let fromUp = faceFlow(u, c);
   let level = c.x - toRight + fromLeft - toDown + fromUp;
-  let lost = sim.evaporation * (1.0 + sim.edge * edgeNearness(cell, c.y));
+  // Only a cell with water to lose looks for the edge: most of a wet tile
+  // has none, and the looking is eight more cells read.
+  var lost = sim.evaporation;
+  if (level > 0.0 && sim.edge > 0.0) { lost *= 1.0 + sim.edge * edgeNearness(cell, c.y); }
   let w = clamp(level - lost, 0.0, MAX_WATER);
   // Paper under water is damp, and dries out once the water has gone.
   let dampness = select(max(0.0, c.y - DAMP_FADE), min(1.0, c.y + 0.2), w > 0.001);
