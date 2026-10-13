@@ -1,6 +1,7 @@
 import type {
   Brush,
   BrushColor,
+  BrushFluid,
   BrushGrain,
   BrushRendering,
   BrushShape,
@@ -48,9 +49,11 @@ export type BrushEdit = {
   }
   /** Null takes the grain away: the brush draws on a smooth surface again. */
   grain?: BrushGrain | null
-  rendering?: Partial<Omit<BrushRendering, "wet">> & {
+  rendering?: Partial<Omit<BrushRendering, "wet" | "fluid">> & {
     /** Null dries the brush: it draws through the stroke buffer again. */
     wet?: BrushWet | null
+    /** Null takes the water away, as null does for wet. */
+    fluid?: BrushFluid | null
   }
   /** Null, or one that throws nothing, takes the section away. */
   scatter?: BrushScatter | null
@@ -95,6 +98,10 @@ export function editBrush(brush: Brush, edit: BrushEdit): Brush {
   // `null` nor `undefined` is a value that model has.
   if (edit.shape && "tipTextureId" in edit.shape && !edit.shape.tipTextureId)
     delete next.shape.tipTextureId
+  // A brush is wet or fluid, not both (D42), so whichever the edit turns on
+  // takes the other off rather than handing the engine a brush it refuses.
+  if (edit.rendering?.fluid) delete next.rendering.wet
+  else if (edit.rendering?.wet) delete next.rendering.fluid
   if (next.rendering.wet) next.rendering.wet = { ...next.rendering.wet }
   else delete next.rendering.wet
   if (next.rendering.fluid) next.rendering.fluid = { ...next.rendering.fluid }

@@ -76,6 +76,27 @@ describe("brushes kept in this browser", () => {
     expect(reopened.brush.rendering.wet).toEqual({ pickup: 0.4 })
   })
 
+  test("a fluid brush is the same brush after a reload", async () => {
+    const storage = fakeStorage()
+    const fluid = {
+      ...pencil,
+      rendering: {
+        ...pencil.rendering,
+        fluid: {
+          water: 0.7,
+          drying: 0.2,
+          bleed: 0.6,
+          edge: 0.3,
+          granulation: 0.1,
+        },
+      },
+    }
+    await createLocalBrushes(storage).save("Wash", "", fluid)
+
+    const [reopened] = createLocalBrushes(storage).read().brushes
+    expect(reopened.brush).toEqual(fluid)
+  })
+
   test("a mapping onto water is still on the brush after a reload", async () => {
     const storage = fakeStorage()
     const dynamics = [
@@ -107,6 +128,7 @@ describe("brushes kept in this browser", () => {
     const [reopened] = createLocalBrushes(storage).read().brushes
     expect(reopened.brush).toEqual(pencil)
     expect("wet" in reopened.brush.rendering).toBe(false)
+    expect("fluid" in reopened.brush.rendering).toBe(false)
   })
 
   test("refuses a wet brush whose pickup is outside [0, 1]", async () => {
