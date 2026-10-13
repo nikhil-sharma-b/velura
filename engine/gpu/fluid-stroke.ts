@@ -25,9 +25,14 @@ import {
   type WetTilesState,
 } from "./wet-tiles"
 
-/** Slots along one side of a field texture; see `wet.wgsl`. */
+/** Slots along a row of a field texture; see `wet.wgsl`. */
 const FIELD_COLUMNS = 8
-const FIELD_SIZE = FIELD_COLUMNS * WET_CELLS
+/**
+ * A field texture's size in cells: rows enough for every slot and no more,
+ * so the wet tile limit is the whole of what the fields are allocated for.
+ */
+const FIELD_WIDTH = FIELD_COLUMNS * WET_CELLS
+const FIELD_HEIGHT = Math.ceil(WET_SLOTS / FIELD_COLUMNS) * WET_CELLS
 
 /** What a batch of dabs lays its water and dampness into: two channels. */
 const LAID_WATER_FORMAT: GPUTextureFormat = "rg16float"
@@ -111,6 +116,12 @@ export type WetViews = {
  * it stays so after the pen lifts.
  */
 export interface FluidStroke extends StrokeRenderer<FluidOpening> {
+  /**
+   * Draws `count` dabs of the stroke in flight. One that needs a wet tile
+   * with every slot taken settles a body early to make room; answers what
+   * each such settle wrote, in order.
+   */
+  draw(dabs: Float32Array, count: number): readonly StrokeMark[]
   /**
    * What the compositor shows over a layer's pixels: the wet tiles' slots
    * and their pigment, or nothing unless `surface` is the one that is wet.
@@ -385,10 +396,19 @@ export function createFluidStroke(
   const reached = new Float64Array(WET_SLOTS * 4)
   /** The slots a frame's dabs landed in; kept, so a frame allocates none. */
   const touched = new Set<number>()
+  const noMarks: readonly StrokeMark[] = []
+
+  /** Pushes back the drying of every body the frame's dabs landed in. */
+  function refreshTouched() {
+    for (const slot of touched) {
+      const tile = tiles!.tile(slot)!
+      tiles!.refresh(tile.x, tile.y, clock + lifetime)
+    }
+  }
 
   function field(usage: number, format = LAYER_FORMAT) {
     const texture = device.createTexture({
-      size: { width: FIELD_SIZE, height: FIELD_SIZE },
+      size: { width: FIELD_WIDTH, height: FIELD_HEIGHT },
       format,
       usage: GPUTextureUsage.TEXTURE_BINDING | usage,
     })
@@ -790,8 +810,8 @@ export function createFluidStroke(
       laid = false
       load = opening.load
       uniformValues.set(opening.ink)
-      uniformValues[4] = FIELD_SIZE
-      uniformValues[5] = FIELD_SIZE
+      uniformValues[4] = FIELD_WIDTH
+      uniformValues[5] = FIELD_HEIGHT
       uniformValues[6] = context.feather() / WET_CELL_SIZE
       uniformValues[7] = opening.water
       device.queue.writeBuffer(uniform, 0, uniformValues)
@@ -815,8 +835,9 @@ export function createFluidStroke(
     },
     /** Dabs are laid out as `STAMP` says; only a round tip is drawn so far. */
     draw(dabs, count) {
-      if (!painting || count <= 0) return
+      if (!painting || count <= 0) return noMarks
       touched.clear()
+      let marks: StrokeMark[] | undefined
       let filled = 0
       /** Slots taken since the shaders were last told of them. */
       let fresh = 0
@@ -835,11 +856,34 @@ export function createFluidStroke(
             column <= lastColumn;
             column++
           ) {
-            // A tile with no slot to take lays nothing: off the canvas, or
-            // past the wet tile limit.
-            const held = tiles!.count()
-            const slot = tiles!.touch(column, row)
-            if (slot < 0) continue
+            let held = tiles!.count()
+            let slot = tiles!.touch(column, row)
+            if (slot < 0) {
+              // Every slot is taken (D42): a body settles early to make
+              // room, the one this dab is painting into last of all. A tile
+              // off the canvas has none to wait for, and lays nothing.
+              if (
+                held < WET_SLOTS ||
+                column < 0 ||
+                row < 0 ||
+                column >= grid.columns ||
+                row >= grid.rows
+              )
+                continue
+              const crowding = tiles!.crowding(column, row, touched)
+              // What is waiting to be drawn is in the paint that settles.
+              if (fresh > 0) writeSlots()
+              fresh = 0
+              drawInstances(filled)
+              filled = 0
+              // The layer is wet from here, if this stroke is its first.
+              surface = painting
+              const mark = settle(crowding)
+              if (mark) (marks ??= []).push(mark)
+              for (const freed of crowding) touched.delete(freed)
+              held = tiles!.count()
+              slot = tiles!.touch(column, row)
+            }
             // A slot just taken starts with nothing reached.
             if (tiles!.count() > held) {
               fresh++
@@ -876,12 +920,9 @@ export function createFluidStroke(
       // A slot the shaders cannot find is paint that does not show.
       if (fresh > 0) writeSlots()
       // Every dab pushes back the drying of the body it landed in.
-      for (const slot of touched) {
-        const tile = tiles!.tile(slot)!
-        tiles!.refresh(tile.x, tile.y, clock + lifetime)
-      }
+      refreshTouched()
       drawInstances(filled)
-      if (touched.size === 0) return
+      if (touched.size === 0) return marks ?? noMarks
       laid = true
       if (surface === painting) context.wetMoved()
       else {
@@ -889,6 +930,7 @@ export function createFluidStroke(
         surface = painting
         context.wetChanged()
       }
+      return marks ?? noMarks
     },
     end(keep) {
       if (!painting) return null

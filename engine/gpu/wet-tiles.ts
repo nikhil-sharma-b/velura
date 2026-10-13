@@ -11,7 +11,8 @@ export const WET_CELL_SIZE = TILE_SIZE / WET_CELLS
 
 /**
  * How many tiles may be wet at once (D42): a slot each in the field
- * textures, which are allocated for this many and never grow.
+ * textures, which are allocated for this many and never grow. The one place
+ * the limit is said; a dab that needs a slot past it settles a body early.
  */
 export const WET_SLOTS = 64
 
@@ -27,6 +28,18 @@ export interface WetTiles {
    * slot, or -1 off the grid or with every slot taken.
    */
   touch(x: number, y: number): number
+  /**
+   * The slots of the body to settle so that this tile can take one, in slot
+   * order: the body due first, and the lower slot of two due together. A
+   * body the tile would join, or one holding a slot of `painted`, is being
+   * painted into, and is answered only when there is no other. Nothing off
+   * the grid, for a tile that holds a slot, or with a slot free.
+   */
+  crowding(
+    x: number,
+    y: number,
+    painted?: ReadonlySet<number>
+  ): readonly number[]
   /**
    * Pushes the drying deadline of every tile in the same body as this one
    * out to the step `until`. A deadline is never pulled in.
@@ -113,6 +126,39 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
       map[y * columns + x] = slot + 1
       count++
       return slot
+    },
+    crowding(x, y, painted) {
+      if (count < WET_SLOTS || x < 0 || y < 0 || x >= columns || y >= rows)
+        return none
+      if (map[y * columns + x] > 0) return none
+      let first = -1
+      let firstDue = Infinity
+      let firstJoined = true
+      sorted.fill(0)
+      for (let slot = 0; slot < WET_SLOTS; slot++) {
+        if (sorted[slot]) continue
+        const size = body(slot)
+        let due = 0
+        let joined = false
+        for (let i = 0; i < size; i++) {
+          const tile = held[found[i]]!
+          sorted[found[i]] = 1
+          due = Math.max(due, deadline[found[i]])
+          if (
+            painted?.has(found[i]) ||
+            (Math.abs(tile.x - x) <= 1 && Math.abs(tile.y - y) <= 1)
+          )
+            joined = true
+        }
+        // Any body before the one painted into; then the one due first.
+        const sooner = joined === firstJoined ? due < firstDue : firstJoined
+        if (first >= 0 && !sooner) continue
+        first = slot
+        firstDue = due
+        firstJoined = joined
+      }
+      const size = body(first)
+      return Array.from(found.subarray(0, size)).sort((a, b) => a - b)
     },
     refresh(x, y, until) {
       const from = slotAt(x, y)
