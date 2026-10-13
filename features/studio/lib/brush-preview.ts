@@ -181,6 +181,12 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
   // A blender lays nothing, and a stroke of nothing says nothing about it. It
   // is shown by what it would drag instead: its pickup, as the graph moves it.
   const blender = isBlender(brush) ? brush.rendering.wet : undefined
+  // A fluid brush with no flow lays water and no pigment (D42), and is shown
+  // by that water for the same reason.
+  const water =
+    brush.rendering.fluid && brush.rendering.flow === 0
+      ? brush.rendering.fluid.water
+      : undefined
   const params: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   const context: StampContext = { ...NEUTRAL_STAMP_CONTEXT }
   const dabs: PreviewDab[] = []
@@ -201,7 +207,9 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
       radius: Math.min(radius * params.size, cap),
       opacity: blender
         ? blender.pickup * params.pickup
-        : brush.rendering.flow * params.flow,
+        : water !== undefined
+          ? water * params.water
+          : brush.rendering.flow * params.flow,
       angle: brush.shape.angle + params.angle,
       roundness: brush.shape.roundness * params.roundness,
       hue: wet ? 0 : params.hue * (brush.color?.hue ?? 1),

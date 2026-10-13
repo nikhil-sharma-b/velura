@@ -1,6 +1,10 @@
 import type { Brush } from "@/engine/brush/brush"
 import { KRITA_BRUSH_SETS } from "@/engine/brush/krita-presets"
-import { BUILTIN_BRUSHES, WET_BRUSH_SET } from "@/engine/brush/presets"
+import {
+  BUILTIN_BRUSHES,
+  FLUID_BRUSH_SET,
+  WET_BRUSH_SET,
+} from "@/engine/brush/presets"
 
 import { DEFAULT_BRUSH_SET } from "@/convex/lib/brush"
 import type { StoredBrush } from "./brush-store"
@@ -19,8 +23,11 @@ import type { StoredBrush } from "./brush-store"
 /** The set the shipped brushes appear in. Not a stored set: there are no rows. */
 export const BUILTIN_SET = "Built-in"
 
-/** The sets shipped as sets, in shelf order: the wet brushes, then Krita's. */
-const SHIPPED_SETS = [WET_BRUSH_SET, ...KRITA_BRUSH_SETS]
+/**
+ * The sets shipped as sets, in shelf order: the wet brushes, the fluid ones,
+ * then Krita's.
+ */
+const SHIPPED_SETS = [WET_BRUSH_SET, FLUID_BRUSH_SET, ...KRITA_BRUSH_SETS]
 
 /**
  * Every shipped set's name. None may be taken by a stored set: two shelves
@@ -34,8 +41,8 @@ export const BUILTIN_SET_NAMES: readonly string[] = [
 
 /**
  * The shipped sets the panel opens folded: the ones ported from Krita. Sixty
- * rows of strokes is a wall, and the built-ins, the wet brushes and the
- * artist's own are what is reached for most.
+ * rows of strokes is a wall, and the built-ins, the wet and fluid brushes and
+ * the artist's own are what is reached for most.
  */
 export const FOLDED_SET_NAMES: readonly string[] = KRITA_BRUSH_SETS.map(
   (set) => set.name
@@ -88,8 +95,9 @@ function savedEntry(stored: StoredBrush): LibraryBrush {
 }
 
 /**
- * The whole library: the six built-ins, then the wet brushes, then the sets
- * ported from Krita, then each of the artist's sets in the order it was made.
+ * The whole library: the six built-ins, then the wet brushes, then the fluid
+ * ones, then the sets ported from Krita, then each of the artist's sets in
+ * the order it was made.
  */
 export function brushShelf(stored: readonly StoredBrush[]): BrushSet[] {
   const sets = new Map<string, LibraryBrush[]>()
