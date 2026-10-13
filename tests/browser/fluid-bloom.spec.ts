@@ -136,6 +136,23 @@ async function untilSettled(page: Page) {
   expect(await steps(page)).toBeGreaterThan(before)
 }
 
+/**
+ * Dries everything wet, waited for as the undo step it lands as: for as long
+ * as the test has, since the steps before it are slow where the GPU is
+ * software and the settle is read back behind them.
+ */
+async function dryNow(page: Page) {
+  const before = await steps(page)
+  await page.evaluate(() => window.engine.dispatch({ type: "dryNow" }))
+  await page.waitForFunction(
+    (n) =>
+      window.engine.historyUsage().steps -
+        window.engine.historyUsage().wetSteps >
+      n,
+    before
+  )
+}
+
 /** Paint enough to see, as a pixel shows it. */
 const PAINTED = 12
 
@@ -225,6 +242,7 @@ const above = (line: number, radius: number) => line - radius - 3
 test("a bloom beside a tile border crosses it with no wall and no seam", async ({
   page,
 }) => {
+  test.slow()
   const width = 300
   const radius = 30
   // Slow to dry, so the water stands deeper than the paper holds for long
@@ -241,9 +259,7 @@ test("a bloom beside a tile border crosses it with no wall and no seam", async (
     // Dried by command, long before it would by itself: a step is slow
     // where the GPU is software.
     await advance(page, 400)
-    const before = await steps(page)
-    await page.evaluate(() => window.engine.dispatch({ type: "dryNow" }))
-    await expect.poll(() => steps(page)).toBeGreaterThan(before)
+    await dryNow(page)
     const image = await picture(page, width)
     return (x: number, y: number) => image(x, y + shift)
   }
@@ -300,15 +316,14 @@ test("the tiles about a stroke's own dry with it, and are freed with it", async 
 test("a bloom that crossed a border is in the settle's undo step", async ({
   page,
 }) => {
+  test.slow()
   const width = 300
   const origin = await openCanvas(page, width, 400)
   const empty = await picture(page, width)
   await setBrush(page, { ...FLOODED, drying: 0 }, 30, 0.3)
   await wash(page, origin, 110, 190, above(BORDER, 30))
   await advance(page, 400)
-  const before = await steps(page)
-  await page.evaluate(() => window.engine.dispatch({ type: "dryNow" }))
-  await expect.poll(() => steps(page)).toBeGreaterThan(before)
+  await dryNow(page)
   const dried = await picture(page, width)
   /** A column of the tile below the border, which no dab reached. */
   const below = (image: Picture) =>
