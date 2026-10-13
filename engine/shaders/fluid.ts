@@ -157,12 +157,14 @@ fn fragmentMain(varyings: Varyings) -> Fields {
     );
   }
   var out: Fields;
-  // A dab leaves the paper damp well out to its rim, where it lays little
-  // water: dampness is what lets water move there at all. In alpha, the
-  // share of the brush's water the dab carries: the deepest of a batch's
-  // dabs at a cell is kept, and the pour fills the cell no deeper.
+  // One dab lays the whole depth the brush fills a cell to, so a single tap
+  // of a flooded brush floods (fluid brushes 12). It leaves the paper damp
+  // well out to its rim, where it lays little water: dampness is what lets
+  // water move there at all. In alpha, the share of the brush's water the
+  // dab carries: the deepest of a batch's dabs at a cell is kept, and the
+  // pour fills the cell no deeper.
   out.water = vec4<f32>(
-    fluid.water * varyings.water * shape,
+    fluid.water * varyings.water * shape * ${FLUID_MAX_WATER.toFixed(1)},
     4.0 * shape,
     0.0,
     select(0.0, varyings.water, shape > 0.0)

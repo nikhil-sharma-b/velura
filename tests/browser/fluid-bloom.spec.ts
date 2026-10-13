@@ -199,6 +199,32 @@ test("a flooded stroke ends wider than it was laid", async ({ page }) => {
     )
 })
 
+test("a single tap of a flooded brush blooms", async ({ page }) => {
+  // On CI's software GPU a flooded body is slow to step.
+  test.slow()
+  const AT = 120
+  /** One dab, laid and left to dry: how far its paint reaches each way. */
+  const tapped = async (fluid: Fluid) => {
+    const origin = await openCanvas(page)
+    await setBrush(page, fluid, STROKE.radius, STROKE.flow)
+    await page.mouse.move(origin.x + AT, origin.y + ROW)
+    await page.mouse.down()
+    await page.mouse.up()
+    await frames(page)
+    const laid = await picture(page)
+    await untilSettled(page)
+    return { laid: painted(laid, AT), dried: painted(await picture(page), AT) }
+  }
+  // One dab carries the brush's whole depth of water (fluid brushes 12),
+  // so a flooded brush's floods the paper under it.
+  const flooded = await tapped(FLOODED)
+  expect(flooded.laid).toBeGreaterThan(STROKE.radius)
+  expect(flooded.dried).toBeGreaterThan(flooded.laid + 4)
+  // And one with water the paper holds stays where it was put.
+  const ordinary = await tapped(ORDINARY)
+  expect(Math.abs(ordinary.dried - ordinary.laid)).toBeLessThanOrEqual(2)
+})
+
 test("water laid into a drying wash leaves a lighter centre and pigment pushed outward", async ({
   page,
 }) => {

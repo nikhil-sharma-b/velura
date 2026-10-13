@@ -25,11 +25,14 @@ const WASH = { from: 70, to: 170, radius: 30, flow: 0.1 }
 type Origin = { x: number; y: number }
 type Box = { left: number; top: number; right: number; bottom: number }
 
-/** Well inside the wash, where it is laid evenly. */
+/**
+ * Well inside the wash, where it is laid evenly: a radius in from each end
+ * of the stroke, since paper nearer an end lies under fewer of its dabs.
+ */
 const INSIDE: Box = {
-  left: WASH.from + 15,
+  left: WASH.from + WASH.radius,
   top: ROW - 14,
-  right: WASH.to - 15,
+  right: WASH.to - WASH.radius,
   bottom: ROW + 14,
 }
 
@@ -219,7 +222,10 @@ test("a dried wash with granulation up shows more pigment in the paper's valleys
   expect(valleysOverPeaks(granulated, INSIDE)).toBeGreaterThan(
     valleysOverPeaks(flat, INSIDE) * 1.25
   )
-  expect(speckle(granulated, INSIDE)).toBeGreaterThan(0.09)
+  // At the most granulation there is (`MAX_GRANULATION`, tuned down in
+  // fluid brushes 12), about three times a flat wash's.
+  expect(speckle(granulated, INSIDE)).toBeGreaterThan(0.045)
+  expect(speckle(granulated, INSIDE)).toBeGreaterThan(speckle(flat, INSIDE) * 2)
 })
 
 test("with granulation at zero a wash dries without speckle from the simulation", async ({
@@ -229,7 +235,7 @@ test("with granulation at zero a wash dries without speckle from the simulation"
   expect(darkness(image, 120, ROW)).toBeGreaterThan(30)
   // Paper of one height shows one darkness, to the rounding of a channel
   // and the width of a band.
-  expect(speckle(image, INSIDE)).toBeLessThan(0.045)
+  expect(speckle(image, INSIDE)).toBeLessThan(0.03)
 })
 
 test("two washes from two different fluid brushes granulate into the same paper", async ({

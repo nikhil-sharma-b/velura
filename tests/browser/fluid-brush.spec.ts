@@ -988,9 +988,12 @@ test("with edge at zero a wash dries flat", async ({ page }) => {
   await addLayer(page)
   const image = await leftToDry(page, origin, 0)
   expect(centre(image)).toBeGreaterThan(30)
-  // To the paper's grain (fluid brushes 07), which a rim is well over.
+  // To the paper's grain (fluid brushes 07) and the stroke as it was laid,
+  // thinner at its side, which lies under fewer dabs than its middle: a
+  // rim is well over both. A dab lays the brush's whole depth of water
+  // (fluid brushes 12), so none runs out to the side to even them.
   expect(Math.abs(side(image) - centre(image))).toBeLessThan(
-    centre(image) * 0.25
+    centre(image) * 0.3
   )
   // A stroke's end is laid thinner than its middle, and stays so.
   expect(end(image)).toBeLessThan(insideEnd(image) * 1.03)

@@ -71,15 +71,19 @@ const MAX_BLEED = 0.05
 
 /**
  * How many times faster water evaporates at the very edge of the damp area
- * than in the middle of it, less one, at a brush's full `edge`.
+ * than in the middle of it, less one, at a brush's full `edge`. Looked at
+ * and left (fluid brushes 12): at half `edge` the rim is a dark band and
+ * not a line, and at full it leaves the middle of a wash pale.
  */
 const MAX_EDGE = 12
 
 /**
  * How much faster the paper takes pigment in its deepest valley than at its
- * middle height, less one, at a brush's full `granulation`.
+ * middle height, less one, at a brush's full `granulation`. Tuned by eye
+ * (fluid brushes 12): much past this the paper's coarsest grain takes the
+ * wash over in blotches, and leaves too little afloat to gather at the rim.
  */
-const MAX_GRANULATION = 16
+const MAX_GRANULATION = 6
 
 /** Steps a body is kept past when its water and dampness should be gone. */
 const DRYING_MARGIN = 20
