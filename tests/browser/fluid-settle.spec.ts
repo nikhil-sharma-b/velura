@@ -87,12 +87,23 @@ const same = (a: number[], b: number[]) =>
   a.length === b.length &&
   a.every((channel, index) => Math.abs(channel - b[index]) <= 1)
 
+/**
+ * The undo steps that are in the layers' own pixels. A fluid stroke whose
+ * paint is still wet is a step too, but one that holds no tile (fluid
+ * brushes 04), and it gives way to the settle's.
+ */
 const steps = (page: Page) =>
-  page.evaluate(() => window.engine.historyUsage().steps)
+  page.evaluate(() => {
+    const { steps, wetSteps } = window.engine.historyUsage()
+    return steps - wetSteps
+  })
 
 const untilSteps = (page: Page, count: number) =>
   page.waitForFunction(
-    (count) => window.engine.historyUsage().steps >= count,
+    (count) =>
+      window.engine.historyUsage().steps -
+        window.engine.historyUsage().wetSteps >=
+      count,
     count
   )
 

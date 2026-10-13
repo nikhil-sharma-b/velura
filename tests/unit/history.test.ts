@@ -850,3 +850,212 @@ describe("a stroke's pixels", () => {
     )
   })
 })
+
+describe("fluid strokes while paint is wet", () => {
+  /**
+   * A stand-in for the wet fields: one number for everything wet, copied and
+   * put back whole, and counted as its copies are let go.
+   */
+  function wetSetup(wetBudgetBytes?: number) {
+    const surfaces = createFakeSurfaces()
+    const wet = { fields: 0, live: 0, onto: "" }
+    let reads = 0
+    const bridge: SurfaceBridge = {
+      ...surfaces.bridge,
+      readTiles(surfaceId, coords) {
+        reads++
+        return surfaces.bridge.readTiles(surfaceId, coords)
+      },
+    }
+    const capture = () => {
+      wet.live++
+      return { bytes: 100, fields: wet.fields }
+    }
+    const history = createDocumentHistory({
+      bridge,
+      wetBudgetBytes,
+      wet: {
+        capture,
+        restore(copy, surfaceId) {
+          wet.fields = (copy as ReturnType<typeof capture>).fields
+          wet.onto = surfaceId
+        },
+        release() {
+          wet.live--
+        },
+      },
+      store: createTileStore({ hotBytes: 1 << 30, warmBytes: 1 << 30 }),
+    })
+    /** A fluid stroke: the copy at pen-down, then paint, then the step. */
+    const wash = async (paint: number) => {
+      const before = capture()
+      wet.fields += paint
+      history.recordWetStroke("layer", before)
+      await history.settle()
+    }
+    /** Everything wet settles into one tile of the layer. */
+    const settle = async (value: number) => {
+      surfaces.paint("layer", ORIGIN, value)
+      wet.fields = 0
+      history.recordSettle("layer", wholeTile(ORIGIN))
+      await history.settle()
+    }
+    return { ...surfaces, history, wet, wash, settle, reads: () => reads }
+  }
+
+  test("three strokes then one undo leave the wash as it was before the third", async () => {
+    const { history, wet, wash } = wetSetup()
+    await wash(1)
+    await wash(10)
+    await wash(100)
+    expect(history.stepsBack()).toBe(3)
+    expect(history.wetSteps()).toBe(3)
+
+    expect(await history.undo(noStructure)).toBe(true)
+    expect(wet.fields).toBe(11)
+    expect(wet.onto).toBe("layer")
+    expect(history.stepsBack()).toBe(2)
+  })
+
+  test("redo restores the copy taken at the moment of the undo", async () => {
+    const { history, wet, wash } = wetSetup()
+    await wash(1)
+    await wash(10)
+    // The paint has moved on since the pen lifted.
+    wet.fields += 1000
+    await history.undo(noStructure)
+    expect(wet.fields).toBe(1)
+    // And goes on moving from there.
+    wet.fields += 5
+    expect(await history.redo(noStructure)).toBe(true)
+    expect(wet.fields).toBe(1011)
+    // Undone again, it is the pen-down copy that comes back.
+    await history.undo(noStructure)
+    expect(wet.fields).toBe(1)
+  })
+
+  test("nothing is read back for a wet stroke, taken back or put back", async () => {
+    const { history, wash, reads } = wetSetup()
+    await wash(1)
+    await wash(10)
+    await history.undo(noStructure)
+    await history.redo(noStructure)
+    expect(reads()).toBe(0)
+  })
+
+  test("a wet stroke is not a commit: nothing of the document changed", async () => {
+    const surfaces = createFakeSurfaces()
+    let commits = 0
+    let changes = 0
+    const history = createDocumentHistory({
+      bridge: surfaces.bridge,
+      wet: { capture: () => ({ bytes: 1 }), restore() {}, release() {} },
+      onCommit: () => commits++,
+      onChange: () => changes++,
+    })
+    history.recordWetStroke("layer", { bytes: 1 })
+    await history.settle()
+    await history.undo(noStructure)
+    await history.redo(noStructure)
+    expect(commits).toBe(0)
+    expect(changes).toBe(3)
+  })
+
+  test("a settle is one step, and takes the wet strokes out of history", async () => {
+    const { history, wet, wash, settle, read } = wetSetup()
+    await wash(1)
+    await wash(10)
+    await wash(100)
+    await history.undo(noStructure)
+    await settle(7)
+    // The three strokes and the undone one's redo are gone: one step is left.
+    expect(history.stepsBack()).toBe(1)
+    expect(history.depth()).toBe(1)
+    expect(history.wetSteps()).toBe(0)
+    expect(history.canRedo()).toBe(false)
+    // Every copy was let go.
+    expect(wet.live).toBe(0)
+
+    await history.undo(noStructure)
+    expect(read("layer", ORIGIN)).toBe(null)
+    await history.redo(noStructure)
+    expect(read("layer", ORIGIN)?.[0]).toBe(7)
+    // A passage that has dried stays dry.
+    expect(wet.fields).toBe(0)
+  })
+
+  test("steps from before the wash are still there under the settle", async () => {
+    const fixture = wetSetup()
+    const { history, wash, settle, read } = fixture
+    await stroke(fixture, 3, { x: 1, y: 0 })
+    await wash(1)
+    await wash(10)
+    await settle(7)
+    expect(history.stepsBack()).toBe(2)
+    await history.undo(noStructure)
+    expect(read("layer", ORIGIN)).toBe(null)
+    expect(read("layer", { x: 1, y: 0 })?.[0]).toBe(3)
+    await history.undo(noStructure)
+    expect(read("layer", { x: 1, y: 0 })).toBe(null)
+  })
+
+  test("wet paint let go takes its strokes out of history with it", async () => {
+    const { history, wet, wash } = wetSetup()
+    await wash(1)
+    await wash(10)
+    history.forgetWetStrokes()
+    await history.settle()
+    expect(history.depth()).toBe(0)
+    expect(history.canUndo()).toBe(false)
+    expect(wet.live).toBe(0)
+  })
+
+  test("the copies stay inside their budget, oldest dropped first", async () => {
+    const { history, wet, wash } = wetSetup(250)
+    for (let i = 0; i < 20; i++) await wash(1)
+    expect(history.wetBytes()).toBeLessThanOrEqual(250)
+    expect(wet.live).toBe(2)
+    expect(history.wetSteps()).toBe(2)
+    // Undo reaches back through the copies that are left and no further. The
+    // copy it takes for redo counts too, and pushes the oldest out.
+    await history.undo(noStructure)
+    expect(wet.fields).toBe(19)
+    expect(history.wetBytes()).toBeLessThanOrEqual(250)
+    expect(history.wetSteps()).toBe(0)
+    expect(history.canUndo()).toBe(false)
+    expect(history.canRedo()).toBe(true)
+  })
+
+  test("a wet stroke still queued when history is cleared lets its copy go", async () => {
+    const { history, wet } = wetSetup()
+    wet.live++
+    history.recordWetStroke("layer", { bytes: 100 })
+    history.clear()
+    await history.settle()
+    expect(wet.live).toBe(0)
+    expect(history.depth()).toBe(0)
+  })
+
+  test("clearing history lets every copy go", async () => {
+    const { history, wet, wash } = wetSetup()
+    await wash(1)
+    await wash(10)
+    await history.undo(noStructure)
+    history.clear()
+    expect(wet.live).toBe(0)
+  })
+
+  test("a wet stroke recorded behind a settle still in flight outlives it", async () => {
+    const { history, wet, wash, paint } = wetSetup()
+    await wash(1)
+    // The settle's readback is still waited on as the next stroke lifts.
+    paint("layer", ORIGIN, 7)
+    history.recordSettle("layer", wholeTile(ORIGIN))
+    const before = { bytes: 100, fields: 0 }
+    wet.live++
+    history.recordWetStroke("layer", before)
+    await history.settle()
+    expect(history.stepsBack()).toBe(2)
+    expect(history.wetSteps()).toBe(1)
+  })
+})

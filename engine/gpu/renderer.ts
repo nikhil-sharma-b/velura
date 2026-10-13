@@ -26,6 +26,7 @@ import {
 import type { LinearColor, TiledLayer } from "../doc/tiled-layer"
 import type { SelectionMask } from "../doc/selection"
 import type { TiledMask } from "../doc/tiled-mask"
+import type { WetCopy } from "../doc/undo-stack"
 import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
 import { surfaceCompositeShader } from "../shaders/surface-composite"
@@ -425,11 +426,17 @@ export interface Renderer {
   /** Draws `count` dabs (see `STAMP`) into the wet surface. */
   drawFluid(dabs: Float32Array, count: number): void
   /**
-   * Ends the fluid stroke. Kept, its paint stays wet; not kept, a stroke
-   * that found the surface dry leaves it dry. Either way no pixel of the
-   * surface has changed.
+   * Ends the fluid stroke. Kept, its paint stays wet, and the wet fields as
+   * they were at pen-down are answered, the caller's to release: null where
+   * it laid nothing. Not kept, the wet fields are what they were at
+   * pen-down. Either way no pixel of the surface has changed.
    */
-  endFluid(keep: boolean): void
+  endFluid(keep: boolean): WetCopy | null
+  /** Copies the wet fields as they now are, on the GPU (D30). */
+  copyFluid(): WetCopy
+  /** Makes a copy the wet fields of a surface again. The copy is kept. */
+  restoreFluid(copy: WetCopy, surfaceId: string): void
+  releaseFluid(copy: WetCopy): void
   /** Whether any paint is wet. */
   fluidWet(): boolean
   /**
@@ -3439,7 +3446,13 @@ export function createRenderer(
     },
     endFluid(keep) {
       fluid.end(keep)
+      return fluid.takeCopy()
     },
+    copyFluid: () => fluid.copy(),
+    restoreFluid(copy, surfaceId) {
+      fluid.restore(copy, ensureSurface(surfaceId))
+    },
+    releaseFluid: (copy) => fluid.release(copy),
     fluidWet: () => fluid.isWet(),
     advanceFluid: (steps) => fluid.advance(steps),
     dryFluid: () => fluid.dry(),

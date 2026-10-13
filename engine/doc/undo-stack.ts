@@ -19,6 +19,13 @@ export type SurfaceChange = {
   tiles: TileChange[]
 }
 
+/**
+ * A copy of a layer's wet fields (D42) as they were at one moment, held on
+ * the GPU by whoever took it. History keeps it and says when it is done with
+ * it, and never looks inside: `bytes` is all it is told.
+ */
+export type WetCopy = { readonly bytes: number }
+
 /** One undoable step: one stroke, or one discrete layer operation. */
 export type UndoEntry = {
   label: string
@@ -28,6 +35,12 @@ export type UndoEntry = {
   scenes?: readonly SceneChange[]
   /** Set when the step is one a following adjustment may extend. */
   coalesceAs?: string
+  /**
+   * Set when the step is a fluid stroke whose paint is still wet (D42). No
+   * tile changed, so it names none: it holds the wet fields as they were at
+   * pen-down, and once undone, as they were at the moment of the undo.
+   */
+  wet?: { surfaceId: string; before: WetCopy; after?: WetCopy }
 }
 
 export interface UndoStack {
@@ -56,6 +69,21 @@ export interface UndoStack {
   stepsBack(): number
   /** The step undo would take back next, by identity. */
   top(): UndoEntry | undefined
+  /**
+   * Gives an undone wet stroke the copy redo restores, letting go of the one
+   * it had from being undone before.
+   */
+  keepWetAfter(entry: UndoEntry, copy: WetCopy): void
+  /**
+   * Takes every wet stroke out of the stack, undone or not, and lets their
+   * copies go: the fields they describe no longer exist. Answers whether
+   * there were any.
+   */
+  dropWet(): boolean
+  /** How many of the steps behind the cursor are wet strokes. */
+  wetSteps(): number
+  /** Bytes of the wet copies the stack is holding. */
+  wetBytes(): number
   /** Logical bytes of the distinct tiles the stack is holding on to. */
   bytes(): number
   clear(): void
@@ -72,12 +100,20 @@ export interface UndoStack {
  * holds in memory is already bounded by the store's own hot and warm pools,
  * whatever history asks of it; this budget is what bounds the spill device,
  * since a tile leaves disk when the last step naming it is dropped.
+ *
+ * Wet strokes' copies are GPU memory and no tile, so they are bounded by a
+ * budget of their own. Past it the oldest copy goes, and its step with it: a
+ * wet stroke that cannot be restored is not a step.
  */
 export function createUndoStack(options: {
   store: TileStore
   budgetBytes: number
+  wetBudgetBytes?: number
+  /** Told of each wet copy the stack is done with. */
+  releaseWet?: (copy: WetCopy) => void
 }): UndoStack {
   const { store, budgetBytes } = options
+  const wetBudgetBytes = options.wetBudgetBytes ?? Infinity
   const entries: UndoEntry[] = []
   /** How many entries are applied; everything past it is the redo branch. */
   let cursor = 0
@@ -107,6 +143,27 @@ export function createUndoStack(options: {
 
   function forget(entry: UndoEntry) {
     for (const hash of hashes(entry)) release(hash)
+    if (!entry.wet) return
+    options.releaseWet?.(entry.wet.before)
+    if (entry.wet.after) options.releaseWet?.(entry.wet.after)
+  }
+
+  /** Takes a step out from wherever it is, keeping the cursor on its step. */
+  function remove(index: number) {
+    forget(entries.splice(index, 1)[0])
+    if (index < cursor) cursor--
+  }
+
+  function wetBytes() {
+    let bytes = 0
+    for (const { wet } of entries)
+      if (wet) bytes += wet.before.bytes + (wet.after?.bytes ?? 0)
+    return bytes
+  }
+
+  function trimWet() {
+    while (wetBytes() > wetBudgetBytes)
+      remove(entries.findIndex((entry) => entry.wet))
   }
 
   function trim() {
@@ -129,6 +186,7 @@ export function createUndoStack(options: {
       cursor = entries.length
       for (const hash of hashes(entry)) retain(hash)
       trim()
+      trimWet()
     },
     extendTop(key, after, scenes) {
       const top = entries[cursor - 1]
@@ -161,6 +219,27 @@ export function createUndoStack(options: {
     depth: () => entries.length,
     stepsBack: () => cursor,
     top: () => entries[cursor - 1],
+    keepWetAfter(entry, copy) {
+      if (!entry.wet || !entries.includes(entry)) {
+        options.releaseWet?.(copy)
+        return
+      }
+      if (entry.wet.after) options.releaseWet?.(entry.wet.after)
+      entry.wet.after = copy
+      trimWet()
+    },
+    dropWet() {
+      let dropped = false
+      for (let index = entries.length - 1; index >= 0; index--)
+        if (entries[index].wet) {
+          remove(index)
+          dropped = true
+        }
+      return dropped
+    },
+    wetSteps: () =>
+      entries.slice(0, cursor).filter((entry) => entry.wet).length,
+    wetBytes,
     bytes,
     clear() {
       for (const entry of entries) forget(entry)
