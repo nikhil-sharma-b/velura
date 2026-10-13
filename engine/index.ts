@@ -417,6 +417,64 @@ const FILTER_PASSTHROUGH: ReadonlySet<EngineCommand["type"]> = new Set([
   "fitView",
   "resetView",
 ])
+
+/**
+ * What may be sent with paint wet and leave it wet (D42): settings, the
+ * view, the selection's outline, how the layer is shown, and the commands
+ * that deal with wet paint themselves. Anything else needs the layer's
+ * pixels to be final, or moves the active layer, and dries it first.
+ */
+const WET_PASSTHROUGH: ReadonlySet<EngineCommand["type"]> = new Set([
+  "initialize",
+  "resize",
+  "setStabilization",
+  "setTool",
+  "setPressureCurve",
+  "setTiltEnabled",
+  "setEraser",
+  "setSmudge",
+  "setColor",
+  "cleanBrush",
+  "setCleanBrushAfterStroke",
+  "setSampleAllLayers",
+  "setBrush",
+  "registerTexture",
+  "setVectorBrush",
+  "setVectorBrushPressure",
+  "setVectorEraser",
+  "setVectorBrushTaper",
+  "setSnapping",
+  "addGuide",
+  "moveGuide",
+  "removeGuide",
+  "clearGuides",
+  "setGuidesVisible",
+  "setRulersVisible",
+  "setRasterMagnification",
+  "setStraightEdge",
+  "setLayer",
+  "setMaskEnabled",
+  "highlightLayer",
+  "panView",
+  "zoomView",
+  "rotateView",
+  "flipView",
+  "fitView",
+  "resetView",
+  "setWandOptions",
+  "selectShape",
+  "selectLasso",
+  "selectAll",
+  "deselect",
+  "abandonSelectionGesture",
+  "invertSelection",
+  "featherSelection",
+  "moveSelection",
+  "undo",
+  "redo",
+  "dryNow",
+  "advanceFluid",
+])
 export {
   encodeExportImage,
   type ImageExportOptions,
@@ -1886,6 +1944,7 @@ export function createEngine(
   let detachSampler: (() => void) | undefined
   let detachWarmth: (() => void) | undefined
   let detachGestures: (() => void) | undefined
+  let detachVisibility: (() => void) | undefined
   // Frame instrumentation. All of it is inert until an observer is attached.
   let frameObserver: ((frame: FrameTiming) => void) | null = null
   /** The page clock reading that this stroke's sample times are relative to. */
@@ -4592,6 +4651,8 @@ export function createEngine(
   function selectWand(point: Point, mode: SelectionMode): Promise<void> {
     const run = wandQueue.then(async () => {
       const document = doc
+      // The wand reads the layer's pixels, so they are final first (D42).
+      dryFluid()
       const pixels = await wandPixels()
       if (disposed || !doc || doc !== document) return
       const shape = wandSelection(pixels, point, wand.tolerance)
@@ -5820,6 +5881,8 @@ export function createEngine(
       // A blender never lays, so it opens as smudge does and drags from the
       // pixel behind, with the brush's own size, pickup and dynamics.
       const lays = wet && !isBlender(activeBrush())
+      // Any stroke but a fluid one lands on paint that has dried (D42).
+      dryFluid()
       if (
         !renderer?.beginDirect(
           target,
@@ -5893,6 +5956,8 @@ export function createEngine(
       })
       fluidTargetId = target
     } else {
+      // Any stroke but a fluid one lands on paint that has dried.
+      dryFluid()
       // Dabs land in the stroke buffer, not the layer, until the pen lifts.
       renderer?.beginStroke({
         accumulation: brush.rendering.accumulation,
@@ -6269,9 +6334,16 @@ export function createEngine(
           })
           flushScheduler = createFlushScheduler({
             // An idle timer set by earlier strokes can come due mid-preview.
+            // What is sent is what the artist sees, so wet paint dries
+            // first (D42), and the flush waits for that step to be recorded.
             flush: () => {
-              if (!restoreOnTrial() && !snapshot.loading)
-                void cloudSync?.flush()
+              const send = () => {
+                if (!restoreOnTrial() && !snapshot.loading)
+                  void cloudSync?.flush()
+              }
+              if (!wetTargetId) return send()
+              dryFluid()
+              void history?.settle().then(send)
             },
             idleMs: cloud.idleMs ?? DEFAULT_CLOUD_IDLE_MS,
           })
@@ -6371,6 +6443,20 @@ export function createEngine(
           target.removeEventListener("pointerenter", warmth.touch)
           target.removeEventListener("pointermove", warmth.touch)
         }
+        // A hidden tab is given no frames, so its paint would stay wet for
+        // as long as it was away: it dries as the tab goes (D42).
+        const host = canvas.ownerDocument
+        const dryWhenHidden = () => {
+          if (host.visibilityState !== "hidden") return
+          try {
+            dryFluid()
+          } catch (error) {
+            fail(error)
+          }
+        }
+        host.addEventListener("visibilitychange", dryWhenHidden)
+        detachVisibility = () =>
+          host.removeEventListener("visibilitychange", dryWhenHidden)
         // Navigation is input too, and it belongs to the same canvas. Holding
         // it here rather than in the host is what keeps the pen, the present
         // pass and the snapshot agreeing about where the canvas is (D28).
@@ -6586,6 +6672,12 @@ export function createEngine(
       landLiftedStroke()
       landEndedShapeDrag()
       if (filterSession && !FILTER_PASSTHROUGH.has(command.type)) cancelFilter()
+      // Whatever needs the layer's pixels to be final finds them so (D42),
+      // and in history, as it would a stroke's.
+      if (wetTargetId && !WET_PASSTHROUGH.has(command.type)) {
+        dryFluid()
+        await history?.settle()
+      }
       switch (command.type) {
         case "initialize":
           if (snapshot.status === "ready") return
@@ -8134,6 +8226,10 @@ export function createEngine(
       frameObserver = observer
     },
     async save() {
+      // A save is of the picture on screen, so wet paint dries into it first
+      // (D42): whatever else this session may not write, it holds no wet
+      // paint once it has been asked to.
+      dryFluid()
       // The same gate the commit hook uses: a session that could not read the
       // stored document does not get to write over it, however it is asked.
       // Nor does a preview that has not been kept.
@@ -8172,6 +8268,8 @@ export function createEngine(
         hashes: version.tiles.map((tile) => tile.hash),
       })
       if (disposed) return false
+      // The restore replaces the layers, so nothing is left wet on one (D42).
+      dryFluid()
 
       const bySurface = new Map<
         string,
@@ -8297,6 +8395,8 @@ export function createEngine(
       if (snapshot.status !== "ready" || !history)
         throw new Error("The graphics device is not ready.")
       const past = history
+      // An export is of the dried picture (D42).
+      dryFluid()
       await past.settle()
       const document = requireDocument()
       // Freeze settings before PNG encoding yields to further edits.
@@ -8343,6 +8443,8 @@ export function createEngine(
     async exportDocument() {
       if (snapshot.status !== "ready" || !history)
         throw new Error("The graphics device is not ready.")
+      // An export is of the dried picture (D42).
+      dryFluid()
       await history.settle()
       const surfaces = history.tileIndex()
       const exported = savedStructure(
@@ -8452,6 +8554,10 @@ export function createEngine(
     dispose() {
       if (disposed) return
       cancelVectorTransform()
+      // Wet paint does not outlive the canvas (D42): it dries into its layer
+      // while there is still a device to dry it on.
+      const dried = !!wetTargetId
+      if (dried) dryFluid()
       disposed = true
       stopSelection()
       stopFluidClock()
@@ -8470,6 +8576,8 @@ export function createEngine(
       warmth.dispose()
       detachGestures?.()
       detachGestures = undefined
+      detachVisibility?.()
+      detachVisibility = undefined
       // A disposed engine has no frames to report, and holding the observer
       // would keep whatever it closes over alive with it.
       frameObserver = null
@@ -8479,26 +8587,29 @@ export function createEngine(
       // the latest strokes and the library without a picture of them. The
       // runtime is kept just long enough to finish that flush; nothing is
       // shown from it meanwhile, and the canvas is free for another engine.
+      // Paint dried just now is a step still being read back. The runtime is
+      // kept for that too, until the save its commit queues has finished.
       const sync = cloudSync
       const unsent =
         sync &&
         (sync.status() === "syncing" ||
+          dried ||
           (committedSinceOpen && sync.status() !== "fully-synced"))
-      if (
-        restored &&
-        sync &&
-        unsent &&
-        !restoreOnTrial() &&
-        !snapshot.loading
-      ) {
+      const saving = dried && restored && !restoreOnTrial()
+      const flushing =
+        restored && unsent && !restoreOnTrial() && !snapshot.loading
+      if (saving || flushing) {
         if (frame !== undefined) cancelAnimationFrame(frame)
         frame = undefined
         context?.unconfigure()
         context = null
         void (async () => {
           await history?.settle()
-          flushScheduler?.flushNow()
-          await sync.settle()
+          if (saving) await persistence?.settle()
+          if (flushing) {
+            flushScheduler?.flushNow()
+            await sync?.settle()
+          }
         })().finally(release)
       } else release()
       publish({ status: "disposed" })
