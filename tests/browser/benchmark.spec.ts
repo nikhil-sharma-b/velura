@@ -220,10 +220,14 @@ test("a wet stroke thrown wide keeps its cancel pages for the stroke after it", 
         width: 2304,
         height: 2304,
         strokes: 3,
+        // A seed whose second and third strokes both reach past one page:
+        // one stroke alone doing so cannot tell a page kept from a page made
+        // again.
+        seed: 10,
         wet: {
           diameter: 512,
           pickup: 0.8,
-          // Thrown across the canvas, so every stroke reaches past one page.
+          // Thrown across the canvas, so a long stroke reaches past one page.
           scatter: { amount: 8, count: 4, axes: "both" },
         },
       }),
@@ -237,9 +241,10 @@ test("a wet stroke thrown wide keeps its cancel pages for the stroke after it", 
   ).toBeGreaterThan(50)
   expect(result.readbacks).toBe(0)
   // The second page is made once, by the first stroke to outgrow the first,
-  // and is there for the strokes that follow (live brushes 20): two pages at
-  // the most, where every stroke making its own again would be more. A page
-  // made as a stroke's tail lands, the pen already up, is not counted.
-  expect(result.allocations).toBeGreaterThanOrEqual(1)
-  expect(result.allocations).toBeLessThanOrEqual(2)
+  // and is there for the stroke after (live brushes 20): two pages, where
+  // each stroke making its own again would be three. Counted to the frame
+  // each stroke's tail lands in: a slow software GPU draws the frame that
+  // needs a page after the pen has lifted, and with the pen down the count
+  // has been one and none (fluid brushes 28).
+  expect(result.strokeAllocations).toBe(2)
 })
