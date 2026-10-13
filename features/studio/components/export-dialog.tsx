@@ -58,6 +58,12 @@ export function ExportDialog({
   const [problem, setProblem] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
 
+  // An image is of the dried picture: `readPixels` leaves wet paint wet.
+  async function finalPixels() {
+    await engine.dispatch({ type: "dryNow" })
+    return await engine.readPixels()
+  }
+
   async function runOperation(label: string, work: () => Promise<void>) {
     setProblem(null)
     setWarnings([])
@@ -109,10 +115,9 @@ export function ExportDialog({
             disabled={busy !== null}
             onClick={() =>
               void runOperation("PNG", async () => {
-                const blob = await encodeExportImage(
-                  await engine.readPixels(),
-                  { format: "png" }
-                )
+                const blob = await encodeExportImage(await finalPixels(), {
+                  format: "png",
+                })
                 download(blob, "untitled-artwork.png")
               })
             }
@@ -140,13 +145,10 @@ export function ExportDialog({
               disabled={busy !== null}
               onClick={() =>
                 void runOperation("JPEG", async () => {
-                  const blob = await encodeExportImage(
-                    await engine.readPixels(),
-                    {
-                      format: "jpeg",
-                      quality: quality / 100,
-                    }
-                  )
+                  const blob = await encodeExportImage(await finalPixels(), {
+                    format: "jpeg",
+                    quality: quality / 100,
+                  })
                   download(blob, "untitled-artwork.jpg")
                 })
               }
