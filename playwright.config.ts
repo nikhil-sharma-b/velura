@@ -6,6 +6,9 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CI ? 2 : undefined,
+  // CI's default is the dot reporter, which says nothing of where a shard's
+  // minutes went. The list reporter prints each test with the time it took.
+  reporter: process.env.CI ? "list" : undefined,
   // CI rasterizes WebGPU on two CPU cores, so pointer-driven tests on the
   // full-size canvas take several times longer than on a real GPU.
   timeout: process.env.CI ? 60_000 : 30_000,

@@ -812,6 +812,9 @@ test("with nothing wet no step runs and no frame is asked for", async ({
 test("paint bleeds across a tile border as it does within a tile", async ({
   page,
 }) => {
+  // Several wet tiles at once: on CI's software GPU this has run to over a
+  // minute, which is all an ordinary test is given there.
+  test.slow()
   const width = 600
   /**
    * A wash with a touch of yellow bled into it, the whole of it moved
@@ -851,6 +854,9 @@ test("paint bleeds across a tile border as it does within a tile", async ({
 test("a body of wet tiles settles as a whole, and apart from another", async ({
   page,
 }) => {
+  // Several wet tiles at once: on CI's software GPU this has run to over a
+  // minute, which is all an ordinary test is given there.
+  test.slow()
   const width = 1100
   const origin = await openCanvas(page, width, 300)
   await addLayer(page)

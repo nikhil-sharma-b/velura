@@ -58,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -81,7 +81,11 @@ jobs:
       # The cache holds the browser only; system libraries still need installing.
       - if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: bunx playwright install-deps chromium
-      - run: bun run test:browser --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+      # The specs are dealt out by how long they take, not by count as
+      # Playwright's own --shard would: see tooling/browser-shards.ts.
+      - run: |
+          specs=$(bun tooling/browser-shards.ts ${{ matrix.shard }} ${{ strategy.job-total }})
+          bun run test:browser $specs
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
