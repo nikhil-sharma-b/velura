@@ -239,31 +239,43 @@ const BORDER = 256
  */
 const above = (line: number, radius: number) => line - radius - 3
 
-test("a bloom beside a tile border crosses it with no wall and no seam", async ({
+test("a bloom beside a tile border crosses it with no wall and no seam, and is undone with its stroke", async ({
   page,
 }) => {
-  test.slow()
-  const width = 300
   const radius = 30
   // Slow to dry, so the water stands deeper than the paper holds for long
   // enough to carry the damp edge well past the border.
   const standing = { ...FLOODED, drying: 0 }
+  /** A column of the tile below the border, which no dab reaches. */
+  const below = (image: Picture) =>
+    Array.from({ length: 12 }, (_, row) => image(MIDDLE, BORDER + row))
   /**
    * A flooded stroke whose dabs end just above `BORDER + shift`, left to
-   * bloom and dried: the picture of it from `shift` rows up.
+   * bloom and dried: the picture of it from `shift` rows up. The canvas is
+   * one tile wide and two deep, and no larger: a step is slow where the GPU
+   * is software.
    */
   const bloomedBy = async (shift: number) => {
-    const origin = await openCanvas(page, width, 400)
+    const origin = await openCanvas(page, WIDTH, 400)
+    const empty = await picture(page)
     await setBrush(page, standing, radius, 0.3)
-    await wash(page, origin, 110, 190, above(BORDER + shift, radius))
-    // Dried by command, long before it would by itself: a step is slow
-    // where the GPU is software.
-    await advance(page, 400)
+    await wash(page, origin, 80, 160, above(BORDER + shift, radius))
+    // Dried by command, long before it would by itself.
+    await advance(page, 250)
     await dryNow(page)
-    const image = await picture(page, width)
+    const image = await picture(page)
+    if (shift === 0) {
+      // The tile the bloom crossed into was settled and kept with the
+      // rest: undo takes the paint out of it, and redo puts it back.
+      expect(below(image)[1]).toBeGreaterThan(PAINTED)
+      await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+      expect(below(await picture(page))).toEqual(below(empty))
+      await page.evaluate(() => window.engine.dispatch({ type: "redo" }))
+      expect(below(await picture(page))).toEqual(below(image))
+    }
     return (x: number, y: number) => image(x, y + shift)
   }
-  // Unshifted, no dab reaches the tiles below the border; a quarter tile
+  // Unshifted, no dab reaches the tile below the border; a quarter tile
   // down, the same stroke has no border within a bloom's reach.
   const across = await bloomedBy(0)
   const within = await bloomedBy(64)
@@ -273,7 +285,7 @@ test("a bloom beside a tile border crosses it with no wall and no seam", async (
     while (image(x, BORDER + rows) > PAINTED) rows++
     return rows
   }
-  for (const x of [120, 150, 180]) {
+  for (const x of [90, 120, 150]) {
     // No wall: the paint goes on past the border, by more than the pixel a
     // cell this side of it would show there.
     expect(past(across, x), `column ${x}`).toBeGreaterThan(2)
@@ -297,12 +309,12 @@ test("a bloom beside a tile border crosses it with no wall and no seam", async (
 test("the tiles about a stroke's own dry with it, and are freed with it", async ({
   page,
 }) => {
-  const origin = await openCanvas(page, 600, 400)
+  const origin = await openCanvas(page, WIDTH, 400)
   // Quick to dry: what is looked for is that nothing is left wet.
   await setBrush(page, { ...FLOODED, drying: 1 }, 30, 0.3)
   const before = await steps(page)
-  // In one tile, with the eight about it wet for whatever blooms into them.
-  await wash(page, origin, 300, 340, above(BORDER, 30))
+  // In one tile, with the one below it wet for whatever blooms into it.
+  await wash(page, origin, 100, 140, above(BORDER, 30))
   expect(await isWet(page)).toBe(true)
   await untilSettled(page)
   // One body, so one step, and no tile of the ring still held.
@@ -311,28 +323,4 @@ test("the tiles about a stroke's own dry with it, and are freed with it", async 
   await advance(page, 400)
   await frames(page)
   expect(await steps(page)).toBe(before + 1)
-})
-
-test("a bloom that crossed a border is in the settle's undo step", async ({
-  page,
-}) => {
-  test.slow()
-  const width = 300
-  const origin = await openCanvas(page, width, 400)
-  const empty = await picture(page, width)
-  await setBrush(page, { ...FLOODED, drying: 0 }, 30, 0.3)
-  await wash(page, origin, 110, 190, above(BORDER, 30))
-  await advance(page, 400)
-  await dryNow(page)
-  const dried = await picture(page, width)
-  /** A column of the tile below the border, which no dab reached. */
-  const below = (image: Picture) =>
-    Array.from({ length: 12 }, (_, row) => image(150, BORDER + row))
-  expect(below(dried)[2]).toBeGreaterThan(PAINTED)
-
-  // The tile the bloom crossed into was settled and kept with the rest.
-  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
-  expect(below(await picture(page, width))).toEqual(below(empty))
-  await page.evaluate(() => window.engine.dispatch({ type: "redo" }))
-  expect(below(await picture(page, width))).toEqual(below(dried))
 })
