@@ -2,6 +2,7 @@ import type { BlendMode } from "../shaders/blend-modes"
 export type { BlendMode } from "../shaders/blend-modes"
 
 import type { Guide } from "./guides"
+import { DEFAULT_PAPER, type Paper } from "./paper"
 import type { ImagePlacement } from "./image-placement"
 import type { PlacedImage } from "./image-source"
 export type { PlacedImage } from "./image-source"
@@ -82,6 +83,8 @@ export type PaintDocument = {
   paintingMask: boolean
   /** Lines laid over the canvas from the rulers (16), in document pixels. */
   guides: Guide[]
+  /** The paper its fluid brushes paint on (fluid brushes 15). */
+  paper: Paper
 }
 
 export type CompositeItem = {
@@ -161,6 +164,7 @@ export function createDocument(size: {
     activeLayerId: layer.id,
     paintingMask: false,
     guides: [],
+    paper: DEFAULT_PAPER,
   }
 }
 
@@ -176,6 +180,7 @@ export function createBlankDocument(size: {
     activeLayerId: layer.id,
     paintingMask: false,
     guides: [],
+    paper: DEFAULT_PAPER,
   }
 }
 

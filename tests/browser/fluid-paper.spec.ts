@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test"
 
+import type { Paper } from "../../engine/doc/paper"
 import { PAPER_SIZE, paperHeights } from "../../engine/gpu/paper"
 
 /**
@@ -36,7 +37,7 @@ const INSIDE: Box = {
   bottom: ROW + 14,
 }
 
-const PAPER = paperHeights()
+const PAPER = paperHeights("cold-press")
 /** The paper's height at a document pixel, in [0, 1]. */
 const paperAt = (x: number, y: number) =>
   PAPER[(y % PAPER_SIZE) * PAPER_SIZE + (x % PAPER_SIZE)] / 255
@@ -335,5 +336,142 @@ test("the paper is made once, with the renderer", async ({ page }) => {
   await untilSettled(page)
   await wash(page, origin, FLUID)
   await dryNow(page)
+  // A document's paper is written into the one texture (fluid brushes 15).
+  await setPaper(page, "rough")
+  await setPaper(page, "hot-press")
   expect(await papers()).toBe(before)
+})
+
+/** The document's paper (fluid brushes 15), set through the command seam. */
+const setPaper = (page: Page, paper: Paper) =>
+  page.evaluate(
+    (paper) => window.engine.dispatch({ type: "setPaper", paper }),
+    paper
+  )
+
+const paperNow = (page: Page) =>
+  page.evaluate(() => window.engine.getSnapshot().paper)
+
+/**
+ * How a picture's darkness varies over a box of it: its spread as a share of
+ * its mean, and how alike two pixels `lag` apart along a row are.
+ */
+function texture(image: number[], box: Box, lag: number) {
+  const values: number[][] = []
+  for (let y = box.top; y < box.bottom; y++) {
+    const row: number[] = []
+    for (let x = box.left; x < box.right; x++) row.push(darkness(image, x, y))
+    values.push(row)
+  }
+  const all = values.flat()
+  const mean = all.reduce((sum, dark) => sum + dark, 0) / all.length
+  const variance =
+    all.reduce((sum, dark) => sum + (dark - mean) ** 2, 0) / all.length
+  let together = 0
+  let alone = 0
+  for (const row of values)
+    for (let x = 0; x + lag < row.length; x++) {
+      together += (row[x] - mean) * (row[x + lag] - mean)
+      alone += (row[x] - mean) ** 2
+    }
+  return { spread: Math.sqrt(variance) / mean, correlation: together / alone }
+}
+
+test("a document's paper is chosen as a step that undoes", async ({ page }) => {
+  await openCanvas(page)
+  expect(await paperNow(page)).toBe("cold-press")
+  const before = await steps(page)
+  await setPaper(page, "rough")
+  expect(await paperNow(page)).toBe("rough")
+  expect(await steps(page)).toBe(before + 1)
+  // Choosing the paper it is on is not a step.
+  await setPaper(page, "rough")
+  expect(await steps(page)).toBe(before + 1)
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await paperNow(page)).toBe("cold-press")
+  await page.evaluate(() => window.engine.dispatch({ type: "redo" }))
+  expect(await paperNow(page)).toBe("rough")
+})
+
+test("a wash dried on rough paper is coarser and stronger in grain than on hot press", async ({
+  page,
+}) => {
+  test.slow()
+  const dried = async (paper: Paper) => {
+    const origin = await openCanvas(page)
+    await setPaper(page, paper)
+    await wash(page, origin, { ...FLUID, granulation: 1 })
+    await untilSettled(page)
+    return texture(await pixels(page), INSIDE, 4)
+  }
+  const hot = await dried("hot-press")
+  const rough = await dried("rough")
+  expect(rough.spread).toBeGreaterThan(hot.spread * 1.3)
+  expect(rough.correlation).toBeGreaterThan(hot.correlation + 0.1)
+})
+
+test("changing the paper settles wet paint into the picture it last showed", async ({
+  page,
+}) => {
+  const origin = await openCanvas(page)
+  await wash(page, origin, { ...FLUID, edge: 0.5, granulation: 1 })
+  await advance(page, 100)
+  const wet = await pixels(page)
+  expect(await page.evaluate(() => window.engine.getSnapshot().wet)).toBe(true)
+  const before = await steps(page)
+  await setPaper(page, "rough")
+  expect(await page.evaluate(() => window.engine.getSnapshot().wet)).toBe(false)
+  // The settle, then the paper.
+  await page.waitForFunction(
+    (n) =>
+      window.engine.historyUsage().steps -
+        window.engine.historyUsage().wetSteps >=
+      n + 2,
+    before
+  )
+  const dry = await pixels(page)
+  // A layer stores half floats, so a channel may round the other way.
+  const off = dry.filter((channel, index) => Math.abs(channel - wet[index]) > 1)
+  expect(off.length).toBe(0)
+  // Undoing the paper leaves the settled paint where it is.
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await paperNow(page)).toBe("cold-press")
+  expect(await pixels(page)).toEqual(dry)
+})
+
+test("dry paint is unchanged by a paper change", async ({ page }) => {
+  const image = await leftToDry(page, 1)
+  await setPaper(page, "hot-press")
+  expect(await pixels(page)).toEqual(image)
+  await setPaper(page, "rough")
+  expect(await pixels(page)).toEqual(image)
+})
+
+test("the paper is saved with the document and comes back with it", async ({
+  page,
+}) => {
+  const documentId = `doc-${Math.random().toString(36).slice(2)}`
+  const open = () =>
+    page.evaluate(async (id) => {
+      window.remountEngine({ persistence: { documentId: id } })
+      await window.engine.dispatch({
+        type: "resize",
+        width: 120,
+        height: 80,
+        devicePixelRatio: 1,
+      })
+      await window.engine.dispatch({ type: "initialize" })
+    }, documentId)
+  await page.goto(
+    process.env.VELURA_TEST_HARNESS ?? "http://127.0.0.1:3101/tests/harness/"
+  )
+  await page.waitForFunction(() => !!window.engine)
+  await open()
+  await setPaper(page, "hot-press")
+  await page.evaluate(() => window.engine.save())
+
+  await page.reload()
+  await page.waitForFunction(() => !!window.engine)
+  await open()
+  await expect.poll(() => paperNow(page)).toBe("hot-press")
 })

@@ -5,6 +5,7 @@ import {
   type PaintDocument,
 } from "./document"
 import { normaliseGuides, type Guide } from "./guides"
+import { DEFAULT_PAPER, normalisePaper, type Paper } from "./paper"
 import type { BlendMode } from "../shaders/blend-modes"
 import type { ImageAssetRef, PlacedImage } from "./image-source"
 import { createTiledMask } from "./tiled-mask"
@@ -55,6 +56,12 @@ export type DocumentStructure = {
    */
   guides?: Guide[]
   /**
+   * The paper its fluid brushes paint on (fluid brushes 15). Only written
+   * when it is not the default, so a tree saved before papers existed and one
+   * on the default compare the same.
+   */
+  paper?: Paper
+  /**
    * Which selection (07) the step left, by the key the engine holds its mask
    * under; null for none. Only a selection step names one — absent, undoing
    * the step leaves the selection as it is. Never saved: a selection is part
@@ -100,6 +107,7 @@ export function captureStructure(
     activeLayerId: doc.activeLayerId,
     paintingMask: doc.paintingMask,
     ...(doc.guides.length ? { guides: [...doc.guides] } : {}),
+    ...(doc.paper !== DEFAULT_PAPER ? { paper: doc.paper } : {}),
   }
 }
 
@@ -323,4 +331,6 @@ export function restoreStructure(
     structure.paintingMask && !!findLayer(doc, doc.activeLayerId).mask
   // A saved tree came from outside, so its guides are checked on the way in.
   doc.guides = normaliseGuides(structure.guides)
+  // And so is its paper; one this client does not know opens on the default.
+  doc.paper = normalisePaper(structure.paper)
 }

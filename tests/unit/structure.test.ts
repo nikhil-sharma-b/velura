@@ -18,6 +18,7 @@ import {
   structureSurfaceIds,
 } from "../../engine/doc/structure"
 import { makeLayerPaintable } from "../../engine/doc/document"
+import type { Paper } from "../../engine/doc/paper"
 
 const document = () => createDocument({ width: 512, height: 512 })
 
@@ -279,5 +280,52 @@ describe("guides in the tree (16)", () => {
       ] as never,
     })
     expect(doc.guides).toEqual([{ id: "guide-1", axis: "x", position: 1 }])
+  })
+})
+
+describe("the paper in the tree (fluid brushes 15)", () => {
+  test("a new document is on cold press", () => {
+    expect(document().paper).toBe("cold-press")
+  })
+
+  test("travels through a snapshot and back", () => {
+    const doc = document()
+    doc.paper = "rough"
+    const structure = captureStructure(doc)
+    expect(structure.paper).toBe("rough")
+    doc.paper = "hot-press"
+    restoreStructure(doc, structure)
+    expect<Paper>(doc.paper).toBe("rough")
+  })
+
+  test("is absent from a tree on cold press, as it was before papers", () => {
+    const doc = document()
+    const before = captureStructure(doc)
+    expect("paper" in before).toBe(false)
+    expect(sameStructure(captureStructure(doc), before)).toBe(true)
+  })
+
+  test("a tree saved before papers existed restores on cold press", () => {
+    const doc = document()
+    const before = captureStructure(doc)
+    doc.paper = "rough"
+    restoreStructure(doc, before)
+    expect<Paper>(doc.paper).toBe("cold-press")
+  })
+
+  test("a paper this client does not know restores on cold press", () => {
+    const doc = document()
+    doc.paper = "rough"
+    restoreStructure(doc, {
+      ...captureStructure(doc),
+      paper: "vellum" as never,
+    })
+    expect<Paper>(doc.paper).toBe("cold-press")
+  })
+
+  test("is written into a save", () => {
+    const doc = document()
+    doc.paper = "hot-press"
+    expect(captureStructure(doc, { scenes: true }).paper).toBe("hot-press")
   })
 })

@@ -290,6 +290,7 @@ import {
   type Extent,
   type SnapTargets,
 } from "./doc/snap"
+import { DEFAULT_PAPER, PAPERS, type Paper } from "./doc/paper"
 import {
   addGuide,
   guideSnapTargets,
@@ -565,6 +566,8 @@ export type { ImageAsset, ImageAssetRef, PlacedImage } from "./doc/image-source"
 export type { AlignAnchor, Extent, Snap, SnapTargets } from "./doc/snap"
 export { placementExtent, resolveSnap } from "./doc/snap"
 export type { Guide, GuideAxis } from "./doc/guides"
+export { DEFAULT_PAPER, PAPERS, type Paper } from "./doc/paper"
+export { paperSwatch } from "./gpu/paper"
 export type { StraightEdge } from "./geom/stroke-assist"
 export type {
   FillRule,
@@ -1044,6 +1047,11 @@ export type EngineCommand =
   | { type: "clearGuides" }
   /** Hides guides without deleting them; hidden guides are not snapped to. */
   | { type: "setGuidesVisible"; visible: boolean }
+  /**
+   * The paper the document's fluid brushes paint on (fluid brushes 15): one
+   * step that undoes. Wet paint dries first.
+   */
+  | { type: "setPaper"; paper: Paper }
   /** Whether the rulers are shown along the canvas's edges (16). */
   | { type: "setRulersVisible"; visible: boolean }
   /**
@@ -1188,6 +1196,8 @@ export type EngineSnapshot = Readonly<{
   guides: readonly Guide[]
   /** Session view state (16): whether guides are drawn and snapped to. */
   guidesVisible: boolean
+  /** The document's paper (fluid brushes 15); undo restores it too. */
+  paper: Paper
   rulersVisible: boolean
   rasterMagnification: RasterMagnification
   /** The straight-edge strokes are held to (17), if one is placed. */
@@ -1357,6 +1367,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   snapping: true,
   guides: Object.freeze([]),
   guidesVisible: true,
+  paper: DEFAULT_PAPER,
   rulersVisible: false,
   rasterMagnification: DEFAULT_RASTER_MAGNIFICATION,
   straightEdge: null,
@@ -4336,6 +4347,8 @@ export function createEngine(
   function syncComposition() {
     if (!renderer || !doc) return
     renderer.setComposition(planComposite(doc, { highlight }))
+    // However the document came to its paper: chosen, undone, opened.
+    renderer.setPaper(doc.paper)
   }
 
   /** The stack as the snapshot carries it: settings, never pixels. */
@@ -4380,6 +4393,7 @@ export function createEngine(
       activeLayerId: document.activeLayerId,
       paintingMask: document.paintingMask,
       guides: Object.freeze([...document.guides]),
+      paper: document.paper,
     }
   }
 
@@ -8233,6 +8247,18 @@ export function createEngine(
           document.guides = []
           recordOperation("clear guides", before)
           publish(describeLayers(document))
+          break
+        }
+        case "setPaper": {
+          const document = requireDocument()
+          if (!PAPERS.includes(command.paper))
+            throw new Error(`No paper is called ${command.paper}.`)
+          // Wet paint has dried by now: this is not a wet passthrough.
+          if (command.paper === document.paper) break
+          const before = captureStructure(document)
+          document.paper = command.paper
+          recordOperation("change paper", before)
+          applyLayerChange()
           break
         }
         case "setGuidesVisible":
