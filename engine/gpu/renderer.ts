@@ -64,7 +64,8 @@ import {
   type WetViews,
 } from "./fluid-stroke"
 import { createFreezeLedger, FREEZE_CHUNK } from "./freeze-ledger"
-import { createPaper } from "./paper"
+import { DEFAULT_PAPER, type Paper } from "../doc/paper"
+import { createPaper, writePaper } from "./paper"
 import type { StrokeMark } from "./stroke-renderer"
 import { LAYER_FORMAT, type Surface } from "./surface"
 
@@ -443,6 +444,11 @@ export interface Renderer {
   releaseFluid(copy: WetCopy): void
   /** Whether any paint is wet. */
   fluidWet(): boolean
+  /**
+   * The paper fluid brushes paint on from here (fluid brushes 15). Wet paint
+   * reads it as it is, so the caller dries any first.
+   */
+  setPaper(paper: Paper): void
   /** How many tiles are wet: what a step of the simulation runs over. */
   fluidTileCount(): number
   /**
@@ -1673,6 +1679,7 @@ export function createRenderer(
    */
   const paper = createPaper(device)
   const paperView = paper.createView()
+  let paperShown: Paper = DEFAULT_PAPER
 
   /** What a wet layer's pipeline binds of its wet paint; a dry one's, nothing. */
   const wetEntries = (wet: WetViews | undefined): GPUBindGroupEntry[] =>
@@ -3477,6 +3484,11 @@ export function createRenderer(
     },
     releaseFluid: (copy) => fluid.release(copy),
     fluidWet: () => fluid.isWet(),
+    setPaper(chosen) {
+      if (chosen === paperShown) return
+      writePaper(device, paper, chosen)
+      paperShown = chosen
+    },
     fluidTileCount: () => fluid.tileCount(),
     advanceFluid: (steps) => fluid.advance(steps),
     dryFluid: () => fluid.dry(),

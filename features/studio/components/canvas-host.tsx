@@ -147,6 +147,7 @@ import { LayerPanel } from "./layer-panel"
 import { ShapeStylePanel } from "./shape-style-panel"
 import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
+import { PaperPicker } from "./paper-picker"
 import {
   ConfirmLayerDialog,
   type LayerConfirmation,
@@ -1539,6 +1540,16 @@ export function CanvasHost({
               <ExportDialog
                 engine={engine}
                 runCommand={(id) => runStudioCommand(id, commandContext)}
+              />
+            )}
+            {/* The document's paper (fluid brushes 15): the document's, like
+                export, not the brush's. Not while a version is being opened
+                or taken back, which would carry the choice into it. */}
+            {engine && (
+              <PaperPicker
+                engine={engine}
+                paper={snapshot.paper}
+                disabled={historyBusy || snapshot.status !== "ready"}
               />
             )}
             <IconButton
