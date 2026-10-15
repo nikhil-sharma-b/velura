@@ -18,6 +18,16 @@ function dotRing(diameter: number): string {
 export const TOOL_CURSOR = dotRing(5)
 
 /**
+ * The dot crossed through, and dimmed: a blot brush (fluid brushes 17) over
+ * paper with nothing wet on it, where a stroke would take nothing up.
+ */
+export const NOTHING_WET_CURSOR = (() => {
+  const size = 13
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" fill="none" opacity="0.6"><circle cx="6.5" cy="6.5" r="4" stroke="#18181b" stroke-width="2.5" stroke-opacity="0.5"/><circle cx="6.5" cy="6.5" r="4" stroke="#fff" stroke-width="1"/><path d="M2 11L11 2" stroke="#18181b" stroke-width="2.5" stroke-opacity="0.5"/><path d="M2 11L11 2" stroke="#fff" stroke-width="1"/></svg>`
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 6.5 6.5, not-allowed`
+})()
+
+/**
  * What the canvas wears while Alt is held. The eyedropper is a modifier and
  * not a tool, so this is the only place it can announce itself: the artist
  * holding the key sees the pen become a dropper before they commit to a click.

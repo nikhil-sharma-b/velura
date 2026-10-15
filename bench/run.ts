@@ -29,8 +29,8 @@
  * `--blender` compares small blenders with wet brushes that have flow;
  * `--fluid` paints with fluid brushes against the same brushes dry (fluid
  * brushes 10); `--fluid-load` times a step of the simulation over 16 and 64
- * wet tiles and paints with every tile of the document wet (fluid brushes
- * 13);
+ * wet tiles and paints, and blots, with every tile of the document wet
+ * (fluid brushes 13, 17);
  * `--cold` times a draw into a texture left alone (live brushes 24);
  * `--vector` times
  * redrawing a vector layer of many paths (19); `--navigate` times panning and
@@ -620,10 +620,10 @@ const FLOODED_SIZES = [1024, 2048]
  * over a document flooded worst case, every cell wet and its neighbours
  * another colour, at 16 and 64 wet tiles. Then the workload painted with a
  * fluid brush over the same flood, every tile wet under the pen, against
- * the same brush on a dry document: whether the pen still meets D30 with
- * the simulation stepping beside it, and how many steps the clock ran and
- * skipped a frame. Strokes do not wait on history between them, since a
- * save dries the flood.
+ * the same brush on a dry document, and a blot brush over the flood: whether
+ * the pen still meets D30 with the simulation stepping beside it, and how
+ * many steps the clock ran and skipped a frame. Strokes do not wait on
+ * history between them, since a save dries the flood.
  */
 async function fluidLoadSweep(): Promise<void> {
   const paced = PASSES.find((entry) => entry.name === "paced")!
@@ -669,6 +669,8 @@ async function fluidLoadSweep(): Promise<void> {
         { name: "dry", dry: true },
         { name: "fluid" },
         { name: `fluid, ${(size / 256) ** 2} wet`, flooded: true },
+        // A blot reaches only the tiles that are wet (fluid brushes 17).
+        { name: `blot, ${(size / 256) ** 2} wet`, flooded: true, blot: true },
       ]) {
         const workload = {
           ...BENCHMARK_WORKLOAD,

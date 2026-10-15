@@ -145,7 +145,7 @@ describe("brushes on the account", () => {
           rendering: { ...pencil.rendering, fluid, wet: { pickup: 0.4 } },
         },
       })
-    ).rejects.toThrow("wet or fluid")
+    ).rejects.toThrow("one of wet, fluid or blot")
   })
 
   test("a mapping onto water comes back as it was saved", async () => {

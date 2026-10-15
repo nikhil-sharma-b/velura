@@ -221,3 +221,21 @@ describe("the ring of tiles about a wet one", () => {
     expect(tiles.surround(10, 1)).toBe(0)
   })
 })
+
+describe("finding a tile's slot", () => {
+  test("answers the slot a wet tile holds, and -1 for a dry one or off the grid", () => {
+    const tiles = createWetTiles(4, 4)
+    const slot = tiles.touch(1, 2)
+    expect(tiles.slotAt(1, 2)).toBe(slot)
+    expect(tiles.slotAt(2, 2)).toBe(-1)
+    expect(tiles.slotAt(-1, 0)).toBe(-1)
+    expect(tiles.slotAt(4, 0)).toBe(-1)
+  })
+
+  test("never gives a dry tile a slot", () => {
+    const tiles = createWetTiles(4, 4)
+    tiles.slotAt(0, 0)
+    expect(tiles.count()).toBe(0)
+    expect(tiles.map().every((byte) => byte === 0)).toBe(true)
+  })
+})

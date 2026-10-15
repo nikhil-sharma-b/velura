@@ -14,6 +14,8 @@ const descriptions: Record<string, string> = {
   "builtin:watercolour-detail": "Small and drier · lines that keep their edge",
   "builtin:ink-wash": "Dark ink · press for black, ease off to grey",
   "builtin:water": "Clean water · softens wet edges, blooms in a wash",
+  "builtin:tissue": "No paint · lifts a wet wash out, water and colour",
+  "builtin:thirsty-brush": "No paint · drinks the water, stops a wash running",
 }
 
 export function brushDescription(id: string): string {

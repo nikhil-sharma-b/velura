@@ -29,6 +29,11 @@ export interface WetTiles {
    */
   touch(x: number, y: number): number
   /**
+   * The slot this tile holds, or -1 for a dry tile or one off the grid. A
+   * dry tile is given none: what only reads wet paint finds nothing there.
+   */
+  slotAt(x: number, y: number): number
+  /**
    * Gives each of this tile's eight neighbours a slot, where one is on the
    * grid, has none and there is one free: a bloom may cross into a tile no
    * dab reached (D42). They join the tile's body, and are freed with it.
@@ -136,6 +141,7 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
 
   return {
     touch,
+    slotAt,
     surround(x, y) {
       const before = count
       for (let dy = -1; dy <= 1 && count < WET_SLOTS; dy++)

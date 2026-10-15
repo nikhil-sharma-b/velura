@@ -444,6 +444,8 @@ export interface Renderer {
   releaseFluid(copy: WetCopy): void
   /** Whether any paint is wet. */
   fluidWet(): boolean
+  /** Whether the tile under a document pixel of one surface is wet. */
+  fluidWetAt(surfaceId: string, x: number, y: number): boolean
   /**
    * The paper fluid brushes paint on from here (fluid brushes 15). Wet paint
    * reads it as it is, so the caller dries any first.
@@ -3484,6 +3486,10 @@ export function createRenderer(
     },
     releaseFluid: (copy) => fluid.release(copy),
     fluidWet: () => fluid.isWet(),
+    fluidWetAt(surfaceId, x, y) {
+      const surface = surfaces.get(surfaceId)
+      return !!surface && fluid.wetAt(surface, x, y)
+    },
     setPaper(chosen) {
       if (chosen === paperShown) return
       writePaper(device, paper, chosen)

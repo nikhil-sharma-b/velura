@@ -5,6 +5,7 @@ import {
   TILE_SIZE,
   type TileCoord,
 } from "../doc/tile-grid"
+import type { BrushBlot } from "../brush/brush"
 import type { WetCopy } from "../doc/undo-stack"
 import {
   FLUID_DAMP_STEPS,
@@ -114,6 +115,13 @@ export type FluidOpening = {
   edge: number
   /** How much pigment settles into the paper's valleys, in [0, 1]. */
   granulation: number
+  /**
+   * Present, the stroke is a blot (fluid brushes 17): its dabs lay nothing
+   * and take water and suspended pigment out of the wet surface, `load` being
+   * how strongly a dab takes at full flow. The five settings above are then
+   * not read: a blot leaves the wet surface's rates as they were.
+   */
+  blot?: BrushBlot
 }
 
 /** What the fluid stroke reads of, and asks of, the renderer it draws for. */
@@ -173,6 +181,8 @@ export interface FluidStroke extends StrokeRenderer<FluidOpening> {
   wet(surface: Surface): WetViews | undefined
   /** Whether any tile is wet. */
   isWet(): boolean
+  /** Whether the tile under a document pixel of `surface` is wet. */
+  wetAt(surface: Surface, x: number, y: number): boolean
   /** How many tiles are wet. */
   tileCount(): number
   /**
@@ -288,29 +298,50 @@ export function createFluidStroke(
       alpha: { operation: "max", srcFactor: "one", dstFactor: "one" },
     }
     const dabModule = device.createShaderModule({ code: fluidDabShader })
+    const dabBuffers: GPUVertexBufferLayout[] = [
+      {
+        arrayStride: INSTANCE_STRIDE * 4,
+        stepMode: "instance",
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: "float32x2" },
+          { shaderLocation: 1, offset: 8, format: "float32" },
+          { shaderLocation: 2, offset: 12, format: "float32" },
+          { shaderLocation: 3, offset: 16, format: "float32x4" },
+          { shaderLocation: 4, offset: 32, format: "float32" },
+          { shaderLocation: 5, offset: 36, format: "float32" },
+          { shaderLocation: 6, offset: 40, format: "float32" },
+          { shaderLocation: 7, offset: 44, format: "float32" },
+          { shaderLocation: 8, offset: 48, format: "float32x3" },
+        ],
+      },
+    ]
+    // Said outright rather than left to the pipeline, so that one binding
+    // serves a paint dab and a blot one.
+    const dabBindings = device.createBindGroupLayout({
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: {},
+        },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { viewDimension: "2d-array" },
+        },
+      ],
+    })
+    const dabLayout = device.createPipelineLayout({
+      bindGroupLayouts: [dabBindings],
+    })
     const dabPipeline = device.createRenderPipeline({
       label: "fluid dabs",
-      layout: "auto",
+      layout: dabLayout,
       vertex: {
         module: dabModule,
         entryPoint: "vertexMain",
-        buffers: [
-          {
-            arrayStride: INSTANCE_STRIDE * 4,
-            stepMode: "instance",
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: "float32x2" },
-              { shaderLocation: 1, offset: 8, format: "float32" },
-              { shaderLocation: 2, offset: 12, format: "float32" },
-              { shaderLocation: 3, offset: 16, format: "float32x4" },
-              { shaderLocation: 4, offset: 32, format: "float32" },
-              { shaderLocation: 5, offset: 36, format: "float32" },
-              { shaderLocation: 6, offset: 40, format: "float32" },
-              { shaderLocation: 7, offset: 44, format: "float32" },
-              { shaderLocation: 8, offset: 48, format: "float32x3" },
-            ],
-          },
-        ],
+        buffers: dabBuffers,
       },
       fragment: {
         module: dabModule,
@@ -318,6 +349,31 @@ export function createFluidStroke(
         targets: [
           { format: LAID_WATER_FORMAT, blend: addWater },
           { format: LAYER_FORMAT, blend: add },
+        ],
+      },
+      primitive: { topology: "triangle-strip" },
+    })
+    // A blot's dabs keep, in the pigment target, the product of what each
+    // leaves of a cell: cleared to one, and each multiplying it by one less
+    // its own strength.
+    const keep: GPUBlendComponent = {
+      srcFactor: "zero",
+      dstFactor: "one-minus-src",
+    }
+    const blotPipeline = device.createRenderPipeline({
+      label: "fluid blot dabs",
+      layout: dabLayout,
+      vertex: {
+        module: dabModule,
+        entryPoint: "vertexMain",
+        buffers: dabBuffers,
+      },
+      fragment: {
+        module: dabModule,
+        entryPoint: "blotFragment",
+        targets: [
+          { format: LAID_WATER_FORMAT, writeMask: 0 },
+          { format: LAYER_FORMAT, blend: { color: keep, alpha: keep } },
         ],
       },
       primitive: { topology: "triangle-strip" },
@@ -377,10 +433,13 @@ export function createFluidStroke(
       })
     return {
       dab: dabPipeline,
+      blot: blotPipeline,
+      dabBindings,
       settle: settlePipeline,
       simLayout,
       step: simPipeline("stepMain"),
       pour: simPipeline("pourMain"),
+      absorb: simPipeline("blotMain"),
     }
   }
   let pipelines: ReturnType<typeof compile> | undefined
@@ -398,6 +457,8 @@ export function createFluidStroke(
   const simRates = new Float32Array(simData, 0, 4)
   /** The depth of water the brush in hand fills a cell to. */
   const simLevel = new Float32Array(simData, SIM_LEVEL_OFFSET, 1)
+  /** What a blot brush takes: the share of water, then of pigment. */
+  const simBlot = new Float32Array(simData, SIM_LEVEL_OFFSET + 4, 2)
   const simTiles = new Int32Array(simData, SIM_TILES_OFFSET)
 
   const uniformValues = new Float32Array(12)
@@ -413,7 +474,7 @@ export function createFluidStroke(
     if (dabBinding && boundTip === tip.texture) return dabBinding
     boundTip = tip.texture
     dabBinding = device.createBindGroup({
-      layout: pipelines!.dab.getBindGroupLayout(0),
+      layout: pipelines!.dabBindings,
       entries: [
         { binding: 0, resource: { buffer: uniform } },
         { binding: 1, resource: tip.sampler },
@@ -491,6 +552,8 @@ export function createFluidStroke(
    */
   let penDown: KeptFields | undefined
   let laid = false
+  /** Whether the stroke in flight is a blot's, which lays nothing. */
+  let blotting = false
   /** The last kept stroke's pen-down copy, until it is taken. */
   let handover: KeptFields | undefined
   /** Every copy not yet released. */
@@ -799,6 +862,79 @@ export function createFluidStroke(
     context.wetChanged()
   }
 
+  /**
+   * Puts the dab at `offset` of `dabs` into the instance list, as it lands
+   * in one wet tile and that tile's slot.
+   */
+  function place(
+    dabs: Float32Array,
+    offset: number,
+    column: number,
+    row: number,
+    slot: number,
+    at: number
+  ) {
+    const slotX = (slot % FIELD_COLUMNS) * WET_CELLS
+    const slotY = Math.floor(slot / FIELD_COLUMNS) * WET_CELLS
+    instances[at] =
+      dabs[offset + STAMP.CENTER_X] / WET_CELL_SIZE - column * WET_CELLS + slotX
+    instances[at + 1] =
+      dabs[offset + STAMP.CENTER_Y] / WET_CELL_SIZE - row * WET_CELLS + slotY
+    instances[at + 2] = dabs[offset + STAMP.RADIUS] / WET_CELL_SIZE
+    instances[at + 3] = dabs[offset + STAMP.OPACITY] * load
+    instances[at + 4] = slotX
+    instances[at + 5] = slotY
+    instances[at + 6] = slotX + WET_CELLS
+    instances[at + 7] = slotY + WET_CELLS
+    instances[at + 8] = dabs[offset + STAMP.ANGLE]
+    instances[at + 9] = dabs[offset + STAMP.ROUNDNESS]
+    instances[at + 10] = dabs[offset + STAMP.WATER]
+    instances[at + 11] = dabs[offset + STAMP.TIP_FRAME]
+    instances[at + 12] = dabs[offset + STAMP.HUE]
+    instances[at + 13] = dabs[offset + STAMP.SATURATION]
+    instances[at + 14] = dabs[offset + STAMP.LIGHTNESS]
+  }
+
+  /**
+   * A blot's dabs (fluid brushes 17): each tile they reach that is wet has
+   * water and pigment taken out of it, and one that is dry is passed over.
+   * None is given a slot, so none makes another body settle, and no body's
+   * drying is pushed back.
+   */
+  function blot(dabs: Float32Array, count: number) {
+    if (surface !== painting) return noMarks
+    touched.clear()
+    let filled = 0
+    for (let i = 0; i < count; i++) {
+      const offset = i * STAMP_STRIDE
+      const x = dabs[offset + STAMP.CENTER_X]
+      const y = dabs[offset + STAMP.CENTER_Y]
+      const reach = dabs[offset + STAMP.RADIUS] * tipReach + WET_CELL_SIZE
+      const lastColumn = tileIndexForPixel(x + reach)
+      const lastRow = tileIndexForPixel(y + reach)
+      for (let row = tileIndexForPixel(y - reach); row <= lastRow; row++)
+        for (
+          let column = tileIndexForPixel(x - reach);
+          column <= lastColumn;
+          column++
+        ) {
+          const slot = tiles!.slotAt(column, row)
+          if (slot < 0) continue
+          touched.add(slot)
+          if (filled === MAX_INSTANCES_PER_DRAW) {
+            drawInstances(filled)
+            filled = 0
+          }
+          place(dabs, offset, column, row, slot, filled++ * INSTANCE_STRIDE)
+        }
+    }
+    drawInstances(filled)
+    if (touched.size === 0) return noMarks
+    laid = true
+    context.wetMoved()
+    return noMarks
+  }
+
   function drawInstances(count: number) {
     if (count === 0) return
     device.queue.writeBuffer(
@@ -811,21 +947,25 @@ export function createFluidStroke(
     const encoder = device.createCommandEncoder()
     const pass = encoder.beginRenderPass({
       // Only this batch: what the last one laid has been poured in.
+      // A blot's batch keeps what it leaves of each cell, from all of it.
       colorAttachments: [fields!.laidWater, fields!.laidPigment].map(
-        (view) => ({
+        (view, target) => ({
           view,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          clearValue:
+            blotting && target === 1
+              ? { r: 1, g: 1, b: 1, a: 1 }
+              : { r: 0, g: 0, b: 0, a: 0 },
           loadOp: "clear" as const,
           storeOp: "store" as const,
         })
       ),
     })
-    pass.setPipeline(pipelines!.dab)
+    pass.setPipeline(blotting ? pipelines!.blot : pipelines!.dab)
     pass.setBindGroup(0, bindDabs())
     pass.setVertexBuffer(0, instanceBuffer)
     pass.draw(4, count)
     pass.end()
-    simulate(encoder, pipelines!.pour)
+    simulate(encoder, blotting ? pipelines!.absorb : pipelines!.pour)
     device.queue.submit([encoder.finish()])
   }
 
@@ -968,6 +1108,10 @@ export function createFluidStroke(
       })
     },
     isWet: () => !!tiles && tiles.count() > 0,
+    wetAt: (of, x, y) =>
+      !!tiles &&
+      of === surface &&
+      tiles.slotAt(tileIndexForPixel(x), tileIndexForPixel(y)) >= 0,
     tileCount: () => tiles?.count() ?? 0,
     prepare,
     begin(opening) {
@@ -981,13 +1125,17 @@ export function createFluidStroke(
         throw new Error("A fluid dab's load must be a finite value in [0, 1].")
       prepare()
       // One layer is wet at a time: whoever opens a stroke on another has
-      // dried this one first.
-      if (surface && surface !== opening.surface)
+      // dried this one first. A blot dries nothing, and on another layer
+      // finds nothing wet to take from.
+      if (surface && surface !== opening.surface && !opening.blot)
         throw new Error("Another layer is still wet.")
       painting = opening.surface
+      blotting = !!opening.blot
       // Before the brush's rates are put to the wash: they are undone too.
+      // A blot with nothing of its layer wet has nothing to put back.
       release(penDown)
-      penDown = keepFields()
+      penDown =
+        blotting && surface !== opening.surface ? undefined : keepFields()
       laid = false
       load = opening.load
       uniformValues.set(opening.ink)
@@ -999,6 +1147,13 @@ export function createFluidStroke(
       uniformValues[8] = usesTip ? 1 : 0
       tipReach = usesTip ? Math.SQRT2 : 1
       device.queue.writeBuffer(uniform, 0, uniformValues)
+      // A blot leaves the rates, the depth and every deadline as they were.
+      if (opening.blot) {
+        simBlot[0] = opening.blot.water
+        simBlot[1] = opening.blot.pigment
+        device.queue.writeBuffer(simUniform, 0, simData)
+        return true
+      }
       // The whole wet surface runs at the rates of the brush last put to it.
       const slower = evaporation(opening.drying) < simRates[0]
       simRates[0] = evaporation(opening.drying)
@@ -1028,6 +1183,7 @@ export function createFluidStroke(
     /** Dabs are laid out as `STAMP` says. */
     draw(dabs, count) {
       if (!painting || count <= 0) return noMarks
+      if (blotting) return blot(dabs, count)
       touched.clear()
       let marks: StrokeMark[] | undefined
       let filled = 0
@@ -1095,24 +1251,7 @@ export function createFluidStroke(
               drawInstances(filled)
               filled = 0
             }
-            const slotX = (slot % FIELD_COLUMNS) * WET_CELLS
-            const slotY = Math.floor(slot / FIELD_COLUMNS) * WET_CELLS
-            const at = filled++ * INSTANCE_STRIDE
-            instances[at] = x / WET_CELL_SIZE - column * WET_CELLS + slotX
-            instances[at + 1] = y / WET_CELL_SIZE - row * WET_CELLS + slotY
-            instances[at + 2] = radius / WET_CELL_SIZE
-            instances[at + 3] = dabs[offset + STAMP.OPACITY] * load
-            instances[at + 4] = slotX
-            instances[at + 5] = slotY
-            instances[at + 6] = slotX + WET_CELLS
-            instances[at + 7] = slotY + WET_CELLS
-            instances[at + 8] = dabs[offset + STAMP.ANGLE]
-            instances[at + 9] = dabs[offset + STAMP.ROUNDNESS]
-            instances[at + 10] = dabs[offset + STAMP.WATER]
-            instances[at + 11] = dabs[offset + STAMP.TIP_FRAME]
-            instances[at + 12] = dabs[offset + STAMP.HUE]
-            instances[at + 13] = dabs[offset + STAMP.SATURATION]
-            instances[at + 14] = dabs[offset + STAMP.LIGHTNESS]
+            place(dabs, offset, column, row, slot, filled++ * INSTANCE_STRIDE)
           }
       }
       // A slot the shaders cannot find is paint that does not show.
@@ -1135,6 +1274,7 @@ export function createFluidStroke(
       if (!painting) return null
       const onto = painting
       painting = undefined
+      blotting = false
       const kept = penDown
       penDown = undefined
       release(handover)
@@ -1182,6 +1322,7 @@ export function createFluidStroke(
     drop(of) {
       if (of && of !== surface && of !== painting) return
       painting = undefined
+      blotting = false
       release(penDown)
       penDown = undefined
       discard()

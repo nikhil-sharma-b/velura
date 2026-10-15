@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import {
   type Brush,
+  DEFAULT_BLOT,
   DEFAULT_BRUSH,
   DEFAULT_FLUID,
   validateBrushMedium,
@@ -110,6 +111,7 @@ describe("the working brush an editor holds", () => {
       scatter: null,
       wet: null,
       fluid: null,
+      blot: null,
       dynamics: [],
     })
   })
@@ -161,6 +163,42 @@ describe("the working brush an editor holds", () => {
     expect("fluid" in plain.rendering).toBe(false)
     expect(isBrushEdited(original, plain)).toBe(false)
     expect(brushCommand(plain).fluid).toBe(null)
+  })
+
+  test("a blot brush reaches the engine a blot, and a plain one says it is not", () => {
+    const blot = editBrush(saved(), {
+      rendering: { blot: { ...DEFAULT_BLOT } },
+    })
+    expect(brushCommand(blot).blot).toEqual(DEFAULT_BLOT)
+    expect(brushCommand(saved()).blot).toBe(null)
+    const plain = editBrush(blot, { rendering: { blot: null } })
+    expect("blot" in plain.rendering).toBe(false)
+    expect(isBrushEdited(saved(), plain)).toBe(false)
+  })
+
+  test("a brush made a blot is neither wet nor fluid, and either takes blot off", () => {
+    const fluid = editBrush(saved(), {
+      rendering: { fluid: { ...DEFAULT_FLUID } },
+    })
+    const blot = editBrush(fluid, { rendering: { blot: { ...DEFAULT_BLOT } } })
+    expect("fluid" in blot.rendering).toBe(false)
+    expect(blot.rendering.blot).toEqual(DEFAULT_BLOT)
+    expect(() => validateBrushMedium(blot.rendering)).not.toThrow()
+    const wet = editBrush(saved(), { rendering: { wet: { pickup: 0.5 } } })
+    expect(
+      "wet" in
+        editBrush(wet, { rendering: { blot: { ...DEFAULT_BLOT } } }).rendering
+    ).toBe(false)
+
+    expect(
+      "blot" in
+        editBrush(blot, { rendering: { fluid: { ...DEFAULT_FLUID } } })
+          .rendering
+    ).toBe(false)
+    expect(
+      "blot" in
+        editBrush(blot, { rendering: { wet: { pickup: 0.5 } } }).rendering
+    ).toBe(false)
   })
 
   test("a brush made fluid is no longer wet, and one made wet no longer fluid", () => {

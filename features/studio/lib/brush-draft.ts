@@ -1,6 +1,7 @@
 import type {
   Brush,
   BrushColor,
+  BrushBlot,
   BrushFluid,
   BrushGrain,
   BrushRendering,
@@ -49,11 +50,13 @@ export type BrushEdit = {
   }
   /** Null takes the grain away: the brush draws on a smooth surface again. */
   grain?: BrushGrain | null
-  rendering?: Partial<Omit<BrushRendering, "wet" | "fluid">> & {
+  rendering?: Partial<Omit<BrushRendering, "wet" | "fluid" | "blot">> & {
     /** Null dries the brush: it draws through the stroke buffer again. */
     wet?: BrushWet | null
     /** Null takes the water away, as null does for wet. */
     fluid?: BrushFluid | null
+    /** Null takes the blot away, as null does for wet. */
+    blot?: BrushBlot | null
   }
   /** Null, or one that throws nothing, takes the section away. */
   scatter?: BrushScatter | null
@@ -98,14 +101,19 @@ export function editBrush(brush: Brush, edit: BrushEdit): Brush {
   // `null` nor `undefined` is a value that model has.
   if (edit.shape && "tipTextureId" in edit.shape && !edit.shape.tipTextureId)
     delete next.shape.tipTextureId
-  // A brush is wet or fluid, not both (D42), so whichever the edit turns on
-  // takes the other off rather than handing the engine a brush it refuses.
-  if (edit.rendering?.fluid) delete next.rendering.wet
-  else if (edit.rendering?.wet) delete next.rendering.fluid
+  // A brush is one of wet, fluid or blot (D42, fluid brushes 17), so
+  // whichever the edit turns on takes the others off rather than handing the
+  // engine a brush it refuses.
+  const media = ["fluid", "wet", "blot"] as const
+  const on = media.find((medium) => edit.rendering?.[medium])
+  if (on)
+    for (const medium of media) if (medium !== on) delete next.rendering[medium]
   if (next.rendering.wet) next.rendering.wet = { ...next.rendering.wet }
   else delete next.rendering.wet
   if (next.rendering.fluid) next.rendering.fluid = { ...next.rendering.fluid }
   else delete next.rendering.fluid
+  if (next.rendering.blot) next.rendering.blot = { ...next.rendering.blot }
+  else delete next.rendering.blot
   const grain = edit.grain === undefined ? brush.grain : edit.grain
   if (grain) next.grain = { ...grain }
   else delete next.grain
@@ -235,6 +243,7 @@ export function brushCommand(brush: Brush): SetBrushCommand {
     scatter: brush.scatter ? { ...brush.scatter } : null,
     wet: brush.rendering.wet ? { ...brush.rendering.wet } : null,
     fluid: brush.rendering.fluid ? { ...brush.rendering.fluid } : null,
+    blot: brush.rendering.blot ? { ...brush.rendering.blot } : null,
     dynamics: structuredClone(brush.dynamics),
   }
 }

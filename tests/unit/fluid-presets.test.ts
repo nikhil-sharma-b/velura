@@ -5,6 +5,7 @@ import type { Brush } from "@/engine/brush/brush"
 import { validateDynamics, type Modulator } from "@/engine/brush/dynamics"
 import { KRITA_BRUSHES } from "@/engine/brush/krita-presets"
 import {
+  BLOT_BRUSHES,
   BUILTIN_BRUSHES,
   builtinBrush,
   FLUID_BRUSH_SET,
@@ -48,7 +49,7 @@ const floods = (brush: Brush) =>
 
 describe("the built-in fluid brushes", () => {
   test("are four, in a set of their own", () => {
-    expect(FLUID_BRUSH_SET.brushes).toBe(FLUID_BRUSHES)
+    expect(FLUID_BRUSH_SET.brushes.slice(0, 4)).toEqual([...FLUID_BRUSHES])
     expect(FLUID_BRUSHES.map((brush) => brush.name)).toEqual([
       "Watercolour wash",
       "Watercolour detail",
@@ -77,6 +78,7 @@ describe("the built-in fluid brushes", () => {
       ...BUILTIN_BRUSHES,
       ...WET_BRUSHES,
       ...FLUID_BRUSHES,
+      ...BLOT_BRUSHES,
       ...KRITA_BRUSHES,
     ].map((brush) => brush.id)
     expect(new Set(ids).size).toBe(ids.length)
@@ -188,6 +190,7 @@ describe("the shelf", () => {
     expect(shelf[2].builtin).toBe(true)
     expect(shelf[2].brushes.map((entry) => entry.brush)).toEqual([
       ...FLUID_BRUSHES,
+      ...BLOT_BRUSHES,
     ])
     for (const entry of shelf[2].brushes) {
       expect(entry.set).toBe(FLUID_BRUSH_SET.name)
@@ -215,5 +218,54 @@ describe("the shelf", () => {
     expect(BUILTIN_SET_NAMES).not.toContain(copy.set)
     expect(copy.brush.rendering.fluid).toEqual(entry.brush.rendering.fluid)
     expect(copy.brush).not.toBe(entry.brush)
+  })
+})
+
+describe("the built-in blot brushes", () => {
+  const blot = (name: string) => {
+    const brush = BLOT_BRUSHES.find((brush) => brush.name === name)
+    if (!brush) throw new Error(`No blot brush called ${name}.`)
+    return brush
+  }
+
+  test("are a tissue and a thirsty brush, shelved after the fluid brushes", () => {
+    expect(BLOT_BRUSHES.map((brush) => brush.name)).toEqual([
+      "Tissue",
+      "Thirsty brush",
+    ])
+    expect(FLUID_BRUSH_SET.brushes).toEqual([...FLUID_BRUSHES, ...BLOT_BRUSHES])
+    expect(brushShelf([])[2].brushes.map((entry) => entry.brush)).toEqual([
+      ...FLUID_BRUSHES,
+      ...BLOT_BRUSHES,
+    ])
+  })
+
+  test("are each a blot and nothing else, stored unchanged, and built-in", () => {
+    const kinds = new Map(shipped.textures.map((t) => [t.id, t.kind]))
+    for (const brush of BLOT_BRUSHES) {
+      expect(brush.rendering.blot).toBeDefined()
+      expect(brush.rendering.fluid).toBeUndefined()
+      expect(brush.rendering.wet).toBeUndefined()
+      expect(normaliseBrushDefinition(brush)).toEqual(brush)
+      expect(builtinBrush(brush.id)).toBe(brush)
+      const tip = brush.shape.tipTextureId
+      if (tip)
+        expect(
+          BUILTIN_TEXTURE_IDS.includes(tip) || kinds.get(tip) === "tip"
+        ).toBe(true)
+    }
+  })
+
+  test("the tissue takes nearly all of the water and most of the pigment at once", () => {
+    const tissue = blot("Tissue")
+    expect(tissue.rendering.blot).toEqual({ water: 1, pigment: 0.8 })
+    expect(tissue.rendering.opacity).toBe(1)
+  })
+
+  test("the thirsty brush takes water and leaves most of the pigment, as hard as it is pressed", () => {
+    const thirsty = blot("Thirsty brush")
+    expect(thirsty.rendering.blot).toEqual({ water: 0.7, pigment: 0.25 })
+    expect(thirsty.shape.tipTextureId).toBeUndefined()
+    expect(maps(thirsty, "pressure", "flow")).toBe(true)
   })
 })

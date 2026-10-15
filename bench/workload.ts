@@ -151,6 +151,8 @@ export type WorkloadOptions = {
     tip?: boolean
     scatter?: BrushScatter
     dry?: boolean
+    /** A blot brush in place of the fluid one (fluid brushes 17). */
+    blot?: boolean
   }
 }
 

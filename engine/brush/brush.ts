@@ -94,6 +94,13 @@ export type BrushRendering = {
    * unread, so turning fluid off restores it.
    */
   fluid?: BrushFluid
+  /**
+   * Present, the brush lays nothing: it takes water and suspended pigment
+   * out of the layer's wet surface (fluid brushes 17), never beside `wet` or
+   * `fluid`. Its opacity and flow are how strongly a dab takes; accumulation
+   * stays on the brush, unread.
+   */
+  blot?: BrushBlot
 }
 
 export type BrushWet = {
@@ -160,13 +167,46 @@ export function copyBrushFluid(fluid: BrushFluid): BrushFluid {
   }
 }
 
-/** Wet drags paint and fluid lets it run: a brush does one of them. */
+/**
+ * How much a blot brush takes out of wet paint where a dab lands at full
+ * strength, each in [0, 1]. Pigment the paper has already taken is left: the
+ * step lifts a little of it back while water stands (`LIFT`, §6.2).
+ */
+export type BrushBlot = {
+  /** The share of standing water and the paper's dampness a dab takes. */
+  water: number
+  /** The share of the pigment suspended in the water a dab takes. */
+  pigment: number
+}
+
+/** What a brush is given when it is first made a blot. */
+export const DEFAULT_BLOT: BrushBlot = { water: 0.7, pigment: 0.5 }
+
+export function validateBrushBlot(blot: BrushBlot): void {
+  for (const field of ["water", "pigment"] as const) {
+    const value = blot?.[field]
+    if (!Number.isFinite(value) || value < 0 || value > 1)
+      throw new Error(`Brush blot ${field} must be in [0, 1].`)
+  }
+}
+
+/** A blot setting as it is stored: its two numbers and nothing else. */
+export function copyBrushBlot(blot: BrushBlot): BrushBlot {
+  return { water: blot.water, pigment: blot.pigment }
+}
+
+/**
+ * Wet drags paint, fluid lets it run and blot takes it up: a brush does one
+ * of them.
+ */
 export function validateBrushMedium(rendering: {
   wet?: unknown
   fluid?: unknown
+  blot?: unknown
 }): void {
-  if (rendering.wet && rendering.fluid)
-    throw new Error("A brush is wet or fluid, not both.")
+  const media = [rendering.wet, rendering.fluid, rendering.blot]
+  if (media.filter(Boolean).length > 1)
+    throw new Error("A brush is one of wet, fluid or blot, not more.")
 }
 
 /**
