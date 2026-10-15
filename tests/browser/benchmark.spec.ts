@@ -286,14 +286,12 @@ test("a flooded fluid workload records the simulation's clock with the pen down"
     WORKLOAD
   )
   expect(result.dispatched).toBe(result.requested)
-  // The clock ran under the pen, over every tile of the document, and was
-  // owed steps. How many it could afford is the GPU's: on a software one,
-  // none in so short a time may fit the budget.
-  const wet = await page.evaluate(() => window.engine.getSnapshot().wet)
-  expect(
-    result.fluidTicks.length,
-    `wet after the run: ${wet}; frames: ${result.frames.length}; elapsed: ${Math.round(result.elapsedMs)} ms`
-  ).toBeGreaterThan(0)
+  // The clock ran through the strokes, over every tile of the document, and
+  // was owed steps. Whether a frame of it fell with the pen down, and how
+  // many steps it could afford, are the GPU's: a software one draws a frame
+  // in a second or two, and none may fall inside a stroke.
+  expect(await page.evaluate(() => window.engine.getSnapshot().wet)).toBe(true)
+  expect(result.fluidTicks.length).toBeGreaterThan(0)
   expect(
     result.fluidTicks.reduce(
       (total, tick) => total + tick.steps + tick.skipped,

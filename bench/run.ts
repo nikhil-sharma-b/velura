@@ -109,7 +109,7 @@ type Pass = {
 /** A pass with what is kept out of the recorded summary. */
 type Measured = Pass & {
   frames: FrameTiming[]
-  fluidTicks: FluidTick[]
+  fluidTicks: (FluidTick & { penDown: boolean })[]
   strokeStarts: number[]
   readbackBytes: number
   historySettledMs: number[]
@@ -682,7 +682,7 @@ async function fluidLoadSweep(): Promise<void> {
         const held = await measure(paced, workload)
         const readbacks = free.readbacks + held.readbacks
         const allocations = Math.max(free.allocations, held.allocations)
-        const ticks = held.fluidTicks
+        const ticks = held.fluidTicks.filter((tick) => tick.penDown)
         const steps = ticks.reduce((total, tick) => total + tick.steps, 0)
         const skipped = ticks.reduce((total, tick) => total + tick.skipped, 0)
         const reckoned = ticks.map((tick) => tick.stepMs).sort((a, b) => a - b)

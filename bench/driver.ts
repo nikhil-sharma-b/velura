@@ -76,11 +76,12 @@ export type RunResult = {
    */
   undoMs: number[]
   /**
-   * Each frame of the fluid simulation's clock while the pen was down: the
-   * steps it ran and those its budget skipped (fluid brushes 13). Empty for
-   * a brush that is not fluid.
+   * Each frame of the fluid simulation's clock from the first pen-down to
+   * the last stroke landing: the steps it ran and those its budget skipped
+   * (fluid brushes 13), and whether the pen was down. Empty with nothing
+   * wet.
    */
-  fluidTicks: FluidTick[]
+  fluidTicks: (FluidTick & { penDown: boolean })[]
   /** Wall-clock milliseconds the pen was down. */
   elapsedMs: number
   /**
@@ -720,11 +721,11 @@ export async function runBenchmark(
 
   const frames: FrameTiming[] = []
   engine.observeFrames((frame) => frames.push(frame))
-  const fluidTicks: FluidTick[] = []
+  const fluidTicks: (FluidTick & { penDown: boolean })[] = []
   let penIsDown = false
-  engine.observeFluid((tick) => {
-    if (penIsDown) fluidTicks.push(tick)
-  })
+  engine.observeFluid((tick) =>
+    fluidTicks.push({ ...tick, penDown: penIsDown })
+  )
   const watch = watchInteractivePath()
   const pump = createPump()
   let dispatched = 0
