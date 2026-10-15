@@ -123,6 +123,7 @@ import { useRulersVisible } from "../lib/ruler-preference"
 import { EraserTrail } from "./eraser-trail"
 import { StraightEdgeOverlay } from "./straight-edge"
 import {
+  NOTHING_WET_CURSOR,
   SAMPLING_CURSOR,
   TOOL_CURSOR,
   VECTOR_CURSORS,
@@ -602,6 +603,52 @@ function findLayer(
       if (found) return found
     }
   }
+}
+
+/**
+ * Whether a blot brush in the hand is over paper with nothing wet on it
+ * (fluid brushes 17), where a stroke would take nothing up: asked of the
+ * engine as the pointer moves, a tile at a time, and again as paint dries.
+ * The answer changes only at a tile's border, so the canvas re-renders only
+ * there.
+ */
+function useNothingWetUnder(
+  engine: Engine | null,
+  canvas: HTMLCanvasElement | null,
+  active: boolean,
+  wet: boolean
+): boolean {
+  const [nothingWet, setNothingWet] = useState(false)
+  // Kept across paint drying, which asks again where the pointer rests.
+  const at = useRef<{ x: number; y: number } | null>(null)
+  useEffect(() => {
+    // Off, the answer is not read: see the return below.
+    if (!engine || !canvas || !active) return
+    const ask = () => {
+      const point = at.current
+      if (!point) return
+      const bounds = canvas.getBoundingClientRect()
+      // The engine reads the canvas in its backing pixels, as the pen does.
+      const x = ((point.x - bounds.left) * canvas.width) / (bounds.width || 1)
+      const y = ((point.y - bounds.top) * canvas.height) / (bounds.height || 1)
+      setNothingWet(!engine.wetUnder(x, y))
+    }
+    const move = (event: PointerEvent) => {
+      at.current = { x: event.clientX, y: event.clientY }
+      ask()
+    }
+    canvas.addEventListener("pointermove", move)
+    canvas.addEventListener("pointerdown", move)
+    // Where the pointer already rests, once the brush or the paint under it
+    // has changed: on the next frame, as the engine's own news comes.
+    const frame = requestAnimationFrame(ask)
+    return () => {
+      cancelAnimationFrame(frame)
+      canvas.removeEventListener("pointermove", move)
+      canvas.removeEventListener("pointerdown", move)
+    }
+  }, [engine, canvas, active, wet])
+  return active && nothingWet
 }
 
 /**
@@ -1201,6 +1248,14 @@ export function CanvasHost({
     snapshot.tool === "eraser" ? snapshot.eraser : snapshot.brush
   // Smudge keeps a size of its own, apart from the brush whose tip it wears.
   const smudging = snapshot.tool === "smudge"
+  /** A blot brush in the hand (fluid brushes 17), which takes up wet paint. */
+  const blotting = snapshot.tool === "brush" && !!snapshot.brush.rendering.blot
+  const nothingWet = useNothingWetUnder(
+    engine,
+    canvasElement,
+    blotting,
+    snapshot.wet
+  )
   const tipRadius = smudging ? snapshot.smudge.radius : activeTip.shape.radius
   /** Half the size setting, as a tip's radius or half an outline's width. */
   const sizeRadius = vectorWidth ? shapeOptions.strokeWidth / 2 : tipRadius
@@ -1362,7 +1417,9 @@ export function CanvasHost({
                 ? VECTOR_CURSORS[snapshot.tool]
                 : isSelectionTool(snapshot.tool)
                   ? "crosshair"
-                  : TOOL_CURSOR,
+                  : nothingWet
+                    ? NOTHING_WET_CURSOR
+                    : TOOL_CURSOR,
         }}
       />
       {/* Guides and the straight-edge (16, 17) are drawn with the canvas, so

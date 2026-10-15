@@ -2361,3 +2361,32 @@ The 512 px rows at 8192² of `--fluid`, whose wash outgrows the limit under
 the pen and settles there with history reading it back, are fluid brushes
 33. The batched deposit at 64 and 512 px is the table of fluid brushes 10,
 above: the dab is not the cost.
+
+### Blotting wet paint (fluid brushes 17)
+
+`--fluid-load` paints the same workload again over the same flood with a
+blot brush (water 1, pigment 0.8, the Tissue's): its dabs reach only tiles
+that are wet, take no slot, and run the absorb pass where a fluid stroke
+runs the pour. Apple GPU (Metal 3), Chrome/WebGPU, 75 Hz display, 2560 ×
+1440 window, six strokes, 2026-10-15, on top of `547e974`; the fluid rows
+of the same run are given beside them:
+
+| document | brush | paint | ms/frame, unpaced | sustained fps | all frames, median / p95 | steps/frame, paced | skipped | reckoned ms a step | dabs | readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1024² | 64 px | Fluid, 16 wet | 1.060 | 500.0 | 14.4 / 17.2 ms | 1.52 | 0 | 0.470 | 356 | 0 | 6 |
+| 1024² | 64 px | Blot, 16 wet | 0.971 | 500.0 | 14.4 / 17.5 ms | 1.46 | 0 | 0.468 | 356 | 0 | 6 |
+| 1024² | 512 px | Fluid, 16 wet | 1.044 | 526.3 | 14.3 / 17.1 ms | 1.46 | 0 | 0.470 | 46 | 0 | 6 |
+| 1024² | 512 px | Blot, 16 wet | 0.976 | 500.0 | 14.0 / 16.7 ms | 1.46 | 0 | 0.482 | 46 | 0 | 6 |
+| 2048² | 64 px | Fluid, 64 wet | 1.345 | 400.0 | 15.0 / 17.7 ms | 0.98 | 59 | 1.775 | 614 | 0 | 6 |
+| 2048² | 64 px | Blot, 64 wet | 1.347 | 416.7 | 14.8 / 17.6 ms | 0.99 | 58 | 1.762 | 614 | 0 | 6 |
+| 2048² | 512 px | Fluid, 64 wet | 1.385 | 400.0 | 14.6 / 17.4 ms | 0.98 | 60 | 1.784 | 80 | 0 | 6 |
+| 2048² | 512 px | Blot, 64 wet | 1.380 | 400.0 | 14.6 / 17.3 ms | 1.00 | 58 | 1.202 | 80 | 0 | 6 |
+
+**A blot stroke over 64 wet tiles meets D30's frame rate,** 400 to 417 fps
+unpaced against 120, and costs what a fluid stroke over the same flood
+does: the absorb pass is the pour's size, and the step beside it is the
+cost. History reads nothing back, since a blot settles nothing. The six
+allocations are the pen-down copy each stroke into wet paint takes (fluid
+brushes 34). Pen-to-pixel cannot be judged on this 75 Hz panel, where it is
+a panel period and the frame's GPU work; the under-10 ms figure needs a 120
+Hz display, which there is none of.

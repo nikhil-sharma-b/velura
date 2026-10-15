@@ -129,10 +129,9 @@ struct Fields {
   @location(1) pigment: vec4<f32>,
 }
 
-@fragment
-fn fragmentMain(varyings: Varyings) -> Fields {
+// How much of a cell the dab covers, from none past its rim to one inside it.
+fn dabShape(varyings: Varyings) -> f32 {
   let cell = varyings.position.xy;
-  if (any(cell < varyings.slot.xy) || any(cell >= varyings.slot.zw)) { discard; }
   // Where the cell lies in the dab, in cells: turned back, and stretched
   // across the tip's length so its squashed rim is a circle's again.
   let offset = cell - varyings.center;
@@ -156,6 +155,14 @@ fn fragmentMain(varyings: Varyings) -> Fields {
       within
     );
   }
+  return shape;
+}
+
+@fragment
+fn fragmentMain(varyings: Varyings) -> Fields {
+  let cell = varyings.position.xy;
+  if (any(cell < varyings.slot.xy) || any(cell >= varyings.slot.zw)) { discard; }
+  let shape = dabShape(varyings);
   var out: Fields;
   // One dab lays the whole depth the brush fills a cell to, so a single tap
   // of a flooded brush floods (fluid brushes 12). It leaves the paper damp
@@ -171,6 +178,20 @@ fn fragmentMain(varyings: Varyings) -> Fields {
   );
   // Density is the pigment's alpha, and its colour is premultiplied by it.
   out.pigment = varyings.ink * (varyings.load * shape);
+  return out;
+}
+
+// A blot brush's dab (fluid brushes 17) lays nothing: in every channel of
+// the pigment target it gives how strongly it takes at the cell, which the
+// target's blend multiplies into what the batch's other dabs leave, so the
+// batch keeps the product and not the sum. Nothing goes into the water one.
+@fragment
+fn blotFragment(varyings: Varyings) -> Fields {
+  let cell = varyings.position.xy;
+  if (any(cell < varyings.slot.xy) || any(cell >= varyings.slot.zw)) { discard; }
+  var out: Fields;
+  out.water = vec4<f32>(0.0);
+  out.pigment = vec4<f32>(clamp(varyings.load * dabShape(varyings), 0.0, 1.0));
   return out;
 }
 `
@@ -251,6 +272,10 @@ struct Sim {
   // The depth of water the brush fills a cell to at a dab's full share, and
   // no deeper.
   level: f32,
+  // A blot brush's: the share of water and dampness, and of suspended
+  // pigment, it takes where it lands at full strength.
+  blotWater: f32,
+  blotPigment: f32,
   // Each slot's tile in xy, and in z whether one holds it.
   tiles: array<vec4<i32>, ${WET_SLOTS}>,
 }
@@ -498,6 +523,31 @@ fn pourMain(@builtin(global_invocation_id) id: vec3<u32>) {
     suspendedOut,
     texel,
     addPaint(textureLoad(suspended, texel, 0), textureLoad(laidPigment, texel, 0) * share)
+  );
+  textureStore(depositedOut, texel, textureLoad(deposited, texel, 0));
+}
+
+// What a batch of blot dabs takes out of the fields (fluid brushes 17): the
+// pigment target holds in alpha the share of each cell the batch leaves, so
+// one less that is how strongly it takes there, clipped by the selection as
+// the pour is. Standing water and dampness go by the same share, so a cell
+// blotted dry stops moving, and so does the pigment suspended in it. The
+// pigment the paper has taken is left alone: the step lifts a little back
+// while water stands on it.
+@compute @workgroup_size(8, 8, 1)
+fn blotMain(@builtin(global_invocation_id) id: vec3<u32>) {
+  let tile = sim.tiles[id.z];
+  if (tile.z == 0) { return; }
+  let texel = slotTexel(id.z, id.xy);
+  let c = textureLoad(water, texel, 0);
+  let share = selected(tile.xy * WET_CELLS + vec2<i32>(id.xy));
+  let strength = (1.0 - textureLoad(laidPigment, texel, 0).a) * share;
+  let kept = 1.0 - sim.blotWater * strength;
+  textureStore(waterOut, texel, vec4<f32>(c.xy * kept, c.zw));
+  textureStore(
+    suspendedOut,
+    texel,
+    textureLoad(suspended, texel, 0) * (1.0 - sim.blotPigment * strength)
   );
   textureStore(depositedOut, texel, textureLoad(deposited, texel, 0));
 }

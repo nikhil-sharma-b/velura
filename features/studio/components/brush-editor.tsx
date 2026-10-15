@@ -19,8 +19,10 @@ import { Slider } from "@/components/ui/slider"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   type Brush,
+  type BrushBlot,
   type BrushFluid,
   type BrushWet,
+  DEFAULT_BLOT,
   DEFAULT_FLUID,
   DEFAULT_WET_PICKUP,
   isBlender,
@@ -149,6 +151,15 @@ const FLUID_SETTINGS: readonly { field: keyof BrushFluid; label: string }[] = [
   { field: "bleed", label: "Bleed" },
   { field: "edge", label: "Edge" },
   { field: "granulation", label: "Granulation" },
+]
+
+/**
+ * A blot brush's two settings (fluid brushes 17): what a dab takes out of a
+ * wet wash where it lands at full strength.
+ */
+const BLOT_SETTINGS: readonly { field: keyof BrushBlot; label: string }[] = [
+  { field: "water", label: "Water taken" },
+  { field: "pigment", label: "Pigment taken" },
 ]
 
 /** One of the Rendering tab's switches: what it turns on, and what that does. */
@@ -481,6 +492,7 @@ export function BrushEditor({
   const color = brush.color ?? UNIT_COLOR
   const wet = brush.rendering.wet
   const fluid = brush.rendering.fluid
+  const blot = brush.rendering.blot
   const blender = isBlender(brush)
   const laying = wet
     ? "Lays colour and drags the paint under it along"
@@ -496,13 +508,25 @@ export function BrushEditor({
   const [dried, setDried] = useState<{ id: string; wet: BrushWet } | null>(null)
   const toggleFluid = () => {
     if (!fluid) {
-      setDried(wet ? { id: brush.id, wet } : null)
+      if (!blot) setDried(wet ? { id: brush.id, wet } : null)
       apply({ rendering: { fluid: { ...DEFAULT_FLUID } } })
       return
     }
     const restored = dried?.id === brush.id ? dried.wet : null
     setDried(null)
     apply({ rendering: { fluid: null, wet: restored } })
+  }
+  // A blot is neither wet nor fluid (fluid brushes 17): turned on it takes
+  // either off, and turned off it puts back the wet setting fluid kept.
+  const toggleBlot = () => {
+    if (!blot) {
+      if (!fluid) setDried(wet ? { id: brush.id, wet } : null)
+      apply({ rendering: { blot: { ...DEFAULT_BLOT } } })
+      return
+    }
+    const restored = dried?.id === brush.id ? dried.wet : null
+    setDried(null)
+    apply({ rendering: { blot: null, wet: restored } })
   }
   const own = textures.filter((id) => !shipped.has(id))
 
@@ -903,9 +927,20 @@ export function BrushEditor({
             checked={!!fluid}
             onToggle={toggleFluid}
           />
-          {/* A fluid brush lays into the wet surface (D42) and is never wet
-              as well, so the wet section goes while fluid is on. */}
-          {!fluid && (
+          <MediumSwitch
+            label="Blot"
+            summary={
+              blot
+                ? "Lays nothing and takes water and pigment out of a wet wash"
+                : "Lays what it carries"
+            }
+            checked={!!blot}
+            onToggle={toggleBlot}
+          />
+          {/* A fluid brush lays into the wet surface (D42), and a blot takes
+              out of it, and neither is wet as well, so the wet section goes
+              while either is on. */}
+          {!fluid && !blot && (
             <MediumSwitch
               label="Wet"
               summary={wetSummary}
@@ -935,6 +970,22 @@ export function BrushEditor({
                 }
               />
             ))}
+          {blot &&
+            BLOT_SETTINGS.map(({ field, label }) => (
+              <SliderSetting
+                key={field}
+                label={label}
+                value={blot[field]}
+                min={0}
+                max={1}
+                step={0.01}
+                scale={100}
+                unit="%"
+                onChange={(value) =>
+                  apply({ rendering: { blot: { ...blot, [field]: value } } })
+                }
+              />
+            ))}
           {/* A wet stroke is written straight to the layer (D41), so what the
               stroke buffer provides cannot apply to it. Those controls are
               hidden and their values left on the brush, where turning wet
@@ -952,8 +1003,9 @@ export function BrushEditor({
             />
           )}
           {/* A fluid brush has no use for accumulation, and keeps its opacity:
-              that is pigment a dab carries. */}
-          {!wet && !fluid && (
+              that is pigment a dab carries. Nor has a blot, whose opacity is
+              how strongly a dab takes. */}
+          {!wet && !fluid && !blot && (
             <div className="space-y-1.5">
               <Label className="text-xs">Dabs within a stroke</Label>
               <Select

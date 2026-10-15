@@ -1,7 +1,9 @@
 import { validateTexture } from "../../engine/brush/texture"
 import { validateTipSelection } from "../../engine/brush/tip-sets"
 import {
+  copyBrushBlot,
   copyBrushFluid,
+  validateBrushBlot,
   validateBrushColor,
   validateBrushFluid,
   validateBrushMedium,
@@ -23,6 +25,7 @@ import {
 
 import type {
   Brush,
+  BrushBlot,
   BrushFluid,
   BrushGrain,
   BrushRendering,
@@ -168,6 +171,11 @@ function normaliseRendering(value: unknown): BrushRendering {
     const fluid = rendering.fluid as BrushFluid
     validateBrushFluid(fluid)
     next.fluid = copyBrushFluid(fluid)
+  }
+  if (rendering.blot !== undefined && rendering.blot !== null) {
+    const blot = rendering.blot as BrushBlot
+    validateBrushBlot(blot)
+    next.blot = copyBrushBlot(blot)
   }
   validateBrushMedium(next)
   return next

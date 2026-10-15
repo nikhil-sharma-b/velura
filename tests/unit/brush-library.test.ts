@@ -173,7 +173,49 @@ describe("a stored brush definition", () => {
         ...round,
         rendering: { ...round.rendering, fluid, wet: { pickup: 0.5 } },
       })
-    ).toThrow(/wet or fluid/)
+    ).toThrow(/one of wet, fluid or blot/)
+  })
+
+  test("a blot brush round-trips, and a brush with no blot loads as it was", () => {
+    const stored = normaliseBrushDefinition(
+      JSON.parse(
+        JSON.stringify({
+          ...round,
+          rendering: {
+            ...round.rendering,
+            blot: { water: 0.7, pigment: 0.25, extra: 1 },
+          },
+        })
+      )
+    )
+    expect(stored.rendering.blot).toEqual({ water: 0.7, pigment: 0.25 })
+    expect(normaliseBrushDefinition(stored)).toEqual(stored)
+    const plain = normaliseBrushDefinition(JSON.parse(JSON.stringify(round)))
+    expect(plain.rendering).not.toHaveProperty("blot")
+  })
+
+  test("refuses a blot setting out of range, and blot with fluid or wet", () => {
+    const blot = { water: 1, pigment: 0.8 }
+    for (const field of ["water", "pigment"] as const)
+      for (const bad of [-0.1, 1.1, Number.NaN, undefined])
+        expect(() =>
+          normaliseBrushDefinition({
+            ...round,
+            rendering: { ...round.rendering, blot: { ...blot, [field]: bad } },
+          })
+        ).toThrow(`blot ${field}`)
+    expect(() =>
+      normaliseBrushDefinition({
+        ...round,
+        rendering: { ...round.rendering, blot, fluid: { ...DEFAULT_FLUID } },
+      })
+    ).toThrow(/one of wet, fluid or blot/)
+    expect(() =>
+      normaliseBrushDefinition({
+        ...round,
+        rendering: { ...round.rendering, blot, wet: { pickup: 0.5 } },
+      })
+    ).toThrow(/one of wet, fluid or blot/)
   })
 })
 

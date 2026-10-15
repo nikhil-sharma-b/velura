@@ -387,10 +387,62 @@ export const FLUID_BRUSHES: readonly Brush[] = Object.freeze([
   },
 ])
 
+/**
+ * The blot brushes every install opens with (fluid brushes 17): what lifts
+ * paint out of a wash while it is wet. Each lays nothing; `rendering.blot`
+ * says how much of the water and the pigment suspended in it a dab takes
+ * where it lands at full strength, and opacity and flow how strong that is.
+ * Neither reaches paint that has dried. Starting values, tuned with a pen.
+ */
+export const BLOT_BRUSHES: readonly Brush[] = Object.freeze([
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}tissue`,
+    name: "Tissue",
+    // Crumpled paper pressed into the wash: a firm mark, mottled by the
+    // folds, that takes the water up and most of the paint with it.
+    shape: {
+      radius: 28,
+      feather: 2,
+      roundness: 1,
+      angle: 0,
+      spacing: 0.15,
+      tipTextureId: CHARCOAL_TIP,
+    },
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 1,
+      blot: { water: 1, pigment: 0.8 },
+    },
+    dynamics: [
+      // The tissue lands at any angle.
+      { source: "random", target: "angle", range: [0, 1], mix: "add" },
+    ],
+  },
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}thirsty-brush`,
+    name: "Thirsty brush",
+    // A damp brush squeezed out: it drinks the water and leaves most of the
+    // paint, softening an area and stopping it running.
+    shape: { radius: 16, feather: 6, roundness: 1, angle: 0, spacing: 0.08 },
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0.6,
+      blot: { water: 0.7, pigment: 0.25 },
+    },
+    dynamics: [
+      // Pressed harder, the bristles take more.
+      scaledBy("pressure", "flow", 0.2, 1),
+      scaledBy("pressure", "size", 0.6, 1),
+    ],
+  },
+])
+
 /** The fluid brushes as the library shelves them, after the wet ones. */
 export const FLUID_BRUSH_SET: BuiltinBrushSet = Object.freeze({
   name: "Fluid",
-  brushes: FLUID_BRUSHES,
+  brushes: Object.freeze([...FLUID_BRUSHES, ...BLOT_BRUSHES]),
 })
 
 /**
@@ -404,6 +456,7 @@ const ALL_BUILTIN_BRUSHES = [
   ...BUILTIN_BRUSHES,
   ...WET_BRUSHES,
   ...FLUID_BRUSHES,
+  ...BLOT_BRUSHES,
   ...KRITA_BRUSHES,
 ]
 

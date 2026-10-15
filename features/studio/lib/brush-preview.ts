@@ -183,10 +183,13 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
   const blender = isBlender(brush) ? brush.rendering.wet : undefined
   // A fluid brush with no flow lays water and no pigment (D42), and is shown
   // by that water for the same reason.
+  // A blot lays nothing either (fluid brushes 17), and is shown by how much
+  // of the water it takes.
   const water =
     brush.rendering.fluid && brush.rendering.flow === 0
       ? brush.rendering.fluid.water
       : undefined
+  const blot = brush.rendering.blot
   const params: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   const context: StampContext = { ...NEUTRAL_STAMP_CONTEXT }
   const dabs: PreviewDab[] = []
@@ -209,7 +212,7 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
         ? blender.pickup * params.pickup
         : water !== undefined
           ? water * params.water
-          : brush.rendering.flow * params.flow,
+          : (blot?.water ?? 1) * brush.rendering.flow * params.flow,
       angle: brush.shape.angle + params.angle,
       roundness: brush.shape.roundness * params.roundness,
       hue: wet ? 0 : params.hue * (brush.color?.hue ?? 1),

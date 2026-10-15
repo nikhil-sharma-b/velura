@@ -87,7 +87,10 @@ import {
   type BrushWet,
   validateBrushWet,
   type BrushFluid,
+  type BrushBlot,
+  copyBrushBlot,
   copyBrushFluid,
+  validateBrushBlot,
   validateBrushFluid,
   validateBrushMedium,
   brushSpacing,
@@ -791,6 +794,12 @@ export type EngineCommand =
        * surface. Null takes that away. Never beside `wet`.
        */
       fluid?: BrushFluid | null
+      /**
+       * Makes the brush a blot (fluid brushes 17): it lays nothing and takes
+       * water and pigment out of the wet surface. Null takes that away.
+       * Never beside `wet` or `fluid`.
+       */
+      blot?: BrushBlot | null
       /** Replaces the dynamics graph outright; see `evaluateDynamics`. */
       dynamics?: Modulator[]
     }
@@ -1514,6 +1523,12 @@ export interface Engine {
    */
   observeFluid(observer: ((tick: FluidTick) => void) | null): void
   /**
+   * Whether paint is wet under a point of the canvas, in its backing pixels
+   * as the pen reports them, on what a stroke there would paint: what a blot
+   * brush could take from (fluid brushes 17). Read a tile at a time.
+   */
+  wetUnder(x: number, y: number): boolean
+  /**
    * What the session's history is holding: how many steps it can take back, the
    * logical bytes of the tiles behind them, and how much of that is in memory
    * rather than compressed away or spilled to disk (D21).
@@ -1925,6 +1940,8 @@ export function createEngine(
   let directWet: BrushWet | undefined
   /** The surface a fluid stroke in flight is painting into (D42). */
   let fluidTargetId: string | undefined
+  /** Whether that stroke is a blot's, which takes paint up and lays none. */
+  let fluidBlot = false
   /** The surface holding wet paint, from its first dab until it has dried. */
   let wetTargetId: string | undefined
   // The simulation's clock (D42): its own frame, asked for only while paint
@@ -2224,6 +2241,7 @@ export function createEngine(
     stampCount = 0
     directTargetId = undefined
     fluidTargetId = undefined
+    fluidBlot = false
     stopFluidClock()
     wetTargetId = undefined
     if (snapshot.wet) publish({ wet: false })
@@ -4975,7 +4993,8 @@ export function createEngine(
     if (fluidTargetId) {
       const settled = renderer?.drawFluid(stamps, stampCount) ?? []
       // Wet from the stroke's dabs, and again if it was dried under the pen.
-      wetTargetId = fluidTargetId
+      // A blot wets nothing.
+      if (!fluidBlot) wetTargetId = fluidTargetId
       // A wash past the wet tile limit settled a body to make room.
       recordSettled(settled)
     } else renderer?.stamp(stamps, stampCount)
@@ -5444,6 +5463,8 @@ export function createEngine(
       directTargetId = undefined
       const fluid = fluidTargetId
       fluidTargetId = undefined
+      const blotted = fluidBlot
+      fluidBlot = false
       // A fluid stroke leaves no mark yet: its paint is still wet, and no
       // pixel of the layer changes until it settles. Its step is the wet
       // fields as they were at pen-down, which stay on the GPU.
@@ -5452,7 +5473,8 @@ export function createEngine(
       else if (fluid) {
         const before = renderer?.endFluid(true)
         if (before) {
-          if (history) history.recordWetStroke(fluid, before)
+          if (history)
+            history.recordWetStroke(fluid, before, blotted ? "blot" : undefined)
           else renderer?.releaseFluid(before)
         }
         syncWet()
@@ -6083,7 +6105,24 @@ export function createEngine(
     // it paints as the brush otherwise is.
     const fluid =
       tool === "brush" && !doc.paintingMask ? brush.rendering.fluid : undefined
-    if (fluid) {
+    // A blot lays nothing and dries nothing (fluid brushes 17): it takes
+    // from the wet surface of what it is drawn on, which on a mask or on a
+    // layer that is not the wet one is nothing at all.
+    const blot = tool === "brush" ? brush.rendering.blot : undefined
+    if (blot) {
+      renderer?.beginFluid(paintTargetId(doc), {
+        ink,
+        load: brush.rendering.opacity,
+        water: 0,
+        drying: 0,
+        bleed: 0,
+        edge: 0,
+        granulation: 0,
+        blot,
+      })
+      fluidTargetId = paintTargetId(doc)
+      fluidBlot = true
+    } else if (fluid) {
       const target = paintTargetId(doc)
       // One layer is wet at a time.
       if (wetTargetId && wetTargetId !== target) dryFluid()
@@ -6161,6 +6200,7 @@ export function createEngine(
     if (fluidTargetId) {
       // The wet fields go back to what they were at pen-down.
       fluidTargetId = undefined
+      fluidBlot = false
       renderer?.endFluid(false)
       syncWet()
     }
@@ -6910,6 +6950,7 @@ export function createEngine(
           if (command.scatter) validateScatter(command.scatter)
           if (command.wet) validateBrushWet(command.wet)
           if (command.fluid) validateBrushFluid(command.fluid)
+          if (command.blot) validateBrushBlot(command.blot)
           // Textures are named, not carried, so a name that resolves to
           // nothing is caught here rather than silently drawing untextured.
           if (command.tipTextureId && !textures.get(command.tipTextureId))
@@ -6992,6 +7033,11 @@ export function createEngine(
               ? brush.rendering.fluid
               : (command.fluid ?? undefined)
           if (fluid) next.rendering.fluid = copyBrushFluid(fluid)
+          const blot =
+            command.blot === undefined
+              ? brush.rendering.blot
+              : (command.blot ?? undefined)
+          if (blot) next.rendering.blot = copyBrushBlot(blot)
           validateBrushMedium(next.rendering)
           // Spacing is fixed for the life of a resampler, so a brush that
           // changes it needs a new one. Never mid-stroke: the pen is up.
@@ -7001,7 +7047,8 @@ export function createEngine(
           cleanBrush()
           brush = next
           // Ahead of the pen: the wet fields are not allocated by a stroke.
-          if (next.rendering.fluid) renderer?.prepareFluid()
+          if (next.rendering.fluid || next.rendering.blot)
+            renderer?.prepareFluid()
           applyBrushTextures()
           if (snapshot.status === "ready") render()
           publish({ brush: Object.freeze(cloneBrush(next)) })
@@ -8534,6 +8581,13 @@ export function createEngine(
       return true
     },
     cloudMetrics: () => cloudSync?.metrics() ?? null,
+    wetUnder(x, y) {
+      if (!doc || !wetTargetId) return false
+      return (
+        renderer?.fluidWetAt(paintTargetId(doc), toDocX(x, y), toDocY(x, y)) ??
+        false
+      )
+    },
     historyUsage: () => ({
       steps: history?.stepsBack() ?? 0,
       wetSteps: history?.wetSteps() ?? 0,

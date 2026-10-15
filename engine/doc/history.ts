@@ -151,7 +151,7 @@ export interface DocumentHistory {
    * fields as they were at pen-down, which history now owns. Undo restores
    * it, and redo the copy undo took as it did.
    */
-  recordWetStroke(surfaceId: string, before: WetCopy): void
+  recordWetStroke(surfaceId: string, before: WetCopy, label?: string): void
   /**
    * Wet paint settled into `region`, one step, recorded as a stroke is. It
    * takes the wet strokes out of history: their copies describe fields that
@@ -602,13 +602,13 @@ export function createDocumentHistory(options: {
         pushEntry({ label: "stroke", surfaces: [change] })
       })
     },
-    recordWetStroke(surfaceId, before) {
+    recordWetStroke(surfaceId, before, label = "fluid stroke") {
       if (!options.wet)
         throw new Error("A wet stroke needs the wet fields to restore it to.")
       enqueue(
         () => {
           stack.push({
-            label: "fluid stroke",
+            label,
             surfaces: [],
             wet: { surfaceId, before },
           })

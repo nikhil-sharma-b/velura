@@ -17,11 +17,15 @@ import {
   type SceneCommand,
 } from "../engine"
 import { DEFAULT_FLUID } from "../engine/brush/brush"
+import { BLOT_BRUSHES } from "../engine/brush/presets"
 import {
   createVectorWorkload,
   type VectorWorkloadOptions,
 } from "./vector-workload"
 import { createWorkload, type WorkloadOptions } from "./workload"
+
+/** The blot the benchmark blots with: the Tissue's (fluid brushes 17). */
+const TISSUE = BLOT_BRUSHES.find((brush) => brush.name === "Tissue")!
 
 export type RunResult = {
   frames: FrameTiming[]
@@ -714,7 +718,11 @@ export async function runBenchmark(
       flow: WET_BRUSH.flow,
       ...(fluid.tip ? { tipTextureId: "bench-fluid-tip" } : {}),
       ...(fluid.scatter ? { scatter: fluid.scatter } : {}),
-      ...(fluid.dry ? {} : { fluid: DEFAULT_FLUID }),
+      ...(fluid.dry
+        ? {}
+        : fluid.blot
+          ? { fluid: null, blot: TISSUE.rendering.blot }
+          : { fluid: DEFAULT_FLUID }),
     })
   }
   const detachThumbnails = attachThumbnails(engine)
