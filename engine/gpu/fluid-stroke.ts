@@ -12,6 +12,7 @@ import {
   FLUID_HOLDS,
   FLUID_MAX_WATER,
   FLUID_RELIEF,
+  FLUID_SLOT_HELD,
   fluidDabShader,
   fluidSettleShader,
   fluidSimShader,
@@ -183,14 +184,24 @@ export interface FluidStroke extends StrokeRenderer<FluidOpening> {
   isWet(): boolean
   /** Whether the tile under a document pixel of `surface` is wet. */
   wetAt(surface: Surface, x: number, y: number): boolean
-  /** How many tiles are wet. */
+  /**
+   * How many tiles a step runs over: those wet, less those held while
+   * drying is paused.
+   */
   tileCount(): number
   /**
-   * Runs the simulation on by `steps` steps, fewer if everything dries
-   * first. A body whose deadline passes settles into the layer; answers what
-   * each such settle wrote, in order.
+   * Runs the simulation on by `steps` steps, fewer if everything dries or
+   * holds first. A body whose deadline passes settles into the layer, or
+   * with drying paused holds; answers what each settle wrote, in order.
    */
   advance(steps: number): StrokeMark[]
+  /**
+   * Pauses drying, or lets it go on (fluid brushes 18). Paused, nothing
+   * evaporates, and a body whose deadline passes holds, its water standing
+   * and no longer stepped, until a dab lands in it. Let go, every body dries
+   * from where it is.
+   */
+  setPaused(paused: boolean): void
   /**
    * Settles everything wet into the layer at once and frees it. Answers what
    * that wrote, or null with nothing wet.
@@ -259,6 +270,8 @@ type KeptFields = WetCopy & {
   clock: number
   rates: [number, number, number, number]
   lifetime: number
+  /** Whether drying was paused, so the deadlines kept are hold timers. */
+  paused: boolean
 }
 
 /**
@@ -563,6 +576,19 @@ export function createFluidStroke(
   let clock = 0
   /** Steps a body outlives its last dab by, at the brush's drying. */
   let lifetime = 0
+  /**
+   * Whether drying is paused (fluid brushes 18): nothing evaporates, and a
+   * body whose deadline passes holds, its water still standing.
+   */
+  let paused = false
+  /**
+   * The slots of held bodies, by slot: alike in both copies of the fields,
+   * so a step that passes them by leaves them as they are whichever copy is
+   * current. Kept, as is what `hold` finds, so a step allocates none (D30).
+   */
+  const holding = new Uint8Array(WET_SLOTS)
+  const holdingNow = new Uint8Array(WET_SLOTS)
+  let heldCount = 0
 
   // What the dabs laid into each slot reached, in document pixels: settling
   // tells history the box round a mark, not the tiles it lies in.
@@ -585,6 +611,8 @@ export function createFluidStroke(
       const tile = tiles!.tile(slot)!
       tiles!.refresh(tile.x, tile.y, clock + lifetime)
     }
+    // A held body painted into moves again.
+    hold()
   }
 
   /** A slot with no tile: no dab has reached it, and no water flooded it. */
@@ -668,10 +696,39 @@ export function createFluidStroke(
     slots = { texture, view: texture.createView() }
     tiles = createWetTiles(columns, rows)
     for (let slot = 0; slot < WET_SLOTS; slot++) forget(slot)
+    holding.fill(0)
+    heldCount = 0
     span = 0
     shown = []
     settleBindings = []
     simBindings = []
+  }
+
+  /** Steps for water so deep to be gone, and the paper dry after it. */
+  const outlasting = (water: number) =>
+    Math.ceil(water / simRates[0]) + FLUID_DAMP_STEPS + DRYING_MARGIN
+
+  /**
+   * Gives every body the time the deepest water takes to dry at the current
+   * rate: what paint already wet is owed when it will dry more slowly than
+   * its deadline was counted for.
+   */
+  function outlastDeepest() {
+    for (const slot of tiles!.slots()) {
+      const tile = tiles!.tile(slot)!
+      tiles!.refresh(tile.x, tile.y, clock + outlasting(FLUID_MAX_WATER))
+    }
+  }
+
+  /**
+   * Tells the simulation its rates and slots. Paused, it is told nothing
+   * evaporates; `simRates` keeps the rate drying goes on at.
+   */
+  function writeSim() {
+    const rate = simRates[0]
+    if (paused) simRates[0] = 0
+    device.queue.writeBuffer(simUniform, 0, simData)
+    simRates[0] = rate
   }
 
   /** Tells the shaders which tiles hold which slots. */
@@ -691,7 +748,47 @@ export function createFluidStroke(
       simTiles[slot * 4 + 2] = 1
       span = slot + 1
     }
-    device.queue.writeBuffer(simUniform, 0, simData)
+    // Held again from what the deadlines say, below.
+    holding.fill(0)
+    heldCount = 0
+    writeSim()
+    hold()
+  }
+
+  /**
+   * With drying paused, holds every body whose deadline has passed and lets
+   * go of any a dab has pushed back, telling the step which is which: it
+   * passes a held slot by. A slot newly held is copied into the other copy
+   * of the fields, so that both hold it as it now is.
+   */
+  function hold() {
+    if (!paused || !tiles) return
+    const count = tiles.due(clock, holdingNow)
+    let changed = false
+    let encoder: GPUCommandEncoder | undefined
+    for (let slot = 0; slot < WET_SLOTS; slot++) {
+      if (holdingNow[slot] === holding[slot]) continue
+      changed = true
+      simTiles[slot * 4 + 2] = holdingNow[slot] ? FLUID_SLOT_HELD : 1
+      if (holdingNow[slot])
+        copyAcross((encoder ??= device.createCommandEncoder()), slot)
+    }
+    if (encoder) device.queue.submit([encoder.finish()])
+    holding.set(holdingNow)
+    heldCount = count
+    if (changed) writeSim()
+  }
+
+  /** Copies a slot of the current copy of the fields into the other. */
+  function copyAcross(encoder: GPUCommandEncoder, slot: number) {
+    const from = fields!.copies[current]
+    const to = fields!.copies[1 - current]
+    for (const name of FIELD_NAMES)
+      encoder.copyTextureToTexture(
+        { texture: from[name].texture, origin: slotOrigin(slot) },
+        { texture: to[name].texture, origin: slotOrigin(slot) },
+        SLOT_EXTENT
+      )
   }
 
   /** One pass of the simulation, out of the current copy into the other. */
@@ -722,6 +819,11 @@ export function createFluidStroke(
     pass.dispatchWorkgroups(WET_CELLS / 8, WET_CELLS / 8, span)
     pass.end()
     current = 1 - current
+    // A pour or a blot writes held slots too (a blot leaves them held), and
+    // into one copy: the other is brought level.
+    if (heldCount > 0 && pipeline !== pipelines!.step)
+      for (let slot = 0; slot < WET_SLOTS; slot++)
+        if (holding[slot]) copyAcross(encoder, slot)
   }
 
   /** Where the `index`th slot's cells are in a texture of slots in rows. */
@@ -780,6 +882,7 @@ export function createFluidStroke(
       reached: reached.slice(),
       flooded: flooded.slice(),
       clock,
+      paused,
       rates: [simRates[0], simRates[1], simRates[2], simRates[3]],
       lifetime,
     }
@@ -846,6 +949,10 @@ export function createFluidStroke(
     clock = kept.clock
     simRates.set(kept.rates)
     lifetime = kept.lifetime
+    // Kept while drying was paused, nothing in it has evaporated since its
+    // deadlines were set: drying going on gives it the time, as it gave the
+    // paint it replaces.
+    if (kept.paused && !paused) outlastDeepest()
     // The rates go with the slots.
     writeSlots()
     surface = kept.slots.length > 0 ? onto : undefined
@@ -1112,7 +1219,7 @@ export function createFluidStroke(
       !!tiles &&
       of === surface &&
       tiles.slotAt(tileIndexForPixel(x), tileIndexForPixel(y)) >= 0,
-    tileCount: () => tiles?.count() ?? 0,
+    tileCount: () => (tiles?.count() ?? 0) - heldCount,
     prepare,
     begin(opening) {
       if (context.size().width === 0)
@@ -1151,7 +1258,7 @@ export function createFluidStroke(
       if (opening.blot) {
         simBlot[0] = opening.blot.water
         simBlot[1] = opening.blot.pigment
-        device.queue.writeBuffer(simUniform, 0, simData)
+        writeSim()
         return true
       }
       // The whole wet surface runs at the rates of the brush last put to it.
@@ -1163,21 +1270,15 @@ export function createFluidStroke(
       simLevel[0] = opening.water
       const depth = opening.water * FLUID_MAX_WATER
       flooding = depth > FLUID_HOLDS
-      device.queue.writeBuffer(simUniform, 0, simData)
-      /** Steps for water so deep to be gone, and the paper dry after it. */
-      const outlasting = (water: number) =>
-        Math.ceil(water / simRates[0]) + FLUID_DAMP_STEPS + DRYING_MARGIN
+      writeSim()
       // The brush fills a cell no deeper than its own water, and levelling
       // raises it by no more than the paper's relief is worth.
       lifetime = outlasting(Math.min(depth + FLUID_RELIEF, FLUID_MAX_WATER))
       // Paint already wet dries more slowly from here on, so it is given
       // the time, as for the deepest water there may be: a deadline is not
-      // to pass with water still standing.
-      if (slower)
-        for (const slot of tiles!.slots()) {
-          const tile = tiles!.tile(slot)!
-          tiles!.refresh(tile.x, tile.y, clock + outlasting(FLUID_MAX_WATER))
-        }
+      // to pass with water still standing. Paused, nothing evaporates, and
+      // drying going on again gives every body that time.
+      if (slower && !paused) outlastDeepest()
       return true
     },
     /** Dabs are laid out as `STAMP` says. */
@@ -1209,8 +1310,9 @@ export function createFluidStroke(
             let slot = tiles!.touch(column, row)
             if (slot < 0) {
               // Every slot is taken (D42): a body settles early to make
-              // room, the one this dab is painting into last of all. A tile
-              // off the canvas has none to wait for, and lays nothing.
+              // room, the one this dab is painting into last of all, and
+              // with drying paused a held one before one still moving. A
+              // tile off the canvas has none to wait for, and lays nothing.
               if (
                 held < WET_SLOTS ||
                 column < 0 ||
@@ -1219,7 +1321,12 @@ export function createFluidStroke(
                 row >= grid.rows
               )
                 continue
-              const crowding = tiles!.crowding(column, row, touched)
+              const crowding = tiles!.crowding(
+                column,
+                row,
+                touched,
+                paused ? clock : undefined
+              )
               // What is waiting to be drawn is in the paint that settles.
               if (fresh > 0) writeSlots()
               fresh = 0
@@ -1304,17 +1411,37 @@ export function createFluidStroke(
       const marks: StrokeMark[] = []
       if (!tiles) return marks
       let stepped = false
-      for (let i = 0; i < steps && tiles.count() > 0; i++) {
+      for (let i = 0; i < steps && tiles.count() > heldCount; i++) {
         const encoder = device.createCommandEncoder()
         simulate(encoder, pipelines!.step)
         device.queue.submit([encoder.finish()])
         stepped = true
         clock++
+        if (paused) {
+          hold()
+          continue
+        }
         const mark = settle(tiles.expired(clock))
         if (mark) marks.push(mark)
       }
       if (stepped) context.wetMoved()
       return marks
+    },
+    setPaused(pause) {
+      if (pause === paused) return
+      paused = pause
+      if (!tiles) return
+      if (pause) {
+        writeSim()
+        hold()
+        return
+      }
+      // Drying goes on from where it stopped: every body, held or not, is
+      // given the time the deepest water takes, since none evaporated while
+      // it was paused.
+      outlastDeepest()
+      // Tells the step every slot moves again, and how fast water goes.
+      writeSlots()
     },
     dry() {
       return tiles ? settle(tiles.slots()) : null

@@ -180,7 +180,7 @@ A good test here checks what the artist would see or what a stored brush means, 
   - document-level paper, chosen per document and stored with it
   - fluid brushes on layer masks
   - a blotting and lifting tool, which is where rewetting dried paint belongs
-  - a pause-drying toggle
+  - a pause-drying toggle, since built (fluid brushes 18)
   - directional flow
   - watercolour preset import
   - bleed reach for large brushes (see Further Notes)

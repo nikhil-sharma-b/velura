@@ -29,8 +29,8 @@
  * `--blender` compares small blenders with wet brushes that have flow;
  * `--fluid` paints with fluid brushes against the same brushes dry (fluid
  * brushes 10); `--fluid-load` times a step of the simulation over 16 and 64
- * wet tiles and paints, and blots, with every tile of the document wet
- * (fluid brushes 13, 17);
+ * wet tiles, moving and held with drying paused, and paints, and blots,
+ * with every tile of the document wet (fluid brushes 13, 17, 18);
  * `--cold` times a draw into a texture left alone (live brushes 24);
  * `--vector` times
  * redrawing a vector layer of many paths (19); `--navigate` times panning and
@@ -631,34 +631,42 @@ async function fluidLoadSweep(): Promise<void> {
   console.log(
     "\n  document  wet tiles   ms/step (median, min, max)   µs per tile-step   tiles in 2 ms   MB"
   )
-  for (const size of FLOODED_SIZES) {
-    const browser = await launch(paced.args)
-    try {
-      const page = await browser.newPage()
-      page.on("pageerror", (error) =>
-        console.error("page error:", error.message)
-      )
-      await page.goto(HARNESS)
-      await page.waitForFunction(() => !!window.runFluidStepBenchmark)
-      const { stepMs } = await page.evaluate(
-        (size) => window.runFluidStepBenchmark({ width: size, height: size }),
-        size
-      )
-      const tiles = (size / 256) ** 2
-      const sorted = [...stepMs].sort((a, b) => a - b)
-      const median = sorted[sorted.length >> 1]
-      const perTile = (median * 1000) / tiles
-      console.log(
-        `  ${`${size}²`.padEnd(8)}  ${String(tiles).padStart(9)}   ` +
-          `${fixed(median, 3).padStart(7)}, ${fixed(sorted[0], 3)}, ${fixed(sorted[sorted.length - 1], 3)}`.padEnd(
-            29
-          ) +
-          `${fixed(perTile, 1).padStart(16)}   ${fixed(2000 / perTile, 0).padStart(13)}   ${fixed(tiles * 0.75, 1)}`
-      )
-    } finally {
-      await browser.close()
+  // Each flood again with drying paused and every body of it held (fluid
+  // brushes 18): a step passes held paint by.
+  for (const size of FLOODED_SIZES)
+    for (const held of [false, true]) {
+      const browser = await launch(paced.args)
+      try {
+        const page = await browser.newPage()
+        page.on("pageerror", (error) =>
+          console.error("page error:", error.message)
+        )
+        await page.goto(HARNESS)
+        await page.waitForFunction(() => !!window.runFluidStepBenchmark)
+        const { stepMs } = await page.evaluate(
+          ([size, held]) =>
+            window.runFluidStepBenchmark(
+              { width: size, height: size },
+              undefined,
+              held
+            ),
+          [size, held] as const
+        )
+        const tiles = (size / 256) ** 2
+        const sorted = [...stepMs].sort((a, b) => a - b)
+        const median = sorted[sorted.length >> 1]
+        const perTile = (median * 1000) / tiles
+        console.log(
+          `  ${`${size}²`.padEnd(8)}  ${`${tiles}${held ? " held" : ""}`.padStart(9)}   ` +
+            `${fixed(median, 3).padStart(7)}, ${fixed(sorted[0], 3)}, ${fixed(sorted[sorted.length - 1], 3)}`.padEnd(
+              29
+            ) +
+            `${fixed(perTile, 1).padStart(16)}   ${fixed(2000 / perTile, 0).padStart(13)}   ${fixed(tiles * 0.75, 1)}`
+        )
+      } finally {
+        await browser.close()
+      }
     }
-  }
   console.log(
     "\n                                     unpaced                    paced: pen-to-pixel in ms" +
       "\n  document  brush   paint        ms/frame   sustained fps   all frames (median / p95)   Hz    steps/frame   skipped   reckoned ms/step   dabs    readbacks   allocations"

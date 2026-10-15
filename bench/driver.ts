@@ -203,6 +203,13 @@ const STEPS_PER_ROUND = 120
 const STEP_ROUNDS = 7
 
 /**
+ * Steps that see the flood past its deadline with drying paused, when its
+ * water stays: the flood brush dries at nothing, so a body outlives its last
+ * dab by the deepest water at the slowest rate, some ten thousand steps.
+ */
+const FLOOD_HELD_AFTER = 10_200
+
+/**
  * What a step of the fluid simulation costs over a flooded document (fluid
  * brushes 13): every tile of it wet, worst case. Steps are run by command,
  * a round at a time, timed from the queue being empty to it being empty
@@ -217,7 +224,12 @@ export async function runFluidStepBenchmark(
   rounds: { steps: number; count: number } = {
     steps: STEPS_PER_ROUND,
     count: STEP_ROUNDS,
-  }
+  },
+  /**
+   * With drying paused, and the flood run on until every body of it holds
+   * (fluid brushes 18): what a step costs over held paint.
+   */
+  held = false
 ): Promise<FluidStepResult> {
   canvas.style.width = `${VIEWPORT}px`
   canvas.style.height = `${(VIEWPORT * size.height) / size.width}px`
@@ -247,8 +259,11 @@ export async function runFluidStepBenchmark(
       })
     )
   try {
+    if (held) await engine.dispatch({ type: "setDryingPaused", paused: true })
     await floodFluid(engine, paint, size.width, size.height)
     if (!engine.getSnapshot().wet) throw new Error("The flood is not wet.")
+    if (held)
+      await engine.dispatch({ type: "advanceFluid", steps: FLOOD_HELD_AFTER })
     // Warm: the pipelines are made and the flood has spread over its first
     // steps, where a cell's water is still finding its level.
     await engine.dispatch({ type: "advanceFluid", steps: rounds.steps })

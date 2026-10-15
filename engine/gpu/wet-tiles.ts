@@ -20,6 +20,7 @@ export const WET_SLOTS = 64
 export type WetTilesState = {
   readonly held: readonly (TileCoord | undefined)[]
   readonly deadline: Float64Array
+  readonly painted: Float64Array
 }
 
 export interface WetTiles {
@@ -46,11 +47,16 @@ export interface WetTiles {
    * body the tile would join, or one holding a slot of `painted`, is being
    * painted into, and is answered only when there is no other. Nothing off
    * the grid, for a tile that holds a slot, or with a slot free.
+   *
+   * With drying paused, `pausedAt` is the step: a body due by then is held
+   * (fluid brushes 18), and held bodies go before any still moving, the one
+   * a dab last reached longest ago first.
    */
   crowding(
     x: number,
     y: number,
-    painted?: ReadonlySet<number>
+    painted?: ReadonlySet<number>,
+    pausedAt?: number
   ): readonly number[]
   /**
    * Pushes the drying deadline of every tile in the same body as this one
@@ -62,6 +68,13 @@ export interface WetTiles {
    * body at a time: one is never settled beside a neighbour still wet.
    */
   expired(step: number): readonly number[]
+  /**
+   * Marks in `into`, one byte a slot, the slots of every body whose deadline
+   * has passed by `step`: with drying paused such a body is held, wet and
+   * still, instead of settled (fluid brushes 18). Answers how many. Allocates
+   * nothing: it is asked every step, with the pen down (D30).
+   */
+  due(step: number, into: Uint8Array): number
   /** Frees a slot. */
   release(slot: number): void
   /** The tile holding a slot, if one does. */
@@ -91,6 +104,9 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
   const map = new Uint8Array(columns * rows)
   const held: (TileCoord | undefined)[] = Array.from({ length: WET_SLOTS })
   const deadline = new Float64Array(WET_SLOTS)
+  /** When a dab last reached each slot's tile, in dabs: what is painted last. */
+  const painted = new Float64Array(WET_SLOTS)
+  let paints = 0
   let count = 0
 
   const slotAt = (x: number, y: number) =>
@@ -126,7 +142,21 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
     return count
   }
 
-  function touch(x: number, y: number) {
+  /**
+   * Whether the body `body` just found is due by `step`: every tile's
+   * deadline passed. Marks its slots as sorted.
+   */
+  function isDue(size: number, step: number) {
+    let due = true
+    for (let i = 0; i < size; i++) {
+      sorted[found[i]] = 1
+      if (deadline[found[i]] > step) due = false
+    }
+    return due
+  }
+
+  /** Gives a tile a slot if it has none; answers it, or -1. */
+  function claim(x: number, y: number) {
     if (x < 0 || y < 0 || x >= columns || y >= rows) return -1
     const have = map[y * columns + x]
     if (have > 0) return have - 1
@@ -134,8 +164,16 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
     if (slot < 0) return -1
     held[slot] = { x, y }
     deadline[slot] = 0
+    painted[slot] = 0
     map[y * columns + x] = slot + 1
     count++
+    return slot
+  }
+
+  /** A dab reached a tile: it claims a slot, and is painted now. */
+  function touch(x: number, y: number) {
+    const slot = claim(x, y)
+    if (slot >= 0) painted[slot] = ++paints
     return slot
   }
 
@@ -144,40 +182,56 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
     slotAt,
     surround(x, y) {
       const before = count
+      // A ring is room for a bloom, not paint laid: it claims, and is not
+      // painted.
       for (let dy = -1; dy <= 1 && count < WET_SLOTS; dy++)
         for (let dx = -1; dx <= 1 && count < WET_SLOTS; dx++)
-          touch(x + dx, y + dy)
+          claim(x + dx, y + dy)
       return count - before
     },
-    crowding(x, y, painted) {
+    crowding(x, y, paintedNow, pausedAt) {
       if (count < WET_SLOTS || x < 0 || y < 0 || x >= columns || y >= rows)
         return none
       if (map[y * columns + x] > 0) return none
       let first = -1
-      let firstDue = Infinity
       let firstJoined = true
+      let firstHeld = false
+      let firstOrder = Infinity
       sorted.fill(0)
       for (let slot = 0; slot < WET_SLOTS; slot++) {
         if (sorted[slot]) continue
         const size = body(slot)
         let due = 0
+        let last = 0
         let joined = false
         for (let i = 0; i < size; i++) {
           const tile = held[found[i]]!
           sorted[found[i]] = 1
           due = Math.max(due, deadline[found[i]])
+          last = Math.max(last, painted[found[i]])
           if (
-            painted?.has(found[i]) ||
+            paintedNow?.has(found[i]) ||
             (Math.abs(tile.x - x) <= 1 && Math.abs(tile.y - y) <= 1)
           )
             joined = true
         }
-        // Any body before the one painted into; then the one due first.
-        const sooner = joined === firstJoined ? due < firstDue : firstJoined
+        const isHeld = pausedAt !== undefined && due <= pausedAt
+        // Held bodies go in the order they were painted, the rest in the
+        // order they are due.
+        const order = isHeld ? last : due
+        // Any body before the one painted into; then a held one before one
+        // still moving; then by order.
+        const sooner =
+          joined !== firstJoined
+            ? firstJoined
+            : isHeld !== firstHeld
+              ? isHeld
+              : order < firstOrder
         if (first >= 0 && !sooner) continue
         first = slot
-        firstDue = due
         firstJoined = joined
+        firstHeld = isHeld
+        firstOrder = order
       }
       const size = body(first)
       return Array.from(found.subarray(0, size)).sort((a, b) => a - b)
@@ -195,16 +249,24 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
       for (let slot = 0; slot < WET_SLOTS; slot++) {
         if (!held[slot] || sorted[slot]) continue
         const size = body(slot)
-        let due = true
-        for (let i = 0; i < size; i++) {
-          sorted[found[i]] = 1
-          if (deadline[found[i]] > step) due = false
-        }
-        if (!due) continue
+        if (!isDue(size, step)) continue
         out ??= []
         for (let i = 0; i < size; i++) out.push(found[i])
       }
       return out ?? none
+    },
+    due(step, into) {
+      into.fill(0)
+      let count = 0
+      sorted.fill(0)
+      for (let slot = 0; slot < WET_SLOTS; slot++) {
+        if (!held[slot] || sorted[slot]) continue
+        const size = body(slot)
+        if (!isDue(size, step)) continue
+        for (let i = 0; i < size; i++) into[found[i]] = 1
+        count += size
+      }
+      return count
     },
     release(slot) {
       const tile = held[slot]
@@ -218,7 +280,11 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
       held.flatMap((tile, slot) => (tile === undefined ? [] : [slot])),
     count: () => count,
     map: () => map,
-    save: () => ({ held: [...held], deadline: deadline.slice() }),
+    save: () => ({
+      held: [...held],
+      deadline: deadline.slice(),
+      painted: painted.slice(),
+    }),
     restore(state) {
       map.fill(0)
       count = 0
@@ -230,6 +296,7 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
         count++
       }
       deadline.set(state.deadline)
+      painted.set(state.painted)
     },
   }
 }

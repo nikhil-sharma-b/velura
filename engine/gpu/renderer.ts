@@ -451,11 +451,17 @@ export interface Renderer {
    * reads it as it is, so the caller dries any first.
    */
   setPaper(paper: Paper): void
-  /** How many tiles are wet: what a step of the simulation runs over. */
+  /**
+   * How many tiles a step of the simulation runs over: those wet, less
+   * those held while drying is paused.
+   */
   fluidTileCount(): number
+  /** Pauses drying, or lets it go on (fluid brushes 18). */
+  setFluidDryingPaused(paused: boolean): void
   /**
    * Runs the simulation on by `steps` steps (D42). Answers what each body
-   * that dried along the way settled into its surface, in order.
+   * that dried along the way settled into its surface, in order; with drying
+   * paused, a body whose time has come holds instead.
    */
   advanceFluid(steps: number): StrokeMark[]
   /**
@@ -3497,6 +3503,7 @@ export function createRenderer(
     },
     fluidTileCount: () => fluid.tileCount(),
     advanceFluid: (steps) => fluid.advance(steps),
+    setFluidDryingPaused: (paused) => fluid.setPaused(paused),
     dryFluid: () => fluid.dry(),
     prepareFluid() {
       if (width > 0) fluid.prepare()

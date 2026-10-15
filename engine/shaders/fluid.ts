@@ -26,6 +26,12 @@ export const FLUID_RELIEF = 0.03
 export const FLUID_DAMP_STEPS = 50
 
 /**
+ * What a slot's tile entry says in z of a slot held while drying is paused
+ * (fluid brushes 18): a step passes it by, and a pour or a blot does not.
+ */
+export const FLUID_SLOT_HELD = 2
+
+/**
  * A fluid brush's dabs (D42), drawn batched: water and dampness into one
  * target and pigment into the other, each added to the batch's other dabs.
  * The targets are not the wet fields. They hold what one batch laid, which
@@ -276,13 +282,15 @@ struct Sim {
   // pigment, it takes where it lands at full strength.
   blotWater: f32,
   blotPigment: f32,
-  // Each slot's tile in xy, and in z whether one holds it.
+  // Each slot's tile in xy, and in z whether one holds it: 0 for none, 1,
+  // or HELD for one held while drying is paused.
   tiles: array<vec4<i32>, ${WET_SLOTS}>,
 }
 
 // How fast water levels: the share of a height difference that crosses a
 // face in a step.
 const FLOW: f32 = 0.2;
+const HELD: i32 = ${FLUID_SLOT_HELD};
 // No cell gives more than this share of its water across one face in a step.
 const FACE_SHARE: f32 = 0.2;
 // The most water a cell holds.
@@ -401,7 +409,8 @@ fn bleedGate(a: vec4<f32>, b: vec4<f32>, open: f32) -> f32 {
 @compute @workgroup_size(8, 8, 1)
 fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   let tile = sim.tiles[id.z];
-  if (tile.z == 0) { return; }
+  // A held slot is the same in both copies of the fields, and stays so.
+  if (tile.z == 0 || tile.z == HELD) { return; }
   let texel = slotTexel(id.z, id.xy);
   let cell = tile.xy * WET_CELLS + vec2<i32>(id.xy);
   let left = cell + vec2<i32>(-1, 0);

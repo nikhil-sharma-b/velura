@@ -1511,6 +1511,11 @@ export function CanvasHost({
         >
           <div className="pointer-events-none absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-studio-edge bg-studio-surface/85 px-4 py-1.5 text-xs shadow-sm backdrop-blur">
             <span>{documentName || DEFAULT_DOCUMENT_NAME}</span>
+            {/* Paint left wet on purpose looks like a brush gone wrong to
+                an artist who has forgotten (fluid brushes 18). */}
+            {snapshot.dryingPaused && (
+              <span data-testid="drying-paused">Drying paused</span>
+            )}
             {snapshot.loading && (
               <span className="text-muted-foreground" data-testid="load-status">
                 Loading…

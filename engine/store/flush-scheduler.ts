@@ -13,8 +13,15 @@ export interface FlushScheduler {
   dispose(): void
 }
 
+/**
+ * What sent a flush: the idle timer, or a trigger that asked for one now
+ * (tab hide, unload, explicit save). Wet paint held while drying is paused
+ * stays wet through an idle flush only (fluid brushes 18).
+ */
+export type FlushReason = "idle" | "now"
+
 export function createFlushScheduler(options: {
-  flush: () => void
+  flush: (reason: FlushReason) => void
   idleMs: number
   setTimeout?: (fn: () => void, ms: number) => unknown
   clearTimeout?: (id: unknown) => void
@@ -37,12 +44,12 @@ export function createFlushScheduler(options: {
       clear()
       timer = schedule(() => {
         timer = undefined
-        options.flush()
+        options.flush("idle")
       }, options.idleMs)
     },
     flushNow() {
       clear()
-      options.flush()
+      options.flush("now")
     },
     dispose: clear,
   }
