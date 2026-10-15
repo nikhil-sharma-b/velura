@@ -2338,9 +2338,8 @@ be judged at 75 Hz, where it is a panel period plus the frame's GPU work
 (brush-library 17); a fluid stroke adds 1.7 to 2.4 ms to it over the same
 brush dry and 2.7 to 2.8 ms over 64 wet tiles. The steps are no longer in
 that: it is the stroke's own pour and the wet surface in the present pass,
-as fluid brushes 10 found. At 120 Hz that puts the 64-wet rows near
-11.5 ms, over the bar, and is ticketed (fluid brushes 35) for when a
-120 Hz panel is to hand.
+as fluid brushes 10 found. At 120 Hz that would put the 64-wet rows near
+11.5 ms, over the bar; there is no 120 Hz display to measure it on.
 
 **The wet tile limit stays at 64.** Its worst-case step is 1.5 ms, inside
 the budget with room for a pour, and 48 MB of fields. 85 tiles would fit
