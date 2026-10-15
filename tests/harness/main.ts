@@ -105,10 +105,10 @@ declare global {
     /** The performance benchmark (D30), driven by `bench/run.ts`. */
     runBenchmark(options: WorkloadOptions): Promise<RunResult>
     /** A step of the fluid simulation over a flooded document (fluid brushes 13). */
-    runFluidStepBenchmark(size: {
-      width: number
-      height: number
-    }): Promise<FluidStepResult>
+    runFluidStepBenchmark(
+      size: { width: number; height: number },
+      rounds?: { steps: number; count: number }
+    ): Promise<FluidStepResult>
     /** Re-rasterising a vector layer of many paths (19). */
     runVectorBenchmark(options: VectorWorkloadOptions): Promise<VectorRunResult>
     /** Panning and zooming a stack, its caches rebuilt each step (sharp-zoom 01). */
@@ -411,9 +411,9 @@ window.runBenchmark = (options) => {
     })
   return runBenchmark(window.engine, canvas, options)
 }
-window.runFluidStepBenchmark = (size) => {
+window.runFluidStepBenchmark = (size, rounds) => {
   window.remountEngine({ manualFluidClock: true, documentSize: size })
-  return runFluidStepBenchmark(window.engine, canvas, size)
+  return runFluidStepBenchmark(window.engine, canvas, size, rounds)
 }
 window.runVectorBenchmark = (options) =>
   runVectorBenchmark(window.engine, canvas, options)

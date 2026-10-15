@@ -193,7 +193,7 @@ export type FluidStepResult = {
   stepMs: number[]
 }
 
-/** Steps timed in a round, and the rounds. */
+/** Steps timed in a round, and the rounds, unless told fewer. */
 const STEPS_PER_ROUND = 120
 const STEP_ROUNDS = 7
 
@@ -207,7 +207,12 @@ const STEP_ROUNDS = 7
 export async function runFluidStepBenchmark(
   engine: Engine,
   canvas: HTMLCanvasElement,
-  size: { width: number; height: number }
+  size: { width: number; height: number },
+  /** Fewer, for a software GPU that only checks the plumbing. */
+  rounds: { steps: number; count: number } = {
+    steps: STEPS_PER_ROUND,
+    count: STEP_ROUNDS,
+  }
 ): Promise<FluidStepResult> {
   canvas.style.width = `${VIEWPORT}px`
   canvas.style.height = `${(VIEWPORT * size.height) / size.width}px`
@@ -241,14 +246,14 @@ export async function runFluidStepBenchmark(
     if (!engine.getSnapshot().wet) throw new Error("The flood is not wet.")
     // Warm: the pipelines are made and the flood has spread over its first
     // steps, where a cell's water is still finding its level.
-    await engine.dispatch({ type: "advanceFluid", steps: STEPS_PER_ROUND })
+    await engine.dispatch({ type: "advanceFluid", steps: rounds.steps })
     await fence()
     const stepMs: number[] = []
-    for (let round = 0; round < STEP_ROUNDS; round++) {
+    for (let round = 0; round < rounds.count; round++) {
       const started = performance.now()
-      await engine.dispatch({ type: "advanceFluid", steps: STEPS_PER_ROUND })
+      await engine.dispatch({ type: "advanceFluid", steps: rounds.steps })
       await fence()
-      stepMs.push((performance.now() - started) / STEPS_PER_ROUND)
+      stepMs.push((performance.now() - started) / rounds.steps)
     }
     if (!engine.getSnapshot().wet) throw new Error("The flood dried.")
     const { width, height } = engine.getSnapshot()
