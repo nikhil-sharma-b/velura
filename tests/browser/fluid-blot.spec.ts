@@ -141,11 +141,12 @@ async function penDown(
   origin: Origin,
   from: number,
   to: number,
-  row = ROW
+  row = ROW,
+  steps = 30
 ) {
   await page.mouse.move(origin.x + from, origin.y + row)
   await page.mouse.down()
-  await page.mouse.move(origin.x + to, origin.y + row, { steps: 30 })
+  await page.mouse.move(origin.x + to, origin.y + row, { steps })
 }
 
 /** A drag, waited for as the step it lands as. */
@@ -154,9 +155,10 @@ async function drag(
   origin: Origin,
   from: number,
   to: number,
-  row = ROW
+  row = ROW,
+  steps = 30
 ) {
-  await penDown(page, origin, from, to, row)
+  await penDown(page, origin, from, to, row, steps)
   await page.mouse.up()
   // The last dabs are laid by the frame after the pen lifts.
   await frames(page)
@@ -348,36 +350,38 @@ test("a blot inside a selection lightens what it covers", async ({ page }) => {
 test("with every wet tile slot taken, a blot settles nothing to make room", async ({
   page,
 }) => {
-  // Nine tiles a side: a wash over all of it is past the 64 slots.
-  const size = 9 * 256
-  const origin = await openCanvas(page, {
-    width: size,
-    height: size,
-    fit: true,
-  })
+  // Software rasterising on CI makes a document this size slow to paint.
+  test.slow()
+  // Twelve tiles across. A wash along every other row of tiles is a body of
+  // its own, since a row of dry tiles parts it from the next, and six of
+  // them are 72 tiles: the last settles the first to make room, and leaves
+  // every slot but four taken.
+  const columns = 12
+  const rows = 11
+  const width = columns * 256
+  const height = rows * 256
+  const origin = await openCanvas(page, { width, height, fit: true })
   await setFluid(page)
-  await dispatch(page, { type: "setBrush", radius: 120 })
-  const zoom = await page.evaluate(() => window.engine.getSnapshot().view.zoom)
-  const step = 256 * zoom
-  for (let row = 0; row < 9; row++)
-    await drag(
-      page,
-      origin,
-      4,
-      396,
-      step * (row + 0.5) + (400 - size * zoom) / 2
-    )
+  await dispatch(page, { type: "setBrush", radius: 100 })
+  const view = await page.evaluate(() => window.engine.getSnapshot().view)
+  /** Where the middle of a row of tiles is on the screen. */
+  const row = (tiles: number) =>
+    200 + view.panY + (256 * (tiles + 0.5) - height / 2) * view.zoom
+  const across = (x: number) => 200 + view.panX + (x - width / 2) * view.zoom
+  const pass = (tiles: number) =>
+    drag(page, origin, across(8), across(width - 8), row(tiles), 12)
+  for (let tiles = 0; tiles < rows; tiles += 2) await pass(tiles)
+  // A settle is recorded once its tiles are read back, a while after it.
+  const recorded = () => page.waitForTimeout(1000)
+  await recorded()
   expect(await isWet(page)).toBe(true)
   const settled = await drySteps(page)
+  // Over the row that settled, where paint would need a slot it has not
+  // got, and the wet row beside it.
   await setBlot(page)
-  for (let row = 0; row < 9; row++)
-    await drag(
-      page,
-      origin,
-      4,
-      396,
-      step * (row + 0.5) + (400 - size * zoom) / 2
-    )
+  await pass(0)
+  await pass(2)
+  await recorded()
   expect(await drySteps(page)).toBe(settled)
   expect(await isWet(page)).toBe(true)
 })
