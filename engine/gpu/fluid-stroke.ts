@@ -173,6 +173,8 @@ export interface FluidStroke extends StrokeRenderer<FluidOpening> {
   wet(surface: Surface): WetViews | undefined
   /** Whether any tile is wet. */
   isWet(): boolean
+  /** How many tiles are wet. */
+  tileCount(): number
   /**
    * Runs the simulation on by `steps` steps, fewer if everything dries
    * first. A body whose deadline passes settles into the layer; answers what
@@ -966,6 +968,7 @@ export function createFluidStroke(
       })
     },
     isWet: () => !!tiles && tiles.count() > 0,
+    tileCount: () => tiles?.count() ?? 0,
     prepare,
     begin(opening) {
       if (context.size().width === 0)

@@ -443,6 +443,8 @@ export interface Renderer {
   releaseFluid(copy: WetCopy): void
   /** Whether any paint is wet. */
   fluidWet(): boolean
+  /** How many tiles are wet: what a step of the simulation runs over. */
+  fluidTileCount(): number
   /**
    * Runs the simulation on by `steps` steps (D42). Answers what each body
    * that dried along the way settled into its surface, in order.
@@ -3475,6 +3477,7 @@ export function createRenderer(
     },
     releaseFluid: (copy) => fluid.release(copy),
     fluidWet: () => fluid.isWet(),
+    fluidTileCount: () => fluid.tileCount(),
     advanceFluid: (steps) => fluid.advance(steps),
     dryFluid: () => fluid.dry(),
     prepareFluid() {

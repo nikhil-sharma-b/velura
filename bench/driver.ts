@@ -12,6 +12,7 @@
 import {
   docToScreen,
   type Engine,
+  type FluidTick,
   type FrameTiming,
   type SceneCommand,
 } from "../engine"
@@ -74,6 +75,12 @@ export type RunResult = {
    * having been taken back, where the workload presses it (live brushes 32).
    */
   undoMs: number[]
+  /**
+   * Each frame of the fluid simulation's clock while the pen was down: the
+   * steps it ran and those its budget skipped (fluid brushes 13). Empty for
+   * a brush that is not fluid.
+   */
+  fluidTicks: FluidTick[]
   /** Wall-clock milliseconds the pen was down. */
   elapsedMs: number
   /**
@@ -121,6 +128,134 @@ function fluidTip() {
       }
   }
   return { width: size, height: size, frameCount: FLUID_TIP_FRAMES, data }
+}
+
+/**
+ * A fluid brush at its most for a step: as much water as a dab lays, none of
+ * it drying while measured, and bleed, rim and granulation all at one.
+ */
+const FLOOD_FLUID = { water: 1, drying: 0, bleed: 1, edge: 1, granulation: 1 }
+
+/** The flood's dab radius, and the rows it is laid along, in pixels. */
+const FLOOD_RADIUS = 8
+
+/**
+ * Floods the whole document with fluid paint, the worst case a step of the
+ * simulation meets (fluid brushes 13): every cell wet, and small dabs each a
+ * hue of its own, so a cell's neighbours hold another colour and pigment
+ * crossing between them is mixed, not added. On a document a whole number
+ * of tiles a side every tile holds a slot, and none is a dry ring.
+ */
+async function floodFluid(
+  engine: Engine,
+  paint: (type: string, x: number, y: number) => void,
+  width: number,
+  height: number
+): Promise<void> {
+  await engine.dispatch({ type: "setColor", hex: "#e04030" })
+  await engine.dispatch({
+    type: "setBrush",
+    radius: FLOOD_RADIUS,
+    spacing: 0.25,
+    flow: 1,
+    fluid: FLOOD_FLUID,
+    color: { hue: 1, saturation: 1, lightness: 1 },
+    dynamics: [
+      { source: "random", target: "hue", range: [-0.5, 0.5], mix: "add" },
+      { source: "random", target: "lightness", range: [-0.3, 0.3], mix: "add" },
+    ],
+  })
+  // One stroke, back and forth along rows a radius apart, a sample every
+  // few dabs: the resampler lays the dabs between.
+  const reach = FLOOD_RADIUS * 4
+  let sent = 0
+  paint("pointerdown", 0, 0)
+  for (let row = 0, y = 0; y <= height; row++, y += FLOOD_RADIUS)
+    for (let along = 0; along <= width; along += reach) {
+      const x = row % 2 === 0 ? along : width - along
+      paint("pointerrawupdate", x, y)
+      paint("pointermove", x, y)
+      if (++sent % 64 === 0) await nextFrame()
+    }
+  paint("pointerup", 0, height)
+  await nextFrame()
+  await nextFrame()
+  await engine.dispatch({
+    type: "setBrush",
+    color: { hue: 0, saturation: 0, lightness: 0 },
+    dynamics: [],
+  })
+}
+
+export type FluidStepResult = {
+  canvas: { width: number; height: number }
+  /** Milliseconds a step of the simulation took, one figure per round. */
+  stepMs: number[]
+}
+
+/** Steps timed in a round, and the rounds. */
+const STEPS_PER_ROUND = 120
+const STEP_ROUNDS = 7
+
+/**
+ * What a step of the fluid simulation costs over a flooded document (fluid
+ * brushes 13): every tile of it wet, worst case. Steps are run by command,
+ * a round at a time, timed from the queue being empty to it being empty
+ * again, a fence and no readback. Each step is a submission of its own, as
+ * the engine's clock submits them.
+ */
+export async function runFluidStepBenchmark(
+  engine: Engine,
+  canvas: HTMLCanvasElement,
+  size: { width: number; height: number }
+): Promise<FluidStepResult> {
+  canvas.style.width = `${VIEWPORT}px`
+  canvas.style.height = `${(VIEWPORT * size.height) / size.width}px`
+  await engine.dispatch({ type: "resize", ...size, devicePixelRatio: 1 })
+  await engine.dispatch({ type: "initialize" })
+  await engine.dispatch({ type: "setStabilization", strength: 0 })
+  // The engine's queue, caught as it submits: the page is not handed it.
+  const queues = new Set<GPUQueue>()
+  const submit = GPUQueue.prototype.submit
+  GPUQueue.prototype.submit = function (...args: Parameters<typeof submit>) {
+    queues.add(this)
+    return submit.apply(this, args)
+  }
+  const fence = () => [...queues][0].onSubmittedWorkDone()
+  const bounds = canvas.getBoundingClientRect()
+  const paint = (type: string, x: number, y: number) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: 1,
+        pointerType: "pen",
+        isPrimary: true,
+        bubbles: true,
+        cancelable: true,
+        clientX: bounds.left + (x * bounds.width) / canvas.width,
+        clientY: bounds.top + (y * bounds.height) / canvas.height,
+        pressure: 1,
+      })
+    )
+  try {
+    await floodFluid(engine, paint, size.width, size.height)
+    if (!engine.getSnapshot().wet) throw new Error("The flood is not wet.")
+    // Warm: the pipelines are made and the flood has spread over its first
+    // steps, where a cell's water is still finding its level.
+    await engine.dispatch({ type: "advanceFluid", steps: STEPS_PER_ROUND })
+    await fence()
+    const stepMs: number[] = []
+    for (let round = 0; round < STEP_ROUNDS; round++) {
+      const started = performance.now()
+      await engine.dispatch({ type: "advanceFluid", steps: STEPS_PER_ROUND })
+      await fence()
+      stepMs.push((performance.now() - started) / STEPS_PER_ROUND)
+    }
+    if (!engine.getSnapshot().wet) throw new Error("The flood dried.")
+    const { width, height } = engine.getSnapshot()
+    return { canvas: { width, height }, stepMs }
+  } finally {
+    GPUQueue.prototype.submit = submit
+  }
 }
 
 const nextFrame = () =>
@@ -552,6 +687,13 @@ export async function runBenchmark(
     }
   }
   const fluid = workload.options.fluid
+  if (fluid?.flooded)
+    await floodFluid(
+      engine,
+      (type, x, y) => dispatch(type, { x, y, pressure: 1, tiltX: 0, tiltY: 0 }),
+      workload.width,
+      workload.height
+    )
   if (fluid) {
     if (fluid.tip)
       await engine.dispatch({
@@ -573,6 +715,11 @@ export async function runBenchmark(
 
   const frames: FrameTiming[] = []
   engine.observeFrames((frame) => frames.push(frame))
+  const fluidTicks: FluidTick[] = []
+  let penIsDown = false
+  engine.observeFluid((tick) => {
+    if (penIsDown) fluidTicks.push(tick)
+  })
   const watch = watchInteractivePath()
   const pump = createPump()
   let dispatched = 0
@@ -594,6 +741,7 @@ export async function runBenchmark(
         )
       const [first] = stroke.samples
       watch.setPenDown(true)
+      penIsDown = true
       strokeStarts.push(frames.length)
       dispatch("pointerdown", first)
       dispatched++
@@ -621,6 +769,7 @@ export async function runBenchmark(
       })
       dispatch("pointerup", stroke.samples[stroke.samples.length - 1])
       watch.setPenDown(false)
+      penIsDown = false
       const penUp = performance.now()
       // Two frames: one flushes the tail and composites the stroke, and the
       // loop has stopped by the end of the next.
@@ -645,6 +794,7 @@ export async function runBenchmark(
     }
   } finally {
     engine.observeFrames(null)
+    engine.observeFluid(null)
     detachThumbnails()
     pump.close()
     watch.restore()
@@ -670,6 +820,7 @@ export async function runBenchmark(
     readbackBytes: watch.readbackBytes(),
     historySettledMs,
     undoMs,
+    fluidTicks,
     elapsedMs: performance.now() - started,
     strokeStarts,
   }

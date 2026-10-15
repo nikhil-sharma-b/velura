@@ -324,6 +324,7 @@ import {
   SMUDGE,
   SMUDGE_STRIDE,
 } from "./gpu/smudge-dab"
+import { createFluidClock } from "./gpu/fluid-clock"
 import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
 import { createWarmKeeper } from "./gpu/warm-keeper"
 import { attachPointerSampler } from "./input/pointer-sampler"
@@ -1437,6 +1438,20 @@ export type FrameTiming = {
   latencyMs: number | null
 }
 
+/** One frame of the fluid simulation's clock (D42), as it decided it. */
+export type FluidTick = {
+  /** The frame callback's timestamp, on the page's clock. */
+  start: number
+  /** Steps the frame ran. */
+  steps: number
+  /** Steps the frame was owed and its budget could not pay for. */
+  skipped: number
+  /** Wet tiles the steps ran over. */
+  tiles: number
+  /** What the clock reckoned one step over those tiles would cost, in ms. */
+  stepMs: number
+}
+
 export interface Engine {
   dispatch(command: EngineCommand): Promise<void>
   getSnapshot(): EngineSnapshot
@@ -1481,6 +1496,12 @@ export interface Engine {
     ) => void
   ): () => void
   observeFrames(observer: ((frame: FrameTiming) => void) | null): void
+  /**
+   * Called with each frame of the fluid simulation's clock, or null to stop:
+   * how many steps it ran and skipped (fluid brushes 13). For the benchmark
+   * and tests.
+   */
+  observeFluid(observer: ((tick: FluidTick) => void) | null): void
   /**
    * What the session's history is holding: how many steps it can take back, the
    * logical bytes of the tiles behind them, and how much of that is in memory
@@ -1617,13 +1638,6 @@ export type CloudOptions = {
   }) => void
 }
 
-/**
- * The fluid simulation's clock (D42): the steps it aims at in a second, and
- * the most it runs in a frame, which is one at 120 Hz and two at 60.
- */
-const FLUID_STEPS_PER_SECOND = 120
-const FLUID_STEPS_PER_FRAME = 2
-
 /** Canvas attachment is a lifecycle operation; commands contain only values. */
 export function createEngine(
   canvas: HTMLCanvasElement | OffscreenCanvas,
@@ -1658,6 +1672,12 @@ export function createEngine(
      * steps whatever the machine.
      */
     manualFluidClock?: boolean
+    /**
+     * Reckons a step of the simulation over one wet tile at this many
+     * milliseconds of GPU time and never measures it, so a test's clock
+     * skips the same steps whatever the machine (fluid brushes 13).
+     */
+    fluidTileStepMs?: number
   } = {}
 ): Engine {
   let snapshot: EngineSnapshot = INITIAL_SNAPSHOT
@@ -1897,10 +1917,17 @@ export function createEngine(
   /** The surface holding wet paint, from its first dab until it has dried. */
   let wetTargetId: string | undefined
   // The simulation's clock (D42): its own frame, asked for only while paint
-  // is wet, the time of the last one, and the steps owed since.
+  // is wet, the time of the last one, and what it owes and can afford.
   let fluidFrame: number | undefined
   let fluidTime: number | undefined
-  let fluidOwed = 0
+  const fluidClock = createFluidClock({ tileStepMs: options.fluidTileStepMs })
+  /** Whether the GPU time of a frame's steps is being waited on. */
+  let fluidTiming = false
+  /** The steps a frame owed, to run once it is presented, and over how many tiles. */
+  let fluidDueSteps = 0
+  let fluidDueTiles = 0
+  let fluidChannel: MessageChannel | undefined
+  let fluidObserver: ((tick: FluidTick) => void) | null = null
   const directDabs = new Float32Array(MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_STRIDE)
   let directCount = 0
   let stroking = false
@@ -4971,9 +4998,47 @@ export function createEngine(
     syncWet()
   }
 
+  /**
+   * Runs `steps` steps of the simulation and has the clock learn what they
+   * cost on the GPU: from the work before them being done to theirs being
+   * done, two fences and no readback (D30). One measurement at a time, and
+   * none of steps that settled a body, whose cost is the settle's.
+   */
+  function runTimedFluid(steps: number, tiles: number): StrokeMark[] {
+    if (fluidTiming || options.fluidTileStepMs !== undefined || !device)
+      return runFluid(steps)
+    const queue = device.queue
+    fluidTiming = true
+    // Where the queue is idle the first fence resolves only once the steps
+    // are under way, and the steps read cheap; that is a fence's latency
+    // varying, which the clock reads across many measurements.
+    let before = performance.now()
+    void queue.onSubmittedWorkDone().then(() => {
+      before = Math.max(before, performance.now())
+    }, ignoreLostDevice)
+    const marks = runFluid(steps)
+    void queue.onSubmittedWorkDone().then(() => {
+      fluidTiming = false
+      if (!disposed && marks.length === 0)
+        fluidClock.measured(steps, tiles, performance.now() - before)
+    }, forgetTiming)
+    return marks
+  }
+
+  /** A fence that failed because the device went: there is nothing to time. */
+  function ignoreLostDevice() {}
+
+  function forgetTiming() {
+    fluidTiming = false
+  }
+
+  function runFluid(steps: number): StrokeMark[] {
+    return renderer?.advanceFluid(steps) ?? []
+  }
+
   /** Runs the simulation on, settling whatever dries along the way. */
   function advanceFluid(steps: number) {
-    recordSettled(renderer?.advanceFluid(steps) ?? [])
+    recordSettled(runFluid(steps))
   }
 
   /** Settles everything wet at once. Nothing on screen changes. */
@@ -4994,35 +5059,61 @@ export function createEngine(
     if (fluidFrame !== undefined) cancelAnimationFrame(fluidFrame)
     fluidFrame = undefined
     fluidTime = undefined
-    fluidOwed = 0
+    fluidDueSteps = 0
+    fluidClock.stop()
   }
 
   /**
-   * One frame of the simulation's clock. The step is fixed and the clock
-   * aims at `FLUID_STEPS_PER_SECOND`; a frame that comes late is not made up
-   * for past `FLUID_STEPS_PER_FRAME`, so on a slow machine paint moves and
+   * One frame of the simulation's clock (D42). The step is fixed; the clock
+   * says how many a frame runs, one at 120 Hz and two at 60, and skips those
+   * the frame's budget cannot pay for, so on a slow machine paint moves and
    * dries more slowly and ends in the same place. The simulation gives way,
    * the pen does not (D30).
    */
   function tickFluid(timestamp: number) {
     fluidFrame = undefined
-    const elapsed =
-      fluidTime === undefined
-        ? 1000 / FLUID_STEPS_PER_SECOND
-        : timestamp - fluidTime
+    const elapsed = fluidTime === undefined ? undefined : timestamp - fluidTime
     fluidTime = timestamp
-    fluidOwed = Math.min(
-      fluidOwed + (elapsed * FLUID_STEPS_PER_SECOND) / 1000,
-      FLUID_STEPS_PER_FRAME
-    )
-    const steps = Math.floor(fluidOwed)
-    fluidOwed -= steps
+    const tiles = renderer?.fluidTileCount() ?? 0
+    const steps = fluidClock.frame(elapsed, tiles)
+    fluidObserver?.({
+      start: timestamp,
+      steps,
+      skipped: fluidClock.skipped(),
+      tiles,
+      stepMs: tiles * fluidClock.tileStepMs(),
+    })
+    if (steps > 0) {
+      // Run once this frame is presented, not before: submitted now, the
+      // steps would sit on the GPU's queue ahead of the stroke's own frame,
+      // and the pen's pixel would wait for them (D30).
+      fluidDueSteps = steps
+      fluidDueTiles = tiles
+      fluidChannel ??= openFluidChannel()
+      fluidChannel.port2.postMessage(null)
+    } else
+      try {
+        syncWet()
+      } catch (error) {
+        fail(error)
+      }
+  }
+
+  function openFluidChannel() {
+    const channel = new MessageChannel()
+    channel.port1.onmessage = stepFluid
+    return channel
+  }
+
+  /** The steps a frame of the clock owed, run after that frame. */
+  function stepFluid() {
+    const steps = fluidDueSteps
+    fluidDueSteps = 0
+    if (steps === 0 || disposed) return
     try {
-      if (steps > 0) {
-        advanceFluid(steps)
-        // A stroke's own frame shows the paint; without one this does.
-        if (frame === undefined && snapshot.status === "ready") render()
-      } else syncWet()
+      recordSettled(runTimedFluid(steps, fluidDueTiles))
+      // A stroke's own frame shows the paint; without one this does.
+      if (frame === undefined && snapshot.status === "ready") render()
     } catch (error) {
       fail(error)
     }
@@ -8281,6 +8372,9 @@ export function createEngine(
         vectorControlObservers.delete(observer)
       }
     },
+    observeFluid(observer) {
+      fluidObserver = observer
+    },
     observeFrames(observer) {
       frameObserver = observer
     },
@@ -8642,6 +8736,9 @@ export function createEngine(
       // A disposed engine has no frames to report, and holding the observer
       // would keep whatever it closes over alive with it.
       frameObserver = null
+      fluidObserver = null
+      fluidChannel?.port1.close()
+      fluidChannel?.port2.close()
       // Leaving the canvas through the app is an unmount, not a pagehide: it
       // would otherwise cancel the idle flush that had not fired yet, or tear
       // the device out from under one mid-preview, leaving the cloud without

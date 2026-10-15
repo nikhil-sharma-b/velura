@@ -139,9 +139,13 @@ export type WorkloadOptions = {
    * `spacing` is the brush's, as a fraction of its diameter; absent, an
    * eighth. `tip` gives it a tip of several frames and `scatter` throws its
    * dabs. `dry` paints with the same brush not fluid: what it is weighed
-   * against.
+   * against. `flooded` first floods the whole document with fluid paint
+   * that does not dry while the strokes are drawn (fluid brushes 13): on a
+   * document a whole number of tiles a side, every tile is wet under the
+   * pen, the worst case for a step.
    */
   fluid?: {
+    flooded?: boolean
     diameter: number
     spacing?: number
     tip?: boolean

@@ -28,7 +28,9 @@
  * `--layer-target` selects original layer deposition);
  * `--blender` compares small blenders with wet brushes that have flow;
  * `--fluid` paints with fluid brushes against the same brushes dry (fluid
- * brushes 10);
+ * brushes 10); `--fluid-load` times a step of the simulation over 16 and 64
+ * wet tiles and paints with every tile of the document wet (fluid brushes
+ * 13);
  * `--cold` times a draw into a texture left alone (live brushes 24);
  * `--vector` times
  * redrawing a vector layer of many paths (19); `--navigate` times panning and
@@ -44,7 +46,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { chromium, type Browser } from "@playwright/test"
 import type { Environment } from "./driver"
-import type { FrameTiming } from "../engine"
+import type { FluidTick, FrameTiming } from "../engine"
 import { judge, PERFORMANCE_TARGET, summarize, type Report } from "./report"
 import { VECTOR_WORKLOAD } from "./vector-workload"
 import { type BrushScatter, MAX_SCATTER_COUNT } from "../engine/brush/scatter"
@@ -107,6 +109,7 @@ type Pass = {
 /** A pass with what is kept out of the recorded summary. */
 type Measured = Pass & {
   frames: FrameTiming[]
+  fluidTicks: FluidTick[]
   strokeStarts: number[]
   readbackBytes: number
   historySettledMs: number[]
@@ -198,6 +201,7 @@ async function measure(
       frames: result.frames,
       strokeStarts: result.strokeStarts,
       readbackBytes: result.readbackBytes,
+      fluidTicks: result.fluidTicks,
       historySettledMs: result.historySettledMs,
       undoMs: result.undoMs,
     }
@@ -608,6 +612,94 @@ async function fluidSweep(): Promise<void> {
   console.log()
 }
 
+/** Documents a whole number of tiles a side: 16 wet tiles, and 64. */
+const FLOODED_SIZES = [1024, 2048]
+
+/**
+ * The fluid simulation under load (fluid brushes 13). First a step's cost
+ * over a document flooded worst case, every cell wet and its neighbours
+ * another colour, at 16 and 64 wet tiles. Then the workload painted with a
+ * fluid brush over the same flood, every tile wet under the pen, against
+ * the same brush on a dry document: whether the pen still meets D30 with
+ * the simulation stepping beside it, and how many steps the clock ran and
+ * skipped a frame. Strokes do not wait on history between them, since a
+ * save dries the flood.
+ */
+async function fluidLoadSweep(): Promise<void> {
+  const paced = PASSES.find((entry) => entry.name === "paced")!
+  const unpaced = PASSES.find((entry) => entry.name === "unpaced")!
+  console.log(
+    "\n  document  wet tiles   ms/step (median, min, max)   µs per tile-step   tiles in 2 ms   MB"
+  )
+  for (const size of FLOODED_SIZES) {
+    const browser = await launch(paced.args)
+    try {
+      const page = await browser.newPage()
+      page.on("pageerror", (error) =>
+        console.error("page error:", error.message)
+      )
+      await page.goto(HARNESS)
+      await page.waitForFunction(() => !!window.runFluidStepBenchmark)
+      const { stepMs } = await page.evaluate(
+        (size) => window.runFluidStepBenchmark({ width: size, height: size }),
+        size
+      )
+      const tiles = (size / 256) ** 2
+      const sorted = [...stepMs].sort((a, b) => a - b)
+      const median = sorted[sorted.length >> 1]
+      const perTile = (median * 1000) / tiles
+      console.log(
+        `  ${`${size}²`.padEnd(8)}  ${String(tiles).padStart(9)}   ` +
+          `${fixed(median, 3).padStart(7)}, ${fixed(sorted[0], 3)}, ${fixed(sorted[sorted.length - 1], 3)}`.padEnd(
+            29
+          ) +
+          `${fixed(perTile, 1).padStart(16)}   ${fixed(2000 / perTile, 0).padStart(13)}   ${fixed(tiles * 0.75, 1)}`
+      )
+    } finally {
+      await browser.close()
+    }
+  }
+  console.log(
+    "\n                                     unpaced                    paced: pen-to-pixel in ms" +
+      "\n  document  brush   paint        ms/frame   sustained fps   all frames (median / p95)   Hz    steps/frame   skipped   reckoned ms/step   dabs    readbacks   allocations"
+  )
+  for (const size of FLOODED_SIZES)
+    for (const diameter of [64, 512])
+      for (const { name, ...paint } of [
+        { name: "dry", dry: true },
+        { name: "fluid" },
+        { name: `fluid, ${(size / 256) ** 2} wet`, flooded: true },
+      ]) {
+        const workload = {
+          ...BENCHMARK_WORKLOAD,
+          width: size,
+          height: size,
+          strokes: SWEEP_STROKES,
+          unwaited: true,
+          fluid: { diameter, ...paint },
+        }
+        const free = await measure(unpaced, workload)
+        const held = await measure(paced, workload)
+        const readbacks = free.readbacks + held.readbacks
+        const allocations = Math.max(free.allocations, held.allocations)
+        const ticks = held.fluidTicks
+        const steps = ticks.reduce((total, tick) => total + tick.steps, 0)
+        const skipped = ticks.reduce((total, tick) => total + tick.skipped, 0)
+        const reckoned = ticks.map((tick) => tick.stepMs).sort((a, b) => a - b)
+        console.log(
+          `  ${`${size}²`.padEnd(8)}  ${`${diameter} px`.padEnd(6)}  ${name.padEnd(11)}  ` +
+            `${fixed(free.report.frameIntervalMs.mean, 3).padStart(9)}   ${fixed(free.report.frameRate.sustained).padStart(13)}   ` +
+            `${fixed(held.report.latencyMs.median).padStart(12)} / ${fixed(held.report.latencyMs.p95).padEnd(12)}   ` +
+            `${String(held.environment.refreshHz ?? "-").padStart(3)}   ` +
+            `${fixed(steps / Math.max(1, ticks.length), 2).padStart(11)}   ${String(skipped).padStart(7)}   ` +
+            `${fixed(reckoned[reckoned.length >> 1] ?? 0, 3).padStart(16)}   ` +
+            `${String(held.report.stamps.total).padStart(6)}   ${String(readbacks).padStart(9)}   ${String(allocations).padStart(11)}`
+        )
+        if (readbacks > 0) process.exitCode = 1
+      }
+  console.log()
+}
+
 /**
  * What a pause before pen-down costs the frame a stroke opens in (live
  * brushes 31): the 512 px rows at 8192², paced, each with no wait but
@@ -983,18 +1075,20 @@ async function main(): Promise<void> {
             ? scatterSweep
             : process.argv.includes("--smudge")
               ? smudgeSweep
-              : process.argv.includes("--fluid")
-                ? fluidSweep
-                : process.argv.includes("--wet") ||
-                    process.argv.includes("--blender")
-                  ? wetSweep
-                  : process.argv.includes("--cold")
-                    ? coldSweep
-                    : process.argv.includes("--vector")
-                      ? vectorSweep
-                      : process.argv.includes("--navigate")
-                        ? navigationSweep
-                        : null
+              : process.argv.includes("--fluid-load")
+                ? fluidLoadSweep
+                : process.argv.includes("--fluid")
+                  ? fluidSweep
+                  : process.argv.includes("--wet") ||
+                      process.argv.includes("--blender")
+                    ? wetSweep
+                    : process.argv.includes("--cold")
+                      ? coldSweep
+                      : process.argv.includes("--vector")
+                        ? vectorSweep
+                        : process.argv.includes("--navigate")
+                          ? navigationSweep
+                          : null
   if (ladder) {
     try {
       await ladder()
@@ -1012,6 +1106,7 @@ async function main(): Promise<void> {
     const strip = ({
       frames: _frames,
       strokeStarts: _strokeStarts,
+      fluidTicks: _fluidTicks,
       ...pass
     }: Measured) => pass
     const passes = {
