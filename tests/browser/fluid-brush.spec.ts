@@ -26,15 +26,16 @@ async function openCanvas(
   page: Page,
   width = WIDTH,
   height = HEIGHT,
-  manualFluidClock = true
+  manualFluidClock = true,
+  fluidTileStepMs?: number
 ): Promise<Origin> {
   await page.goto(
     process.env.VELURA_TEST_HARNESS ?? "http://127.0.0.1:3101/tests/harness/"
   )
   await page.waitForFunction(() => !!window.engine)
   await page.evaluate(
-    async ([width, height, colour, manualFluidClock]) => {
-      window.remountEngine({ manualFluidClock })
+    async ([width, height, colour, manualFluidClock, fluidTileStepMs]) => {
+      window.remountEngine({ manualFluidClock, fluidTileStepMs })
       await window.engine.dispatch({
         type: "resize",
         width,
@@ -52,7 +53,7 @@ async function openCanvas(
       })
       await window.engine.dispatch({ type: "setColor", hex: colour })
     },
-    [width, height, BLUE, manualFluidClock] as const
+    [width, height, BLUE, manualFluidClock, fluidTileStepMs] as const
   )
   const box = (await page.locator("canvas").boundingBox())!
   return { x: box.x, y: box.y }
@@ -807,6 +808,78 @@ test("with nothing wet no step runs and no frame is asked for", async ({
   )
   await frames(page)
   expect(await watch()).toEqual({ frames: 0, steps: 0, wet: false })
+})
+
+test("over budget the clock skips steps, and the wash dries into the same pixels", async ({
+  page,
+}) => {
+  // One dab, laid in one frame before any step: the clock cannot step
+  // between the dabs of a wash, as it would between those of a drag.
+  const tap = (origin: Origin) =>
+    page.evaluate(
+      ([x, y]) => {
+        const canvas = document.querySelector("canvas")!
+        for (const type of ["pointerdown", "pointerup"])
+          canvas.dispatchEvent(
+            new PointerEvent(type, {
+              pointerId: 1,
+              pointerType: "pen",
+              isPrimary: true,
+              bubbles: true,
+              cancelable: true,
+              clientX: x,
+              clientY: y,
+              pressure: 0.7,
+            })
+          )
+      },
+      [origin.x + 110, origin.y + ROW] as const
+    )
+
+  // Unloaded: stepped by command until it has dried.
+  let origin = await openCanvas(page)
+  await addLayer(page)
+  await setFluid(page, QUICK)
+  await tap(origin)
+  await frames(page)
+  for (let i = 0; i < 400 && (await isWet(page)); i++) await advance(page, 5)
+  expect(await isWet(page)).toBe(false)
+  const unloaded = await pixels(page)
+
+  // On the engine's own clock, reckoning a step at 3 ms where the budget is
+  // 2: no frame can afford one, and one runs only every so many frames.
+  origin = await openCanvas(page, WIDTH, HEIGHT, false, 3)
+  await addLayer(page)
+  await setFluid(page, QUICK)
+  await frames(page)
+  const watching = page.evaluate(
+    () =>
+      new Promise<{ steps: number; skipped: number; most: number }>(
+        (resolve) => {
+          const seen = { steps: 0, skipped: 0, most: 0 }
+          window.engine.observeFluid((tick) => {
+            seen.steps += tick.steps
+            seen.skipped += tick.skipped
+            seen.most = Math.max(seen.most, tick.steps)
+          })
+          const unsubscribe = window.engine.subscribe(() => {
+            if (window.engine.getSnapshot().wet || seen.steps === 0) return
+            unsubscribe()
+            window.engine.observeFluid(null)
+            resolve(seen)
+          })
+        }
+      )
+  )
+  await tap(origin)
+  const seen = await watching
+  expect(seen.most).toBe(1)
+  expect(seen.skipped).toBeGreaterThan(seen.steps / 2)
+
+  const loaded = await pixels(page)
+  expect(differing(loaded, unloaded, WIDTH)).toBe(null)
+  // And the same pixels are paint: one dab of a wash is a light one.
+  expect(distance(rgba(loaded, 110), rgba(unloaded, 0))).toBeGreaterThan(50)
 })
 
 test("paint bleeds across a tile border as it does within a tile", async ({

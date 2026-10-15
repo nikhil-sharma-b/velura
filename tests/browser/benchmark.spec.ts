@@ -248,3 +248,56 @@ test("a wet stroke thrown wide keeps its cancel pages for the stroke after it", 
   // has been one and none (fluid brushes 28).
   expect(result.strokeAllocations).toBe(2)
 })
+
+test("the fluid step benchmark floods every tile and times its steps", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.runFluidStepBenchmark)
+  // Two tiles a side, four wet, and a few steps a round: the software GPU
+  // takes most of a second a step.
+  const result = await page.evaluate(() =>
+    window.runFluidStepBenchmark(
+      { width: 512, height: 512 },
+      { steps: 2, count: 3 }
+    )
+  )
+  expect(result.canvas).toEqual({ width: 512, height: 512 })
+  // The flood was wet and stayed so (the run throws otherwise), and every
+  // round of steps took time on the GPU.
+  expect(result.stepMs).toHaveLength(3)
+  for (const ms of result.stepMs) expect(ms).toBeGreaterThan(0)
+})
+
+test("a flooded fluid workload records the simulation's clock with the pen down", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.runBenchmark)
+  const result = await page.evaluate(
+    (workload) =>
+      window.runBenchmark({
+        ...workload,
+        unwaited: true,
+        fluid: { diameter: 32, flooded: true },
+      }),
+    WORKLOAD
+  )
+  expect(result.dispatched).toBe(result.requested)
+  // The clock ran through the strokes, over every tile of the document, and
+  // was owed steps. Whether a frame of it fell with the pen down, and how
+  // many steps it could afford, are the GPU's: a software one draws a frame
+  // in a second or two, and none may fall inside a stroke.
+  expect(await page.evaluate(() => window.engine.getSnapshot().wet)).toBe(true)
+  expect(result.fluidTicks.length).toBeGreaterThan(0)
+  expect(
+    result.fluidTicks.reduce(
+      (total, tick) => total + tick.steps + tick.skipped,
+      0
+    )
+  ).toBeGreaterThan(0)
+  for (const tick of result.fluidTicks) expect(tick.tiles).toBe(4)
+  expect(result.readbacks).toBe(0)
+})

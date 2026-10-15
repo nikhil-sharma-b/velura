@@ -2250,3 +2250,114 @@ into here. A 512 px brush at 8192² does it with the pen down in every row,
 twice as often with a tip, whose turned corners reach tiles the disc's rim
 does not; thrown sixteen a step it misses the bar outright (88.7 / 245.1 ms).
 The cause is read from what the code does at the limit, not measured.
+
+## Fluid brushes hold D30: the step, its budget and the wet tile limit (fluid brushes 13)
+
+The simulation now has a budget. Its clock still aims at 120 steps a
+second, one a frame at 120 Hz and two at 60, but a frame runs only the
+steps it can pay for out of 2 ms of GPU time, and the rest are skipped and
+not made up: paint moves and dries more slowly in wall time and ends in the
+same pixels, since the step is fixed and a body's deadline is a count of
+steps. A step dearer than a whole frame's budget still runs, every few
+frames, so paint always dries. The clock and its arithmetic are
+`engine/gpu/fluid-clock.ts`, tested on their own.
+
+What a step costs is measured as it runs: a fence before the frame's steps
+and one after, no readback. A fence resolves a fixed time after the work it
+waits on, about 2.6 ms here, so one step over sixteen tiles fenced alone
+reads 3.2 ms and two read 3.8 ms, where the steps cost 0.39 ms each. The
+clock reckons with the slope across measurements of different sizes (one
+step or two, few tiles or many), a least-squares line with older
+measurements counting less, and holds to the benchmark's 24 µs a tile-step
+until measurements differ in size. Taken as a ratio, the same fences
+reckoned a 64-tile step at 3.3 ms and ran 0.66 steps a frame for one that
+costs 1.5.
+
+The steps also run after the frame is presented, from a task the frame
+posts, not inside it. Submitted in the frame they sat on the GPU's queue
+ahead of the stroke's own work, and the pen's pixel waited for them: over
+64 wet tiles that was 16.3 ms median pen-to-pixel, and is 14.8 now. The
+simulation gives way; the pen does not.
+
+`--fluid-load` measures both halves. First a step, run by command over a
+document flooded worst case: every cell wet, with water, bleed, rim and
+granulation at one, laid by 8 px dabs each a hue of its own, so pigment
+crossing between dabs is mixed by Kubelka–Munk rather than added. A flood
+of 2 px dabs, a cell's every neighbour another colour, steps at the same
+cost (0.37 against 0.39 ms at sixteen tiles): what a step costs is the
+water standing in its cells, not their colours. A document a whole number
+of tiles a side holds no dry ring, so every slot held is a tile of wet
+cells. Then the workload painted with a fluid brush over that flood,
+against the same brush on a dry document and the brush dry. The strokes do
+not wait on history between them, since a save dries the flood. The
+flooded documents are 1024² and 2048², sixteen tiles and sixty-four: at
+8192² the workload's strokes reach tiles past the flood and settle it to
+make room. A step costs by its tiles and not by the document, and the
+8192² fluid rows are those of fluid brushes 10.
+
+Apple GPU (Metal 3), Chrome/WebGPU, 75 Hz display, 2560 × 1440 window, six
+strokes, 2026-10-15, on top of `0acba2f`, the second of two runs that
+agree:
+
+| document | wet tiles | ms a step (median of 7 × 120) | µs a tile-step | tiles in 2 ms | field memory |
+|---|---:|---:|---:|---:|---:|
+| 1024² | 16 | 0.391 | 24.4 | 82 | 12 MB |
+| 2048² | 64 | 1.500 | 23.4 | 85 | 48 MB |
+
+| document | brush | paint | ms/frame, unpaced | sustained fps | all frames, median / p95 | steps/frame, paced | skipped | reckoned ms a step | dabs | readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1024² | 64 px | Dry | 0.441 | 1428.6 | 11.8 / 14.2 ms | – | – | – | 366 | 0 | 0 |
+| 1024² | 64 px | Fluid | 0.885 | 666.7 | 13.5 / 16.1 ms | 1.46 | 0 | 0.157 | 362 | 0 | 5 |
+| 1024² | 64 px | Fluid, 16 wet | 1.004 | 555.6 | 14.2 / 18.4 ms | 1.49 | 0 | 0.486 | 356 | 0 | 6 |
+| 1024² | 512 px | Dry | 0.445 | 1250.0 | 11.7 / 14.3 ms | – | – | – | 47 | 0 | 0 |
+| 1024² | 512 px | Fluid | 0.963 | 555.6 | 14.1 / 16.9 ms | 1.46 | 0 | 0.303 | 47 | 0 | 5 |
+| 1024² | 512 px | Fluid, 16 wet | 0.994 | 500.0 | 14.6 / 17.8 ms | 1.52 | 0 | 0.488 | 46 | 0 | 6 |
+| 2048² | 64 px | Dry | 0.482 | 1250.0 | 12.1 / 14.1 ms | – | – | – | 620 | 0 | 0 |
+| 2048² | 64 px | Fluid | 0.936 | 526.3 | 13.9 / 16.2 ms | 1.51 | 0 | 0.154 | 622 | 0 | 5 |
+| 2048² | 64 px | Fluid, 64 wet | 1.018 | 400.0 | 14.8 / 17.5 ms | 0.99 | 59 | 1.744 | 614 | 0 | 6 |
+| 2048² | 512 px | Dry | 0.483 | 1111.1 | 12.0 / 14.1 ms | – | – | – | 80 | 0 | 0 |
+| 2048² | 512 px | Fluid | 0.944 | 500.0 | 14.3 / 17.6 ms | 1.32 | 16 | 0.739 | 81 | 0 | 5 |
+| 2048² | 512 px | Fluid, 64 wet | 1.340 | 416.7 | 14.8 / 18.2 ms | 0.98 | 58 | 1.795 | 80 | 0 | 6 |
+
+**The step is linear in tiles,** 23 to 24 µs a tile-step at worst, which
+is the prototype's 26 on the same kind of GPU. Sixty-four tiles are 1.5 ms
+run back to back; in the engine, among the frame's other work, the clock
+reckons a step over them at 1.7 to 1.8 ms. That fits the budget once a
+frame and not twice, so at 75 Hz a frame runs one step and skips what
+owed a second: about 74 steps a second against 120, paint moving at three
+fifths of its speed while every tile is wet worst case. Under a dry
+document's stroke the steps are over a handful of tiles and the clock runs
+the steps owed, 1.5 a frame at 75 Hz; the 2048² 512 px row's wash grows
+large enough late in a stroke for the second step to be skipped now and
+then. On a 60 Hz display the clock runs two steps a frame wherever two fit
+the budget (unit-tested; this machine's panel is 75 Hz).
+
+**A stroke drawn while 64 tiles are wet meets D30's frame rate**, 400 fps
+unpaced against 120, and history reads nothing back. Pen-to-pixel cannot
+be judged at 75 Hz, where it is a panel period plus the frame's GPU work
+(brush-library 17); a fluid stroke adds 1.7 to 2.4 ms to it over the same
+brush dry and 2.7 to 2.8 ms over 64 wet tiles. The steps are no longer in
+that: it is the stroke's own pour and the wet surface in the present pass,
+as fluid brushes 10 found. At 120 Hz that would put the 64-wet rows near
+11.5 ms, over the bar; there is no 120 Hz display to measure it on.
+
+**The wet tile limit stays at 64.** Its worst-case step is 1.5 ms, inside
+the budget with room for a pour, and 48 MB of fields. 85 tiles would fit
+2 ms run alone, but not in the engine, where 64 already reckons at 1.75 ms;
+and the clock now gives way where the step is dearer, so a slower GPU
+slows the paint and not the pen. Weighed with the ring (fluid brushes 08):
+a dab allocates its tile's eight neighbours, so a flooded stroke along a
+row takes three slots for each tile it reaches, and 64 slots hold a wash
+about twenty tiles long, 5,000 px, before the first body is settled to
+make room. A ring tile with no slot free is a wall to a bloom. Raising the
+limit to 96 would make that thirty tiles and a 2.3 ms worst-case step; the
+reach a large brush wants is the coarser simulation of fluid brushes 21,
+not more slots at this resolution.
+
+**Rows over the bar, ticketed.** The fluid rows count five or six
+allocations with the pen down, flooded or not: each stroke that goes down
+into wet paint makes a texture for its pen-down copy (fluid brushes 34).
+The 512 px rows at 8192² of `--fluid`, whose wash outgrows the limit under
+the pen and settles there with history reading it back, are fluid brushes
+33. The batched deposit at 64 and 512 px is the table of fluid brushes 10,
+above: the dab is not the cost.
