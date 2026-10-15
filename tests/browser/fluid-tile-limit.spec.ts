@@ -284,12 +284,14 @@ test("paused, the held body painted into longest ago makes room, and not the one
   // Eight tiles a slow brush paints first, two rows of four, and four in the
   // first row, a tile clear of them, a quick brush paints after: due long
   // before the first.
-  await brush(0.2)
+  // About three hundred steps to its deadline, against some 170 for the
+  // quick brush: both held soon, and few steps for a slow GPU to run.
+  await brush(0.8)
   await wash([LEFT, rowY(0)], [900, rowY(0)], [900, rowY(1)], [LEFT, rowY(1)])
   await brush(1)
   await wash([1380, rowY(0)], [RIGHT, rowY(0)])
   // Both held.
-  await advance(page, 2600)
+  await advance(page, 320)
   expect(await isWet(page)).toBe(true)
   const dry = await drySteps(page)
 
