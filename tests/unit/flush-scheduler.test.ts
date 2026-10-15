@@ -103,3 +103,20 @@ describe("idle flush", () => {
     expect(flushes).toBe(0)
   })
 })
+
+describe("what sent a flush", () => {
+  test("the flush is told whether it is the idle one or one asked for now", () => {
+    const clock = fakeClock()
+    const reasons: string[] = []
+    const scheduler = createFlushScheduler({
+      flush: (reason) => reasons.push(reason),
+      idleMs: 1000,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+    })
+    scheduler.touch()
+    clock.advance(1000)
+    scheduler.flushNow()
+    expect(reasons).toEqual(["idle", "now"])
+  })
+})

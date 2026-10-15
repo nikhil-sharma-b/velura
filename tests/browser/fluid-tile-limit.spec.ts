@@ -254,3 +254,49 @@ test("the paint settled early is what was on screen, and the wash being painted 
   await advance(page, 20)
   expect(differing(band(await pixels(page)), band(before))).toBe(0)
 })
+
+test("paused, the held body painted into longest ago makes room, and not the one due first", async ({
+  page,
+}) => {
+  test.slow()
+  const canvas = await openCanvas(page)
+  await page.evaluate(() =>
+    window.engine.dispatch({ type: "setDryingPaused", paused: true })
+  )
+  const brush = (drying: number) =>
+    page.evaluate(
+      (fluid) => window.engine.dispatch({ type: "setBrush", fluid }),
+      { ...FLUID, drying }
+    )
+  /** A wash through document points, in one stroke. */
+  const wash = async (...points: [number, number][]) => {
+    await move(page, canvas, ...points[0])
+    await page.mouse.down()
+    for (const point of points.slice(1)) await move(page, canvas, ...point, 10)
+    await page.mouse.up()
+    await frames(page)
+  }
+  const wetAt = (x: number) =>
+    page.evaluate(
+      ({ x, y }) => window.engine.wetUnder(x, y),
+      canvas.toScreen(x, rowY(0))
+    )
+  // Eight tiles a slow brush paints first, two rows of four, and four in the
+  // first row, a tile clear of them, a quick brush paints after: due long
+  // before the first.
+  await brush(0.2)
+  await wash([LEFT, rowY(0)], [900, rowY(0)], [900, rowY(1)], [LEFT, rowY(1)])
+  await brush(1)
+  await wash([1380, rowY(0)], [RIGHT, rowY(0)])
+  // Both held.
+  await advance(page, 2600)
+  expect(await isWet(page)).toBe(true)
+  const dry = await drySteps(page)
+
+  // Six rows of tiles, two more than the slots left: one body makes room.
+  await serpentine(page, canvas, 3, SIDE - 1)
+
+  await expect.poll(() => drySteps(page)).toBe(dry + 1)
+  expect(await wetAt(500)).toBe(false)
+  expect(await wetAt(1800)).toBe(true)
+})

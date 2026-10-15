@@ -2390,3 +2390,22 @@ allocations are the pen-down copy each stroke into wet paint takes (fluid
 brushes 34). Pen-to-pixel cannot be judged on this 75 Hz panel, where it is
 a panel period and the frame's GPU work; the under-10 ms figure needs a 120
 Hz display, which there is none of.
+
+`--fluid-load` also steps each flood with drying paused and run on until
+every body of it holds (fluid brushes 18): ten thousand steps, the flood
+brush drying at nothing. A held slot is passed by, and with every tile held
+the simulation runs no step at all, so what is timed is the command and the
+fence around it. Apple GPU (Metal 3), Chrome/WebGPU, 75 Hz display, 2560 ×
+1440 window, 2026-10-15, on top of `a7a5624`:
+
+| document | wet tiles | ms a step (median of 7 × 120) | µs a tile-step | field memory |
+|---|---:|---:|---:|---:|
+| 1024² | 16 | 0.407 | 25.4 | 12 MB |
+| 1024² | 16, held | 0.008 | 0.5 | 12 MB |
+| 2048² | 64 | 1.568 | 24.5 | 48 MB |
+| 2048² | 64, held | 0.022 | 0.3 | 48 MB |
+
+**Held paint costs no step time:** 64 held tiles take 0.022 ms against 1.568
+for the same flood moving, the fence's latency and no GPU work. The engine's
+clock stops once everything wet is held, so it is not asked even that. Held
+paint keeps its slots and its field memory.

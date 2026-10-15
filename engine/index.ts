@@ -472,6 +472,7 @@ const WET_PASSTHROUGH: ReadonlySet<EngineCommand["type"]> = new Set([
   "undo",
   "redo",
   "dryNow",
+  "setDryingPaused",
   "advanceFluid",
 ])
 export {
@@ -1173,8 +1174,15 @@ export type EngineCommand =
   /** Settles everything wet into its layer at once (D42). */
   | { type: "dryNow" }
   /**
+   * Pauses drying, or lets it go on (fluid brushes 18). Paused, nothing
+   * evaporates, and a body whose time has come holds, wet and still, until a
+   * dab lands in it; let go, every body dries from where it is.
+   */
+  | { type: "setDryingPaused"; paused: boolean }
+  /**
    * Runs the fluid simulation on by a whole number of steps (D42), whatever
-   * the clock: paint moves, and a body whose time has come settles.
+   * the clock: paint moves, and a body whose time has come settles, or with
+   * drying paused holds.
    */
   | { type: "advanceFluid"; steps: number }
 
@@ -1291,8 +1299,13 @@ export type EngineSnapshot = Readonly<{
   /** Whether there is a step to take back, and one to put back (D21). */
   canUndo: boolean
   canRedo: boolean
-  /** Whether any paint is wet, and so still moving (D42). */
+  /** Whether any paint is wet (D42). */
   wet: boolean
+  /**
+   * Whether drying is paused (fluid brushes 18): session state, off whenever
+   * a document opens, and never stored.
+   */
+  dryingPaused: boolean
   error: string | null
   /** A non-fatal durability/sync problem with an explicit next action. */
   problem: ExplainedFailure | null
@@ -1422,6 +1435,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   canUndo: false,
   canRedo: false,
   wet: false,
+  dryingPaused: false,
   error: null,
   problem: null,
   syncStatus: null,
@@ -2245,6 +2259,7 @@ export function createEngine(
     stopFluidClock()
     wetTargetId = undefined
     if (snapshot.wet) publish({ wet: false })
+    if (snapshot.dryingPaused) publish({ dryingPaused: false })
     directCount = 0
     samples.clear()
     renderer?.destroy()
@@ -5003,15 +5018,15 @@ export function createEngine(
 
   /**
    * Squares what the engine holds with whether paint is wet: the clock runs
-   * while it is and stops when it is not.
+   * while any of it moves, and stops when none is wet or all of it is held
+   * with drying paused (fluid brushes 18).
    */
   function syncWet() {
     const wet = renderer?.fluidWet() ?? false
-    if (wet) runFluidClock()
-    else {
-      wetTargetId = undefined
-      stopFluidClock()
-    }
+    // Paint all held while drying is paused has nothing for the clock to do.
+    if (wet && (renderer?.fluidTileCount() ?? 0) > 0) runFluidClock()
+    else stopFluidClock()
+    if (!wet) wetTargetId = undefined
     // React learns nothing with the pen down (§10.2): a stroke's end says.
     if (snapshot.wet !== wet && !stroking) publish({ wet })
   }
@@ -6377,6 +6392,8 @@ export function createEngine(
         feather: BRUSH_FEATHER,
       })
       renderer = target
+      // Paused before there was a renderer to tell (fluid brushes 18).
+      if (snapshot.dryingPaused) target.setFluidDryingPaused(true)
       target.setRasterMagnification(snapshot.rasterMagnification)
       const local = options.persistence
       const store = local
@@ -6526,12 +6543,15 @@ export function createEngine(
             // An idle timer set by earlier strokes can come due mid-preview.
             // What is sent is what the artist sees, so wet paint dries
             // first (D42), and the flush waits for that step to be recorded.
-            flush: () => {
+            // Paint held while drying is paused stays wet through an idle
+            // flush, which sends what has settled (fluid brushes 18).
+            flush: (reason) => {
               const send = () => {
                 if (!restoreOnTrial() && !snapshot.loading)
                   void cloudSync?.flush()
               }
-              if (!wetTargetId) return send()
+              if (!wetTargetId || (reason === "idle" && snapshot.dryingPaused))
+                return send()
               dryFluid()
               void history?.settle().then(send)
             },
@@ -8096,6 +8116,14 @@ export function createEngine(
           if (snapshot.status === "ready") render()
           break
         }
+        case "setDryingPaused": {
+          if (command.paused === snapshot.dryingPaused) break
+          renderer?.setFluidDryingPaused(command.paused)
+          publish({ dryingPaused: command.paused })
+          // Held paint moves again when drying goes on.
+          syncWet()
+          break
+        }
         case "advanceFluid": {
           if (!Number.isInteger(command.steps) || command.steps < 0)
             throw new Error("Steps must be a whole number, zero or more.")
@@ -8733,6 +8761,11 @@ export function createEngine(
         if (bytes) assets.set(ref.id, Object.freeze({ ...ref, bytes }))
       }
       renderer.resize(imported.manifest.width, imported.manifest.height)
+      // Another document: drying is not paused in it (fluid brushes 18).
+      if (snapshot.dryingPaused) {
+        renderer.setFluidDryingPaused(false)
+        publish({ dryingPaused: false })
+      }
       syncWet()
       if (snapshot.sampleAllLayers) renderer.prepareSampling()
       drawnScenes.clear()

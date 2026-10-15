@@ -872,6 +872,17 @@ export const studioCommands = createRegistry<StudioContext>(
       run: ({ engine }) => void engine?.dispatch({ type: "dryNow" }),
     },
     {
+      // Unbound by default, as Dry now is: a wash kept workable until the
+      // artist dries it (fluid brushes 18).
+      id: "brush.toggleDryingPaused",
+      label: "Pause or resume drying",
+      category: "Brush",
+      ...dispatching(({ engine }) => ({
+        type: "setDryingPaused",
+        paused: !engine?.getSnapshot().dryingPaused,
+      })),
+    },
+    {
       id: "layer.add",
       label: "Add layer",
       category: "Layers",

@@ -239,3 +239,97 @@ describe("finding a tile's slot", () => {
     expect(tiles.map().every((byte) => byte === 0)).toBe(true)
   })
 })
+
+describe("bodies held while drying is paused", () => {
+  test("a body whose deadline has passed is held, whole, and one still due is not", () => {
+    const tiles = createWetTiles(10, 10)
+    // Two bodies, clear of each other: two tiles due at 50, one due at 90.
+    tiles.touch(0, 0)
+    tiles.touch(1, 0)
+    tiles.touch(5, 5)
+    tiles.refresh(0, 0, 50)
+    tiles.refresh(5, 5, 90)
+    const held = new Uint8Array(WET_SLOTS)
+
+    expect(tiles.due(49, held)).toBe(0)
+    expect([...held].every((byte) => byte === 0)).toBe(true)
+
+    expect(tiles.due(50, held)).toBe(2)
+    expect(held[tiles.slotAt(0, 0)]).toBe(1)
+    expect(held[tiles.slotAt(1, 0)]).toBe(1)
+    expect(held[tiles.slotAt(5, 5)]).toBe(0)
+
+    // A dab into it pushes its deadline back: it moves again.
+    tiles.refresh(1, 0, 120)
+    expect(tiles.due(60, held)).toBe(0)
+    expect(held[tiles.slotAt(0, 0)]).toBe(0)
+  })
+})
+
+describe("the wet tile limit while drying is paused", () => {
+  /** Every slot taken by two held bodies and a moving one, clear of each other. */
+  function crowded() {
+    const tiles = createWetTiles(40, 40)
+    // Painted first, by a slow brush: due last of the two held.
+    for (let x = 0; x < 20; x++) tiles.touch(x, 0)
+    tiles.refresh(0, 0, 100)
+    // Painted second, by a fast brush: due first.
+    for (let x = 0; x < 20; x++) tiles.touch(x, 10)
+    tiles.refresh(0, 10, 50)
+    // Painted last, and still moving.
+    for (let x = 0; x < WET_SLOTS - 40; x++) tiles.touch(x, 20)
+    tiles.refresh(0, 20, 500)
+    return tiles
+  }
+  const rows = (
+    tiles: ReturnType<typeof createWetTiles>,
+    slots: readonly number[]
+  ) => new Set(slots.map((slot) => tiles.tile(slot)!.y))
+
+  test("a held body makes room before one still moving, the one least recently painted into first", () => {
+    const tiles = crowded()
+    expect(rows(tiles, tiles.crowding(0, 30, undefined, 200))).toEqual(
+      new Set([0])
+    )
+  })
+
+  test("paused or not, a body still moving waits for every held one", () => {
+    const tiles = crowded()
+    // Only the fast brush's body is held at 60.
+    expect(rows(tiles, tiles.crowding(0, 30, undefined, 60))).toEqual(
+      new Set([10])
+    )
+  })
+
+  test("unpaused, the body due first makes room, as before", () => {
+    const tiles = crowded()
+    expect(rows(tiles, tiles.crowding(0, 30))).toEqual(new Set([10]))
+  })
+
+  test("a held body being painted into is still the last to make room", () => {
+    const tiles = crowded()
+    // The tile joins the body painted first.
+    expect(rows(tiles, tiles.crowding(20, 0, undefined, 200))).toEqual(
+      new Set([10])
+    )
+  })
+
+  test("a ring that reaches a held body's tile is not paint laid in it", () => {
+    const tiles = crowded()
+    // A ring about a tile beside the body painted first takes in its tile
+    // (19, 0) without a dab landing there; the ring takes the last free slot.
+    tiles.release(tiles.slotAt(0, 20))
+    tiles.surround(20, 1)
+    expect(rows(tiles, tiles.crowding(0, 30, undefined, 200))).toEqual(
+      new Set([0])
+    )
+  })
+
+  test("painting a held body again makes it the most recently painted", () => {
+    const tiles = crowded()
+    tiles.touch(3, 0)
+    expect(rows(tiles, tiles.crowding(0, 30, undefined, 200))).toEqual(
+      new Set([10])
+    )
+  })
+})

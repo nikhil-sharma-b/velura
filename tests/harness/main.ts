@@ -107,7 +107,9 @@ declare global {
     /** A step of the fluid simulation over a flooded document (fluid brushes 13). */
     runFluidStepBenchmark(
       size: { width: number; height: number },
-      rounds?: { steps: number; count: number }
+      rounds?: { steps: number; count: number },
+      /** Every body of the flood held, drying paused (fluid brushes 18). */
+      held?: boolean
     ): Promise<FluidStepResult>
     /** Re-rasterising a vector layer of many paths (19). */
     runVectorBenchmark(options: VectorWorkloadOptions): Promise<VectorRunResult>
@@ -411,9 +413,9 @@ window.runBenchmark = (options) => {
     })
   return runBenchmark(window.engine, canvas, options)
 }
-window.runFluidStepBenchmark = (size, rounds) => {
+window.runFluidStepBenchmark = (size, rounds, held) => {
   window.remountEngine({ manualFluidClock: true, documentSize: size })
-  return runFluidStepBenchmark(window.engine, canvas, size, rounds)
+  return runFluidStepBenchmark(window.engine, canvas, size, rounds, held)
 }
 window.runVectorBenchmark = (options) =>
   runVectorBenchmark(window.engine, canvas, options)
