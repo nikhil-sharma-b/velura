@@ -3,7 +3,7 @@
 **Status:** ready-for-agent
 **Date:** 2026-10-10
 **Predecessor:** `docs/design/prd-brush-library.md`. Companion: `docs/design/architecture.md` (D1, D23, D27, D29, D30, D32, §6.2).
-**Successor:** the fluid brushes milestone (watercolour and other paint that moves after the pen lifts), which builds on what this one leaves behind. See Further Notes.
+**Successor:** `docs/design/prd-fluid-brushes.md`, the fluid brushes milestone (watercolour and other paint that moves after the pen lifts), which builds on what this one leaves behind. See Further Notes.
 **Issues:** `.scratch/live-brushes/issues/`
 
 ---

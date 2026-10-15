@@ -1,9 +1,9 @@
 # Velura Fluid Brushes — Product Spec
 
-**Status:** ready-for-agent
+**Status:** done, but for tuning the look with a pen (fluid brushes 31); the open follow-ups are fluid brushes 15 to 26, 29, 30 and 32 to 34
 **Date:** 2026-10-12
-**Predecessor:** `docs/design/prd-live-brushes.md`. Companion: `docs/design/architecture.md` (D3, D9, D15, D19, D21, D23, D27, D29, D30, D41, §6.2, §6.3, §8, §9.2).
-**Prototype:** branch `fluid-brushes/prototype`, one self-contained page under `tmp/fluid-prototype/`. It is the primary source for the simulation rules and the measurements quoted here. It is never imported by the engine.
+**Predecessor:** `docs/design/prd-live-brushes.md`. Companion: `docs/design/architecture.md` (D3, D9, D15, D19, D21, D23, D27, D29, D30, D41, D42, §6.2, §6.3, §8, §9.2).
+**Prototype:** branch `fluid-brushes/prototype`, one self-contained page under `tmp/fluid-prototype/`, kept on that branch alone and never merged to `dev`. It is the primary source for the simulation rules and the measurements quoted here. It is never imported by the engine.
 **Issues:** `.scratch/fluid-brushes/issues/`
 
 ---
