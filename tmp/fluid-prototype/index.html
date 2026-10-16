@@ -108,7 +108,7 @@ function createWetTiles(grid, capacity) {
 
 // ───────────────────────── portable part 2: the shaders ─────────────────────────
 const U_FIELDS = ["grid", "tile", "slots", "model", "kmMix", "dabCount", "simOn", "view", "showTiles", "maskOn", "benchFill", "settleOnly", "edgeR"]
-const F_FIELDS = ["kw", "drag", "evap", "edgeK", "absorb", "dryRate", "diff", "carry", "depRate", "gran", "lift", "paperK", "wMax", "grainDetail", "viewX", "viewY", "viewScale", "docSize", "hard", "spill"]
+const F_FIELDS = ["kw", "drag", "evap", "edgeK", "absorb", "dryRate", "diff", "carry", "depRate", "gran", "lift", "paperK", "wMax", "grainDetail", "viewX", "viewY", "viewScale", "docSize", "hard", "spill", "gravity", "downX", "downY", "runCreep", "runPow", "runAt"]
 
 const COMMON = /* wgsl */ `
 struct Params { ${U_FIELDS.map((n) => `${n}: u32,`).join(" ")} ${F_FIELDS.map((n) => `${n}: f32,`).join(" ")} }
@@ -229,10 +229,34 @@ fn gate(a: vec4f, b: vec4f, ma: f32, mb: f32) -> f32 { return smoothstep(0.02, 0
 // Water crossing a face per step, before the donor's limit.
 // model 0: overdamped, flow follows the height difference, so a puddle levels and its edge stays fed.
 // model 1: the face keeps momentum.
-fn faceFlow(old: f32, ha: f32, hb: f32, g: f32) -> f32 {
+// model 2: overdamped, but a face keeps momentum where water stands past what the paper holds (spill), on a tilted board.
+// Gravity (directional flow spike): a board tilted toward down adds flow along it, in proportion to the water upstream.
+// dir is down's component along the face's direction (+x for the right face, +y for the bottom face).
+// runPow > 1 makes deep water run faster than shallow (a thin film's flux grows as depth cubed), so a deeper spot
+// on the front pulls ahead: the instability a straight front needs to break into runs.
+fn fall(dir: f32, wa: f32, wb: f32) -> f32 {
+  let along = P.gravity * dir;
+  let donor = select(wb, wa, along > 0.0);
+  return along * donor * pow(max(donor, 0.0), P.runPow - 1.0);
+}
+fn faceFlow(old: f32, ha: f32, hb: f32, wa: f32, wb: f32, dir: f32, g: f32) -> f32 {
   var q = P.kw * (ha - hb);
+  if (P.gravity > 0.0) { q += fall(dir, wa, wb); }
   if (P.model == 1u) { q = old * (1.0 - P.drag) + q * P.drag; }
+  if (P.model == 2u && P.gravity > 0.0) {
+    let m = smoothstep(P.spill, P.spill + 0.2, max(wa, wb));
+    q = mix(q, old * (1.0 - P.drag) + q * P.drag, m);
+  }
   return q * g;
+}
+// How much faster the damp front creeps downhill than across: dir is down's component along the creep's direction.
+// runAt > 0 pins a front facing downhill until the water behind it stands deeper than runAt: a bead holds on the
+// paper and gives way only where it is heaviest, which is where a real drip starts.
+fn creepBias(dir: f32, w: f32) -> f32 {
+  if (P.gravity <= 0.0) { return 1.0; }
+  var k = max(0.0, 1.0 + P.runCreep * dir);
+  if (P.runAt > 0.0 && dir > 0.0) { k *= smoothstep(P.runAt, P.runAt + 0.1, w); }
+  return k;
 }
 fn pgate(a: vec4f, b: vec4f) -> f32 { return smoothstep(0.0, 0.25, min(a.x, b.x)); }
 
@@ -265,10 +289,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let Hu = u.x + P.paperK * paperAt(docPx + vec2f(0.0, -scale));
     let Hd = d.x + P.paperK * paperAt(docPx + vec2f(0.0, scale));
     // no cell gives more than a fifth of its water across one face in one step
-    vR = clamp(faceFlow(c.z, Hc, Hr, gate(c, r, mc, mr)), -0.2 * r.x, 0.2 * c.x);
-    let vL = clamp(faceFlow(l.z, Hl, Hc, gate(l, c, ml, mc)), -0.2 * c.x, 0.2 * l.x);
-    vD = clamp(faceFlow(c.w, Hc, Hd, gate(c, d, mc, md)), -0.2 * d.x, 0.2 * c.x);
-    let vU = clamp(faceFlow(u.w, Hu, Hc, gate(u, c, mu, mc)), -0.2 * c.x, 0.2 * u.x);
+    vR = clamp(faceFlow(c.z, Hc, Hr, c.x, r.x, P.downX, gate(c, r, mc, mr)), -0.2 * r.x, 0.2 * c.x);
+    let vL = clamp(faceFlow(l.z, Hl, Hc, l.x, c.x, P.downX, gate(l, c, ml, mc)), -0.2 * c.x, 0.2 * l.x);
+    vD = clamp(faceFlow(c.w, Hc, Hd, c.x, d.x, P.downY, gate(c, d, mc, md)), -0.2 * d.x, 0.2 * c.x);
+    let vU = clamp(faceFlow(u.w, Hu, Hc, u.x, c.x, P.downY, gate(u, c, mu, mc)), -0.2 * c.x, 0.2 * u.x);
     // the same flows as the fraction of each donor's water, which is the fraction of its pigment that rides along
     let inv = 1.0 / max(c.x, 0.0001);
     let oR = max(vR, 0.0) * inv; let oL = max(-vL, 0.0) * inv; let oD = max(vD, 0.0) * inv; let oU = max(-vU, 0.0) * inv;
@@ -285,8 +309,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // paper saturation: dampness creeps into dry paper next to standing water, and fades once the water is gone
     // only water standing deeper than the paper can hold (spill) pushes the damp front outward: that is a bloom
-    let creep = max(l.y - s, 0.0) * smoothstep(P.spill, P.spill + 0.2, l.x) * ml + max(r.y - s, 0.0) * smoothstep(P.spill, P.spill + 0.2, r.x) * mr
-              + max(u.y - s, 0.0) * smoothstep(P.spill, P.spill + 0.2, u.x) * mu + max(d.y - s, 0.0) * smoothstep(P.spill, P.spill + 0.2, d.x) * md;
+    let creep = max(l.y - s, 0.0) * smoothstep(P.spill, P.spill + 0.2, l.x) * ml * creepBias(P.downX, l.x) + max(r.y - s, 0.0) * smoothstep(P.spill, P.spill + 0.2, r.x) * mr * creepBias(-P.downX, r.x)
+              + max(u.y - s, 0.0) * smoothstep(P.spill, P.spill + 0.2, u.x) * mu * creepBias(P.downY, u.x) + max(d.y - s, 0.0) * smoothstep(P.spill, P.spill + 0.2, d.x) * md * creepBias(-P.downY, d.x);
     s = s + P.absorb * creep * mc;
     if (w > 0.001) { s = min(1.0, s + 0.2); } else { s = max(0.0, s - P.dryRate); }
 
@@ -396,18 +420,22 @@ const S = {
   model: 0, kmMix: 1, simOn: 1, stepsPerFrame: 1, view: 0, showTiles: 0, maskOn: 0, audit: 1,
   kw: 0.2, drag: 0.15, evap: 0.0008, edgeK: 6, edgeR: 6, absorb: 0.1, spill: 0.6, dryRate: 0.02, diff: 0.03, carry: 1,
   depRate: 0.0003, gran: 1, lift: 0.001, paperK: 0.03, wMax: 1, grainDetail: 0.15,
+  // board (directional flow spike): steepness 0..1 (0 flat), direction in degrees on the paper (0 bottom edge, 90 right edge)
+  steep: 0, boardDeg: 0, gMax: 0.2, runCreep: 0, runPow: 1, runAt: 0,
   // brush
   color: "#0d3fc0", radius: 60, water: 0.1, load: 0.3, hard: 0.8,
   // view
   viewX: 0, viewY: 0, viewScale: 1,
 }
-const stats = { step: 0, gpuMs: null, dropped: 0, audit: "none yet", settled: 0 }
+const stats = { step: 0, gpuMs: null, dropped: 0, audit: "none yet", settled: 0, water: "not measured" }
 let device, ctx, format, paramsBuf, paperTex, stepPipe, displayPipe, settlePipe, stepLayout, drawLayout
 let sim = null, layers = null, layerCur = 0, benchRunning = false, hasTs = false
 const dabQueue = []
 
 function writeParams(over = {}, target = sim) {
-  const v = { ...S, grid: target.grid, tile: target.tile, slots: target.capacity, docSize: target.grid * 256, dabCount: 0, benchFill: 0, settleOnly: 0, ...over }
+  const th = (S.boardDeg * Math.PI) / 180
+  const board = { gravity: S.steep * S.gMax, downX: Math.sin(th), downY: Math.cos(th) }
+  const v = { ...S, ...board, grid: target.grid, tile: target.tile, slots: target.capacity, docSize: target.grid * 256, dabCount: 0, benchFill: 0, settleOnly: 0, ...over }
   const buf = new ArrayBuffer((U_FIELDS.length + F_FIELDS.length) * 4)
   const u = new Uint32Array(buf, 0, U_FIELDS.length), f = new Float32Array(buf, U_FIELDS.length * 4)
   U_FIELDS.forEach((n, i) => (u[i] = v[n]))
@@ -535,6 +563,24 @@ function audit(slots) {
   })
 }
 
+/** Spike check: total and least water over every wet slot, so a tilted board can be shown to make or lose none. */
+async function measureWater() {
+  const T = sim.tile, slots = sim.tiles.all()
+  if (!slots.length) return { total: 0, min: 0, max: 0, slots: 0 }
+  const buf = device.createBuffer({ size: T * T * 8 * slots.length, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })
+  const enc = device.createCommandEncoder()
+  slots.forEach((s, i) => enc.copyTextureToBuffer({ texture: sim.tex[sim.cur].W, origin: [0, 0, s] }, { buffer: buf, offset: i * T * T * 8, bytesPerRow: T * 8 }, [T, T, 1]))
+  device.queue.submit([enc.finish()])
+  await buf.mapAsync(GPUMapMode.READ)
+  const px = new Uint16Array(buf.getMappedRange())
+  let total = 0, min = Infinity, max = 0
+  for (let i = 0; i < px.length; i += 4) { const w = h2f(px[i]); total += w; min = Math.min(min, w); max = Math.max(max, w) }
+  buf.unmap(); buf.destroy()
+  const out = { total, min, max, slots: slots.length }
+  stats.water = `${total.toFixed(1)} over ${slots.length} tiles (min ${min.toFixed(4)}, max ${max.toFixed(3)})`
+  return out
+}
+
 function settle(slots, forced = false) {
   const t = sim.tiles
   if (S.audit && !forced) audit(slots)
@@ -563,7 +609,9 @@ function draw() {
 function renderState() {
   const t = sim.tiles, left = t.all().reduce((m, s) => Math.min(m, t.deadline[s] - stats.step), Infinity)
   const rows = {
-    "Flow model": S.model ? "momentum (shallow-water-like)" : "overdamped (diffusion-like)",
+    "Flow model": ["overdamped (diffusion-like)", "momentum (shallow-water-like)", "overdamped, momentum past spill"][S.model],
+    "Board": S.steep ? `steepness ${S.steep}, down ${S.boardDeg}° (g ${(S.steep * S.gMax).toFixed(3)})` : "flat",
+    "Water total": stats.water,
     "Sim resolution": `${S.tile} cells per 256 px tile (1/${256 / S.tile})`,
     "Step": stats.step,
     "Wet tiles": `${t.count} of ${t.capacity} slots` + (stats.dropped ? ` · <span class=warn>${stats.dropped} dabs dropped, out of slots</span>` : ""),
@@ -599,7 +647,7 @@ function stroke(points, o = {}) {
 function advance(n) { while (dabQueue.length) stepOnce(); for (let i = 0; i < n; i++) stepOnce() }
 function dryNow() { while (dabQueue.length) stepOnce(); const all = sim.tiles.all(); if (all.length) settle(all, true) }
 function set(o) { const layout = ["grid", "tile", "capacity"].some((k) => k in o && o[k] !== S[k]); Object.assign(S, o); if (layout) rebuild(); else if ("evap" in o || "dryRate" in o) sim.tiles.refreshAll(stats.step + dryIn()); syncControls() }
-window.proto = { S, stats, stroke, advance, dryNow, set, reset: rebuild, bench: runBench, get sim() { return sim } }
+window.proto = { S, stats, stroke, advance, dryNow, set, reset: rebuild, bench: runBench, water: measureWater, get sim() { return sim } }
 
 const BLUE = "#0d3fc0", YELLOW = "#f2c80f", RED = "#c8201c", SEPIA = "#5a3a22"
 const SCENARIOS = [
@@ -635,6 +683,16 @@ const SCENARIOS = [
     ["Yellow across it", () => stroke([[0.15, 0.5], [0.6, 0.5]], { color: YELLOW, radius: 80 })],
     ["Advance 150 steps", () => advance(150)], ["Dry now (should not pop)", () => dryNow()],
   ] },
+  { name: "Board: slope", text: "Directional flow spike. A light wash, below what the paper holds, on a board tilted toward the bottom edge. Watch: pigment and the dark rim should gather on the downhill side, and the wash should not leave its damp area.", steps: [
+    ["Reset, board steep, down = bottom", () => { rebuild(); set({ view: 0, model: 2, steep: 1, boardDeg: 0 }) }],
+    ["Lay a light wash", () => stroke([[0.3, 0.45], [0.7, 0.45], [0.7, 0.55], [0.3, 0.55]], { color: BLUE, radius: 90, water: 0.05 })],
+    ["Advance 600 steps", () => advance(600)], ["Dry now", () => dryNow()],
+  ] },
+  { name: "Board: runs", text: "Directional flow spike. A heavy wash, past what the paper holds, on a steep board. Watch: does the wet edge break into runs that carry a dark bead at the tip, or slide down as one sheet? Try the flow model (overdamped vs momentum past spill), drag, and downhill creep.", steps: [
+    ["Reset, board steep, momentum past spill", () => { rebuild(); set({ view: 0, model: 2, steep: 1, boardDeg: 0, runCreep: 2 }) }],
+    ["Lay a heavy band", () => stroke([[0.25, 0.3], [0.75, 0.3]], { color: SEPIA, radius: 50, water: 0.6 })],
+    ["Advance 300 steps", () => advance(300)], ["Advance 600 more", () => advance(600)], ["Dry now", () => dryNow()],
+  ] },
   { name: "Masked area", text: "A masked bar down the middle stands in for a selection. Watch: paint should pool against it and not cross.", steps: [
     ["Reset, mask on", () => { rebuild(); set({ view: 0, maskOn: 1 }) }],
     ["Wash across the bar", () => stroke([[0.3, 0.5], [0.7, 0.5]], { color: RED, radius: 100, water: 0.5 })],
@@ -646,7 +704,8 @@ const SCENARIOS = [
 const CONTROLS = {
   brush: [["color", "Colour", "color"], ["radius", "Radius (doc px)", 8, 200, 1], ["water", "Water per dab", 0, 1, 0.01], ["load", "Pigment per dab (0 = water brush)", 0, 0.5, 0.005], ["hard", "Edge hardness", 0, 0.95, 0.05]],
   sim: [
-    ["model", "Flow model", [[0, "overdamped"], [1, "momentum"]]], ["tile", "Sim cells per tile", [[64, "64 (1/4)"], [128, "128 (1/2)"], [256, "256 (full)"]]],
+    ["model", "Flow model", [[0, "overdamped"], [1, "momentum"], [2, "momentum past spill"]]],
+    ["steep", "Board steepness (0 flat)", 0, 1, 0.01], ["boardDeg", "Board down (° on paper, 0 bottom)", 0, 359, 1], ["gMax", "Gravity at full steepness", 0, 0.5, 0.005], ["runCreep", "Downhill creep", 0, 8, 0.1], ["runPow", "Run flux exponent (1 linear, 3 film)", 1, 4, 0.1], ["runAt", "Bead gives way at (0 off)", 0, 3, 0.05], ["tile", "Sim cells per tile", [[64, "64 (1/4)"], [128, "128 (1/2)"], [256, "256 (full)"]]],
     ["grid", "Document", [[4, "1024²"], [8, "2048²"], [16, "4096²"]]], ["capacity", "Wet tile slots", [[64, "64"], [128, "128"], [256, "256"]]],
     ["view", "View", [[0, "paint"], [1, "water"], [2, "paper dampness"], [3, "suspended only"], [4, "deposited only"], [5, "flow"]]],
     ["kmMix", "Pigment mix in sim", [[1, "Kubelka–Munk"], [0, "linear RGB"]]], ["halo", "Allocate neighbour ring", [[1, "on"], [0, "off"]]],
