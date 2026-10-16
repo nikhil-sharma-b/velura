@@ -222,7 +222,9 @@ test("a stroke that reaches more tiles than there are slots lays paint along its
 test("the paint settled early is what was on screen, and the wash being painted stays wet", async ({
   page,
 }) => {
-  test.slow()
+  // Paints into most of the wet tiles on CI's two-core software GPU, where
+  // the same commit has taken from about one to three minutes by runner.
+  test.setTimeout(300_000)
   const canvas = await openCanvas(page)
   const dry = await drySteps(page)
 
@@ -258,7 +260,9 @@ test("the paint settled early is what was on screen, and the wash being painted 
 test("paused, the held body painted into longest ago makes room, and not the one due first", async ({
   page,
 }) => {
-  test.slow()
+  // Paints into most of the wet tiles on CI's two-core software GPU, where
+  // the same commit has taken from about one to three minutes by runner.
+  test.setTimeout(300_000)
   const canvas = await openCanvas(page)
   await page.evaluate(() =>
     window.engine.dispatch({ type: "setDryingPaused", paused: true })
@@ -306,7 +310,9 @@ test("paused, the held body painted into longest ago makes room, and not the one
 test("a run at 64 slots settles another body and takes only its downhill tile", async ({
   page,
 }) => {
-  test.slow()
+  // Paints into most of the wet tiles on CI's two-core software GPU, where
+  // the same commit has taken from about one to three minutes by runner.
+  test.setTimeout(300_000)
   const canvas = await openCanvas(page)
   await page.evaluate(async () => {
     await window.engine.dispatch({ type: "setDryingPaused", paused: true })

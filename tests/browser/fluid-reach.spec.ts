@@ -227,7 +227,9 @@ test("fractional water and feathered selection preserve the small-brush gate", a
 test("a two-pixel selection slit blocks long-range mixing rather than just clipping its endpoints", async ({
   page,
 }) => {
-  test.slow()
+  // Paints into most of the wet tiles on CI's two-core software GPU, where
+  // the same commit has taken from about one to three minutes by runner.
+  test.setTimeout(300_000)
   const plain = await wash(page, true, 500, { barrier: true, yellow: false })
   const touched = await wash(page, true, 500, { barrier: true })
   // Both endpoints beyond this slit are selected and wet. A shortcut which
@@ -238,7 +240,9 @@ test("a two-pixel selection slit blocks long-range mixing rather than just clipp
 test("undo and redo restore local reach as well as the displayed paint", async ({
   page,
 }) => {
-  test.slow()
+  // Paints into most of the wet tiles on CI's two-core software GPU, where
+  // the same commit has taken from about one to three minutes by runner.
+  test.setTimeout(300_000)
   await wash(page, true, 500, { steps: 0 })
   const read = () =>
     page.evaluate(async () => {
