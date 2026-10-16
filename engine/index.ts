@@ -1737,6 +1737,8 @@ export function createEngine(
      * skips the same steps whatever the machine (fluid brushes 13).
      */
     fluidTileStepMs?: number
+    /** Story 21 experiment only; off until visual/performance approval. */
+    experimentalFluidReach?: boolean
   } = {}
 ): Engine {
   let snapshot: EngineSnapshot = INITIAL_SNAPSHOT
@@ -6423,6 +6425,7 @@ export function createEngine(
         workspaceBackground: WORKSPACE_BACKGROUND,
         ink: BRUSH_COLOR,
         feather: BRUSH_FEATHER,
+        experimentalFluidReach: options.experimentalFluidReach,
       })
       renderer = target
       // Paused before there was a renderer to tell (fluid brushes 18).

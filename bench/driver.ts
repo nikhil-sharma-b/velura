@@ -160,12 +160,13 @@ async function floodFluid(
   engine: Engine,
   paint: (type: string, x: number, y: number) => void,
   width: number,
-  height: number
+  height: number,
+  radius = FLOOD_RADIUS
 ): Promise<void> {
   await engine.dispatch({ type: "setColor", hex: "#e04030" })
   await engine.dispatch({
     type: "setBrush",
-    radius: FLOOD_RADIUS,
+    radius,
     spacing: 0.25,
     flow: 1,
     fluid: FLOOD_FLUID,
@@ -177,10 +178,10 @@ async function floodFluid(
   })
   // One stroke, back and forth along rows a radius apart, a sample every
   // few dabs: the resampler lays the dabs between.
-  const reach = FLOOD_RADIUS * 4
+  const reach = radius * 4
   let sent = 0
   paint("pointerdown", 0, 0)
-  for (let row = 0, y = 0; y <= height; row++, y += FLOOD_RADIUS)
+  for (let row = 0, y = 0; y <= height; row++, y += radius)
     for (let along = 0; along <= width; along += reach) {
       const x = row % 2 === 0 ? along : width - along
       paint("pointerrawupdate", x, y)
@@ -236,7 +237,9 @@ export async function runFluidStepBenchmark(
    */
   held = false,
   /** Full-steepness board, alongside the flat baseline (fluid brushes 39). */
-  steep = false
+  steep = false,
+  /** Story 21's large-scale flood; the normal benchmark remains 16 px. */
+  diameter = FLOOD_RADIUS * 2
 ): Promise<FluidStepResult> {
   canvas.style.width = `${VIEWPORT}px`
   canvas.style.height = `${(VIEWPORT * size.height) / size.width}px`
@@ -269,7 +272,7 @@ export async function runFluidStepBenchmark(
     )
   try {
     if (held) await engine.dispatch({ type: "setDryingPaused", paused: true })
-    await floodFluid(engine, paint, size.width, size.height)
+    await floodFluid(engine, paint, size.width, size.height, diameter / 2)
     if (!engine.getSnapshot().wet) throw new Error("The flood is not wet.")
     if (held)
       await engine.dispatch({ type: "advanceFluid", steps: FLOOD_HELD_AFTER })

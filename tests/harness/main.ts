@@ -110,7 +110,8 @@ declare global {
       rounds?: { steps: number; count: number },
       /** Every body of the flood held, drying paused (fluid brushes 18). */
       held?: boolean,
-      steep?: boolean
+      steep?: boolean,
+      experiment?: { reach: boolean; diameter: number }
     ): Promise<FluidStepResult>
     /** Re-rasterising a vector layer of many paths (19). */
     runVectorBenchmark(options: VectorWorkloadOptions): Promise<VectorRunResult>
@@ -408,15 +409,28 @@ window.remountEngine = (options) => {
 window.runBenchmark = (options) => {
   // A window smaller than the document needs the document's size up front:
   // without it, the first resize makes a document the size of the window.
-  if (options.viewport)
+  if (options.viewport || options.fluid?.experimentalReach !== undefined)
     window.remountEngine({
       documentSize: { width: options.width, height: options.height },
+      experimentalFluidReach: options.fluid?.experimentalReach,
     })
   return runBenchmark(window.engine, canvas, options)
 }
-window.runFluidStepBenchmark = (size, rounds, held, steep) => {
-  window.remountEngine({ manualFluidClock: true, documentSize: size })
-  return runFluidStepBenchmark(window.engine, canvas, size, rounds, held, steep)
+window.runFluidStepBenchmark = (size, rounds, held, steep, experiment) => {
+  window.remountEngine({
+    manualFluidClock: true,
+    documentSize: size,
+    experimentalFluidReach: experiment?.reach,
+  })
+  return runFluidStepBenchmark(
+    window.engine,
+    canvas,
+    size,
+    rounds,
+    held,
+    steep,
+    experiment?.diameter
+  )
 }
 window.runVectorBenchmark = (options) =>
   runVectorBenchmark(window.engine, canvas, options)

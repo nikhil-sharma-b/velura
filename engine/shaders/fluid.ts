@@ -31,6 +31,10 @@ export const FLUID_DAMP_STEPS = 50
  */
 export const FLUID_SLOT_HELD = 2
 
+/** Provisional story 21 experiment values, not a shipping brush policy. */
+const REACH_START_DIAMETER = 150
+const REACH_MAX_DIAMETER = 500
+
 /**
  * A fluid brush's dabs (D42), drawn batched: water and dampness into one
  * target and pigment into the other, each added to the batch's other dabs.
@@ -48,7 +52,8 @@ export const FLUID_SLOT_HELD = 2
  * shape the tip's where the brush has one, and its ink shifted by the dab's
  * colour offsets, as the stamp pass draws a dry one.
  */
-export const fluidDabShader = /* wgsl */ `
+export function createFluidDabShader(reach = false): string {
+  return /* wgsl */ `
 ${hslShader}
 
 const TAU = 6.283185307179586;
@@ -133,6 +138,7 @@ fn vertexMain(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings
 struct Fields {
   @location(0) water: vec4<f32>,
   @location(1) pigment: vec4<f32>,
+  ${reach ? "@location(2) reach: vec4<f32>," : ""}
 }
 
 // How much of a cell the dab covers, from none past its rim to one inside it.
@@ -184,6 +190,12 @@ fn fragmentMain(varyings: Varyings) -> Fields {
   );
   // Density is the pigment's alpha, and its colour is premultiplied by it.
   out.pigment = varyings.ink * (varyings.load * shape);
+  ${
+    reach
+      ? `// Maximum dab diameter, only where the dab actually lays water.
+  out.reach = vec4<f32>(select(0.0, min(${REACH_MAX_DIAMETER.toFixed(1)}, varyings.radius * ${(2 * WET_CELL_SIZE).toFixed(1)}), shape > 0.0 && fluid.water * varyings.water > 0.0), 0.0, 0.0, 0.0);`
+      : ""
+  }
   return out;
 }
 
@@ -198,9 +210,13 @@ fn blotFragment(varyings: Varyings) -> Fields {
   var out: Fields;
   out.water = vec4<f32>(0.0);
   out.pigment = vec4<f32>(clamp(varyings.load * dabShape(varyings), 0.0, 1.0));
+  ${reach ? "out.reach = vec4<f32>(0.0);" : ""}
   return out;
 }
 `
+}
+
+export const fluidDabShader = createFluidDabShader()
 
 /**
  * Settling (D42): a wet tile's paint glazed onto the layer's own pixels, by
@@ -259,8 +275,9 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
  * The water field holds standing water in x and the paper's dampness in y,
  * with the water that crossed the cell's right and bottom faces in z and w.
  */
-export const fluidSimShader = preprocess(
-  /* wgsl */ `
+export function createFluidSimShader(reach = false): string {
+  return preprocess(
+    /* wgsl */ `
 #include "pigment"
 #include "wet"
 
@@ -428,6 +445,46 @@ fn bleedGate(a: vec4<f32>, b: vec4<f32>, open: f32) -> f32 {
   return sim.bleed * open * smoothstep(0.0, 0.25, min(a.x, b.x));
 }
 
+${
+  reach
+    ? `
+@group(0) @binding(14) var reachField: texture_2d<f32>;
+@group(0) @binding(15) var reachOut: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(16) var laidReach: texture_2d<f32>;
+
+// Provisional experiment: keep a local component to avoid disconnecting a
+// small-scale detail from a large wash. The three weights sum to one.
+fn reachWeights(cell: vec2<i32>) -> vec3<f32> {
+  let diameter = wetCell(wetSlots, reachField, cell).x;
+  let t = smoothstep(${REACH_START_DIAMETER.toFixed(1)}, ${REACH_MAX_DIAMETER.toFixed(1)}, diameter);
+  return vec3<f32>(1.0 - 0.75 * t, 0.375 * t, 0.375 * t);
+}
+
+// The minimum endpoint weight is symmetric AND bounded by each endpoint's
+// own budget. Across four directions the total diffusion outflow <= .2;
+// existing advection <= .8. No donor clamp/renormalization can create mass.
+fn reachGate(cell: vec2<i32>, direction: vec2<i32>, distance: i32, ring: u32) -> f32 {
+  let other = cell + direction * distance;
+  let weight = min(reachWeights(cell)[ring], reachWeights(other)[ring]);
+  if (weight <= 0.0 || sim.bleed <= 0.0) { return 0.0; }
+  // Water and selection are independent restrictions, multiplied just as
+  // bleedGate does for one face. A min across both would change small
+  // brushes whenever water and selection coverage are both fractional.
+  var waterGate = 1.0;
+  var open = 1.0;
+  var previous = cell;
+  for (var n = 0; n <= distance; n++) {
+    let point = cell + direction * n;
+    waterGate = min(waterGate, smoothstep(0.0, 0.25, wetCell(wetSlots, water, point).x));
+    if (n > 0) { open = min(open, selected(previous) * selected(point)); }
+    previous = point;
+  }
+  return sim.bleed * weight * open * waterGate;
+}
+`
+    : ""
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   let tile = sim.tiles[id.z];
@@ -445,6 +502,12 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   let r = wetCell(wetSlots, water, right);
   let u = wetCell(wetSlots, water, up);
   let d = wetCell(wetSlots, water, down);
+  ${
+    reach
+      ? `// Scale stays where the dab wetted paint; it is not diffused with pigment.
+  textureStore(reachOut, texel, textureLoad(reachField, texel, 0) * select(0.0, 1.0, c.x > 0.0));`
+      : ""
+  }
 
   // A cell with no water on it or beside it: nothing flows, its paper dries
   // out, and it takes whatever pigment was left in it. Most of a wet tile is
@@ -506,14 +569,32 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   let inLeft = max(fromLeft, 0.0) / max(l.x, 0.0001);
   let inDown = max(-toDown, 0.0) / max(d.x, 0.0001);
   let inUp = max(fromUp, 0.0) / max(u.x, 0.0001);
-  let bleedRight = bleedGate(c, r, open.x);
-  let bleedLeft = bleedGate(c, l, open.y);
-  let bleedDown = bleedGate(c, d, open.z);
-  let bleedUp = bleedGate(c, u, open.w);
+  let bleedRight = ${reach ? "reachGate(cell, vec2<i32>(1, 0), 1, 0u)" : "bleedGate(c, r, open.x)"};
+  let bleedLeft = ${reach ? "reachGate(cell, vec2<i32>(-1, 0), 1, 0u)" : "bleedGate(c, l, open.y)"};
+  let bleedDown = ${reach ? "reachGate(cell, vec2<i32>(0, 1), 1, 0u)" : "bleedGate(c, d, open.z)"};
+  let bleedUp = ${reach ? "reachGate(cell, vec2<i32>(0, -1), 1, 0u)" : "bleedGate(c, u, open.w)"};
+  ${
+    reach
+      ? `var distantOut = 0.0;
+  var distantIn = vec4<f32>(0.0);
+  let directions = array<vec2<i32>, 4>(vec2<i32>(1, 0), vec2<i32>(-1, 0), vec2<i32>(0, 1), vec2<i32>(0, -1));
+  for (var ring = 1u; ring < 3u; ring++) {
+    let distance = i32(1u << ring);
+    for (var face = 0u; face < 4u; face++) {
+      let direction = directions[face];
+      let coefficient = reachGate(cell, direction, distance, ring);
+      if (coefficient > 0.0) {
+        distantOut += coefficient;
+        distantIn = addPaint(distantIn, wetCell(wetSlots, suspended, cell + direction * distance) * coefficient);
+      }
+    }
+  }`
+      : ""
+  }
   // At most a fifth by each face and the brush's bleed by each again: a
   // cell never gives away more than it has, so none is made or lost.
   let leaving = min(
-    outRight + outLeft + outDown + outUp + bleedRight + bleedLeft + bleedDown + bleedUp,
+    outRight + outLeft + outDown + outUp + bleedRight + bleedLeft + bleedDown + bleedUp${reach ? " + distantOut" : ""},
     1.0
   );
   var s = textureLoad(suspended, texel, 0) * (1.0 - leaving);
@@ -521,6 +602,7 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   s = addPaint(s, wetCell(wetSlots, suspended, left) * (inLeft + bleedLeft));
   s = addPaint(s, wetCell(wetSlots, suspended, down) * (inDown + bleedDown));
   s = addPaint(s, wetCell(wetSlots, suspended, up) * (inUp + bleedUp));
+  ${reach ? "s = addPaint(s, distantIn);" : ""}
 
   // The paper takes pigment slowly while water stands on it, faster in its
   // valleys than on its peaks by the brush's granulation, and all of it once
@@ -546,6 +628,13 @@ fn pourMain(@builtin(global_invocation_id) id: vec3<u32>) {
   let share = selected(tile.xy * WET_CELLS + vec2<i32>(id.xy));
   let batch = textureLoad(laidWater, texel, 0);
   let laid = batch * share;
+  ${
+    reach
+      ? `let oldScale = textureLoad(reachField, texel, 0).x * select(0.0, 1.0, c.x > 0.0);
+  let dabScale = textureLoad(laidReach, texel, 0).x;
+  textureStore(reachOut, texel, vec4<f32>(max(oldScale, select(0.0, dabScale, laid.x > 0.0 && sim.level * batch.a > 0.0)), 0.0, 0.0, 0.0));`
+      : ""
+  }
   textureStore(
     waterOut,
     texel,
@@ -582,6 +671,7 @@ fn blotMain(@builtin(global_invocation_id) id: vec3<u32>) {
   let share = selected(tile.xy * WET_CELLS + vec2<i32>(id.xy));
   let strength = (1.0 - textureLoad(laidPigment, texel, 0).a) * share;
   let kept = 1.0 - sim.blotWater * strength;
+  ${reach ? "textureStore(reachOut, texel, textureLoad(reachField, texel, 0) * select(0.0, 1.0, c.x * kept > 0.0));" : ""}
   textureStore(waterOut, texel, vec4<f32>(c.xy * kept, c.zw));
   textureStore(
     suspendedOut,
@@ -591,5 +681,8 @@ fn blotMain(@builtin(global_invocation_id) id: vec3<u32>) {
   textureStore(depositedOut, texel, textureLoad(deposited, texel, 0));
 }
 `,
-  { pigment: pigmentShader, wet }
-)
+    { pigment: pigmentShader, wet }
+  )
+}
+
+export const fluidSimShader = createFluidSimShader()
