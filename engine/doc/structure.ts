@@ -6,6 +6,7 @@ import {
 } from "./document"
 import { normaliseGuides, type Guide } from "./guides"
 import { DEFAULT_PAPER, normalisePaper, type Paper } from "./paper"
+import { isFlat, normaliseBoard, type Board } from "./board"
 import type { BlendMode } from "../shaders/blend-modes"
 import type { ImageAssetRef, PlacedImage } from "./image-source"
 import { createTiledMask } from "./tiled-mask"
@@ -62,6 +63,12 @@ export type DocumentStructure = {
    */
   paper?: Paper
   /**
+   * The board the paper lies on (fluid brushes 38). Only written when it is
+   * not flat, so a tree saved before boards existed and one on a flat board
+   * compare the same.
+   */
+  board?: Board
+  /**
    * Which selection (07) the step left, by the key the engine holds its mask
    * under; null for none. Only a selection step names one — absent, undoing
    * the step leaves the selection as it is. Never saved: a selection is part
@@ -108,6 +115,7 @@ export function captureStructure(
     paintingMask: doc.paintingMask,
     ...(doc.guides.length ? { guides: [...doc.guides] } : {}),
     ...(doc.paper !== DEFAULT_PAPER ? { paper: doc.paper } : {}),
+    ...(isFlat(doc.board) ? {} : { board: { ...doc.board } }),
   }
 }
 
@@ -333,4 +341,6 @@ export function restoreStructure(
   doc.guides = normaliseGuides(structure.guides)
   // And so is its paper; one this client does not know opens on the default.
   doc.paper = normalisePaper(structure.paper)
+  // And its board; one that is not a board opens flat.
+  doc.board = normaliseBoard(structure.board)
 }

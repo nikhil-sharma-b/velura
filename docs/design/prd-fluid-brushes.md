@@ -129,7 +129,7 @@ release(slot)
 
 **The simulation step.** One compute pass over every wet tile, the engine's first compute pipeline. The rules are the prototype's:
 
-- *Water levels.* Flow across a face follows the difference in water height (plus a small paper relief), and no cell gives more than a fifth of its water across one face in a step. This is the overdamped model. It is what keeps the edge of a wash fed and pinned; a flow proportional to the donor's water lets edges recede and gives no edge darkening. A momentum term was tried, produced the same pictures at the same cost, and is not built.
+- *Water levels.* Flow across a face follows the difference in water height (plus a small paper relief), and no cell gives more than a fifth of its water across one face in a step. This is the overdamped model. It is what keeps the edge of a wash fed and pinned; a flow proportional to the donor's water lets edges recede and gives no edge darkening. A momentum term was tried, produced the same pictures at the same cost, and is not built. The directional flow spike (fluid brushes 37) tried it again for paint running down a tilted board, where it made no picture the overdamped flow did not either.
 - *Water stays on damp paper.* Water moves only between two damp cells. Dampness advances into dry paper only beside water standing deeper than the paper holds, which is a bloom; otherwise the edge of a wash stays where the brush put it.
 - *Water evaporates,* faster near the edge of the damp area, where "near" looks a few cells out so the rim is a band and not one cell. The brush's `drying` sets the rate and `edge` sets how much faster the rim dries.
 - *Pigment rides the water.* The fraction of a cell's water that crosses a face carries the same fraction of its suspended pigment. That one rule gives edge darkening, and blooms with it. Pigment also diffuses between two cells that both hold water, at the brush's `bleed`.
@@ -174,14 +174,14 @@ A good test here checks what the artist would see or what a stored brush means, 
 
 - **Persisted wetness.** Wet paint saved with the document or synced.
 - **Oil with body:** paint thickness, impasto and lighting.
-- **Directional flow:** gravity, tilt, paint that runs.
+- **Directional flow:** gravity, tilt, paint that runs. Since designed as fluid brushes 19: a tilted board that slopes a wash is built (fluid brushes 38); paint that runs past what the paper holds, and drips, are fluid brushes 39 to 41.
 - **Rewetting.** Water does not lift or move dried paint.
 - Ticketed as follow-ups, not built here:
   - document-level paper, chosen per document and stored with it
   - fluid brushes on layer masks
   - a blotting and lifting tool, which is where rewetting dried paint belongs
   - a pause-drying toggle, since built (fluid brushes 18)
-  - directional flow
+  - directional flow, since designed (fluid brushes 19) and partly built (fluid brushes 38)
   - watercolour preset import
   - bleed reach for large brushes (see Further Notes)
 

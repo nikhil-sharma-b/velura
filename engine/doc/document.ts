@@ -3,6 +3,7 @@ export type { BlendMode } from "../shaders/blend-modes"
 
 import type { Guide } from "./guides"
 import { DEFAULT_PAPER, type Paper } from "./paper"
+import { FLAT_BOARD, type Board } from "./board"
 import type { ImagePlacement } from "./image-placement"
 import type { PlacedImage } from "./image-source"
 export type { PlacedImage } from "./image-source"
@@ -85,6 +86,8 @@ export type PaintDocument = {
   guides: Guide[]
   /** The paper its fluid brushes paint on (fluid brushes 15). */
   paper: Paper
+  /** The board the paper lies on, which wet paint runs down (fluid brushes 38). */
+  board: Board
 }
 
 export type CompositeItem = {
@@ -165,6 +168,7 @@ export function createDocument(size: {
     paintingMask: false,
     guides: [],
     paper: DEFAULT_PAPER,
+    board: FLAT_BOARD,
   }
 }
 
@@ -181,6 +185,7 @@ export function createBlankDocument(size: {
     paintingMask: false,
     guides: [],
     paper: DEFAULT_PAPER,
+    board: FLAT_BOARD,
   }
 }
 

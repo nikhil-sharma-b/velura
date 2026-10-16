@@ -65,6 +65,7 @@ import {
 } from "./fluid-stroke"
 import { createFreezeLedger, FREEZE_CHUNK } from "./freeze-ledger"
 import { DEFAULT_PAPER, type Paper } from "../doc/paper"
+import { FLAT_BOARD, sameBoard, type Board } from "../doc/board"
 import { createPaper, writePaper } from "./paper"
 import type { StrokeMark } from "./stroke-renderer"
 import { LAYER_FORMAT, type Surface } from "./surface"
@@ -452,6 +453,13 @@ export interface Renderer {
    */
   setPaper(paper: Paper): void
   /**
+   * The board the paper lies on (fluid brushes 38). Wet paint runs down it
+   * from the next step; nothing dries for it.
+   */
+  setBoard(board: Board): void
+  /** All the water standing in the wet fields, for tests (fluid brushes 38). */
+  readFluidWater(): Promise<number>
+  /**
    * How many tiles a step of the simulation runs over: those wet, less
    * those held while drying is paused.
    */
@@ -538,6 +546,16 @@ export type GrainSettings = Omit<BrushGrain, "textureId">
  * document with many *painted* layers fit, and they replace this allocation
  * without moving the seam — the compositor still sees below, active, above.
  */
+/** A half float's value, from its bits. */
+function fromHalf(bits: number) {
+  const exponent = (bits >> 10) & 31
+  const fraction = bits & 1023
+  const sign = bits >> 15 ? -1 : 1
+  if (exponent === 0) return sign * fraction * 2 ** -24
+  if (exponent === 31) return fraction ? Number.NaN : sign * Infinity
+  return sign * (1 + fraction / 1024) * 2 ** (exponent - 15)
+}
+
 export function createRenderer(
   device: GPUDevice,
   options: {
@@ -1688,6 +1706,7 @@ export function createRenderer(
   const paper = createPaper(device)
   const paperView = paper.createView()
   let paperShown: Paper = DEFAULT_PAPER
+  let boardShown: Board = FLAT_BOARD
 
   /** What a wet layer's pipeline binds of its wet paint; a dry one's, nothing. */
   const wetEntries = (wet: WetViews | undefined): GPUBindGroupEntry[] =>
@@ -3501,6 +3520,11 @@ export function createRenderer(
       writePaper(device, paper, chosen)
       paperShown = chosen
     },
+    setBoard(chosen) {
+      if (sameBoard(chosen, boardShown)) return
+      fluid.setBoard(chosen)
+      boardShown = chosen
+    },
     fluidTileCount: () => fluid.tileCount(),
     advanceFluid: (steps) => fluid.advance(steps),
     setFluidDryingPaused: (paused) => fluid.setPaused(paused),
@@ -3517,6 +3541,33 @@ export function createRenderer(
       target.empty = false
       invalidateCaches()
       return region
+    },
+    async readFluidWater() {
+      const texture = fluid.waterField()
+      if (!texture) return 0
+      // A freed slot is blanked, so the whole field holds only what is wet.
+      const bytesPerRow = texture.width * 8
+      const buffer = device.createBuffer({
+        size: bytesPerRow * texture.height,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      })
+      try {
+        const encoder = device.createCommandEncoder()
+        encoder.copyTextureToBuffer(
+          { texture },
+          { buffer, bytesPerRow },
+          { width: texture.width, height: texture.height }
+        )
+        device.queue.submit([encoder.finish()])
+        await buffer.mapAsync(GPUMapMode.READ)
+        const halves = new Uint16Array(buffer.getMappedRange())
+        let total = 0
+        for (let at = 0; at < halves.length; at += 4)
+          total += fromHalf(halves[at])
+        return total
+      } finally {
+        buffer.destroy()
+      }
     },
     async readSelection() {
       if (!selection) return null

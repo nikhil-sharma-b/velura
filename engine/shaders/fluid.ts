@@ -282,6 +282,10 @@ struct Sim {
   // pigment, it takes where it lands at full strength.
   blotWater: f32,
   blotPigment: f32,
+  // The board the paper lies on (fluid brushes 38): in x how much lower the
+  // paper is a cell further downhill, in depth of water, zero on a flat
+  // board; in yz which way is down, a unit vector in cells.
+  fall: vec4<f32>,
   // Each slot's tile in xy, and in z whether one holds it: 0 for none, 1,
   // or HELD for one held while drying is paused.
   tiles: array<vec4<i32>, ${WET_SLOTS}>,
@@ -363,9 +367,16 @@ fn selected(cell: vec2<i32>) -> f32 {
 // and only as far as the selection leaves the face between them open. Both
 // cells work the same number out for the face they share, so none is made or
 // lost.
-fn faceFlow(a: vec4<f32>, b: vec4<f32>, paperA: f32, paperB: f32, open: f32) -> f32 {
+//
+// On a tilted board (fluid brushes 38) the paper under b also lies lower
+// than under a, by the board's drop over a cell times how near down lies to
+// the face's direction from a to b, which is along. So water levels to a
+// surface tilted as the board is: a wash slopes, deeper downhill, within the
+// paper it has wet. A flat board skips it, and paints as it always has.
+fn faceFlow(a: vec4<f32>, b: vec4<f32>, paperA: f32, paperB: f32, open: f32, along: f32) -> f32 {
   let damp = open * smoothstep(0.02, 0.3, min(a.y, b.y));
-  let fall = a.x - b.x + RELIEF * (paperA - paperB);
+  var fall = a.x - b.x + RELIEF * (paperA - paperB);
+  if (sim.fall.x > 0.0) { fall += sim.fall.x * along; }
   return clamp(FLOW * fall * damp, -FACE_SHARE * b.x, FACE_SHARE * a.x);
 }
 
@@ -447,10 +458,10 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   // it is the coverage of the cells either side, multiplied.
   let open = selected(cell)
     * vec4<f32>(selected(right), selected(left), selected(down), selected(up));
-  let toRight = faceFlow(c, r, height, relief.x, open.x);
-  let fromLeft = faceFlow(l, c, relief.y, height, open.y);
-  let toDown = faceFlow(c, d, height, relief.z, open.z);
-  let fromUp = faceFlow(u, c, relief.w, height, open.w);
+  let toRight = faceFlow(c, r, height, relief.x, open.x, sim.fall.y);
+  let fromLeft = faceFlow(l, c, relief.y, height, open.y, sim.fall.y);
+  let toDown = faceFlow(c, d, height, relief.z, open.z, sim.fall.z);
+  let fromUp = faceFlow(u, c, relief.w, height, open.w, sim.fall.z);
   let level = c.x - toRight + fromLeft - toDown + fromUp;
   // Only a cell with water to lose looks for the edge: most of a wet tile
   // has none, and the looking is eight more cells read.
