@@ -14,9 +14,9 @@ import {
   FLUID_MAX_WATER,
   FLUID_RELIEF,
   FLUID_SLOT_HELD,
-  fluidDabShader,
+  createFluidDabShader,
   fluidSettleShader,
-  fluidSimShader,
+  createFluidSimShader,
 } from "../shaders/fluid"
 import { STAMP, STAMP_STRIDE } from "./stamp-instance"
 import type { StrokeMark, StrokeRenderer } from "./stroke-renderer"
@@ -276,7 +276,7 @@ const FIELD_NAMES = ["water", "suspended", "deposited"] as const
 type Fields = Record<
   (typeof FIELD_NAMES)[number],
   { texture: GPUTexture; view: GPUTextureView }
->
+> & { reach?: { texture: GPUTexture; view: GPUTextureView } }
 
 /**
  * The wet fields as they were at one moment: the cells of every tile that
@@ -314,8 +314,14 @@ type KeptFields = WetCopy & {
  */
 export function createFluidStroke(
   device: GPUDevice,
-  context: FluidStrokeContext
+  context: FluidStrokeContext,
+  experimentalReach = false
 ): FluidStroke {
+  // The opt-in field participates in the same copy/free/history lifecycle as
+  // water and pigment. The default path allocates no experiment resources.
+  const fieldNames = experimentalReach
+    ? ([...FIELD_NAMES, "reach"] as const)
+    : FIELD_NAMES
   const uniform = device.createBuffer({
     size: 48,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -336,7 +342,9 @@ export function createFluidStroke(
       color: add.color,
       alpha: { operation: "max", srcFactor: "one", dstFactor: "one" },
     }
-    const dabModule = device.createShaderModule({ code: fluidDabShader })
+    const dabModule = device.createShaderModule({
+      code: createFluidDabShader(experimentalReach),
+    })
     const dabBuffers: GPUVertexBufferLayout[] = [
       {
         arrayStride: INSTANCE_STRIDE * 4,
@@ -388,6 +396,25 @@ export function createFluidStroke(
         targets: [
           { format: LAID_WATER_FORMAT, blend: addWater },
           { format: LAYER_FORMAT, blend: add },
+          ...(experimentalReach
+            ? [
+                {
+                  format: LAYER_FORMAT,
+                  blend: {
+                    color: {
+                      operation: "max",
+                      srcFactor: "one",
+                      dstFactor: "one",
+                    },
+                    alpha: {
+                      operation: "max",
+                      srcFactor: "one",
+                      dstFactor: "one",
+                    },
+                  },
+                } satisfies GPUColorTargetState,
+              ]
+            : []),
         ],
       },
       primitive: { topology: "triangle-strip" },
@@ -413,6 +440,9 @@ export function createFluidStroke(
         targets: [
           { format: LAID_WATER_FORMAT, writeMask: 0 },
           { format: LAYER_FORMAT, blend: { color: keep, alpha: keep } },
+          ...(experimentalReach
+            ? [{ format: LAYER_FORMAT, writeMask: 0 }]
+            : []),
         ],
       },
       primitive: { topology: "triangle-strip" },
@@ -466,9 +496,12 @@ export function createFluidStroke(
           visibility: GPUShaderStage.COMPUTE,
           buffer: { type: "storage" },
         },
+        ...(experimentalReach ? [read(14), write(15), read(16)] : []),
       ],
     })
-    const simModule = device.createShaderModule({ code: fluidSimShader })
+    const simModule = device.createShaderModule({
+      code: createFluidSimShader(experimentalReach),
+    })
     const simPipeline = (entryPoint: string) =>
       device.createComputePipeline({
         label: `fluid ${entryPoint}`,
@@ -594,6 +627,7 @@ export function createFluidStroke(
         /** What one batch of dabs laid, before it is poured in. */
         laidWater: GPUTextureView
         laidPigment: GPUTextureView
+        laidReach?: GPUTextureView
         /** One tile of a layer, copied for settle to read. */
         under: GPUTexture
         /** A slot of nothing, copied over a slot as it is freed. */
@@ -710,6 +744,7 @@ export function createFluidStroke(
         water: field(simulated),
         suspended: field(simulated),
         deposited: field(simulated),
+        ...(experimentalReach ? { reach: field(simulated) } : {}),
       })
       const copies: [Fields, Fields] = [copy(), copy()]
       const laidWater = field(
@@ -717,6 +752,9 @@ export function createFluidStroke(
         LAID_WATER_FORMAT
       )
       const laidPigment = field(GPUTextureUsage.RENDER_ATTACHMENT)
+      const laidReach = experimentalReach
+        ? field(GPUTextureUsage.RENDER_ATTACHMENT)
+        : undefined
       const under = device.createTexture({
         size: { width: TILE_SIZE, height: TILE_SIZE },
         format: LAYER_FORMAT,
@@ -731,6 +769,7 @@ export function createFluidStroke(
         copies,
         laidWater: laidWater.view,
         laidPigment: laidPigment.view,
+        laidReach: laidReach?.view,
         under,
         blank,
         textures: [
@@ -739,6 +778,7 @@ export function createFluidStroke(
           ),
           laidWater.texture,
           laidPigment.texture,
+          ...(laidReach ? [laidReach.texture] : []),
           under,
           blank,
         ],
@@ -844,10 +884,10 @@ export function createFluidStroke(
   function copyAcross(encoder: GPUCommandEncoder, slot: number) {
     const from = fields!.copies[current]
     const to = fields!.copies[1 - current]
-    for (const name of FIELD_NAMES)
+    for (const name of fieldNames)
       encoder.copyTextureToTexture(
-        { texture: from[name].texture, origin: slotOrigin(slot) },
-        { texture: to[name].texture, origin: slotOrigin(slot) },
+        { texture: from[name]!.texture, origin: slotOrigin(slot) },
+        { texture: to[name]!.texture, origin: slotOrigin(slot) },
         SLOT_EXTENT
       )
   }
@@ -873,6 +913,13 @@ export function createFluidStroke(
         { binding: 11, resource: selectionView() },
         { binding: 12, resource: selectionSampler },
         { binding: 13, resource: { buffer: runEdges } },
+        ...(experimentalReach
+          ? [
+              { binding: 14, resource: from.reach!.view },
+              { binding: 15, resource: to.reach!.view },
+              { binding: 16, resource: fields!.laidReach! },
+            ]
+          : []),
       ],
     })
     const pass = encoder.beginComputePass()
@@ -937,7 +984,7 @@ export function createFluidStroke(
     }
     const kept: KeptFields = {
       // Half floats, four to a cell, in each of the fields.
-      bytes: size.width * size.height * FIELD_NAMES.length * 8,
+      bytes: size.width * size.height * fieldNames.length * 8,
       slots: held,
       tiles: tiles!.save(),
       grid,
@@ -951,7 +998,7 @@ export function createFluidStroke(
     copies.add(kept)
     if (held.length === 0) return kept
     const texture = device.createTexture({
-      size: { ...size, depthOrArrayLayers: FIELD_NAMES.length },
+      size: { ...size, depthOrArrayLayers: fieldNames.length },
       format: LAYER_FORMAT,
       usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
     })
@@ -959,9 +1006,9 @@ export function createFluidStroke(
     const from = fields!.copies[current]
     const encoder = device.createCommandEncoder()
     held.forEach((slot, index) =>
-      FIELD_NAMES.forEach((name, layer) =>
+      fieldNames.forEach((name, layer) =>
         encoder.copyTextureToTexture(
-          { texture: from[name].texture, origin: slotOrigin(slot) },
+          { texture: from[name]!.texture, origin: slotOrigin(slot) },
           { texture, origin: { ...slotOrigin(index), z: layer } },
           SLOT_EXTENT
         )
@@ -993,13 +1040,13 @@ export function createFluidStroke(
     // slot is held.
     const to = fields!.copies[current]
     kept.slots.forEach((slot, index) =>
-      FIELD_NAMES.forEach((name, layer) =>
+      fieldNames.forEach((name, layer) =>
         encoder.copyTextureToTexture(
           {
             texture: kept.texture!,
             origin: { ...slotOrigin(index), z: layer },
           },
-          { texture: to[name].texture, origin: slotOrigin(slot) },
+          { texture: to[name]!.texture, origin: slotOrigin(slot) },
           SLOT_EXTENT
         )
       )
@@ -1117,17 +1164,19 @@ export function createFluidStroke(
     const pass = encoder.beginRenderPass({
       // Only this batch: what the last one laid has been poured in.
       // A blot's batch keeps what it leaves of each cell, from all of it.
-      colorAttachments: [fields!.laidWater, fields!.laidPigment].map(
-        (view, target) => ({
-          view,
-          clearValue:
-            blotting && target === 1
-              ? { r: 1, g: 1, b: 1, a: 1 }
-              : { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: "clear" as const,
-          storeOp: "store" as const,
-        })
-      ),
+      colorAttachments: [
+        fields!.laidWater,
+        fields!.laidPigment,
+        ...(fields!.laidReach ? [fields!.laidReach] : []),
+      ].map((view, target) => ({
+        view,
+        clearValue:
+          blotting && target === 1
+            ? { r: 1, g: 1, b: 1, a: 1 }
+            : { r: 0, g: 0, b: 0, a: 0 },
+        loadOp: "clear" as const,
+        storeOp: "store" as const,
+      })),
     })
     pass.setPipeline(blotting ? pipelines!.blot : pipelines!.dab)
     pass.setBindGroup(0, bindDabs())

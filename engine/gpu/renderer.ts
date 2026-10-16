@@ -577,6 +577,8 @@ export function createRenderer(
     directWetTarget?: "layer" | "scratch"
     /** See `DirectStrokeContext.legacyPickup`; bounds the numerical change. */
     directLegacyPickup?: boolean
+    /** Opt-in story 21 transport experiment, never an artist preset. */
+    experimentalFluidReach?: boolean
   }
 ): Renderer {
   // A pipeline for each mode, and another for a layer with wet paint on it
@@ -1724,19 +1726,23 @@ export function createRenderer(
       : []
 
   /** The stroke that lays paint into a layer's wet surface (D42). */
-  const fluid = createFluidStroke(device, {
-    size: () => documentSize,
-    feather: () => feather,
-    tip: () => tipShape,
-    paper: () => paperView,
-    selection: () => selection?.view,
-    wetChanged() {
-      for (const compositor of compositors) compositor.refreshWet()
+  const fluid = createFluidStroke(
+    device,
+    {
+      size: () => documentSize,
+      feather: () => feather,
+      tip: () => tipShape,
+      paper: () => paperView,
+      selection: () => selection?.view,
+      wetChanged() {
+        for (const compositor of compositors) compositor.refreshWet()
+      },
+      wetMoved() {
+        for (const compositor of compositors) compositor.showWet()
+      },
     },
-    wetMoved() {
-      for (const compositor of compositors) compositor.showWet()
-    },
-  })
+    options.experimentalFluidReach
+  )
 
   /**
    * Draws what the selection covers of `source` into `target`, in

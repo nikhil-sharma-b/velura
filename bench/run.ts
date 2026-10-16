@@ -33,6 +33,7 @@
  * wet tiles, moving and held with drying paused, and paints, and blots,
  * with every tile of the document wet (fluid brushes 13, 17, 18); add
  * `--steep` for the full-steepness board comparison (39);
+ * `--fluid-reach` compares story 21's opt-in transport against baseline;
  * `--cold` times a draw into a texture left alone (live brushes 24);
  * `--vector` times
  * redrawing a vector layer of many paths (19); `--navigate` times panning and
@@ -726,6 +727,69 @@ async function fluidLoadSweep(): Promise<void> {
   console.log()
 }
 
+/** Experimental evidence only; no shipping target is inferred from these rows. */
+async function fluidReachSweep(): Promise<void> {
+  const paced = PASSES.find((entry) => entry.name === "paced")!
+  const steps = []
+  for (const size of [512, 1024, 2048]) {
+    for (const reach of [false, true]) {
+      const browser = await launch([])
+      try {
+        const page = await browser.newPage()
+        await page.goto(HARNESS)
+        await page.waitForFunction(() => !!window.runFluidStepBenchmark)
+        const result = await page.evaluate(
+          async ({ size, reach }) => ({
+            result: await window.runFluidStepBenchmark(
+              { width: size, height: size },
+              { steps: 50, count: 5 },
+              false,
+              false,
+              { reach, diameter: 500 }
+            ),
+            environment: await window.describeEnvironment(true),
+          }),
+          { size, reach }
+        )
+        const row = { size, reach, diameter: 500, ...result }
+        steps.push(row)
+        console.log(JSON.stringify(row))
+      } finally {
+        await browser.close()
+      }
+    }
+  }
+  const painting = []
+  for (const experimentalReach of [false, true]) {
+    const result = await measure(paced, {
+      ...BENCHMARK_WORKLOAD,
+      width: 2048,
+      height: 2048,
+      strokes: 4,
+      unwaited: true,
+      fluid: { diameter: 500, flooded: true, experimentalReach },
+    })
+    const ticks = result.fluidTicks.filter((tick) => tick.penDown)
+    const row = {
+      experimentalReach,
+      environment: result.environment,
+      report: result.report,
+      penDownTicks: ticks.length,
+      steps: ticks.reduce((sum, tick) => sum + tick.steps, 0),
+      skipped: ticks.reduce((sum, tick) => sum + tick.skipped, 0),
+      readbacks: result.readbacks,
+    }
+    painting.push(row)
+    console.log(JSON.stringify(row))
+    if (row.readbacks > 0) process.exitCode = 1
+  }
+  mkdirSync(RESULTS, { recursive: true })
+  writeFileSync(
+    join(RESULTS, "fluid-reach.json"),
+    JSON.stringify({ date: new Date().toISOString(), steps, painting }, null, 2)
+  )
+}
+
 /**
  * What a pause before pen-down costs the frame a stroke opens in (live
  * brushes 31): the 512 px rows at 8192², paced, each with no wait but
@@ -1089,32 +1153,34 @@ async function main(): Promise<void> {
     ? { ...BENCHMARK_WORKLOAD, colourDynamics: true }
     : BENCHMARK_WORKLOAD
   const stop = await serve()
-  const ladder = process.argv.includes("--wet-dab")
-    ? wetDabDiagnostic
-    : process.argv.includes("--sweep")
-      ? sweep
-      : process.argv.includes("--layers")
-        ? layerSweep
-        : process.argv.includes("--feather")
-          ? featherSweep
-          : process.argv.includes("--scatter")
-            ? scatterSweep
-            : process.argv.includes("--smudge")
-              ? smudgeSweep
-              : process.argv.includes("--fluid-load")
-                ? fluidLoadSweep
-                : process.argv.includes("--fluid")
-                  ? fluidSweep
-                  : process.argv.includes("--wet") ||
-                      process.argv.includes("--blender")
-                    ? wetSweep
-                    : process.argv.includes("--cold")
-                      ? coldSweep
-                      : process.argv.includes("--vector")
-                        ? vectorSweep
-                        : process.argv.includes("--navigate")
-                          ? navigationSweep
-                          : null
+  const ladder = process.argv.includes("--fluid-reach")
+    ? fluidReachSweep
+    : process.argv.includes("--wet-dab")
+      ? wetDabDiagnostic
+      : process.argv.includes("--sweep")
+        ? sweep
+        : process.argv.includes("--layers")
+          ? layerSweep
+          : process.argv.includes("--feather")
+            ? featherSweep
+            : process.argv.includes("--scatter")
+              ? scatterSweep
+              : process.argv.includes("--smudge")
+                ? smudgeSweep
+                : process.argv.includes("--fluid-load")
+                  ? fluidLoadSweep
+                  : process.argv.includes("--fluid")
+                    ? fluidSweep
+                    : process.argv.includes("--wet") ||
+                        process.argv.includes("--blender")
+                      ? wetSweep
+                      : process.argv.includes("--cold")
+                        ? coldSweep
+                        : process.argv.includes("--vector")
+                          ? vectorSweep
+                          : process.argv.includes("--navigate")
+                            ? navigationSweep
+                            : null
   if (ladder) {
     try {
       await ladder()

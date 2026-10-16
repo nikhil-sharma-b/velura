@@ -145,6 +145,8 @@ export type WorkloadOptions = {
    * pen, the worst case for a step.
    */
   fluid?: {
+    /** Opt-in story 21 experiment; never enabled by normal benchmark rows. */
+    experimentalReach?: boolean
     /** Full-steepness board for the runs cost comparison (fluid brushes 39). */
     steep?: boolean
     flooded?: boolean
