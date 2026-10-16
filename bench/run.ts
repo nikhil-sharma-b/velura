@@ -10,8 +10,9 @@
  * It is tracked, not gated: the process exits zero whatever the numbers are,
  * because a benchmark that fails a build teaches people to make it quieter
  * rather than to make the program faster. The one exception is CPU readback
- * during painting, which D30 forbids outright — that is a rule, not a
- * measurement, and breaking it fails the run.
+ * during painting, which D30 forbids — that is a rule, not a measurement,
+ * and breaking it fails the run. Fluid brushes 40's bounded edge report is
+ * allowed only by the steep fluid-load sweep, with throughput still met.
  *
  * `--sweep` runs the document-size ladder instead of the two passes, and
  * `--layers` the layer-count one; `--feather` paints inside a large feathered
@@ -101,6 +102,7 @@ type Pass = {
   /** Dispatched against requested: a shortfall means the pen could not keep up. */
   pen: { dispatched: number; requested: number; elapsedMs: number }
   readbacks: number
+  runEdgeReadbacks: number
   readbacksTotal: number
   /** Textures and buffers created while the pen was down. */
   allocations: number
@@ -193,6 +195,7 @@ async function measure(
         elapsedMs: result.elapsedMs,
       },
       readbacks: result.readbacks,
+      runEdgeReadbacks: result.runEdgeReadbacks,
       readbacksTotal: result.readbacksTotal,
       allocations: result.allocations,
       report: summarize(result.frames, {
@@ -673,7 +676,7 @@ async function fluidLoadSweep(): Promise<void> {
     }
   console.log(
     "\n                                     unpaced                    paced: pen-to-pixel in ms" +
-      "\n  document  brush   paint        ms/frame   sustained fps   all frames (median / p95)   Hz    steps/frame   skipped   reckoned ms/step   dabs    readbacks   allocations"
+      "\n  document  brush   paint        ms/frame   sustained fps   all frames (median / p95)   Hz    steps/frame   skipped   reckoned ms/step   dabs    readbacks (edges)   allocations"
   )
   for (const size of FLOODED_SIZES)
     for (const diameter of [64, 512])
@@ -695,6 +698,7 @@ async function fluidLoadSweep(): Promise<void> {
         const free = await measure(unpaced, workload)
         const held = await measure(paced, workload)
         const readbacks = free.readbacks + held.readbacks
+        const edges = free.runEdgeReadbacks + held.runEdgeReadbacks
         const allocations = Math.max(free.allocations, held.allocations)
         const ticks = held.fluidTicks.filter((tick) => tick.penDown)
         const steps = ticks.reduce((total, tick) => total + tick.steps, 0)
@@ -707,9 +711,17 @@ async function fluidLoadSweep(): Promise<void> {
             `${String(held.environment.refreshHz ?? "-").padStart(3)}   ` +
             `${fixed(steps / Math.max(1, ticks.length), 2).padStart(11)}   ${String(skipped).padStart(7)}   ` +
             `${fixed(reckoned[reckoned.length >> 1] ?? 0, 3).padStart(16)}   ` +
-            `${String(held.report.stamps.total).padStart(6)}   ${String(readbacks).padStart(9)}   ${String(allocations).padStart(11)}`
+            `${String(held.report.stamps.total).padStart(6)}   ${String(readbacks).padStart(9)} (${edges})   ${String(allocations).padStart(11)}`
         )
-        if (readbacks > 0) process.exitCode = 1
+        // Ticket 40 explicitly permits this bounded report when painting
+        // still meets D30's throughput target. All other interactive
+        // readbacks remain forbidden; totals above never hide the reports.
+        if (
+          readbacks > (steep ? edges : 0) ||
+          (edges > 0 &&
+            free.report.frameRate.sustained < PERFORMANCE_TARGET.fps)
+        )
+          process.exitCode = 1
       }
   console.log()
 }

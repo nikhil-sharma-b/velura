@@ -334,6 +334,17 @@ const CELL_SIZE: i32 = ${WET_CELL_SIZE};
 @group(0) @binding(10) var paper: texture_2d<f32>;
 @group(0) @binding(11) var selection: texture_2d<f32>;
 @group(0) @binding(12) var selectionSampler: sampler;
+// One face mask per slot. The driver claims these tiles between steps.
+@group(0) @binding(13) var<storage, read_write> runEdges: array<atomic<u32>, ${WET_SLOTS}>;
+
+fn pressEdge(slot: u32, neighbour: vec2<i32>, open: f32, along: f32, bit: u32) {
+  if (along <= 0.0 || open <= 0.0) { return; }
+  let size = vec2<i32>(textureDimensions(wetSlots));
+  if (any(neighbour < vec2<i32>(0)) || any(neighbour >= size)) { return; }
+  if (textureLoad(wetSlots, neighbour, 0).r == 0u) {
+    atomicOr(&runEdges[slot], bit);
+  }
+}
 
 // Where a slot's cell is in a field texture.
 fn slotTexel(slot: u32, cell: vec2<u32>) -> vec2<i32> {
@@ -458,6 +469,14 @@ fn stepMain(@builtin(global_invocation_id) id: vec3<u32>) {
   // it is the coverage of the cells either side, multiplied.
   let open = selected(cell)
     * vec4<f32>(selected(right), selected(left), selected(down), selected(up));
+  // Flat paint never reports edges. A run presses only downhill faces of
+  // its body's tile boundary, not the ring a dab would take for a bloom.
+  if (sim.fall.x > 0.0 && c.x > HOLDS) {
+    if (id.x == u32(WET_CELLS - 1)) { pressEdge(id.z, tile.xy + vec2<i32>(1, 0), open.x, sim.fall.y, 1u); }
+    if (id.x == 0u) { pressEdge(id.z, tile.xy + vec2<i32>(-1, 0), open.y, -sim.fall.y, 2u); }
+    if (id.y == u32(WET_CELLS - 1)) { pressEdge(id.z, tile.xy + vec2<i32>(0, 1), open.z, sim.fall.z, 4u); }
+    if (id.y == 0u) { pressEdge(id.z, tile.xy + vec2<i32>(0, -1), open.w, -sim.fall.z, 8u); }
+  }
   let toRight = faceFlow(c, r, height, relief.x, open.x, sim.fall.y);
   let fromLeft = faceFlow(l, c, relief.y, height, open.y, sim.fall.y);
   let toDown = faceFlow(c, d, height, relief.z, open.z, sim.fall.z);

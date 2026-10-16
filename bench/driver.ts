@@ -36,12 +36,17 @@ export type RunResult = {
   requested: number
   /**
    * Calls to the two WebGPU entry points that move pixels back to the CPU,
-   * counted while the pen is down. D30 forbids readback in the interactive
-   * path outright, so the only defensible number here is zero. History reads
+   * counted while the pen is down. D30 forbids pixel readback in the interactive
+   * path. Fluid brushes 40 permits its bounded edge report when the measured
+   * budget holds; it remains counted here and identified separately. History reads
    * the tiles a mark landed in once the pen has lifted (D21), which is off
    * that path and counted separately.
    */
   readbacks: number
+  /** Subset of pen-down readbacks: the bounded 256-byte tile-edge report
+   * allowed by fluid brushes 40 when its measured frame budget holds.
+   */
+  runEdgeReadbacks: number
   /** Readbacks over the whole run, the pen-up ones included. */
   readbacksTotal: number
   /**
@@ -300,6 +305,7 @@ const nextFrame = () =>
  */
 function watchInteractivePath(): {
   count: () => number
+  runEdges: () => number
   total: () => number
   allocations: () => number
   strokeAllocations: () => number
@@ -311,6 +317,7 @@ function watchInteractivePath(): {
   restore: () => void
 } {
   let count = 0
+  let runEdges = 0
   let total = 0
   let allocations = 0
   let strokeAllocations = 0
@@ -330,6 +337,12 @@ function watchInteractivePath(): {
   }
   buffer.mapAsync = function (...args: Parameters<typeof mapAsync>) {
     record()
+    if (
+      penDown &&
+      this.label === "fluid run edge readback" &&
+      this.size === 256
+    )
+      runEdges++
     return mapAsync.apply(this, args)
   }
   encoder.copyTextureToBuffer = function (
@@ -354,6 +367,7 @@ function watchInteractivePath(): {
   }
   return {
     count: () => count,
+    runEdges: () => runEdges,
     total: () => total,
     allocations: () => allocations,
     strokeAllocations: () => strokeAllocations,
@@ -849,6 +863,7 @@ export async function runBenchmark(
       0
     ),
     readbacks: watch.count(),
+    runEdgeReadbacks: watch.runEdges(),
     readbacksTotal: watch.total(),
     allocations: watch.allocations(),
     strokeAllocations: watch.strokeAllocations(),

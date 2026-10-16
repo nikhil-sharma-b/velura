@@ -2413,6 +2413,62 @@ the trail (1.21×). The test records these values as an attachment; pen
 tuning of the curve remains 31. No momentum, directional creep or film
 flux was added.
 
+### Runs crossing tile boundaries (fluid brushes 40)
+
+`bun run bench/run.ts --fluid-load --steep`, Apple GPU (Metal 3),
+Chrome/WebGPU, **75 Hz** display, 2560 × 1440 window, six strokes,
+2026-10-16, on top of `fd6f164`. A tilted step with a missing downhill
+neighbour now reads a **256-byte face report** asynchronously between steps.
+It never reads the water or pigment textures. All downhill neighbours already
+wet, or outside the document, means no report and the old synchronous path;
+thus the fully flooded rows still have zero interactive readbacks.
+
+| document | moving tiles | median ms/step | min / max | held ms/step |
+|---|---:|---:|---:|---:|
+| 1024² | 16 | 0.417 | 0.412 / 0.420 | 0.007 |
+| 2048² | 64 | 1.602 | 1.583 / 1.612 | 0.023 |
+
+The 64-tile moving step remains within the clock's 2 ms budget (39's
+same-board measurement was 1.562 ms). These are full-document floods, where
+topology rules out tile acquisition, not the cost of awaiting an edge report.
+The painting rows include that cost where the wet body has missing neighbours:
+
+| document | brush | paint | ms/frame, unpaced | sustained fps | paced latency median / p95 | pen-down readbacks, both passes |
+|---|---|---|---:|---:|---:|---:|
+| 1024² | 64 px | Fluid | 0.905 | 769.2 | 13.7 / 16.7 ms | 22 |
+| 1024² | 512 px | Fluid | 1.048 | 526.3 | 14.1 / 16.4 ms | 24 |
+| 2048² | 64 px | Fluid | 0.882 | 526.3 | 14.0 / 16.5 ms | 173 |
+| 2048² | 512 px | Fluid | 0.978 | 526.3 | 14.4 / 17.1 ms | 141 |
+| 2048² | 64 px | Fluid, 64 wet | 1.051 | 357.1 | 15.1 / 17.7 ms | 0 |
+| 2048² | 512 px | Fluid, 64 wet | 1.319 | 400.0 | 15.1 / 18.2 ms | 0 |
+
+**Painting with the report remains above D30's 120 fps throughput target.**
+On this panel the sparse-body median/p95 latency is 13.7–14.4 / 16.4–17.1 ms;
+it cannot establish the under-10 ms 120 Hz pen-to-pixel figure, which is not
+claimed. The report's buffers are preallocated; the five/six pen-down
+allocations remain the existing history copies. The report yields to input;
+if a dab, undo or topology change overtakes it, it is discarded.
+
+Ticket 40 explicitly allows this bounded report when the measured frame
+budget holds. The benchmark still counts **every** interactive readback;
+its `--fluid-load --steep` rows now also identify how many are the labelled,
+256-byte edge report. Only that subset is allowed, and only above the
+throughput target; any other pen-down readback remains a failure. The first
+measurement above exited 1 under the previous blanket zero-readback guard,
+not because throughput failed. The browser regression separately verifies
+the report size and the zero-readback full-document path.
+
+**Final confirmation at `6070f4c`:** the same command completed successfully
+with the updated guard. The 64-tile moving step was 1.595 ms (1.577–1.603),
+and held paint 0.024 ms. Sparse tilted painting sustained 588.2/526.3 fps at
+1024² (64/512 px brushes), and 526.3/500.0 fps at 2048². Its median/p95
+latency was 13.7–14.2 / 16.3–17.5 ms on the same 75 Hz display. All 21, 25,
+176 and 141 interactive readbacks respectively were the bounded edge report;
+there were no other interactive readbacks. The fully wet 64-tile painting
+rows sustained 400 fps with zero readbacks. The final local regression run
+also passed all 1,536 unit tests and 868 browser tests, including the
+settle-before-next-report undo interleaving regression.
+
 ### Blotting wet paint (fluid brushes 17)
 
 `--fluid-load` paints the same workload again over the same flood with a

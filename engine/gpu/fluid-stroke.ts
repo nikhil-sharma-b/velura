@@ -204,8 +204,13 @@ export interface FluidStroke extends StrokeRenderer<FluidOpening> {
    * Runs the simulation on by `steps` steps, fewer if everything dries or
    * holds first. A body whose deadline passes settles into the layer, or
    * with drying paused holds; answers what each settle wrote, in order.
+   * `settled` receives each mark before another asynchronous step can yield
+   * to input, so history can queue it before an undo overtakes it.
    */
-  advance(steps: number): StrokeMark[]
+  advance(
+    steps: number,
+    settled?: (mark: StrokeMark) => void
+  ): StrokeMark[] | Promise<StrokeMark[]>
   /**
    * Pauses drying, or lets it go on (fluid brushes 18). Paused, nothing
    * evaporates, and a body whose deadline passes holds, its water standing
@@ -456,6 +461,11 @@ export function createFluidStroke(
         read(10),
         read(11),
         { binding: 12, visibility: GPUShaderStage.COMPUTE, sampler: {} },
+        {
+          binding: 13,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "storage" },
+        },
       ],
     })
     const simModule = device.createShaderModule({ code: fluidSimShader })
@@ -487,6 +497,33 @@ export function createFluidStroke(
     size: SIM_UNIFORM_SIZE,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
+  const runEdges = device.createBuffer({
+    label: "fluid run edges",
+    size: WET_SLOTS * 4,
+    usage:
+      GPUBufferUsage.STORAGE |
+      GPUBufferUsage.COPY_SRC |
+      GPUBufferUsage.COPY_DST,
+  })
+  const edgeReadback = device.createBuffer({
+    label: "fluid run edge readback",
+    size: WET_SLOTS * 4,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+  })
+  const edgeMasks = new Uint32Array(WET_SLOTS)
+  const reportedTiles: (TileCoord | undefined)[] = Array.from({
+    length: WET_SLOTS,
+  })
+  const faces = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ] as const
+  // An awaited report must not claim tiles after undo, a new dab, a board
+  // change or disposal has replaced what the GPU saw.
+  let revision = 0
+  let advancing = false
   const simData = new ArrayBuffer(SIM_UNIFORM_SIZE)
   const simRates = new Float32Array(simData, 0, 4)
   /** The depth of water the brush in hand fills a cell to. */
@@ -756,6 +793,7 @@ export function createFluidStroke(
 
   /** Tells the shaders which tiles hold which slots. */
   function writeSlots() {
+    revision++
     device.queue.writeTexture(
       { texture: slots!.texture },
       tiles!.map(),
@@ -834,6 +872,7 @@ export function createFluidStroke(
         { binding: 10, resource: context.paper() },
         { binding: 11, resource: selectionView() },
         { binding: 12, resource: selectionSampler },
+        { binding: 13, resource: { buffer: runEdges } },
       ],
     })
     const pass = encoder.beginComputePass()
@@ -1225,6 +1264,116 @@ export function createFluidStroke(
     }
   }
 
+  /** The only CPU transfer in this module: a fixed-size face mask, not pixels.
+   * Ticket 40 permits it subject to the measured interactive frame budget.
+   */
+  async function readRunEdges() {
+    await edgeReadback.mapAsync(GPUMapMode.READ)
+    try {
+      edgeMasks.set(new Uint32Array(edgeReadback.getMappedRange()))
+    } finally {
+      edgeReadback.unmap()
+    }
+  }
+
+  /** No report is needed where every downhill face already has a slot, or
+   * ends at the document boundary. This is topology, not a guess at water.
+   */
+  function needsEdges() {
+    if (simFall[0] <= 0) return false
+    for (let slot = 0; slot < span; slot++) {
+      const tile = tiles!.tile(slot)
+      if (!tile || holding[slot]) continue
+      for (const [dx, dy] of faces) {
+        if (dx * simFall[1] + dy * simFall[2] <= 0) continue
+        const x = tile.x + dx
+        const y = tile.y + dy
+        if (x < 0 || y < 0 || x >= grid.columns || y >= grid.rows) continue
+        if (tiles!.slotAt(x, y) < 0) return true
+      }
+    }
+    return false
+  }
+
+  /** A tilted step reports flooded faces; only the driver can acquire slots.
+   * Awaiting the 256-byte report yields to input, never blocks presentation.
+   * At most one step is in flight, so no water crosses an unclaimed face.
+   */
+  async function advanceRuns(
+    steps: number,
+    settled?: (mark: StrokeMark) => void
+  ): Promise<StrokeMark[]> {
+    const marks: StrokeMark[] = []
+    if (advancing) return marks
+    advancing = true
+    let stepped = false
+    try {
+      for (let i = 0; i < steps && tiles!.count() > heldCount; i++) {
+        const before = revision
+        for (let slot = 0; slot < WET_SLOTS; slot++)
+          reportedTiles[slot] = tiles!.tile(slot)
+        const encoder = device.createCommandEncoder()
+        encoder.clearBuffer(runEdges)
+        simulate(encoder, pipelines!.step)
+        encoder.copyBufferToBuffer(runEdges, 0, edgeReadback, 0, WET_SLOTS * 4)
+        device.queue.submit([encoder.finish()])
+        clock++
+        stepped = true
+        await readRunEdges()
+        if (revision !== before) break
+        if (paused) hold()
+        else {
+          const mark = settle(tiles!.expired(clock))
+          if (mark) {
+            marks.push(mark)
+            settled?.(mark)
+          }
+        }
+        let fresh = false
+        for (let source = 0; source < WET_SLOTS; source++) {
+          const tile = reportedTiles[source]
+          if (!tile || tiles!.tile(source) !== tile || holding[source]) continue
+          for (let face = 0; face < faces.length; face++) {
+            if (!(edgeMasks[source] & (1 << face))) continue
+            const [dx, dy] = faces[face]
+            const x = tile.x + dx
+            const y = tile.y + dy
+            if (tiles!.slotAt(x, y) >= 0) continue
+            // Do not use a source slot's report after an earlier claim made
+            // its body settle, even if that slot has since been reused.
+            if (tiles!.tile(source) !== tile) break
+            const crowding = tiles!.crowding(
+              x,
+              y,
+              undefined,
+              paused ? clock : undefined,
+              source
+            )
+            if (crowding.length > 0) {
+              if (fresh) writeSlots()
+              fresh = false
+              const mark = settle(crowding)
+              if (mark) {
+                marks.push(mark)
+                settled?.(mark)
+              }
+              if (tiles!.tile(source) !== tile) break
+            }
+            const next = tiles!.extend(source, dx, dy)
+            if (next < 0) continue
+            flooded[source] = flooded[next] = 1
+            fresh = true
+          }
+        }
+        if (fresh) writeSlots()
+      }
+    } finally {
+      advancing = false
+      if (stepped) context.wetMoved()
+    }
+    return marks
+  }
+
   return {
     wet(of) {
       if (!surface || of !== surface) return undefined
@@ -1245,6 +1394,7 @@ export function createFluidStroke(
     tileCount: () => (tiles?.count() ?? 0) - heldCount,
     prepare,
     begin(opening) {
+      revision++
       if (context.size().width === 0)
         throw new Error("The render target has not been sized.")
       if (
@@ -1307,6 +1457,7 @@ export function createFluidStroke(
     /** Dabs are laid out as `STAMP` says. */
     draw(dabs, count) {
       if (!painting || count <= 0) return noMarks
+      revision++
       if (blotting) return blot(dabs, count)
       touched.clear()
       let marks: StrokeMark[] | undefined
@@ -1425,14 +1576,17 @@ export function createFluidStroke(
     restore: (copy, onto) => putBack(copy as KeptFields, onto),
     release: (copy) => release(copy as KeptFields),
     selectionChanged() {
+      revision++
       shown = []
       settleBindings = []
       simBindings = []
       if (surface) context.wetChanged()
     },
-    advance(steps) {
+    advance(steps, settled) {
       const marks: StrokeMark[] = []
       if (!tiles) return marks
+      if (advancing) return marks
+      if (steps > 0 && needsEdges()) return advanceRuns(steps, settled)
       let stepped = false
       for (let i = 0; i < steps && tiles.count() > heldCount; i++) {
         const encoder = device.createCommandEncoder()
@@ -1445,13 +1599,17 @@ export function createFluidStroke(
           continue
         }
         const mark = settle(tiles.expired(clock))
-        if (mark) marks.push(mark)
+        if (mark) {
+          marks.push(mark)
+          settled?.(mark)
+        }
       }
       if (stepped) context.wetMoved()
       return marks
     },
     setPaused(pause) {
       if (pause === paused) return
+      revision++
       paused = pause
       if (!tiles) return
       if (pause) {
@@ -1470,6 +1628,7 @@ export function createFluidStroke(
       return fields ? fields.copies[current].water.texture : null
     },
     setBoard(board) {
+      revision++
       const down = boardDown(board)
       const fall = isFlat(board) ? 0 : STEEPEST_FALL * board.steepness
       simFall.set(fall ? [fall, down.x, down.y] : [0, 0, 0])
@@ -1487,6 +1646,7 @@ export function createFluidStroke(
       discard()
     },
     destroy() {
+      revision++
       for (const kept of [...copies]) release(kept)
       for (const texture of fields?.textures ?? []) texture.destroy()
       slots?.texture.destroy()
@@ -1494,6 +1654,8 @@ export function createFluidStroke(
       uniform.destroy()
       simUniform.destroy()
       instanceBuffer.destroy()
+      runEdges.destroy()
+      edgeReadback.destroy()
     },
   }
 }
