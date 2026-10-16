@@ -1722,6 +1722,7 @@ export function createRenderer(
           { binding: 9, resource: wet.suspended },
           { binding: 10, resource: paperView },
           { binding: 11, resource: wet.selection },
+          { binding: 12, resource: wet.coverage },
         ]
       : []
 

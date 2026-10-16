@@ -46,14 +46,36 @@ const settledSteps = (page: Page) =>
     return steps - wetSteps
   })
 
-/** A diagonal stroke left to dry by itself, and the canvas it leaves. */
-async function driedDiagonal(page: Page, radius: number, fluid: Fluid | null) {
+type Mark = {
+  radius: number
+  fluid: Fluid | null
+  /** Where the pen goes down and where it lifts; one point is a tap. */
+  path: [number, number][]
+  /** The brush's flow, which sets how much pigment a dab carries. */
+  flow?: number
+  /** The brush's feather, in document pixels. */
+  feather?: number
+  /** A tap of a blot brush, of this radius, at this point, while it is wet. */
+  blot?: { at: [number, number]; radius: number }
+}
+
+/** A diagonal, at a slope where a two pixel step comes round every seven columns. */
+const DIAGONAL: [number, number][] = [
+  [20, 170],
+  [236, 105],
+]
+
+/** A mark left to dry by itself, and the canvas it leaves. */
+async function dried(
+  page: Page,
+  { radius, fluid, path, flow = 1, feather = 1, blot }: Mark
+) {
   await page.goto(
     process.env.VELURA_TEST_HARNESS ?? "http://127.0.0.1:3101/tests/harness/"
   )
   await page.waitForFunction(() => !!window.engine)
   await page.evaluate(
-    async ([size, radius, colour, fluid]) => {
+    async ([size, radius, colour, fluid, flow, feather]) => {
       window.remountEngine({ manualFluidClock: true })
       await window.engine.dispatch({
         type: "resize",
@@ -69,19 +91,38 @@ async function driedDiagonal(page: Page, radius: number, fluid: Fluid | null) {
         type: "setBrush",
         radius,
         spacing: 0.125,
+        flow,
+        feather,
         fluid,
       })
       await window.engine.dispatch({ type: "setColor", hex: colour })
     },
-    [SIZE, radius, BLUE, fluid] as const
+    [SIZE, radius, BLUE, fluid, flow, feather] as const
   )
   const box = (await page.locator("canvas").boundingBox())!
-  // A slope of about 0.3: a two pixel step comes round every seven columns.
-  await page.mouse.move(box.x + 20, box.y + 170)
+  const [[x0, y0], ...rest] = path
+  await page.mouse.move(box.x + x0, box.y + y0)
   await page.mouse.down()
-  await page.mouse.move(box.x + 236, box.y + 105, { steps: 60 })
+  for (const [x, y] of rest)
+    await page.mouse.move(box.x + x, box.y + y, { steps: 60 })
   await page.mouse.up()
   await frames(page)
+  if (blot) {
+    await page.evaluate(
+      (radius) =>
+        window.engine.dispatch({
+          type: "setBrush",
+          radius,
+          fluid: null,
+          blot: { water: 1, pigment: 0.8 },
+        }),
+      blot.radius
+    )
+    await page.mouse.move(box.x + blot.at[0], box.y + blot.at[1])
+    await page.mouse.down()
+    await page.mouse.up()
+    await frames(page)
+  }
   if (fluid) {
     const before = await settledSteps(page)
     for (let i = 0; i < 60 && (await settledSteps(page)) === before; i++) {
@@ -145,7 +186,9 @@ function upperEdge(image: number[]) {
 test("a dry brush's diagonal edge is straight by this measure", async ({
   page,
 }) => {
-  const edge = upperEdge(await driedDiagonal(page, 24, null))
+  const edge = upperEdge(
+    await dried(page, { radius: 24, fluid: null, path: DIAGONAL })
+  )
   expect(edge.columns).toBe(120)
   expect(edge.rms).toBeLessThanOrEqual(STRAIGHT.rms)
   expect(edge.max).toBeLessThanOrEqual(STRAIGHT.max)
@@ -168,21 +211,150 @@ const CASES = [
 for (const { name, radius, fluid } of CASES) {
   test(`${name} is anti-aliased`, async ({ page }) => {
     test.slow()
-    const edge = upperEdge(await driedDiagonal(page, radius, fluid))
+    const edge = upperEdge(await dried(page, { radius, fluid, path: DIAGONAL }))
     expect(edge.columns).toBe(120)
     expect(edge.unramped).toBe(0)
   })
 
   test(`${name} follows the stroke, not the cell grid`, async ({ page }) => {
-    // Filtering in what a cell shows anti-aliases the edge but cannot move
-    // it off the cell grid: it still strays about 0.45 px from a straight
-    // line, stepped every two pixels. Fluid brushes 42 puts the edge back at
-    // the document's resolution; this then passes and the mark comes off.
     test.slow()
-    test.fail()
-    const edge = upperEdge(await driedDiagonal(page, radius, fluid))
+    // Where the dabs laid paint is kept at the document's resolution, so a
+    // laid edge follows the brush (fluid brushes 42). A bloom carries paint
+    // past where it was laid, and there the edge is still the cells': it is
+    // anti-aliased but stepped every two pixels (fluid brushes 44).
+    test.fail(fluid === FLOODED)
+    const edge = upperEdge(await dried(page, { radius, fluid, path: DIAGONAL }))
     expect(edge.columns).toBe(120)
     expect(edge.rms).toBeLessThanOrEqual(STRAIGHT.rms)
     expect(edge.max).toBeLessThanOrEqual(STRAIGHT.max)
   })
 }
+
+/** How dark a pixel is: what has been taken out of white paper. */
+const darknessIn = (image: number[]) => (x: number, y: number) => {
+  const i = (y * SIZE + x) * 4
+  return 765 - image[i] - image[i + 1] - image[i + 2]
+}
+
+/** The pixels showing at least half a mark's darkest pixel's darkness. */
+function painted(image: number[]) {
+  const darkness = darknessIn(image)
+  let peak = 0
+  for (let y = 32; y < SIZE; y++)
+    for (let x = 0; x < SIZE; x++) peak = Math.max(peak, darkness(x, y))
+  const box = { left: SIZE, top: SIZE, right: -1, bottom: -1 }
+  let area = 0
+  for (let y = 32; y < SIZE; y++)
+    for (let x = 0; x < SIZE; x++) {
+      if (darkness(x, y) < peak / 2) continue
+      area++
+      box.left = Math.min(box.left, x)
+      box.top = Math.min(box.top, y)
+      box.right = Math.max(box.right, x)
+      box.bottom = Math.max(box.bottom, y)
+    }
+  return {
+    area,
+    width: box.right - box.left + 1,
+    height: box.bottom - box.top + 1,
+    ...box,
+  }
+}
+
+// What these marks measured before the edge followed where the dabs laid
+// paint (fluid brushes 42), which must only trim where paint shows.
+const TAP_AREA = 48
+const LINE_ENDS = { left: 56, right: 199 }
+const FAINT_INTERIOR = 64.6
+
+test("a single small dab keeps its size and stays round", async ({ page }) => {
+  test.slow()
+  const tap = painted(
+    await dried(page, { radius: 4, fluid: RIMMED, path: [[128, 128]] })
+  )
+  expect(tap.area).toBeGreaterThanOrEqual(TAP_AREA * 0.9)
+  expect(tap.area).toBeLessThanOrEqual(TAP_AREA * 1.1)
+  expect(tap.width / tap.height).toBeGreaterThanOrEqual(0.9)
+  expect(tap.width / tap.height).toBeLessThanOrEqual(1.1)
+})
+
+test("a thin stroke's tips draw back no more than a pixel", async ({
+  page,
+}) => {
+  test.slow()
+  const line = painted(
+    await dried(page, {
+      radius: 4,
+      fluid: RIMMED,
+      path: [
+        [60, 128],
+        [196, 128],
+      ],
+    })
+  )
+  expect(line.left).toBeLessThanOrEqual(LINE_ENDS.left + 1)
+  expect(line.right).toBeGreaterThanOrEqual(LINE_ENDS.right - 1)
+})
+
+test("a faint wash dries as light inside as it was", async ({ page }) => {
+  test.slow()
+  const darkness = darknessIn(
+    await dried(page, {
+      radius: 24,
+      fluid: RIMMED,
+      flow: 0.1,
+      path: [
+        [40, 128],
+        [216, 128],
+      ],
+    })
+  )
+  let patch = 0
+  for (let y = 124; y < 132; y++)
+    for (let x = 112; x < 144; x++) patch += darkness(x, y)
+  expect(Math.abs(patch / 256 - FAINT_INTERIOR)).toBeLessThanOrEqual(2)
+})
+
+// Also measured before the edge followed the coverage: a soft brush's width,
+// and the steepest step between neighbouring pixels across the edge of a hole
+// blotted out of a wash, which inside where paint was laid is filtered across
+// as it always was.
+const SOFT_WIDTH = 32
+const BLOTTED_STEP = 85
+
+test("a soft brush's paint is as wide as it was", async ({ page }) => {
+  test.slow()
+  const soft = painted(
+    await dried(page, {
+      radius: 16,
+      feather: 6,
+      fluid: RIMMED,
+      path: [
+        [60, 128],
+        [196, 128],
+      ],
+    })
+  )
+  expect(Math.abs(soft.height - SOFT_WIDTH)).toBeLessThanOrEqual(1)
+})
+
+test("the edge of a hole blotted out of a wash is as soft as it was", async ({
+  page,
+}) => {
+  test.slow()
+  const darkness = darknessIn(
+    await dried(page, {
+      radius: 24,
+      fluid: RIMMED,
+      path: [
+        [40, 128],
+        [216, 128],
+      ],
+      blot: { at: [128, 128], radius: 10 },
+    })
+  )
+  let step = 0
+  for (let x = 100; x < 156; x++)
+    step = Math.max(step, Math.abs(darkness(x + 1, 128) - darkness(x, 128)))
+  expect(step).toBeLessThanOrEqual(BLOTTED_STEP * 1.1)
+})

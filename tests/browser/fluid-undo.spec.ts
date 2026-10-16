@@ -21,8 +21,11 @@ const YELLOW = "#f0c020"
 const FLUID = { water: 0.5, drying: 0.5, bleed: 1, edge: 0.5, granulation: 0 }
 /** A brush whose paint is dry within two hundred steps. */
 const QUICK = { ...FLUID, drying: 1 }
-/** The wet fields of one wet tile, copied: half floats in three fields. */
-const TILE_COPY_BYTES = 128 * 128 * 3 * 8
+/**
+ * The wet fields of one wet tile, copied: half floats in three fields, and a
+ * byte a document pixel of where its dabs laid paint (fluid brushes 42).
+ */
+const TILE_COPY_BYTES = 128 * 128 * 3 * 8 + 256 * 256
 
 type Origin = { x: number; y: number }
 
