@@ -323,7 +323,9 @@ test("a run at 64 slots settles another body and takes only its downhill tile", 
       type: "setBrush",
       radius: 18,
       flow: 1,
-      fluid: { water: 0.6, drying: 0.5, bleed: 0.5, edge: 0, granulation: 0 },
+      // All slots are occupied after this dab takes the last one, so even
+      // a flooded brush cannot take its usual ring. The run must make room.
+      fluid: { water: 1, drying: 0.5, bleed: 0.5, edge: 0, granulation: 0 },
     })
   )
   await move(page, canvas, 128, 234)
@@ -337,7 +339,17 @@ test("a run at 64 slots settles another body and takes only its downhill tile", 
     )
   expect(await wetAt(128, 270)).toBe(false)
   const dry = await drySteps(page)
-  await advance(page, 400)
+  // This test observes acquisition, not hundreds of subsequent run steps.
+  // Stop at the claim so CI's software GPU need not step 64 tiles afterward.
+  let steps = 0
+  while (steps < 100 && !(await wetAt(128, 270))) {
+    await advance(page, 5)
+    steps += 5
+  }
+  await test.info().attach("steps-to-claim", {
+    body: String(steps),
+    contentType: "text/plain",
+  })
   expect(await wetAt(128, 234)).toBe(true)
   expect(await wetAt(128, 270)).toBe(true)
   expect(await wetAt(384, 270)).toBe(false)

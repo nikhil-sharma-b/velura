@@ -214,7 +214,9 @@ async function countPasses(
     encoder.beginRenderPass = function (
       ...args: Parameters<typeof beginRenderPass>
     ) {
-      passes++
+      // Idle warming may land between the two measured animation frames on
+      // a slow runner. It is not stroke/compositor work (D19).
+      if (this.label !== "idle texture warming") passes++
       return beginRenderPass.apply(this, args)
     }
     try {
@@ -240,7 +242,7 @@ async function countPassesForSetLayer(
       encoder.beginRenderPass = function (
         ...args: Parameters<typeof beginRenderPass>
       ) {
-        passes++
+        if (this.label !== "idle texture warming") passes++
         return beginRenderPass.apply(this, args)
       }
       try {

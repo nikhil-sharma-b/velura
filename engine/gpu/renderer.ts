@@ -3601,7 +3601,9 @@ export function createRenderer(
       }
     },
     keepWarm(sampling = false) {
-      const encoder = device.createCommandEncoder()
+      const encoder = device.createCommandEncoder({
+        label: "idle texture warming",
+      })
       if (paintTarget) warmSurface(encoder, paintTarget.view)
       buffered.warm(encoder)
       direct.warm(encoder)
