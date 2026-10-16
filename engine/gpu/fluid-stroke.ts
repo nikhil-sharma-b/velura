@@ -40,14 +40,12 @@ const FIELD_WIDTH = FIELD_COLUMNS * WET_CELLS
 const FIELD_HEIGHT = Math.ceil(WET_SLOTS / FIELD_COLUMNS) * WET_CELLS
 
 /**
- * Where the dabs laid paint (fluid brushes 42): a texel a document pixel,
- * from none to all. A slot's coverage is a tile, beside its cells.
+ * Where the dabs laid paint (fluid brushes 42), from none to all, at the
+ * document's resolution: a texel a cell, beside the fields, with a channel
+ * for each of the cell's four pixels, so that drawing it costs what a dab
+ * does and the glaze reads a cell's in one fetch.
  */
-const COVERAGE_FORMAT: GPUTextureFormat = "r8unorm"
-const COVERAGE_EXTENT = {
-  width: WET_CELLS * WET_CELL_SIZE,
-  height: WET_CELLS * WET_CELL_SIZE,
-}
+const COVERAGE_FORMAT: GPUTextureFormat = "rgba8unorm"
 
 /**
  * What a batch of dabs lays its water and dampness into, with the share of
@@ -814,8 +812,8 @@ export function createFluidStroke(
       })
       const coverageTexture = device.createTexture({
         size: {
-          width: FIELD_WIDTH * WET_CELL_SIZE,
-          height: FIELD_HEIGHT * WET_CELL_SIZE,
+          width: FIELD_WIDTH,
+          height: FIELD_HEIGHT,
         },
         format: COVERAGE_FORMAT,
         usage:
@@ -825,7 +823,7 @@ export function createFluidStroke(
           GPUTextureUsage.COPY_DST,
       })
       const blankCoverage = device.createTexture({
-        size: COVERAGE_EXTENT,
+        size: SLOT_EXTENT,
         format: COVERAGE_FORMAT,
         usage: GPUTextureUsage.COPY_SRC,
       })
@@ -1012,11 +1010,6 @@ export function createFluidStroke(
     y: Math.floor(index / FIELD_COLUMNS) * WET_CELLS,
   })
   const SLOT_EXTENT = { width: WET_CELLS, height: WET_CELLS }
-  /** Where the `index`th slot's coverage is, a texel a document pixel. */
-  const coverageOrigin = (index: number) => {
-    const { x, y } = slotOrigin(index)
-    return { x: x * WET_CELL_SIZE, y: y * WET_CELL_SIZE }
-  }
 
   /**
    * Empties slots in both copies of the fields, so the next tile to take
@@ -1026,8 +1019,8 @@ export function createFluidStroke(
     for (const slot of emptied) {
       encoder.copyTextureToTexture(
         { texture: fields!.blankCoverage },
-        { texture: fields!.coverage.texture, origin: coverageOrigin(slot) },
-        COVERAGE_EXTENT
+        { texture: fields!.coverage.texture, origin: slotOrigin(slot) },
+        SLOT_EXTENT
       )
       for (const copy of fields!.copies)
         for (const field of Object.values(copy))
@@ -1088,8 +1081,8 @@ export function createFluidStroke(
     kept.texture = texture
     const coverage = device.createTexture({
       size: {
-        width: size.width * WET_CELL_SIZE,
-        height: size.height * WET_CELL_SIZE,
+        width: size.width,
+        height: size.height,
       },
       format: COVERAGE_FORMAT,
       usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
@@ -1106,9 +1099,9 @@ export function createFluidStroke(
         )
       )
       encoder.copyTextureToTexture(
-        { texture: fields!.coverage.texture, origin: coverageOrigin(slot) },
-        { texture: coverage, origin: coverageOrigin(index) },
-        COVERAGE_EXTENT
+        { texture: fields!.coverage.texture, origin: slotOrigin(slot) },
+        { texture: coverage, origin: slotOrigin(index) },
+        SLOT_EXTENT
       )
     })
     device.queue.submit([encoder.finish()])
@@ -1149,9 +1142,9 @@ export function createFluidStroke(
         )
       )
       encoder.copyTextureToTexture(
-        { texture: kept.coverage!, origin: coverageOrigin(index) },
-        { texture: fields!.coverage.texture, origin: coverageOrigin(slot) },
-        COVERAGE_EXTENT
+        { texture: kept.coverage!, origin: slotOrigin(index) },
+        { texture: fields!.coverage.texture, origin: slotOrigin(slot) },
+        SLOT_EXTENT
       )
     })
     device.queue.submit([encoder.finish()])

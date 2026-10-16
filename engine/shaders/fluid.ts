@@ -205,21 +205,31 @@ fn fragmentMain(varyings: Varyings) -> Fields {
 }
 
 // Where the dab lays paint, at the document's resolution (fluid brushes 42):
-// drawn into the wet surface's coverage, a texel a document pixel, two to a
-// cell each way, so the glaze can draw the paint's edge where the brush put
-// it and not on the cell grid. It says only where paint was laid, not how
-// much: a soft brush's falloff is in the cells already. So a disc's coverage
-// is all of it out to its radius, anti-aliased across a cell centred there,
-// and a tip's is wherever the tip lays anything.
+// drawn into the wet surface's coverage, a texel a cell with a channel for
+// each of its four pixels, so the glaze can draw the paint's edge where the
+// brush put it and not on the cell grid. It says only where paint was laid,
+// not how much: a soft brush's falloff is in the cells already. So a disc's
+// coverage is all of it out to its radius, anti-aliased across a cell
+// centred there, and a tip's is wherever the tip lays anything.
 @fragment
 fn coverageFragment(varyings: Varyings) -> @location(0) vec4<f32> {
-  let cell = varyings.position.xy * ${(1 / WET_CELL_SIZE).toFixed(1)};
+  let cell = varyings.position.xy;
   if (any(cell < varyings.slot.xy) || any(cell >= varyings.slot.zw)) { discard; }
-  let across = dabAcross(varyings, cell);
-  if (fluid.useTip > 0.0) {
-    return vec4<f32>(min(1.0, tipShape(varyings, across) * 4.0));
-  }
-  return vec4<f32>(1.0 - smoothstep(varyings.radius - 0.5, varyings.radius + 0.5, length(across)));
+  // The middles of the cell's pixels: left and right, top and bottom.
+  let corner = floor(cell);
+  return vec4<f32>(
+    laidAt(varyings, corner + vec2<f32>(0.25, 0.25)),
+    laidAt(varyings, corner + vec2<f32>(0.75, 0.25)),
+    laidAt(varyings, corner + vec2<f32>(0.25, 0.75)),
+    laidAt(varyings, corner + vec2<f32>(0.75, 0.75))
+  );
+}
+
+// Whether the dab lays paint at a point, in cells, anti-aliased across a cell.
+fn laidAt(varyings: Varyings, point: vec2<f32>) -> f32 {
+  let across = dabAcross(varyings, point);
+  if (fluid.useTip > 0.0) { return min(1.0, tipShape(varyings, across) * 4.0); }
+  return 1.0 - smoothstep(varyings.radius - 0.5, varyings.radius + 0.5, length(across));
 }
 
 // A blot brush's dab (fluid brushes 17) lays nothing: in every channel of

@@ -33,28 +33,28 @@ fn wetCell(slots: texture_2d<u32>, field: texture_2d<f32>, cell: vec2<i32>) -> v
   return textureLoad(field, corner + cell - tile * WET_CELLS, 0);
 }
 
-// Where the dabs laid paint at a document pixel (fluid brushes 42), from
-// none to all. The coverage holds each slot's tile at the document's
-// resolution, beside its cells at half of it.
-fn coverageAt(slots: texture_2d<u32>, coverage: texture_2d<f32>, pixel: vec2<i32>) -> f32 {
-  let size = WET_CELLS * WET_CELL_SIZE;
-  let tile = select(pixel / size, vec2<i32>(-1), pixel < vec2<i32>(0));
+// Where the dabs laid paint in a cell's four pixels (fluid brushes 42), from
+// none to all: left and right of its top row, then of its bottom one. The
+// coverage holds a texel a cell, beside the fields.
+fn cellCoverage(slots: texture_2d<u32>, coverage: texture_2d<f32>, cell: vec2<i32>) -> vec4<f32> {
+  let tile = select(cell / WET_CELLS, vec2<i32>(-1), cell < vec2<i32>(0));
   let corner = slotCorner(slots, tile);
-  if (corner.x < 0) { return 0.0; }
-  return textureLoad(coverage, corner * WET_CELL_SIZE + pixel - tile * size, 0).r;
+  if (corner.x < 0) { return vec4<f32>(0.0); }
+  return textureLoad(coverage, corner + cell - tile * WET_CELLS, 0);
+}
+
+// Where the dabs laid paint at a document pixel.
+fn coverageAt(slots: texture_2d<u32>, coverage: texture_2d<f32>, pixel: vec2<i32>) -> f32 {
+  let four = cellCoverage(slots, coverage, select(pixel / WET_CELL_SIZE, vec2<i32>(-1), pixel < vec2<i32>(0)));
+  let at = pixel & vec2<i32>(1);
+  return four[at.y * 2 + at.x];
 }
 
 // How much of a cell the dabs laid paint in: the mean of its pixels'
 // coverage. A dab lays paint in the cells whose middle it covers, so paint in
 // a cell under half laid has been carried there, by a bloom or a run.
 fn cellLaid(slots: texture_2d<u32>, coverage: texture_2d<f32>, cell: vec2<i32>) -> f32 {
-  let tile = select(cell / WET_CELLS, vec2<i32>(-1), cell < vec2<i32>(0));
-  let corner = slotCorner(slots, tile);
-  if (corner.x < 0) { return 0.0; }
-  let at = (corner + cell - tile * WET_CELLS) * WET_CELL_SIZE;
-  let laid = textureLoad(coverage, at, 0).r + textureLoad(coverage, at + vec2<i32>(1, 0), 0).r
-    + textureLoad(coverage, at + vec2<i32>(0, 1), 0).r + textureLoad(coverage, at + vec2<i32>(1, 1), 0).r;
-  return laid * 0.25;
+  return dot(cellCoverage(slots, coverage, cell), vec4<f32>(0.25));
 }
 
 // How much a cell holds paint, from its density: all but the faintest paint
