@@ -20,20 +20,6 @@ fn wetCell(slots: texture_2d<u32>, field: texture_2d<f32>, cell: vec2<i32>) -> v
   return textureLoad(field, origin + cell - tile * WET_CELLS, 0);
 }
 
-// A wet field at a document point, filtered between cells. Neighbours are
-// found a cell at a time, so a tile's border is filtered across like any other.
-fn wetField(slots: texture_2d<u32>, field: texture_2d<f32>, point: vec2<f32>) -> vec4<f32> {
-  let cellPoint = point * (f32(WET_CELLS) / 256.0) - 0.5;
-  let corner = floor(cellPoint);
-  let f = cellPoint - corner;
-  let cell = vec2<i32>(corner);
-  return mix(
-    mix(wetCell(slots, field, cell), wetCell(slots, field, cell + vec2<i32>(1, 0)), f.x),
-    mix(wetCell(slots, field, cell + vec2<i32>(0, 1)), wetCell(slots, field, cell + vec2<i32>(1, 1)), f.x),
-    f.y
-  );
-}
-
 // How much more of the pigment it has taken the paper shows in its deepest
 // valley, and how much less on its highest peak. The fields hold a cell to
 // two document pixels, coarser than the paper's grain, so the grain is put
@@ -66,7 +52,7 @@ fn selectedOut(selection: texture_2d<f32>, pixel: vec2<i32>) -> bool {
 // A layer's pixel with whatever is wet over that document point glazed onto
 // it: the pigment the paper has taken first, more of it showing in the
 // paper's valleys, and what is still in the water over it. A pixel the
-// selection leaves out shows none: the fields are filtered between cells, and
+// selection leaves out shows none: what cells show is filtered between them, and
 // a cell is wider than a pixel, so paint held in by the selection's edge
 // would otherwise show a pixel past it.
 fn glazeWet(
@@ -81,8 +67,41 @@ fn glazeWet(
   if (selectedOut(selection, vec2<i32>(floor(point)))) { return under; }
   let height = paperHeight(paper, vec2<i32>(floor(point)));
   let grain = 1.0 + PAPER_GRAIN * (1.0 - 2.0 * height);
+  // Filtered between cells in what each cell shows, not in its density
+  // (fluid brushes 30): the glaze saturates, so half a dense cell's density
+  // is nearly as dark as all of it, and a filter in density would leave the
+  // edge of a wash a hard step on the cell grid.
+  let cellPoint = point * (f32(WET_CELLS) / 256.0) - 0.5;
+  let corner = floor(cellPoint);
+  let f = cellPoint - corner;
+  let cell = vec2<i32>(corner);
+  return mix(
+    mix(
+      glazeCell(under, slots, deposited, suspended, grain, cell),
+      glazeCell(under, slots, deposited, suspended, grain, cell + vec2<i32>(1, 0)),
+      f.x
+    ),
+    mix(
+      glazeCell(under, slots, deposited, suspended, grain, cell + vec2<i32>(0, 1)),
+      glazeCell(under, slots, deposited, suspended, grain, cell + vec2<i32>(1, 1)),
+      f.x
+    ),
+    f.y
+  );
+}
+
+// A pixel with one cell's paint glazed onto it: the pigment the paper has
+// taken, then what is still in the water over it.
+fn glazeCell(
+  under: vec4<f32>,
+  slots: texture_2d<u32>,
+  deposited: texture_2d<f32>,
+  suspended: texture_2d<f32>,
+  grain: f32,
+  cell: vec2<i32>
+) -> vec4<f32> {
   return glaze(
-    glaze(under, wetField(slots, deposited, point) * grain),
-    wetField(slots, suspended, point)
+    glaze(under, wetCell(slots, deposited, cell) * grain),
+    wetCell(slots, suspended, cell)
   );
 }
