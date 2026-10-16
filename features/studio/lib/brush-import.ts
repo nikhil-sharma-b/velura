@@ -1,4 +1,5 @@
-import type { Brush } from "@/engine/brush/brush"
+import { type Brush, copyBrushFluid } from "@/engine/brush/brush"
+import { WATERCOLOUR_WASH_FLUID } from "@/engine/brush/presets"
 import {
   type KritaTip,
   kritaTextureId,
@@ -39,6 +40,8 @@ import {
 
 export type ImportFile = Readonly<{ name: string; bytes: Uint8Array }>
 
+export type ImportOptions = Readonly<{ adaptToWatercolour?: boolean }>
+
 export type ImportDeps = {
   /** Any image the browser can read, as interleaved pixels. */
   decodeImage(bytes: Uint8Array): Promise<SourceImage>
@@ -54,6 +57,8 @@ export type ImportedBrush = Readonly<{
   brush: Brush
   /** What the source had that the brush does not; empty for a plain tip. */
   dropped: readonly string[]
+  /** Adaptations/defaults, distinct from settings that were lost. */
+  notes?: readonly string[]
 }>
 
 export type ImportOutcome = Readonly<{
@@ -120,7 +125,8 @@ export async function readTipFiles(
 async function importPreset(
   file: ImportFile,
   tips: Map<string, ImportFile>,
-  deps: ImportDeps
+  deps: ImportDeps,
+  options: ImportOptions
 ): Promise<ImportedBrush> {
   const preset = parseKritaPreset(await readKpp(file.bytes))
   const tipFile = kritaTipFile(preset)
@@ -180,8 +186,32 @@ async function importPreset(
     }
   }
 
+  const notes = options.adaptToWatercolour
+    ? [
+        "Adapted to Velura watercolour using wash defaults; source appearance may differ.",
+      ]
+    : undefined
+  if (notes) {
+    if (brush.rendering.wet) {
+      delete brush.rendering.wet
+      report.push("wet/smudge behaviour: replaced by fluid")
+    }
+    if (brush.dynamics.some((modulator) => modulator.target === "pickup")) {
+      brush.dynamics = brush.dynamics.filter(
+        (modulator) => modulator.target !== "pickup"
+      )
+      report.push("pickup dynamics: no equivalent in fluid mode")
+    }
+    brush.rendering.fluid = copyBrushFluid(WATERCOLOUR_WASH_FLUID)
+    if (brush.rendering.flow === 0)
+      notes.push("Source lays no colour; adapted brush adds water only.")
+  }
   const id = await deps.save(brush.name, IMPORT_SET, brush)
-  return { brush: { ...brush, id }, dropped: report }
+  return {
+    brush: { ...brush, id },
+    dropped: report,
+    ...(notes ? { notes } : {}),
+  }
 }
 
 async function importTip(
@@ -201,7 +231,8 @@ async function importTip(
  */
 export async function importBrushFiles(
   files: readonly ImportFile[],
-  deps: ImportDeps
+  deps: ImportDeps,
+  options: ImportOptions = {}
 ): Promise<ImportOutcome> {
   const imported: ImportedBrush[] = []
   const failed: { file: string; reason: string }[] = []
@@ -221,7 +252,7 @@ export async function importBrushFiles(
 
   for (const file of presets)
     try {
-      imported.push(await importPreset(file, tips, deps))
+      imported.push(await importPreset(file, tips, deps, options))
     } catch (error) {
       failed.push({ file: file.name, reason: reason(error) })
     }

@@ -1896,8 +1896,9 @@ export function CanvasHost({
                                 if (!keepOpen) setLibraryOpen(false)
                               }}
                               onClose={() => setLibraryOpen(false)}
-                              onImport={(files) =>
+                              onImport={(files, options) =>
                                 studioImport(files, {
+                                  ...options,
                                   store: brushStore,
                                   shipped: KRITA_TEXTURES,
                                   register: (id, texture) =>

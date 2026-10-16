@@ -101,6 +101,48 @@ async function paintsAMark(page: Page) {
   }).toPass()
 }
 
+test("watercolour adaptation is opt-in, survives cancellation, resets, and paints a real Krita preset as fluid", async ({
+  page,
+}) => {
+  await openLibrary(page)
+  const library = page.getByTestId("brush-library")
+  const adapt = library.getByRole("checkbox", {
+    name: "Adapt Krita presets to watercolour",
+  })
+  await expect(adapt).not.toBeChecked()
+  await adapt.check()
+  // The browser's cancellation event must not clear the artist's choice.
+  await library
+    .getByLabel("Import brush", { exact: true })
+    .dispatchEvent("cancel")
+  await expect(adapt).toBeChecked()
+  await importFiles(page, [
+    {
+      name: "watercolour.kpp",
+      buffer: readFileSync(
+        new URL("../fixtures/krita-watercolour.kpp", import.meta.url)
+      ),
+    },
+  ])
+  const report = page.getByRole("region", { name: "Import report" })
+  await expect(report).toContainText(
+    "Adapted to Velura watercolour using wash defaults; source appearance may differ."
+  )
+  await expect(report).not.toContainText("Everything carried over.")
+  await expect(adapt).not.toBeChecked()
+  await page.keyboard.press("Escape")
+  await page.getByRole("button", { name: "Brush editor", exact: true }).click()
+  const editor = page.getByRole("region", { name: "Brush editor", exact: true })
+  await editor.getByRole("tab", { name: "Rendering" }).click()
+  await expect(editor.getByRole("switch", { name: /^Fluid / })).toBeChecked()
+  await expect(editor.getByRole("switch", { name: /^Wet/ })).toHaveCount(0)
+  await expect(
+    editor.getByRole("slider", { name: "Water", exact: true })
+  ).toHaveAttribute("aria-valuenow", "0.6")
+  await page.getByRole("button", { name: "Brush editor", exact: true }).click()
+  await paintsAMark(page)
+})
+
 test("a Krita preset is imported, reports what it lost, and paints", async ({
   page,
 }) => {

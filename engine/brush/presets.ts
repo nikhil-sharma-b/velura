@@ -1,4 +1,4 @@
-import type { Brush } from "./brush"
+import { type Brush, type BrushFluid, copyBrushFluid } from "./brush"
 import type { Modulator } from "./dynamics"
 import { type BuiltinBrushSet, KRITA_BRUSHES } from "./krita-presets"
 import { CHARCOAL_TIP, GRAPHITE_TIP, PAPER_GRAIN } from "./texture"
@@ -287,6 +287,15 @@ export const WET_BRUSH_SET: BuiltinBrushSet = Object.freeze({
  * the three that lay paint carry that much or less and their marks stay
  * where they were put. The water brush alone floods.
  */
+/** Shared by the built-in wash and explicit Krita watercolour adaptation. */
+export const WATERCOLOUR_WASH_FLUID: Readonly<BrushFluid> = Object.freeze({
+  water: 0.6,
+  drying: 0.3,
+  bleed: 0.7,
+  edge: 0.4,
+  granulation: 0.35,
+})
+
 export const FLUID_BRUSHES: readonly Brush[] = Object.freeze([
   {
     id: `${BUILTIN_BRUSH_PREFIX}watercolour-wash`,
@@ -298,13 +307,7 @@ export const FLUID_BRUSHES: readonly Brush[] = Object.freeze([
       accumulation: "buildup",
       opacity: 1,
       flow: 0.25,
-      fluid: {
-        water: 0.6,
-        drying: 0.3,
-        bleed: 0.7,
-        edge: 0.4,
-        granulation: 0.35,
-      },
+      fluid: copyBrushFluid(WATERCOLOUR_WASH_FLUID),
     },
     dynamics: [
       // A light touch lays a paler, drier wash; it is never wetter than set.
