@@ -139,6 +139,19 @@ fn glazeWet(
   );
   let held = density > vec4<f32>(NO_PAINT);
   if (!any(held)) { return under; }
+  let holds = vec4<f32>(holdsPaint(density.x), holdsPaint(density.y), holdsPaint(density.z), holdsPaint(density.w));
+  let here = coverageAt(slots, coverage, vec2<i32>(floor(point)));
+  // Well inside laid paint, where the pixel was laid whole and every cell
+  // about it holds paint, the cells about it are counted as they hold paint
+  // whether laid or not, and paint shows at least as the cells do: what was
+  // laid where is not read.
+  if (here >= 1.0 && all(holds > vec4<f32>(0.99))) {
+    let inside = 1.0 / dot(weights, holds);
+    return film(
+      film(under, filteredFilm(deposited4, weights, inside, 0.0)),
+      filteredFilm(suspended4, weights, inside, 0.0)
+    );
+  }
   let laidCells = vec4<f32>(
     cellLaid(slots, coverage, cells[0]),
     cellLaid(slots, coverage, cells[1]),
@@ -151,9 +164,9 @@ fn glazeWet(
   // the edge as inside it; bare paper inside, where paint was laid and has
   // gone, is filtered across as it always was.
   let whole = smoothstep(vec4<f32>(0.75), vec4<f32>(1.0), laidCells);
-  let counted = dot(weights, max(vec4<f32>(holdsPaint(density.x), holdsPaint(density.y), holdsPaint(density.z), holdsPaint(density.w)), whole));
+  let counted = dot(weights, max(holds, whole));
   if (counted <= NO_PAINT) { return under; }
-  let within = coverageAt(slots, coverage, vec2<i32>(floor(point))) / counted;
+  let within = here / counted;
   // Paint carried past where it was laid shows as the cells do.
   let beyond = select(0.0, 1.0, any(held & (laidCells < vec4<f32>(0.5))));
   return film(
