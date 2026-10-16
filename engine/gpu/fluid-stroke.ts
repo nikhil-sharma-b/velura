@@ -40,6 +40,14 @@ const FIELD_WIDTH = FIELD_COLUMNS * WET_CELLS
 const FIELD_HEIGHT = Math.ceil(WET_SLOTS / FIELD_COLUMNS) * WET_CELLS
 
 /**
+ * Where the dabs laid paint (fluid brushes 42), from none to all, at the
+ * document's resolution: a texel a cell, beside the fields, with a channel
+ * for each of the cell's four pixels, so that drawing it costs what a dab
+ * does and the glaze reads a cell's in one fetch.
+ */
+const COVERAGE_FORMAT: GPUTextureFormat = "rgba8unorm"
+
+/**
  * What a batch of dabs lays its water and dampness into, with the share of
  * the brush's water its dabs carry in alpha.
  */
@@ -172,6 +180,8 @@ export type WetViews = {
   suspended: GPUTextureView
   /** The selection's coverage, or a texel of full coverage with none. */
   selection: GPUTextureView
+  /** Where the dabs laid paint, a texel a document pixel. */
+  coverage: GPUTextureView
 }
 
 /**
@@ -286,6 +296,8 @@ type Fields = Record<
 type KeptFields = WetCopy & {
   /** The cells; none with nothing wet. */
   texture?: GPUTexture
+  /** Where the dabs laid paint in those tiles, side by side as the cells. */
+  coverage?: GPUTexture
   /** The slot each tile's cells were copied out of, in the order kept. */
   slots: number[]
   tiles: WetTilesState
@@ -447,6 +459,31 @@ export function createFluidStroke(
       },
       primitive: { topology: "triangle-strip" },
     })
+    // Where the dabs laid paint, at the document's resolution (fluid
+    // brushes 42): the most any dab laid at a texel.
+    const coveragePipeline = device.createRenderPipeline({
+      label: "fluid coverage",
+      layout: dabLayout,
+      vertex: {
+        module: dabModule,
+        entryPoint: "vertexMain",
+        buffers: dabBuffers,
+      },
+      fragment: {
+        module: dabModule,
+        entryPoint: "coverageFragment",
+        targets: [
+          {
+            format: COVERAGE_FORMAT,
+            blend: {
+              color: { operation: "max", srcFactor: "one", dstFactor: "one" },
+              alpha: { operation: "max", srcFactor: "one", dstFactor: "one" },
+            },
+          },
+        ],
+      },
+      primitive: { topology: "triangle-strip" },
+    })
     const settleModule = device.createShaderModule({ code: fluidSettleShader })
     const settlePipeline = device.createRenderPipeline({
       label: "fluid settle",
@@ -511,6 +548,7 @@ export function createFluidStroke(
     return {
       dab: dabPipeline,
       blot: blotPipeline,
+      coverage: coveragePipeline,
       dabBindings,
       settle: settlePipeline,
       simLayout,
@@ -632,6 +670,13 @@ export function createFluidStroke(
         under: GPUTexture
         /** A slot of nothing, copied over a slot as it is freed. */
         blank: GPUTexture
+        /**
+         * Where the dabs laid paint, a texel a document pixel (fluid brushes
+         * 42). One copy: the simulation never writes it.
+         */
+        coverage: { texture: GPUTexture; view: GPUTextureView }
+        /** A slot's coverage of nothing. */
+        blankCoverage: GPUTexture
         textures: GPUTexture[]
       }
     | undefined
@@ -765,6 +810,23 @@ export function createFluidStroke(
         format: LAYER_FORMAT,
         usage: GPUTextureUsage.COPY_SRC,
       })
+      const coverageTexture = device.createTexture({
+        size: {
+          width: FIELD_WIDTH,
+          height: FIELD_HEIGHT,
+        },
+        format: COVERAGE_FORMAT,
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.RENDER_ATTACHMENT |
+          GPUTextureUsage.COPY_SRC |
+          GPUTextureUsage.COPY_DST,
+      })
+      const blankCoverage = device.createTexture({
+        size: SLOT_EXTENT,
+        format: COVERAGE_FORMAT,
+        usage: GPUTextureUsage.COPY_SRC,
+      })
       fields = {
         copies,
         laidWater: laidWater.view,
@@ -772,6 +834,11 @@ export function createFluidStroke(
         laidReach: laidReach?.view,
         under,
         blank,
+        coverage: {
+          texture: coverageTexture,
+          view: coverageTexture.createView(),
+        },
+        blankCoverage,
         textures: [
           ...copies.flatMap((fields) =>
             Object.values(fields).map((field) => field.texture)
@@ -781,6 +848,8 @@ export function createFluidStroke(
           ...(laidReach ? [laidReach.texture] : []),
           under,
           blank,
+          coverageTexture,
+          blankCoverage,
         ],
       }
     }
@@ -947,7 +1016,12 @@ export function createFluidStroke(
    * one starts dry whichever copy is current by then.
    */
   function blank(encoder: GPUCommandEncoder, emptied: readonly number[]) {
-    for (const slot of emptied)
+    for (const slot of emptied) {
+      encoder.copyTextureToTexture(
+        { texture: fields!.blankCoverage },
+        { texture: fields!.coverage.texture, origin: slotOrigin(slot) },
+        SLOT_EXTENT
+      )
       for (const copy of fields!.copies)
         for (const field of Object.values(copy))
           encoder.copyTextureToTexture(
@@ -955,6 +1029,7 @@ export function createFluidStroke(
             { texture: field.texture, origin: slotOrigin(slot) },
             SLOT_EXTENT
           )
+    }
   }
 
   /** Frees slots and empties them. */
@@ -983,8 +1058,9 @@ export function createFluidStroke(
       height: Math.ceil(held.length / FIELD_COLUMNS) * WET_CELLS,
     }
     const kept: KeptFields = {
-      // Half floats, four to a cell, in each of the fields.
-      bytes: size.width * size.height * fieldNames.length * 8,
+      // Half floats, four to a cell, in each of the fields; and a byte a
+      // document pixel, four to a cell, of where the dabs laid paint.
+      bytes: size.width * size.height * (fieldNames.length * 8 + 4),
       slots: held,
       tiles: tiles!.save(),
       grid,
@@ -1003,9 +1079,18 @@ export function createFluidStroke(
       usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
     })
     kept.texture = texture
+    const coverage = device.createTexture({
+      size: {
+        width: size.width,
+        height: size.height,
+      },
+      format: COVERAGE_FORMAT,
+      usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+    })
+    kept.coverage = coverage
     const from = fields!.copies[current]
     const encoder = device.createCommandEncoder()
-    held.forEach((slot, index) =>
+    held.forEach((slot, index) => {
       fieldNames.forEach((name, layer) =>
         encoder.copyTextureToTexture(
           { texture: from[name]!.texture, origin: slotOrigin(slot) },
@@ -1013,7 +1098,12 @@ export function createFluidStroke(
           SLOT_EXTENT
         )
       )
-    )
+      encoder.copyTextureToTexture(
+        { texture: fields!.coverage.texture, origin: slotOrigin(slot) },
+        { texture: coverage, origin: slotOrigin(index) },
+        SLOT_EXTENT
+      )
+    })
     device.queue.submit([encoder.finish()])
     return kept
   }
@@ -1021,6 +1111,7 @@ export function createFluidStroke(
   function release(kept: KeptFields | undefined) {
     if (!kept || !copies.delete(kept)) return
     kept.texture?.destroy()
+    kept.coverage?.destroy()
   }
 
   /**
@@ -1039,7 +1130,7 @@ export function createFluidStroke(
     // Into the current copy alone: a pass writes the other whole wherever a
     // slot is held.
     const to = fields!.copies[current]
-    kept.slots.forEach((slot, index) =>
+    kept.slots.forEach((slot, index) => {
       fieldNames.forEach((name, layer) =>
         encoder.copyTextureToTexture(
           {
@@ -1050,7 +1141,12 @@ export function createFluidStroke(
           SLOT_EXTENT
         )
       )
-    )
+      encoder.copyTextureToTexture(
+        { texture: kept.coverage!, origin: slotOrigin(index) },
+        { texture: fields!.coverage.texture, origin: slotOrigin(slot) },
+        SLOT_EXTENT
+      )
+    })
     device.queue.submit([encoder.finish()])
     tiles.restore(kept.tiles)
     reached.set(kept.reached)
@@ -1183,6 +1279,23 @@ export function createFluidStroke(
     pass.setVertexBuffer(0, instanceBuffer)
     pass.draw(4, count)
     pass.end()
+    // A blot takes paint out and lays none: where paint was laid stands.
+    if (!blotting) {
+      const laying = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: fields!.coverage.view,
+            loadOp: "load",
+            storeOp: "store",
+          },
+        ],
+      })
+      laying.setPipeline(pipelines!.coverage)
+      laying.setBindGroup(0, bindDabs())
+      laying.setVertexBuffer(0, instanceBuffer)
+      laying.draw(4, count)
+      laying.end()
+    }
     simulate(encoder, blotting ? pipelines!.absorb : pipelines!.pour)
     device.queue.submit([encoder.finish()])
   }
@@ -1235,6 +1348,7 @@ export function createFluidStroke(
         { binding: 3, resource: views.suspended.view },
         { binding: 4, resource: context.paper() },
         { binding: 5, resource: selectionView() },
+        { binding: 6, resource: fields!.coverage.view },
       ],
     })
     const box = {
@@ -1433,6 +1547,7 @@ export function createFluidStroke(
         deposited: views.deposited.view,
         suspended: views.suspended.view,
         selection: selectionView(),
+        coverage: fields!.coverage.view,
       })
     },
     isWet: () => !!tiles && tiles.count() > 0,

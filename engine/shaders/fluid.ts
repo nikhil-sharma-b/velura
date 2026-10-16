@@ -141,33 +141,38 @@ struct Fields {
   ${reach ? "@location(2) reach: vec4<f32>," : ""}
 }
 
-// How much of a cell the dab covers, from none past its rim to one inside it.
-fn dabShape(varyings: Varyings) -> f32 {
-  let cell = varyings.position.xy;
-  // Where the cell lies in the dab, in cells: turned back, and stretched
-  // across the tip's length so its squashed rim is a circle's again.
+// Where a point lies in the dab, in cells: turned back, and stretched across
+// the tip's length so its squashed rim is a circle's again.
+fn dabAcross(varyings: Varyings, cell: vec2<f32>) -> vec2<f32> {
   let offset = cell - varyings.center;
-  let across = vec2<f32>(
+  return vec2<f32>(
     offset.x * varyings.turn.x + offset.y * varyings.turn.y,
     (offset.y * varyings.turn.x - offset.x * varyings.turn.y) / varyings.roundness
   );
+}
+
+// A tip's shape at a point of the dab, as on a dry dab: read in stamp space,
+// where the rim is at length one, and nothing past its square.
+fn tipShape(varyings: Varyings, across: vec2<f32>) -> f32 {
+  let local = across / varyings.radius;
+  let within = all(abs(local) <= vec2<f32>(1.0));
+  return select(
+    0.0,
+    textureSampleLevel(tipTexture, tipSampler, local * 0.5 + 0.5, varyings.tipFrame, 0.0).r,
+    within
+  );
+}
+
+// How much of a cell the dab covers, from none past its rim to one inside it.
+fn dabShape(varyings: Varyings) -> f32 {
+  let across = dabAcross(varyings, varyings.position.xy);
+  // A tip replaces the disc.
+  if (fluid.useTip > 0.0) { return tipShape(varyings, across); }
   // The disc's rim is no narrower than a cell along the tip's length, which
   // is as fine as a field can hold an edge; across it, it is squashed as
   // the dab is.
   let feather = max(fluid.feather, 1.0);
-  var shape = 1.0 - smoothstep(varyings.radius - feather, varyings.radius, length(across));
-  if (fluid.useTip > 0.0) {
-    // A tip replaces the disc, as on a dry dab: read in stamp space, where
-    // the rim is at length one, and nothing past its square.
-    let local = across / varyings.radius;
-    let within = all(abs(local) <= vec2<f32>(1.0));
-    shape = select(
-      0.0,
-      textureSampleLevel(tipTexture, tipSampler, local * 0.5 + 0.5, varyings.tipFrame, 0.0).r,
-      within
-    );
-  }
-  return shape;
+  return 1.0 - smoothstep(varyings.radius - feather, varyings.radius, length(across));
 }
 
 @fragment
@@ -197,6 +202,34 @@ fn fragmentMain(varyings: Varyings) -> Fields {
       : ""
   }
   return out;
+}
+
+// Where the dab lays paint, at the document's resolution (fluid brushes 42):
+// drawn into the wet surface's coverage, a texel a cell with a channel for
+// each of its four pixels, so the glaze can draw the paint's edge where the
+// brush put it and not on the cell grid. It says only where paint was laid,
+// not how much: a soft brush's falloff is in the cells already. So a disc's
+// coverage is all of it out to its radius, anti-aliased across a cell
+// centred there, and a tip's is wherever the tip lays anything.
+@fragment
+fn coverageFragment(varyings: Varyings) -> @location(0) vec4<f32> {
+  let cell = varyings.position.xy;
+  if (any(cell < varyings.slot.xy) || any(cell >= varyings.slot.zw)) { discard; }
+  // The middles of the cell's pixels: left and right, top and bottom.
+  let corner = floor(cell);
+  return vec4<f32>(
+    laidAt(varyings, corner + vec2<f32>(0.25, 0.25)),
+    laidAt(varyings, corner + vec2<f32>(0.75, 0.25)),
+    laidAt(varyings, corner + vec2<f32>(0.25, 0.75)),
+    laidAt(varyings, corner + vec2<f32>(0.75, 0.75))
+  );
+}
+
+// Whether the dab lays paint at a point, in cells, anti-aliased across a cell.
+fn laidAt(varyings: Varyings, point: vec2<f32>) -> f32 {
+  let across = dabAcross(varyings, point);
+  if (fluid.useTip > 0.0) { return min(1.0, tipShape(varyings, across) * 4.0); }
+  return 1.0 - smoothstep(varyings.radius - 0.5, varyings.radius + 0.5, length(across));
 }
 
 // A blot brush's dab (fluid brushes 17) lays nothing: in every channel of
@@ -234,6 +267,7 @@ export const fluidSettleShader = preprocess(
 @group(0) @binding(3) var wetSuspended: texture_2d<f32>;
 @group(0) @binding(4) var paper: texture_2d<f32>;
 @group(0) @binding(5) var selection: texture_2d<f32>;
+@group(0) @binding(6) var wetCoverage: texture_2d<f32>;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -251,6 +285,7 @@ fn fragmentMain(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
     wetSlots,
     wetDeposited,
     wetSuspended,
+    wetCoverage,
     paper,
     selection,
     position.xy
