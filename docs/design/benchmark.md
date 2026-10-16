@@ -2458,6 +2458,17 @@ measurement above exited 1 under the previous blanket zero-readback guard,
 not because throughput failed. The browser regression separately verifies
 the report size and the zero-readback full-document path.
 
+**Final confirmation at `6070f4c`:** the same command completed successfully
+with the updated guard. The 64-tile moving step was 1.595 ms (1.577–1.603),
+and held paint 0.024 ms. Sparse tilted painting sustained 588.2/526.3 fps at
+1024² (64/512 px brushes), and 526.3/500.0 fps at 2048². Its median/p95
+latency was 13.7–14.2 / 16.3–17.5 ms on the same 75 Hz display. All 21, 25,
+176 and 141 interactive readbacks respectively were the bounded edge report;
+there were no other interactive readbacks. The fully wet 64-tile painting
+rows sustained 400 fps with zero readbacks. The final local regression run
+also passed all 1,536 unit tests and 868 browser tests, including the
+settle-before-next-report undo interleaving regression.
+
 ### Blotting wet paint (fluid brushes 17)
 
 `--fluid-load` paints the same workload again over the same flood with a
