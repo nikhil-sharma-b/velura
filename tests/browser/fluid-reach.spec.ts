@@ -14,6 +14,8 @@ async function wash(
     barrier?: boolean
     yellow?: boolean
     prelude?: "cancel" | "clear" | "undo"
+    water?: number
+    feather?: boolean
   } = {}
 ) {
   await page.goto(
@@ -48,13 +50,24 @@ async function wash(
           mode: "subtract",
         })
       }
+      if (options.feather) {
+        await engine.dispatch({
+          type: "selectShape",
+          shape: "rect",
+          x: 256,
+          y: 0,
+          width: 256,
+          height: 512,
+        })
+        await engine.dispatch({ type: "featherSelection", radius: 8 })
+      }
       await engine.dispatch({ type: "setColor", hex: "#1040e0" })
       await engine.dispatch({
         type: "setBrush",
         radius: diameter / 2,
         flow: 0.1,
         fluid: {
-          water: 0.5,
+          water: options.water ?? 0.5,
           drying: 0.5,
           bleed: options.bleed ?? 1,
           edge: 0,
@@ -202,6 +215,15 @@ test("a disconnected large mark sharing allocated tiles does not rescale the sma
   expect(crop(withLarge)).toEqual(crop(without))
 })
 
+test("fractional water and feathered selection preserve the small-brush gate", async ({
+  page,
+}) => {
+  test.slow()
+  const options = { water: 0.1, feather: true, steps: 10 }
+  const baseline = await wash(page, false, 100, options)
+  expect(await wash(page, true, 100, options)).toEqual(baseline)
+})
+
 test("a two-pixel selection slit blocks long-range mixing rather than just clipping its endpoints", async ({
   page,
 }) => {
@@ -228,6 +250,15 @@ test("undo and redo restore local reach as well as the displayed paint", async (
   const before = await read()
   await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
   expect(await read()).not.toEqual(before)
+  // Remove the large wash too, so redo must restore its scale field rather
+  // than merely retain scale that the yellow touch never changed.
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  const empty = await read()
+  expect(empty.slice((256 * 512 + 256) * 4, (256 * 512 + 256) * 4 + 4)).toEqual(
+    [255, 255, 255, 255]
+  )
+  expect(await page.evaluate(() => window.engine.getSnapshot().wet)).toBe(false)
+  await page.evaluate(() => window.engine.dispatch({ type: "redo" }))
   await page.evaluate(() => window.engine.dispatch({ type: "redo" }))
   expect(await read()).toEqual(before)
   await page.evaluate(() =>

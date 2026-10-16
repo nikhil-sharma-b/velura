@@ -31,6 +31,10 @@ export const FLUID_DAMP_STEPS = 50
  */
 export const FLUID_SLOT_HELD = 2
 
+/** Provisional story 21 experiment values, not a shipping brush policy. */
+const REACH_START_DIAMETER = 150
+const REACH_MAX_DIAMETER = 500
+
 /**
  * A fluid brush's dabs (D42), drawn batched: water and dampness into one
  * target and pigment into the other, each added to the batch's other dabs.
@@ -189,7 +193,7 @@ fn fragmentMain(varyings: Varyings) -> Fields {
   ${
     reach
       ? `// Maximum dab diameter, only where the dab actually lays water.
-  out.reach = vec4<f32>(select(0.0, min(500.0, varyings.radius * ${(2 * WET_CELL_SIZE).toFixed(1)}), shape > 0.0 && fluid.water * varyings.water > 0.0), 0.0, 0.0, 0.0);`
+  out.reach = vec4<f32>(select(0.0, min(${REACH_MAX_DIAMETER.toFixed(1)}, varyings.radius * ${(2 * WET_CELL_SIZE).toFixed(1)}), shape > 0.0 && fluid.water * varyings.water > 0.0), 0.0, 0.0, 0.0);`
       : ""
   }
   return out;
@@ -452,7 +456,7 @@ ${
 // small-scale detail from a large wash. The three weights sum to one.
 fn reachWeights(cell: vec2<i32>) -> vec3<f32> {
   let diameter = wetCell(wetSlots, reachField, cell).x;
-  let t = smoothstep(150.0, 500.0, diameter);
+  let t = smoothstep(${REACH_START_DIAMETER.toFixed(1)}, ${REACH_MAX_DIAMETER.toFixed(1)}, diameter);
   return vec3<f32>(1.0 - 0.75 * t, 0.375 * t, 0.375 * t);
 }
 
@@ -463,15 +467,19 @@ fn reachGate(cell: vec2<i32>, direction: vec2<i32>, distance: i32, ring: u32) ->
   let other = cell + direction * distance;
   let weight = min(reachWeights(cell)[ring], reachWeights(other)[ring]);
   if (weight <= 0.0 || sim.bleed <= 0.0) { return 0.0; }
-  var gate = 1.0;
+  // Water and selection are independent restrictions, multiplied just as
+  // bleedGate does for one face. A min across both would change small
+  // brushes whenever water and selection coverage are both fractional.
+  var waterGate = 1.0;
+  var open = 1.0;
   var previous = cell;
   for (var n = 0; n <= distance; n++) {
     let point = cell + direction * n;
-    gate = min(gate, smoothstep(0.0, 0.25, wetCell(wetSlots, water, point).x));
-    if (n > 0) { gate = min(gate, selected(previous) * selected(point)); }
+    waterGate = min(waterGate, smoothstep(0.0, 0.25, wetCell(wetSlots, water, point).x));
+    if (n > 0) { open = min(open, selected(previous) * selected(point)); }
     previous = point;
   }
-  return sim.bleed * weight * gate;
+  return sim.bleed * weight * open * waterGate;
 }
 `
     : ""

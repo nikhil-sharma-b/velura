@@ -59,7 +59,10 @@ timing, **not SwiftShader timings**. Raw results are written to the ignored
   still applies.
 - Every intervening cell must hold standing water and every intervening
   selection face must be open. Endpoints alone are insufficient. Mixing remains
-  the existing density-weighted pigment model, not RGB blur.
+  the existing density-weighted pigment model, not RGB blur. The minimum water
+  gate along the path is multiplied by the minimum selection-face coverage;
+  for distance one this preserves the baseline multiplicative gate, including
+  when both water and selection coverage are fractional.
 
 The earlier isolated CPU screen used different weights and a maximum endpoint
 scale. Its measurements are not the GPU candidate's measurements. The minimum
@@ -77,24 +80,26 @@ small-dab, per-cell colour worst-case benchmark**.
 
 | Allocated wet tiles | Baseline median ms/step | Candidate median ms/step | Ratio |
 | --- | ---: | ---: | ---: |
-| 4 (512²) | 0.116 | 0.344 | 2.97× |
-| 16 (1024²) | 0.432 | 1.472 | 3.41× |
-| 64 (2048²) | 1.576 | 5.816 | 3.69× |
+| 4 (512²) | 0.132 | 0.370 | 2.80× |
+| 16 (1024²) | 0.416 | 1.422 | 3.42× |
+| 64 (2048²) | 1.598 | 5.622 | 3.52× |
+
+These numbers are the final rerun after the fractional-gate review fix.
 
 Paced painting: identical 2048² pre-flooded workload, four 500 px strokes,
 history not waited for. Pre-flood uses the existing small-dab flood; large
-workload dabs establish larger scale locally. The 80 pen-down clock ticks
+workload dabs establish larger scale locally. The pen-down clock ticks
 include the warm-up portion, whereas reported latency uses the runner's normal
 warm-up filtering; raw tick counts are not a separate fixed-duration throughput
 test.
 
 | Metric | Baseline | Candidate |
 | --- | ---: | ---: |
-| Pen-down clock ticks | 80 | 80 |
+| Pen-down clock ticks | 80 | 79 |
 | Delivered steps | 78 | 23 |
-| Skipped steps | 41 | 98 |
-| Steps per pen-down tick | 0.975 | 0.288 |
-| Pen-to-pixel median / p95 | 14.7 / 18.0 ms | 13.9 / 17.5 ms |
+| Skipped steps | 42 | 97 |
+| Steps per pen-down tick | 0.975 | 0.291 |
+| Pen-to-pixel median / p95 | 14.9 / 17.6 ms | 14.6 / 17.0 ms |
 | Interactive readbacks | 0 | 0 |
 
 The scheduler protects presentation by reducing simulation progress. Similar
@@ -106,12 +111,13 @@ The panel-specific latency says only what this 75 Hz setup measured.
 
 Engine tests cover fixed-step reach, 100/150 px preservation, Bleed zero,
 disconnected marks sharing allocation, a thin selection slit, undo/redo with
-continued simulation, and cancelled/undone/cleared large dabs not leaving scale
-in reused cells. PNGs provide reproducible comparison evidence, not artist
-approval.
+continued simulation after removing/restoring the large wash itself, fractional
+water plus feathered-selection preservation for small brushes, and cancelled/
+undone/cleared large dabs not leaving scale in reused cells. PNGs provide
+reproducible comparison evidence, not artist approval.
 
 Still outstanding: overlapping large strokes and reversed order; isotropy/grid
-lobes and cap/curve quality; dry/blotted barriers and feathered selections;
+lobes and cap/curve quality; dry/blotted barriers and large-scale feathered selections;
 fine suspended/deposited detail and granulation; metadata behaviour with bloom,
 hold/pause and natural drying; GPU density-drift/nonnegativity measurements.
 Existing default-path tests remain relevant but do not prove these experimental
@@ -122,3 +128,14 @@ Next design decision: choose a materially cheaper transport/metadata strategy
 or explicitly revise scope with the user. Do not enable this method, weaken the
 budget, lengthen wet lifetime, or fold capacity/rate-ownership stories into this
 one to make the experiment appear successful.
+
+## Review
+
+Two-axis review against `897aa204` found no documented-standard violations and
+one non-blocking duplicated tuning-cap smell (resolved by named experiment
+constants). Spec review found a fractional-gate preservation bug, reproduced
+with a failing engine regression and corrected. It also identified that the
+original undo/redo test did not change reach metadata; the strengthened test
+now removes and restores the large wash before comparing continued simulation.
+The remaining partial requirements above stay explicitly incomplete at the
+failed experiment gate.
