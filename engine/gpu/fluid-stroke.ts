@@ -93,11 +93,12 @@ const DRYING_MARGIN = 20
 
 /**
  * How far the paper drops over a cell straight downhill on the steepest
- * board (fluid brushes 38), in depth of water: a wash levels to a surface
- * that much deeper a cell further down. A starting value, for tuning with a
- * pen.
+ * board (fluid brushes 38, 39), in depth of water: a wash levels to a surface
+ * that much deeper a cell further down. At 0.1 a flooded 48 px wash travels
+ * over 8 document px in 400 steps; below HOLDS it still only slopes. The
+ * steepness curve remains for tuning with a pen (31).
  */
-const STEEPEST_FALL = 0.05
+const STEEPEST_FALL = 0.1
 
 /**
  * Bytes of the simulation's uniform: its rates and the brush's water, the

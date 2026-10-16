@@ -30,7 +30,8 @@
  * `--fluid` paints with fluid brushes against the same brushes dry (fluid
  * brushes 10); `--fluid-load` times a step of the simulation over 16 and 64
  * wet tiles, moving and held with drying paused, and paints, and blots,
- * with every tile of the document wet (fluid brushes 13, 17, 18);
+ * with every tile of the document wet (fluid brushes 13, 17, 18); add
+ * `--steep` for the full-steepness board comparison (39);
  * `--cold` times a draw into a texture left alone (live brushes 24);
  * `--vector` times
  * redrawing a vector layer of many paths (19); `--navigate` times panning and
@@ -626,6 +627,8 @@ const FLOODED_SIZES = [1024, 2048]
  * history between them, since a save dries the flood.
  */
 async function fluidLoadSweep(): Promise<void> {
+  const steep = process.argv.includes("--steep")
+  console.log(`\n  Board: ${steep ? "full steepness, downhill" : "flat"}`)
   const paced = PASSES.find((entry) => entry.name === "paced")!
   const unpaced = PASSES.find((entry) => entry.name === "unpaced")!
   console.log(
@@ -644,13 +647,14 @@ async function fluidLoadSweep(): Promise<void> {
         await page.goto(HARNESS)
         await page.waitForFunction(() => !!window.runFluidStepBenchmark)
         const { stepMs } = await page.evaluate(
-          ([size, held]) =>
+          ([size, held, steep]) =>
             window.runFluidStepBenchmark(
               { width: size, height: size },
               undefined,
-              held
+              held,
+              steep
             ),
-          [size, held] as const
+          [size, held, steep] as const
         )
         const tiles = (size / 256) ** 2
         const sorted = [...stepMs].sort((a, b) => a - b)
@@ -686,7 +690,7 @@ async function fluidLoadSweep(): Promise<void> {
           height: size,
           strokes: SWEEP_STROKES,
           unwaited: true,
-          fluid: { diameter, ...paint },
+          fluid: { diameter, steep, ...paint },
         }
         const free = await measure(unpaced, workload)
         const held = await measure(paced, workload)

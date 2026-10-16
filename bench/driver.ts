@@ -229,13 +229,17 @@ export async function runFluidStepBenchmark(
    * With drying paused, and the flood run on until every body of it holds
    * (fluid brushes 18): what a step costs over held paint.
    */
-  held = false
+  held = false,
+  /** Full-steepness board, alongside the flat baseline (fluid brushes 39). */
+  steep = false
 ): Promise<FluidStepResult> {
   canvas.style.width = `${VIEWPORT}px`
   canvas.style.height = `${(VIEWPORT * size.height) / size.width}px`
   await engine.dispatch({ type: "resize", ...size, devicePixelRatio: 1 })
   await engine.dispatch({ type: "initialize" })
   await engine.dispatch({ type: "setStabilization", strength: 0 })
+  if (steep)
+    await engine.dispatch({ type: "setBoard", steepness: 1, direction: 0 })
   // The engine's queue, caught as it submits: the page is not handed it.
   const queues = new Set<GPUQueue>()
   const submit = GPUQueue.prototype.submit
@@ -712,6 +716,8 @@ export async function runBenchmark(
     }
   }
   const fluid = workload.options.fluid
+  if (fluid?.steep)
+    await engine.dispatch({ type: "setBoard", steepness: 1, direction: 0 })
   if (fluid?.flooded)
     await floodFluid(
       engine,

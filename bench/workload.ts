@@ -145,6 +145,8 @@ export type WorkloadOptions = {
    * pen, the worst case for a step.
    */
   fluid?: {
+    /** Full-steepness board for the runs cost comparison (fluid brushes 39). */
+    steep?: boolean
     flooded?: boolean
     diameter: number
     spacing?: number

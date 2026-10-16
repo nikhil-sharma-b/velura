@@ -21,6 +21,7 @@ bun run bench/run.ts --smudge  # smudging the workload against painting it
 bun run bench/run.ts --wet     # wet brushes over the workload against dry ones
 bun run bench/run.ts --wet --opening # 8192² sampling openings against active-layer pickup
 bun run bench/run.ts --fluid   # fluid brushes against the same brushes dry
+bun run bench/run.ts --fluid-load --steep # step and strokes on a steep board (39)
 bun run bench/run.ts --vector  # redrawing a vector layer of many paths (19)
 bun run bench/run.ts --navigate # panning and zooming a stack (sharp-zoom 01)
 ```
@@ -2361,6 +2362,56 @@ The 512 px rows at 8192² of `--fluid`, whose wash outgrows the limit under
 the pen and settles there with history reading it back, are fluid brushes
 33. The batched deposit at 64 and 512 px is the table of fluid brushes 10,
 above: the dab is not the cost.
+
+### Runs on a steep board (fluid brushes 39)
+
+`bun run bench/run.ts --fluid-load --steep` repeats the step and stroke
+workloads above with the document's board at full steepness, downhill.
+Without `--steep` it is the same flat baseline. Apple GPU (Metal 3),
+Chrome/WebGPU, 75 Hz display, 2560 × 1440 window, 2026-10-16, on top of
+`85112b1`, `STEEPEST_FALL` 0.1. Each step figure is the median of seven
+rounds of 120 steps, after a warm round:
+
+| document | wet tiles | flat ms/step | steep ms/step | steep min–max | steep µs/tile-step |
+|---|---:|---:|---:|---:|---:|
+| 1024² | 16 | 0.407 | 0.405 | 0.401–0.408 | 25.3 |
+| 2048² | 64 | 1.567 | 1.562 | 1.545–1.567 | 24.4 |
+| 2048² | 64, held | 0.022 (18's run above) | 0.022 | 0.020–0.027 | 0.3 |
+
+The tilted term adds no measurable cost over flat here: the difference is
+under half a percent, within run-to-run noise. A 64-tile step fits the
+**2 ms simulation budget**. Held bodies still run no GPU step. The flat
+comparison run completed the moving step rows but lost its page during the
+64-held measurement (`Execution context was destroyed`), so its later
+stroke rows are not reported; the complete steep run is below. An earlier
+steep attempt also lost its page during a stroke; its completed 64-tile
+step was 1.573 ms, agreeing with the repeat's 1.562 ms.
+
+| document | brush | paint, steep board | ms/frame, unpaced | sustained fps | paced median / p95 | steps/frame | skipped | reckoned ms/step | readbacks | allocations |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2048² | 64 px | Dry | 0.496 | 1250.0 | 12.4 / 14.8 ms | – | – | – | 0 | 0 |
+| 2048² | 64 px | Fluid, 64 wet | 1.367 | 384.6 | 15.3 / 18.4 ms | 0.98 | 60 | 1.755 | 0 | 6 |
+| 2048² | 512 px | Dry | 0.505 | 1000.0 | 11.9 / 14.2 ms | – | – | – | 0 | 0 |
+| 2048² | 512 px | Fluid, 64 wet | 1.021 | 370.4 | 14.9 / 17.6 ms | 0.98 | 58 | 1.809 | 0 | 6 |
+
+Flooded painting still exceeds D30's 120 fps throughput target and reads
+nothing back during painting. The clock runs about one step a 75 Hz frame,
+skipping the second rather than holding up the pen. This panel can show
+75 frames/s, **not a 120 Hz pen-to-pixel result**; the under-10 ms figure
+is not measured. The six allocations are the existing pen-down history
+copies (34), not a run path or a new field.
+
+Speed was measured separately through the engine's manual test clock, not
+inferred from wall time: a 48 px heavy wash (`water` 1, `drying`, `bleed`
+and `edge` 0.5, `granulation` 0, flow 0.1) moves its visible downhill tip
+**13 document px in 400 steps** at full steepness, versus 7 px with 38's
+0.05 drop. That is 3.9 px/s at the intended 120 steps/s, not the spike's
+128 px per 100 steps: the height-drop model is deliberately slower than
+the spike's nonconservative upstream pull. Naturally dried, the bead's
+mean darkness across the wash's middle is 198.875 against 163.7625 along
+the trail (1.21×). The test records these values as an attachment; pen
+tuning of the curve remains 31. No momentum, directional creep or film
+flux was added.
 
 ### Blotting wet paint (fluid brushes 17)
 
