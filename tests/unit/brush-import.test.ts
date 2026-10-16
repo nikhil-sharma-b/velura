@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
+import { normaliseBrushDefinition } from "@/convex/lib/brush"
 import type { Brush } from "@/engine/brush/brush"
 import type { SourceImage } from "@/engine/brush/source-image"
 import type { GrayscaleTexture } from "@/engine/brush/texture"
@@ -104,6 +105,193 @@ const rgba = (width: number, height: number, value: number): SourceImage => ({
 })
 
 describe("importing a .kpp", () => {
+  test("imports the real CC0 watercolour fixture without changing its compatible definition", async () => {
+    const fixture = new Uint8Array(
+      await Bun.file(
+        new URL("../fixtures/krita-watercolour.kpp", import.meta.url)
+      ).arrayBuffer()
+    )
+    const files = [file("watercolour.kpp", fixture)]
+    const { deps } = fakes()
+    deps.shippedTip = async (id) =>
+      id === "krita:watercolor"
+        ? { width: 220, height: 220, selection: "random" }
+        : undefined
+    const ordinary = await importBrushFiles(files, deps)
+    const adapted = await importBrushFiles(files, deps, {
+      adaptToWatercolour: true,
+    })
+    expect(adapted.failed).toEqual([])
+    const brush = adapted.imported[0].brush
+    expect(brush.name).toBe("Watercolor Texture")
+    expect(brush.shape.tipTextureId).toBe("krita:watercolor")
+    expect(brush.shape.tipSelection).toBe("random")
+    expect(brush).toEqual({
+      ...ordinary.imported[0].brush,
+      id: brush.id,
+      rendering: {
+        ...ordinary.imported[0].brush.rendering,
+        fluid: {
+          water: 0.6,
+          drying: 0.3,
+          bleed: 0.7,
+          edge: 0.4,
+          granulation: 0.35,
+        },
+      },
+    })
+    expect(normaliseBrushDefinition(brush)).toEqual(brush)
+    expect(ordinary.imported[0].brush.rendering.fluid).toBeUndefined()
+  })
+
+  test("adaptation keeps companion tips and grain, leaves standalone tips alone, and isolates failed files", async () => {
+    const files = [
+      file(
+        "a.kpp",
+        kpp(
+          "paintbrush",
+          definition(
+            `<Brush type="gbr_brush" filename="Hearts.gih" scale="1"/>`
+          ),
+          `<param name="Texture/Pattern/Enabled">true</param>`,
+          `<param name="Texture/Pattern/Name">shipped_paper.png</param>`
+        )
+      ),
+      file("hearts.gih", gih("Hearts", [gbr("a", 8, 6), gbr("b", 8, 6)])),
+      file("dots.gbr", gbr("Dots", 4, 4)),
+      file("splat.png", text("AAAA")),
+      file("unsupported.kpp", kpp("spraybrush")),
+      file("broken.kpp", text("not a preset")),
+    ]
+    const original = await importBrushFiles(
+      files,
+      fakes({ AAAA: rgba(4, 4, 0) }).deps
+    )
+    const adapted = await importBrushFiles(
+      files,
+      fakes({ AAAA: rgba(4, 4, 0) }).deps,
+      { adaptToWatercolour: true }
+    )
+    expect(adapted.failed).toEqual(original.failed)
+    expect(adapted.failed.map((f) => f.file)).toEqual([
+      "unsupported.kpp",
+      "broken.kpp",
+    ])
+    expect(adapted.imported).toHaveLength(3)
+    const preset = adapted.imported[0].brush
+    expect(preset.shape.tipTextureId).toBe("texture:1")
+    expect(preset.shape.tipSelection).toBe("random")
+    expect(preset.grain).toEqual(original.imported[0].brush.grain)
+    expect(preset.grain?.textureId).toBe("krita:shipped-paper")
+    expect(preset.rendering.fluid).toBeDefined()
+    expect(normaliseBrushDefinition(preset)).toEqual(preset)
+    expect(adapted.imported.slice(1)).toEqual(original.imported.slice(1))
+    const explicitOptOut = await importBrushFiles(
+      files,
+      fakes({ AAAA: rgba(4, 4, 0) }).deps,
+      { adaptToWatercolour: false }
+    )
+    expect(explicitOptOut).toEqual(original)
+  })
+
+  test.each([
+    `<param name="ColorRateValue">0</param>`,
+    `<param name="PressureColorRate">false</param><param name="ColorRateValue">0.8</param>`,
+  ])(
+    "preserves a pure blender as a reported water-only adaptation: %s",
+    async (colourRate) => {
+      const { imported, failed } = await importBrushFiles(
+        [file("blender.kpp", kpp("colorsmudge", colourRate))],
+        fakes().deps,
+        { adaptToWatercolour: true }
+      )
+      expect(failed).toEqual([])
+      expect(imported[0].brush.rendering.flow).toBe(0)
+      expect(imported[0].brush.rendering.wet).toBeUndefined()
+      expect(imported[0].brush.rendering.fluid?.water).toBe(0.6)
+      expect(imported[0].notes).toContain(
+        "Source lays no colour; adapted brush adds water only."
+      )
+    }
+  )
+
+  test("adapts colour-smudge without changing pigment or retaining pickup controls", async () => {
+    const files = [
+      file(
+        "smudge.kpp",
+        kpp(
+          "colorsmudge",
+          `<param name="SmudgeRateValue">0.6</param>`,
+          `<param name="ColorRateValue">0.3</param>`,
+          `<param name="SmudgeRateSensor"><![CDATA[<params id="pressure"/>]]></param>`,
+          `<param name="ColorRateSensor"><![CDATA[<params id="speed"/>]]></param>`
+        )
+      ),
+    ]
+    const original = (await importBrushFiles(files, fakes().deps)).imported[0]
+    expect(original.brush.dynamics.some((m) => m.target === "pickup")).toBe(
+      true
+    )
+    const { imported, failed } = await importBrushFiles(files, fakes().deps, {
+      adaptToWatercolour: true,
+    })
+    expect(failed).toEqual([])
+    const { brush, dropped } = imported[0]
+    expect(brush.rendering.wet).toBeUndefined()
+    expect(normaliseBrushDefinition(brush)).toEqual(brush)
+    expect(brush.rendering.flow).toBe(0.3)
+    expect(brush.dynamics).toEqual(
+      original.brush.dynamics.filter((m) => m.target !== "pickup")
+    )
+    expect(brush.dynamics.some((m) => m.target === "water")).toBe(false)
+    expect(dropped).toContain("wet/smudge behaviour: replaced by fluid")
+    expect(dropped).toContain("pickup dynamics: no equivalent in fluid mode")
+    expect(original.brush.rendering.wet).toEqual({ pickup: 0.6 })
+  })
+
+  test("explicitly adapts a pixel preset using only the five wash fluid defaults", async () => {
+    const files = [
+      file(
+        "watercolour.kpp",
+        kpp(
+          "paintbrush",
+          definition(
+            `<Brush type="auto_brush" spacing="0.17"><MaskGenerator diameter="20" hfade="0.8" vfade="0.8" type="circle"/></Brush>`
+          ),
+          `<param name="PressureFlow">true</param><param name="FlowUseCurve">false</param><param name="FlowValue">0.08</param>`
+        )
+      ),
+    ]
+    const ordinary = await importBrushFiles(files, fakes().deps)
+    const { deps, brushes } = fakes()
+    const adapted = await importBrushFiles(files, deps, {
+      adaptToWatercolour: true,
+    })
+    expect(adapted.failed).toEqual([])
+    const entry = adapted.imported[0]
+    expect(entry.brush).toEqual({
+      ...ordinary.imported[0].brush,
+      rendering: {
+        ...ordinary.imported[0].brush.rendering,
+        fluid: {
+          water: 0.6,
+          drying: 0.3,
+          bleed: 0.7,
+          edge: 0.4,
+          granulation: 0.35,
+        },
+      },
+    })
+    expect(entry.brush.rendering.flow).toBe(0.08)
+    expect(brushes[0].brush.rendering.fluid).toEqual(
+      entry.brush.rendering.fluid
+    )
+    expect(entry.notes).toEqual([
+      "Adapted to Velura watercolour using wash defaults; source appearance may differ.",
+    ])
+    expect(ordinary.imported[0].notes).toBeUndefined()
+  })
+
   test("translates it, saves it in the imported set, and says what it lost", async () => {
     const { deps, brushes } = fakes()
     const outcome = await importBrushFiles(

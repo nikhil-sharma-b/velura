@@ -4,6 +4,7 @@ import type { SourceImage } from "@/engine/brush/source-image"
 import type { BrushStore } from "./brush-store"
 import {
   type ImportDeps,
+  type ImportOptions,
   type ImportOutcome,
   importBrushFiles,
 } from "./brush-import"
@@ -110,7 +111,7 @@ export function readFiles(
  */
 export async function studioImport(
   files: readonly File[],
-  options: {
+  options: ImportOptions & {
     store: BrushStore
     shipped: ShippedTextures
     register(id: string, texture: GrayscaleTexture): Promise<unknown>
@@ -139,5 +140,5 @@ export async function studioImport(
     },
     shippedGrain: (id) => isShipped(id, "grain") !== undefined,
   }
-  return importBrushFiles(await readFiles(files), deps)
+  return importBrushFiles(await readFiles(files), deps, options)
 }

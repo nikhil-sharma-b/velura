@@ -170,6 +170,60 @@ A good test here checks what the artist would see or what a stored brush means, 
 - **Golden image.** One wash, with a Linux baseline from the first ticket that draws one (live brushes 16).
 - **Benchmark.** Step cost at 16 and 64 wet tiles, the batched deposit, and a stroke held to D30 while the simulation runs, recorded in the benchmark document.
 
+## Watercolour preset adaptation (fluid brushes 20)
+
+The brush library offers an unchecked **Adapt Krita presets to watercolour**
+option beside Import brush. It applies to newly selected `.kpp` presets using
+the already-supported `paintbrush` and `colorsmudge` engines, not to arbitrary
+presets from other applications. It is explicit adaptation to Velura, not
+watercolour classification or a faithful reproduction of Krita's simulation.
+Watercolour-named presets may use the generic pixel-brush engine; names never
+select the medium.
+
+The choice is captured for the selected batch and resets after a nonempty file
+selection. Cancelling the picker leaves it unchanged. Ordinary import is the
+default. Companion assets, standalone PNG/GIMP tip imports, unsupported-engine
+refusal and per-file failures retain their existing rules. Existing library
+brushes, shipped presets and document paper are not changed. There is no new
+preview or tuning screen: the resulting brush is editable in the brush editor.
+
+The existing Krita translation and asset resolution run first. The adaptation
+then applies this mapping, before saving the new brush:
+
+| Source / translated setting | Treatment in the fluid adaptation |
+|---|---|
+| Tip and frame selection, shape, spacing, scatter, grain, colour settings | Preserve the existing compatible translation and its asset fallbacks |
+| Pigment flow and opacity, compatible dynamics | Preserve, without adding the built-in wash's flow or dynamics |
+| Wet/smudge mode | Remove and report as replaced by fluid |
+| Pickup-target dynamics | Remove and report; pickup is not water |
+| `water` | Velura default **0.6**, not a source mapping |
+| `drying` | Velura default **0.3**, not a source mapping |
+| `bleed` | Velura default **0.7**, not a source mapping |
+| `edge` | Velura default **0.4**, not a source mapping |
+| `granulation` | Velura default **0.35**, not a source mapping |
+| Accumulation | Retain the stored setting; fluid ignores it |
+| Other settings already unsupported by the translator | Keep the existing loss report |
+
+The five defaults share the built-in Watercolour wash's fluid profile, not its
+shape, pigment flow or pressure mappings. Low flow is not raised; zero flow
+remains zero, so a pure blender becomes water-only, not an equivalent smudge
+blender. Imported brush grain remains grain: the document's existing procedural
+paper controls simulation absorption and relief, and is never replaced by an
+imported pattern.
+
+Each adapted brush reports **“Adapted to Velura watercolour using wash defaults;
+source appearance may differ.”** separately from its lost settings. A zero-flow
+brush also reports **“Source lays no colour; adapted brush adds water only.”**
+Adapted imports never claim unqualified “Everything carried over.”
+
+The public importer tests preserve compatible definitions and exact flow,
+remove pickup, validate the resulting medium, and cover unchanged ordinary and
+mixed-file imports. The browser import flow verifies opt-in, cancellation and
+reset, imports the real CC0 Krita `j)_Watercolor_Texture.kpp` fixture, opens it
+as fluid in the editor and paints a mark. Fixture provenance is recorded beside
+`tests/fixtures/krita-watercolour.kpp`. No screenshot match to Krita is promised.
+Native brush file round-trip remains fluid brushes 29.
+
 ## Out of Scope
 
 - **Persisted wetness.** Wet paint saved with the document or synced.
@@ -182,7 +236,7 @@ A good test here checks what the artist would see or what a stored brush means, 
   - a blotting and lifting tool, which is where rewetting dried paint belongs
   - a pause-drying toggle, since built (fluid brushes 18)
   - directional flow, since designed (fluid brushes 19) and partly built (fluid brushes 38)
-  - watercolour preset import
+  - watercolour preset import, since built as explicit Krita adaptation (fluid brushes 20; mapping above)
   - bleed reach for large brushes (see Further Notes)
 
 ## Further Notes

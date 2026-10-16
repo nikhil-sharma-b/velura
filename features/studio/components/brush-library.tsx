@@ -9,7 +9,7 @@ import {
   TrashIcon,
   XIcon,
 } from "@phosphor-icons/react"
-import { type Ref, useMemo, useRef, useState } from "react"
+import { type Ref, useId, useMemo, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -25,7 +25,7 @@ import {
   searchShelf,
   setForNewBrush,
 } from "../lib/brush-shelf"
-import type { ImportOutcome } from "../lib/brush-import"
+import type { ImportOptions, ImportOutcome } from "../lib/brush-import"
 import type { BrushLibraryState, BrushStore } from "../lib/brush-store"
 import { KRITA_TEXTURES } from "../lib/shipped-textures"
 import { brushDescription } from "../lib/brush-description"
@@ -67,7 +67,7 @@ export function BrushLibrary({
    * Imports Krita presets and GIMP or PNG tips as the artist's own brushes
    * (07). Absent in a host with nowhere to keep them.
    */
-  onImport?(files: File[]): Promise<ImportOutcome>
+  onImport?(files: File[], options: ImportOptions): Promise<ImportOutcome>
 }) {
   const [problem, setProblem] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -81,6 +81,8 @@ export function BrushLibrary({
   const [newSet, setNewSet] = useState("")
   const [query, setQuery] = useState("")
   const [importing, setImporting] = useState(false)
+  const [adaptToWatercolour, setAdaptToWatercolour] = useState(false)
+  const adaptationHelpId = useId()
   /** What the last import brought in, and what each brush left behind. */
   const [report, setReport] = useState<ImportOutcome | null>(null)
   /**
@@ -136,10 +138,12 @@ export function BrushLibrary({
 
   const importFiles = (files: File[]) => {
     if (!onImport) return
+    const options = { adaptToWatercolour }
+    setAdaptToWatercolour(false)
     setProblem(null)
     setReport(null)
     setImporting(true)
-    void onImport(files)
+    void onImport(files, options)
       .then((outcome) => {
         setReport(outcome)
         // The first one in the hand, so it is painted with straight away.
@@ -401,24 +405,44 @@ export function BrushLibrary({
       </div>
 
       {onImport && (
-        // A file input, as the editor's texture import is: the browser's own
-        // picker is the only way to a file, and the keyboard reaches it.
-        <label className="flex h-8 cursor-pointer items-center justify-center rounded-md border border-border/70 text-xs font-medium focus-within:outline-2 focus-within:outline-primary hover:bg-muted">
-          {importing ? "Importing…" : "Import brush…"}
-          <input
-            type="file"
-            multiple
-            accept=".kpp,.gbr,.gih,.png"
-            aria-label="Import brush"
-            className="sr-only"
-            disabled={importing}
-            onChange={(event) => {
-              const files = [...(event.target.files ?? [])]
-              event.target.value = ""
-              if (files.length) importFiles(files)
-            }}
-          />
-        </label>
+        <div className="space-y-2">
+          <label className="flex items-start gap-2 text-xs leading-snug">
+            <input
+              type="checkbox"
+              checked={adaptToWatercolour}
+              disabled={importing}
+              aria-describedby={adaptationHelpId}
+              className="mt-0.5 accent-primary"
+              onChange={(event) => setAdaptToWatercolour(event.target.checked)}
+            />
+            Adapt Krita presets to watercolour
+          </label>
+          <p
+            id={adaptationHelpId}
+            className="text-xs leading-snug text-muted-foreground"
+          >
+            Uses Velura fluid defaults, not the source simulation. Krita presets
+            only.
+          </p>
+          {/* The browser's own picker is the only way to a file. Cancelling it
+            leaves the option alone; only a nonempty selection starts a batch. */}
+          <label className="flex h-8 cursor-pointer items-center justify-center rounded-md border border-border/70 text-xs font-medium focus-within:outline-2 focus-within:outline-primary hover:bg-muted">
+            {importing ? "Importing…" : "Import brush…"}
+            <input
+              type="file"
+              multiple
+              accept=".kpp,.gbr,.gih,.png"
+              aria-label="Import brush"
+              className="sr-only"
+              disabled={importing}
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])]
+                event.target.value = ""
+                if (files.length) importFiles(files)
+              }}
+            />
+          </label>
+        </div>
       )}
 
       <div className="flex gap-1.5">
@@ -482,9 +506,14 @@ function ImportReport({
           <XIcon className="size-3" />
         </IconButton>
       </div>
-      {report.imported.map(({ brush, dropped }) => (
+      {report.imported.map(({ brush, dropped, notes }) => (
         <div key={brush.id}>
           <p className="font-medium">{brush.name}</p>
+          {notes?.map((note) => (
+            <p key={note} className="text-muted-foreground">
+              {note}
+            </p>
+          ))}
           {dropped.length > 0 ? (
             <>
               <p className="text-muted-foreground">Not carried over:</p>
@@ -494,9 +523,9 @@ function ImportReport({
                 ))}
               </ul>
             </>
-          ) : (
+          ) : !notes?.length ? (
             <p className="text-muted-foreground">Everything carried over.</p>
-          )}
+          ) : null}
         </div>
       ))}
       {report.failed.length > 0 && (
