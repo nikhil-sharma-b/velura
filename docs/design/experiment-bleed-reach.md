@@ -139,3 +139,12 @@ original undo/redo test did not change reach metadata; the strengthened test
 now removes and restores the large wash before comparing continued simulation.
 The remaining partial requirements above stay explicitly incomplete at the
 failed experiment gate.
+
+## Final validation
+
+After the review fixes, `bun run test` passed **1,542 unit tests across 126
+files** and **877 browser tests**, including all eight reach-experiment tests.
+The browser run took 13.3 minutes. Typecheck, lint, formatting and diff-whitespace
+checks also passed. The spec reviewer verified the fractional-gate and metadata
+history corrections; the standards reviewer verified the shared constants.
+Passing regressions does not override the failed performance gate.
