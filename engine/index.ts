@@ -294,6 +294,7 @@ import {
   type SnapTargets,
 } from "./doc/snap"
 import { DEFAULT_PAPER, PAPERS, type Paper } from "./doc/paper"
+import { FLAT_BOARD, normaliseBoard, sameBoard, type Board } from "./doc/board"
 import {
   addGuide,
   guideSnapTargets,
@@ -455,6 +456,7 @@ const WET_PASSTHROUGH: ReadonlySet<EngineCommand["type"]> = new Set([
   "removeGuide",
   "clearGuides",
   "setGuidesVisible",
+  "setBoard",
   "setRulersVisible",
   "setRasterMagnification",
   "setStraightEdge",
@@ -571,6 +573,7 @@ export type { AlignAnchor, Extent, Snap, SnapTargets } from "./doc/snap"
 export { placementExtent, resolveSnap } from "./doc/snap"
 export type { Guide, GuideAxis } from "./doc/guides"
 export { DEFAULT_PAPER, PAPERS, type Paper } from "./doc/paper"
+export { FLAT_BOARD, boardDown, type Board } from "./doc/board"
 export { paperSwatch } from "./gpu/paper"
 export type { StraightEdge } from "./geom/stroke-assist"
 export type {
@@ -1062,6 +1065,13 @@ export type EngineCommand =
    * step that undoes. Wet paint dries first.
    */
   | { type: "setPaper"; paper: Paper }
+  /**
+   * The board the document's paper lies on (fluid brushes 38): steepness in
+   * [0, 1], 0 flat, and down in degrees clockwise from the paper's bottom
+   * edge. One step that undoes. Wet paint does not dry for it: it runs the
+   * new way from the next step, and undo puts the board back, not the paint.
+   */
+  | { type: "setBoard"; steepness: number; direction: number }
   /** Whether the rulers are shown along the canvas's edges (16). */
   | { type: "setRulersVisible"; visible: boolean }
   /**
@@ -1215,6 +1225,8 @@ export type EngineSnapshot = Readonly<{
   guidesVisible: boolean
   /** The document's paper (fluid brushes 15); undo restores it too. */
   paper: Paper
+  /** The board the paper lies on (fluid brushes 38); undo restores it too. */
+  board: Board
   rulersVisible: boolean
   rasterMagnification: RasterMagnification
   /** The straight-edge strokes are held to (17), if one is placed. */
@@ -1390,6 +1402,7 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   guides: Object.freeze([]),
   guidesVisible: true,
   paper: DEFAULT_PAPER,
+  board: FLAT_BOARD,
   rulersVisible: false,
   rasterMagnification: DEFAULT_RASTER_MAGNIFICATION,
   straightEdge: null,
@@ -1515,6 +1528,12 @@ export interface Engine {
     height: number
     data: Uint8Array
   } | null>
+  /**
+   * All the water standing in the wet paint, read back from the GPU: for
+   * tests that the simulation makes and loses none (fluid brushes 38).
+   * Explicit and asynchronous, like `readPixels`.
+   */
+  readWetWater(): Promise<number>
   /** Samples one composited canvas pixel and makes it the current ink. */
   sampleColor(x: number, y: number): Promise<EngineColor>
   /**
@@ -4382,6 +4401,7 @@ export function createEngine(
     renderer.setComposition(planComposite(doc, { highlight }))
     // However the document came to its paper: chosen, undone, opened.
     renderer.setPaper(doc.paper)
+    renderer.setBoard(doc.board)
   }
 
   /** The stack as the snapshot carries it: settings, never pixels. */
@@ -4427,6 +4447,7 @@ export function createEngine(
       paintingMask: document.paintingMask,
       guides: Object.freeze([...document.guides]),
       paper: document.paper,
+      board: document.board,
     }
   }
 
@@ -8336,6 +8357,27 @@ export function createEngine(
           applyLayerChange()
           break
         }
+        case "setBoard": {
+          const document = requireDocument()
+          if (
+            ![command.steepness, command.direction].every(Number.isFinite) ||
+            command.steepness < 0 ||
+            command.steepness > 1
+          )
+            throw new Error(
+              "A board's steepness must be in [0, 1] and its direction finite."
+            )
+          const board = normaliseBoard(command)
+          if (sameBoard(board, document.board)) break
+          // Wet paint stays wet: this is a wet passthrough, and the paint
+          // runs the new way from the next step.
+          const before = captureStructure(document)
+          document.board = board
+          recordOperation("tilt board", before)
+          renderer?.setBoard(board)
+          publish(describeLayers(document))
+          break
+        }
         case "setGuidesVisible":
           guidesVisible = command.visible !== false
           publish({ guidesVisible })
@@ -8628,6 +8670,11 @@ export function createEngine(
       if (snapshot.status !== "ready")
         throw new Error("The graphics device is not ready.")
       return await capturePixels()
+    },
+    async readWetWater() {
+      if (snapshot.status !== "ready" || !renderer)
+        throw new Error("The graphics device is not ready.")
+      return renderer.readFluidWater()
     },
     async readSelection() {
       if (snapshot.status !== "ready" || !renderer)

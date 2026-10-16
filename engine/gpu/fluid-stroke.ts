@@ -6,6 +6,7 @@ import {
   type TileCoord,
 } from "../doc/tile-grid"
 import type { BrushBlot } from "../brush/brush"
+import { boardDown, isFlat, type Board } from "../doc/board"
 import type { WetCopy } from "../doc/undo-stack"
 import {
   FLUID_DAMP_STEPS,
@@ -91,11 +92,20 @@ const MAX_GRANULATION = 6
 const DRYING_MARGIN = 20
 
 /**
- * Bytes of the simulation's uniform: its rates and the brush's water, then a
- * row for each slot.
+ * How far the paper drops over a cell straight downhill on the steepest
+ * board (fluid brushes 38), in depth of water: a wash levels to a surface
+ * that much deeper a cell further down. A starting value, for tuning with a
+ * pen.
+ */
+const STEEPEST_FALL = 0.05
+
+/**
+ * Bytes of the simulation's uniform: its rates and the brush's water, the
+ * board, then a row for each slot.
  */
 const SIM_LEVEL_OFFSET = 16
-const SIM_TILES_OFFSET = 32
+const SIM_FALL_OFFSET = 32
+const SIM_TILES_OFFSET = 48
 const SIM_UNIFORM_SIZE = SIM_TILES_OFFSET + WET_SLOTS * 16
 
 /** What a fluid stroke is told as it opens. */
@@ -202,6 +212,16 @@ export interface FluidStroke extends StrokeRenderer<FluidOpening> {
    * from where it is.
    */
   setPaused(paused: boolean): void
+  /**
+   * The board the paper lies on (fluid brushes 38): wet paint runs down it
+   * from the next step, whatever is wet now included.
+   */
+  setBoard(board: Board): void
+  /**
+   * The copy of the water field the next step reads, for the renderer's
+   * test readback of it (fluid brushes 38); null before any fluid brush.
+   */
+  waterField(): GPUTexture | null
   /**
    * Settles everything wet into the layer at once and frees it. Answers what
    * that wrote, or null with nothing wet.
@@ -472,6 +492,8 @@ export function createFluidStroke(
   const simLevel = new Float32Array(simData, SIM_LEVEL_OFFSET, 1)
   /** What a blot brush takes: the share of water, then of pigment. */
   const simBlot = new Float32Array(simData, SIM_LEVEL_OFFSET + 4, 2)
+  /** The board: how hard water is pulled downhill, then which way is down. */
+  const simFall = new Float32Array(simData, SIM_FALL_OFFSET, 3)
   const simTiles = new Int32Array(simData, SIM_TILES_OFFSET)
 
   const uniformValues = new Float32Array(12)
@@ -1442,6 +1464,15 @@ export function createFluidStroke(
       outlastDeepest()
       // Tells the step every slot moves again, and how fast water goes.
       writeSlots()
+    },
+    waterField() {
+      return fields ? fields.copies[current].water.texture : null
+    },
+    setBoard(board) {
+      const down = boardDown(board)
+      const fall = isFlat(board) ? 0 : STEEPEST_FALL * board.steepness
+      simFall.set(fall ? [fall, down.x, down.y] : [0, 0, 0])
+      writeSim()
     },
     dry() {
       return tiles ? settle(tiles.slots()) : null

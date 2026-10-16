@@ -19,6 +19,7 @@ import {
 } from "../../engine/doc/structure"
 import { makeLayerPaintable } from "../../engine/doc/document"
 import type { Paper } from "../../engine/doc/paper"
+import { FLAT_BOARD } from "../../engine/doc/board"
 
 const document = () => createDocument({ width: 512, height: 512 })
 
@@ -327,5 +328,56 @@ describe("the paper in the tree (fluid brushes 15)", () => {
     const doc = document()
     doc.paper = "hot-press"
     expect(captureStructure(doc, { scenes: true }).paper).toBe("hot-press")
+  })
+})
+
+describe("the board in the tree (fluid brushes 38)", () => {
+  test("a new document lies flat", () => {
+    expect(document().board).toEqual(FLAT_BOARD)
+  })
+
+  test("travels through a snapshot and back", () => {
+    const doc = document()
+    doc.board = { steepness: 0.6, direction: 90 }
+    const structure = captureStructure(doc)
+    expect(structure.board).toEqual({ steepness: 0.6, direction: 90 })
+    doc.board = FLAT_BOARD
+    restoreStructure(doc, structure)
+    expect(doc.board).toEqual({ steepness: 0.6, direction: 90 })
+  })
+
+  test("is absent from a tree on a flat board, as it was before boards", () => {
+    const doc = document()
+    const before = captureStructure(doc)
+    expect("board" in before).toBe(false)
+    doc.board = { steepness: 0, direction: 90 }
+    expect(sameStructure(captureStructure(doc), before)).toBe(true)
+  })
+
+  test("a tree saved before boards existed restores flat", () => {
+    const doc = document()
+    const before = captureStructure(doc)
+    doc.board = { steepness: 1, direction: 0 }
+    restoreStructure(doc, before)
+    expect(doc.board).toEqual(FLAT_BOARD)
+  })
+
+  test("a board that is not one restores flat", () => {
+    const doc = document()
+    doc.board = { steepness: 1, direction: 0 }
+    restoreStructure(doc, {
+      ...captureStructure(doc),
+      board: { steepness: "steep" } as never,
+    })
+    expect(doc.board).toEqual(FLAT_BOARD)
+  })
+
+  test("is written into a save", () => {
+    const doc = document()
+    doc.board = { steepness: 0.3, direction: 180 }
+    expect(captureStructure(doc, { scenes: true }).board).toEqual({
+      steepness: 0.3,
+      direction: 180,
+    })
   })
 })

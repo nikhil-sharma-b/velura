@@ -149,6 +149,7 @@ import { ShapeStylePanel } from "./shape-style-panel"
 import { VersionPanel, type VersionPreviewState } from "./version-panel"
 import { ExportDialog } from "./export-dialog"
 import { PaperPicker } from "./paper-picker"
+import { BoardControl } from "./board-control"
 import {
   ConfirmLayerDialog,
   type LayerConfirmation,
@@ -1611,6 +1612,14 @@ export function CanvasHost({
               <PaperPicker
                 engine={engine}
                 paper={snapshot.paper}
+                disabled={historyBusy || snapshot.status !== "ready"}
+              />
+            )}
+            {/* The board the paper lies on (fluid brushes 38), beside it. */}
+            {engine && (
+              <BoardControl
+                engine={engine}
+                board={snapshot.board}
                 disabled={historyBusy || snapshot.status !== "ready"}
               />
             )}
