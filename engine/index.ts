@@ -5105,12 +5105,20 @@ export function createEngine(
   }
 
   function runFluid(steps: number): StrokeMark[] | Promise<StrokeMark[]> {
-    return renderer?.advanceFluid(steps) ?? []
+    return renderer?.advanceFluid(steps, recordFluidSettle) ?? []
+  }
+
+  /** A tilted batch can yield between steps: enqueue each settle before
+   * yielding again, so undo cannot restore wet paint over a settled layer.
+   */
+  function recordFluidSettle(mark: StrokeMark) {
+    recordSettled([mark])
   }
 
   /** Runs the simulation on, settling whatever dries along the way. */
   async function advanceFluid(steps: number) {
-    recordSettled(await runFluid(steps))
+    await runFluid(steps)
+    syncWet()
   }
 
   /** Settles everything wet at once. Nothing on screen changes. */
@@ -5183,7 +5191,8 @@ export function createEngine(
     fluidDueSteps = 0
     if (steps === 0 || disposed) return
     try {
-      recordSettled(await runTimedFluid(steps, fluidDueTiles))
+      await runTimedFluid(steps, fluidDueTiles)
+      syncWet()
       // A stroke's own frame shows the paint; without one this does.
       if (frame === undefined && snapshot.status === "ready") render()
     } catch (error) {

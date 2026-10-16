@@ -204,8 +204,13 @@ export interface FluidStroke extends StrokeRenderer<FluidOpening> {
    * Runs the simulation on by `steps` steps, fewer if everything dries or
    * holds first. A body whose deadline passes settles into the layer, or
    * with drying paused holds; answers what each settle wrote, in order.
+   * `settled` receives each mark before another asynchronous step can yield
+   * to input, so history can queue it before an undo overtakes it.
    */
-  advance(steps: number): StrokeMark[] | Promise<StrokeMark[]>
+  advance(
+    steps: number,
+    settled?: (mark: StrokeMark) => void
+  ): StrokeMark[] | Promise<StrokeMark[]>
   /**
    * Pauses drying, or lets it go on (fluid brushes 18). Paused, nothing
    * evaporates, and a body whose deadline passes holds, its water standing
@@ -1259,6 +1264,18 @@ export function createFluidStroke(
     }
   }
 
+  /** The only CPU transfer in this module: a fixed-size face mask, not pixels.
+   * Ticket 40 permits it subject to the measured interactive frame budget.
+   */
+  async function readRunEdges() {
+    await edgeReadback.mapAsync(GPUMapMode.READ)
+    try {
+      edgeMasks.set(new Uint32Array(edgeReadback.getMappedRange()))
+    } finally {
+      edgeReadback.unmap()
+    }
+  }
+
   /** No report is needed where every downhill face already has a slot, or
    * ends at the document boundary. This is topology, not a guess at water.
    */
@@ -1282,7 +1299,10 @@ export function createFluidStroke(
    * Awaiting the 256-byte report yields to input, never blocks presentation.
    * At most one step is in flight, so no water crosses an unclaimed face.
    */
-  async function advanceRuns(steps: number): Promise<StrokeMark[]> {
+  async function advanceRuns(
+    steps: number,
+    settled?: (mark: StrokeMark) => void
+  ): Promise<StrokeMark[]> {
     const marks: StrokeMark[] = []
     if (advancing) return marks
     advancing = true
@@ -1299,14 +1319,15 @@ export function createFluidStroke(
         device.queue.submit([encoder.finish()])
         clock++
         stepped = true
-        await edgeReadback.mapAsync(GPUMapMode.READ)
-        edgeMasks.set(new Uint32Array(edgeReadback.getMappedRange()))
-        edgeReadback.unmap()
+        await readRunEdges()
         if (revision !== before) break
         if (paused) hold()
         else {
           const mark = settle(tiles!.expired(clock))
-          if (mark) marks.push(mark)
+          if (mark) {
+            marks.push(mark)
+            settled?.(mark)
+          }
         }
         let fresh = false
         for (let source = 0; source < WET_SLOTS; source++) {
@@ -1332,7 +1353,10 @@ export function createFluidStroke(
               if (fresh) writeSlots()
               fresh = false
               const mark = settle(crowding)
-              if (mark) marks.push(mark)
+              if (mark) {
+                marks.push(mark)
+                settled?.(mark)
+              }
               if (tiles!.tile(source) !== tile) break
             }
             const next = tiles!.extend(source, dx, dy)
@@ -1558,11 +1582,11 @@ export function createFluidStroke(
       simBindings = []
       if (surface) context.wetChanged()
     },
-    advance(steps) {
+    advance(steps, settled) {
       const marks: StrokeMark[] = []
       if (!tiles) return marks
       if (advancing) return marks
-      if (steps > 0 && needsEdges()) return advanceRuns(steps)
+      if (steps > 0 && needsEdges()) return advanceRuns(steps, settled)
       let stepped = false
       for (let i = 0; i < steps && tiles.count() > heldCount; i++) {
         const encoder = device.createCommandEncoder()
@@ -1575,7 +1599,10 @@ export function createFluidStroke(
           continue
         }
         const mark = settle(tiles.expired(clock))
-        if (mark) marks.push(mark)
+        if (mark) {
+          marks.push(mark)
+          settled?.(mark)
+        }
       }
       if (stepped) context.wetMoved()
       return marks

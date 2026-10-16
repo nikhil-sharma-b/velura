@@ -6,14 +6,17 @@ const dispatch = (page: Page, command: Command) =>
 
 async function open(
   page: Page,
-  steepness = 1,
-  water = 0.6,
-  size = { width: 512, height: 768 }
+  {
+    steepness = 1,
+    water = 0.6,
+    size = { width: 512, height: 768 },
+    paused = true,
+  } = {}
 ) {
   await page.goto("http://127.0.0.1:3101/tests/harness/")
   await page.waitForFunction(() => !!window.engine)
   await page.evaluate(
-    async ({ steepness, water, size }) => {
+    async ({ steepness, water, size, paused }) => {
       window.remountEngine({ manualFluidClock: true })
       await window.engine.dispatch({
         type: "resize",
@@ -24,7 +27,7 @@ async function open(
       await window.engine.dispatch({ type: "setStabilization", strength: 0 })
       await window.engine.dispatch({ type: "addLayer" })
       await window.engine.dispatch({ type: "setColor", hex: "#1040e0" })
-      await window.engine.dispatch({ type: "setDryingPaused", paused: true })
+      await window.engine.dispatch({ type: "setDryingPaused", paused })
       await window.engine.dispatch({
         type: "setBoard",
         steepness,
@@ -39,7 +42,7 @@ async function open(
         fluid: { water, drying: 0.5, bleed: 0.5, edge: 0, granulation: 0 },
       })
     },
-    { steepness, water, size }
+    { steepness, water, size, paused }
   )
   const box = (await page.locator("canvas").boundingBox())!
   await page.mouse.move(box.x + 128, box.y + 234)
@@ -93,7 +96,7 @@ for (const control of [
   { name: "below HOLDS", steepness: 1, water: 0.15 },
 ]) {
   test(`${control.name} paint claims no downhill tile`, async ({ page }) => {
-    await open(page, control.steepness, control.water)
+    await open(page, control)
     await dispatch(page, { type: "advanceFluid", steps: 400 })
     expect(await wet(page, 128, 270)).toBe(false)
   })
@@ -102,7 +105,7 @@ for (const control of [
 test("a body already covering the document needs no edge readback", async ({
   page,
 }) => {
-  await open(page, 1, 0.6, { width: 256, height: 256 })
+  await open(page, { size: { width: 256, height: 256 } })
   const readbacks = await page.evaluate(async () => {
     const original = GPUBuffer.prototype.mapAsync
     let count = 0
@@ -168,4 +171,72 @@ test("finding a missing downhill face reads only the bounded edge report", async
     }
   })
   expect(reports).toEqual([256, 256])
+})
+
+test("a settle reaches history before another edge report permits undo", async ({
+  page,
+}) => {
+  test.slow()
+  await open(page, { paused: false })
+  await dispatch(page, { type: "advanceFluid", steps: 939 })
+  // A faster brush leaves the first body's deadline alone.
+  await dispatch(page, {
+    type: "setBrush",
+    fluid: {
+      water: 0.6,
+      drying: 0.6,
+      bleed: 0.5,
+      edge: 0,
+      granulation: 0,
+    },
+  })
+  const box = (await page.locator("canvas").boundingBox())!
+  // Another body will still be wet when the first reaches its deadline.
+  await page.mouse.move(box.x + 128, box.y + 700)
+  await page.mouse.down()
+  await page.mouse.up()
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      )
+  )
+  let release!: () => void
+  let reached!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const waiting = new Promise<void>((resolve) => {
+    reached = resolve
+  })
+  await page.exposeFunction("edgeReportGate", () => {
+    reached()
+    return gate
+  })
+  await page.evaluate(() => {
+    const original = GPUBuffer.prototype.mapAsync
+    let reports = 0
+    GPUBuffer.prototype.mapAsync = function (...args) {
+      const mapped = original.apply(this, args)
+      if (this.label === "fluid run edge readback" && ++reports === 2)
+        return Promise.all([
+          mapped,
+          (
+            window as unknown as { edgeReportGate(): Promise<void> }
+          ).edgeReportGate(),
+        ]).then(() => undefined)
+      return mapped
+    }
+  })
+  const running = dispatch(page, { type: "advanceFluid", steps: 2 })
+  await waiting
+  try {
+    await dispatch(page, { type: "undo" })
+    // Correct ordering dries/undoes the second body. Restoring its old wet
+    // copy instead would put the first body's wet paint over its dry paint.
+    expect(await wet(page, 128, 234)).toBe(false)
+  } finally {
+    release()
+    await running
+  }
 })

@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 /**
- * D30 forbids CPU readback in the interactive path outright. Five calls are
+ * D30 forbids pixel readback in the interactive path. Five calls are
  * sanctioned exceptions, all asynchronous and none per frame: `readPixels`
  * for export and previews, `sampleColor` for one explicit eyedropper sample,
  * the renderer's `readTiles`, which is how an undo entry learns what a
@@ -17,6 +17,9 @@ import { join } from "node:path"
  *
  * The benchmark checks the same claim at runtime by counting those calls while
  * painting; this catches the introduction rather than the consequence.
+ * Fluid brushes 40 additionally permits the fixed 256-byte run-edge report,
+ * subject to the measured frame budget. Its helper alone is sanctioned;
+ * pixel readback and readback elsewhere in the fluid driver remain forbidden.
  */
 const READBACK = ["mapAsync", "copyTextureToBuffer", "getMappedRange"]
 
@@ -45,6 +48,9 @@ const SANCTIONED = {
     },
     { from: "async readSelection(", to: "    render(view, overlay) {" },
     { from: "async readFluidWater(", to: "    async readSelection() {" },
+  ],
+  "gpu/fluid-stroke.ts": [
+    { from: "async function readRunEdges()", to: "  function needsEdges()" },
   ],
 } as const
 

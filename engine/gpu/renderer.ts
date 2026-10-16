@@ -471,7 +471,10 @@ export interface Renderer {
    * that dried along the way settled into its surface, in order; with drying
    * paused, a body whose time has come holds instead.
    */
-  advanceFluid(steps: number): StrokeMark[] | Promise<StrokeMark[]>
+  advanceFluid(
+    steps: number,
+    settled?: (mark: StrokeMark) => void
+  ): StrokeMark[] | Promise<StrokeMark[]>
   /**
    * Settles everything wet into its surface at once. Answers what that
    * wrote, or null with nothing wet.
@@ -3526,7 +3529,7 @@ export function createRenderer(
       boardShown = chosen
     },
     fluidTileCount: () => fluid.tileCount(),
-    advanceFluid: (steps) => fluid.advance(steps),
+    advanceFluid: (steps, settled) => fluid.advance(steps, settled),
     setFluidDryingPaused: (paused) => fluid.setPaused(paused),
     dryFluid: () => fluid.dry(),
     prepareFluid() {
