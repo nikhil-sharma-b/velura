@@ -32,15 +32,6 @@ fn paperHeight(paper: texture_2d<f32>, pixel: vec2<i32>) -> f32 {
   return textureLoad(paper, pixel & (vec2<i32>(textureDimensions(paper)) - 1), 0).r;
 }
 
-// Paint of some density over what is beneath it: a transparent film. Alpha in
-// `paint` is pigment density, not coverage, and its colour is premultiplied
-// by it.
-fn glaze(under: vec4<f32>, paint: vec4<f32>) -> vec4<f32> {
-  if (paint.a <= 0.00001) { return under; }
-  let amount = 1.0 - exp(-paint.a);
-  return mixPaint(under, vec4<f32>(paint.rgb / paint.a, 1.0), amount);
-}
-
 // Whether the selection leaves a document pixel out altogether. `selection`
 // is its coverage, a texel a document pixel, or a single texel of full
 // coverage while nothing is selected: every pixel reads that one.
@@ -67,41 +58,45 @@ fn glazeWet(
   if (selectedOut(selection, vec2<i32>(floor(point)))) { return under; }
   let height = paperHeight(paper, vec2<i32>(floor(point)));
   let grain = 1.0 + PAPER_GRAIN * (1.0 - 2.0 * height);
-  // Filtered between cells in what each cell shows, not in its density
-  // (fluid brushes 30): the glaze saturates, so half a dense cell's density
-  // is nearly as dark as all of it, and a filter in density would leave the
-  // edge of a wash a hard step on the cell grid.
+  // Filtered between cells in how much of each cell shows, not in its
+  // density (fluid brushes 30): the glaze saturates, so half a dense cell's
+  // density is nearly as dark as all of it, and a filter in density would
+  // leave the edge of a wash a hard step on the cell grid. The colour is still
+  // filtered in density, so each film is mixed onto the pixel once.
   let cellPoint = point * (f32(WET_CELLS) / 256.0) - 0.5;
   let corner = floor(cellPoint);
   let f = cellPoint - corner;
   let cell = vec2<i32>(corner);
-  return mix(
-    mix(
-      glazeCell(under, slots, deposited, suspended, grain, cell),
-      glazeCell(under, slots, deposited, suspended, grain, cell + vec2<i32>(1, 0)),
-      f.x
-    ),
-    mix(
-      glazeCell(under, slots, deposited, suspended, grain, cell + vec2<i32>(0, 1)),
-      glazeCell(under, slots, deposited, suspended, grain, cell + vec2<i32>(1, 1)),
-      f.x
-    ),
-    f.y
+  return film(
+    film(under, filteredFilm(slots, deposited, cell, f, grain)),
+    filteredFilm(slots, suspended, cell, f, 1.0)
   );
 }
 
-// A pixel with one cell's paint glazed onto it: the pigment the paper has
-// taken, then what is still in the water over it.
-fn glazeCell(
-  under: vec4<f32>,
+// A field's paint between four cells, as a film: in rgb its colour, filtered
+// in density, and in alpha how much of it shows, filtered between what each
+// cell shows. `scale` multiplies each cell's density first.
+fn filteredFilm(
   slots: texture_2d<u32>,
-  deposited: texture_2d<f32>,
-  suspended: texture_2d<f32>,
-  grain: f32,
-  cell: vec2<i32>
+  field: texture_2d<f32>,
+  cell: vec2<i32>,
+  f: vec2<f32>,
+  scale: f32
 ) -> vec4<f32> {
-  return glaze(
-    glaze(under, wetCell(slots, deposited, cell) * grain),
-    wetCell(slots, suspended, cell)
-  );
+  let a = wetCell(slots, field, cell) * scale;
+  let b = wetCell(slots, field, cell + vec2<i32>(1, 0)) * scale;
+  let c = wetCell(slots, field, cell + vec2<i32>(0, 1)) * scale;
+  let d = wetCell(slots, field, cell + vec2<i32>(1, 1)) * scale;
+  let paint = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  if (paint.a <= 0.00001) { return vec4<f32>(0.0); }
+  let shows = 1.0 - exp(-vec4<f32>(a.a, b.a, c.a, d.a));
+  let amount = mix(mix(shows.x, shows.y, f.x), mix(shows.z, shows.w, f.x), f.y);
+  return vec4<f32>(paint.rgb / paint.a, amount);
+}
+
+// A film over what is beneath it: its colour in rgb, and in alpha how much of
+// it shows.
+fn film(under: vec4<f32>, paint: vec4<f32>) -> vec4<f32> {
+  if (paint.a <= 0.0) { return under; }
+  return mixPaint(under, vec4<f32>(paint.rgb, 1.0), paint.a);
 }

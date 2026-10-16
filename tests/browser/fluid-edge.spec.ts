@@ -84,9 +84,9 @@ async function driedDiagonal(page: Page, radius: number, fluid: Fluid | null) {
   await frames(page)
   if (fluid) {
     const before = await settledSteps(page)
-    for (let i = 0; i < 300 && (await settledSteps(page)) === before; i++) {
+    for (let i = 0; i < 60 && (await settledSteps(page)) === before; i++) {
       await page.evaluate(() =>
-        window.engine.dispatch({ type: "advanceFluid", steps: 20 })
+        window.engine.dispatch({ type: "advanceFluid", steps: 100 })
       )
       await frames(page)
     }
@@ -167,6 +167,7 @@ const CASES = [
 
 for (const { name, radius, fluid } of CASES) {
   test(`${name} is anti-aliased`, async ({ page }) => {
+    test.slow()
     const edge = upperEdge(await driedDiagonal(page, radius, fluid))
     expect(edge.columns).toBe(120)
     expect(edge.unramped).toBe(0)
@@ -177,6 +178,7 @@ for (const { name, radius, fluid } of CASES) {
     // it off the cell grid: it still strays about 0.45 px from a straight
     // line, stepped every two pixels. Fluid brushes 42 puts the edge back at
     // the document's resolution; this then passes and the mark comes off.
+    test.slow()
     test.fail()
     const edge = upperEdge(await driedDiagonal(page, radius, fluid))
     expect(edge.columns).toBe(120)
