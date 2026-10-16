@@ -73,6 +73,25 @@ async function wash(
   await page.mouse.up()
   await frames(page)
 }
+async function blotBead(
+  page: Page,
+  origin: { x: number; y: number },
+  row: number
+) {
+  await dispatch(page, {
+    type: "setBrush",
+    fluid: null,
+    blot: { water: 1, pigment: 0.8 },
+    radius: 12,
+    flow: 1,
+  })
+  await page.mouse.move(origin.x + 25, origin.y + row)
+  await page.mouse.down()
+  await page.mouse.move(origin.x + 215, origin.y + row, { steps: 40 })
+  await page.mouse.up()
+  await frames(page)
+}
+
 /** Mean darkness across the evenly laid middle of the wash. */
 function rowPaint(image: number[], y: number) {
   let sum = 0
@@ -196,18 +215,7 @@ test("blotting the downhill bead stops its tip", async ({ page }) => {
   await wash(page, origin)
   await advance(page, 200)
   const end = tip(await pixels(page))
-  await dispatch(page, {
-    type: "setBrush",
-    fluid: null,
-    blot: { water: 1, pigment: 0.8 },
-    radius: 12,
-    flow: 1,
-  })
-  await page.mouse.move(origin.x + 25, origin.y + end)
-  await page.mouse.down()
-  await page.mouse.move(origin.x + 215, origin.y + end, { steps: 40 })
-  await page.mouse.up()
-  await frames(page)
+  await blotBead(page, origin, end)
   await advance(page, 300)
   // Removing pigment can retract the visible edge. The run must never
   // advance past the tip where its bead was removed.
@@ -215,6 +223,23 @@ test("blotting the downhill bead stops its tip", async ({ page }) => {
   // Without the blot, the same front still has travel left: undo restores
   // its fields and test clock to just before the tissue touched it.
   await dispatch(page, { type: "undo" })
+  await advance(page, 300)
+  expect(tip(await pixels(page))).toBeGreaterThan(end)
+})
+
+test("still-flooded upstream paint can rewet a blotted front while evaporation is paused", async ({
+  page,
+}) => {
+  const origin = await open(page)
+  await dispatch(page, { type: "setDryingPaused", paused: true })
+  await wash(page, origin)
+  await advance(page, 200)
+  const end = tip(await pixels(page))
+  await blotBead(page, origin, end)
+  // The blotted bead cannot continue immediately, but blotting is not a
+  // permanent barrier against a fresh supply from the flooded sheet.
+  await advance(page, 1)
+  expect(tip(await pixels(page))).toBeLessThanOrEqual(end)
   await advance(page, 300)
   expect(tip(await pixels(page))).toBeGreaterThan(end)
 })
