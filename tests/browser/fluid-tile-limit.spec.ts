@@ -302,3 +302,45 @@ test("paused, the held body painted into longest ago makes room, and not the one
   expect(await wetAt(500)).toBe(false)
   expect(await wetAt(1800)).toBe(true)
 })
+
+test("a run at 64 slots settles another body and takes only its downhill tile", async ({
+  page,
+}) => {
+  test.slow()
+  const canvas = await openCanvas(page)
+  await page.evaluate(async () => {
+    await window.engine.dispatch({ type: "setDryingPaused", paused: true })
+    await window.engine.dispatch({
+      type: "setBoard",
+      steepness: 1,
+      direction: 0,
+    })
+  })
+  // Sixty-three tiles in another body, separated from the source by row 1.
+  await serpentine(page, canvas, 2, 8)
+  await page.evaluate(() =>
+    window.engine.dispatch({
+      type: "setBrush",
+      radius: 18,
+      flow: 1,
+      fluid: { water: 0.6, drying: 0.5, bleed: 0.5, edge: 0, granulation: 0 },
+    })
+  )
+  await move(page, canvas, 128, 234)
+  await page.mouse.down()
+  await page.mouse.up()
+  await frames(page)
+  const wetAt = (x: number, y: number) =>
+    page.evaluate(
+      ({ x, y }) => window.engine.wetUnder(x, y),
+      canvas.toScreen(x, y)
+    )
+  expect(await wetAt(128, 270)).toBe(false)
+  const dry = await drySteps(page)
+  await advance(page, 400)
+  expect(await wetAt(128, 234)).toBe(true)
+  expect(await wetAt(128, 270)).toBe(true)
+  expect(await wetAt(384, 270)).toBe(false)
+  expect(await wetAt(128, rowY(2))).toBe(false)
+  await expect.poll(() => drySteps(page)).toBe(dry + 1)
+})

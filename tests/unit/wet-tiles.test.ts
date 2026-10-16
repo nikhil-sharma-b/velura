@@ -162,6 +162,90 @@ describe("the wet tile limit", () => {
   })
 })
 
+describe("a run claims its next tile", () => {
+  test("only that face neighbour joins, with its body's deadline and no dab", () => {
+    const tiles = createWetTiles(5, 5)
+    const source = tiles.touch(2, 2)
+    tiles.refresh(2, 2, 80)
+    const next = tiles.extend(source, 0, 1)
+    expect(next).toBeGreaterThanOrEqual(0)
+    expect(tiles.tile(next)).toEqual({ x: 2, y: 3 })
+    expect(tiles.count()).toBe(2)
+    expect(tiles.expired(79)).toEqual([])
+    expect(tiles.expired(80)).toEqual([source, next])
+    expect(tiles.save().painted[next]).toBe(0)
+  })
+
+  test("an already wet face is not refreshed or repainted by a run", () => {
+    const tiles = createWetTiles(5, 5)
+    const source = tiles.touch(2, 2)
+    tiles.refresh(2, 2, 80)
+    const next = tiles.touch(2, 3)
+    const before = tiles.save()
+    expect(tiles.extend(source, 0, 1)).toBe(next)
+    expect(tiles.save()).toEqual(before)
+  })
+
+  test("a run makes room in another held body first and keeps its deadline", () => {
+    const tiles = createWetTiles(70, 5)
+    const source = tiles.touch(0, 0)
+    tiles.refresh(0, 0, 20)
+    for (let x = 0; x < 63; x++) tiles.touch(x, 4)
+    tiles.refresh(0, 4, 40)
+    expect(tiles.extend(source, 0, 1)).toBe(-1)
+    const room = tiles.crowding(0, 1, undefined, 50)
+    // Even though the source is older and held too, the other body goes.
+    expect(room).toHaveLength(63)
+    expect(room).not.toContain(source)
+    for (const slot of room) tiles.release(slot)
+    const next = tiles.extend(source, 0, 1)
+    expect(tiles.count()).toBe(2)
+    expect(tiles.expired(20)).toEqual([source, next])
+  })
+
+  test("with no other body, the source settles instead of seeding a new run", () => {
+    const tiles = createWetTiles(65, 2)
+    for (let x = 0; x < 64; x++) tiles.touch(x, 0)
+    const source = tiles.slotAt(63, 0)
+    const room = tiles.crowding(64, 0)
+    expect(room).toHaveLength(64)
+    for (const slot of room) tiles.release(slot)
+    expect(tiles.extend(source, 1, 0)).toBe(-1)
+    expect(tiles.count()).toBe(0)
+  })
+
+  test("even a body the next tile would join makes room before the run's own", () => {
+    const tiles = createWetTiles(64, 3)
+    const source = tiles.touch(0, 0)
+    tiles.refresh(0, 0, 10)
+    for (let x = 0; x < 63; x++) tiles.touch(x, 2)
+    tiles.refresh(0, 2, 80)
+    const room = tiles.crowding(0, 1, undefined, undefined, source)
+    expect(room).not.toContain(source)
+    expect(room).toHaveLength(63)
+  })
+
+  test("a face off the document or a diagonal claims nothing", () => {
+    const tiles = createWetTiles(2, 2)
+    const source = tiles.touch(0, 0)
+    expect(tiles.extend(source, -1, 0)).toBe(-1)
+    expect(tiles.extend(source, 1, 1)).toBe(-1)
+    expect(tiles.count()).toBe(1)
+  })
+
+  test("restoring the stroke's copy releases tiles acquired by its run", () => {
+    const tiles = createWetTiles(5, 5)
+    const source = tiles.touch(2, 2)
+    tiles.refresh(2, 2, 80)
+    const before = tiles.save()
+    tiles.extend(source, 0, 1)
+    tiles.restore(before)
+    expect(tiles.slotAt(2, 3)).toBe(-1)
+    expect(tiles.count()).toBe(1)
+    expect(tiles.expired(80)).toEqual([source])
+  })
+})
+
 describe("the ring of tiles about a wet one", () => {
   test("a tile's eight neighbours are given slots, and it keeps its own", () => {
     const tiles = createWetTiles(5, 5)

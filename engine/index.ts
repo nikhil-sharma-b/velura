@@ -5073,7 +5073,10 @@ export function createEngine(
    * done, two fences and no readback (D30). One measurement at a time, and
    * none of steps that settled a body, whose cost is the settle's.
    */
-  function runTimedFluid(steps: number, tiles: number): StrokeMark[] {
+  async function runTimedFluid(
+    steps: number,
+    tiles: number
+  ): Promise<StrokeMark[]> {
     if (fluidTiming || options.fluidTileStepMs !== undefined || !device)
       return runFluid(steps)
     const queue = device.queue
@@ -5085,7 +5088,7 @@ export function createEngine(
     void queue.onSubmittedWorkDone().then(() => {
       before = Math.max(before, performance.now())
     }, ignoreLostDevice)
-    const marks = runFluid(steps)
+    const marks = await runFluid(steps)
     void queue.onSubmittedWorkDone().then(() => {
       fluidTiming = false
       if (!disposed && marks.length === 0)
@@ -5101,13 +5104,13 @@ export function createEngine(
     fluidTiming = false
   }
 
-  function runFluid(steps: number): StrokeMark[] {
+  function runFluid(steps: number): StrokeMark[] | Promise<StrokeMark[]> {
     return renderer?.advanceFluid(steps) ?? []
   }
 
   /** Runs the simulation on, settling whatever dries along the way. */
-  function advanceFluid(steps: number) {
-    recordSettled(runFluid(steps))
+  async function advanceFluid(steps: number) {
+    recordSettled(await runFluid(steps))
   }
 
   /** Settles everything wet at once. Nothing on screen changes. */
@@ -5175,12 +5178,12 @@ export function createEngine(
   }
 
   /** The steps a frame of the clock owed, run after that frame. */
-  function stepFluid() {
+  async function stepFluid() {
     const steps = fluidDueSteps
     fluidDueSteps = 0
     if (steps === 0 || disposed) return
     try {
-      recordSettled(runTimedFluid(steps, fluidDueTiles))
+      recordSettled(await runTimedFluid(steps, fluidDueTiles))
       // A stroke's own frame shows the paint; without one this does.
       if (frame === undefined && snapshot.status === "ready") render()
     } catch (error) {
@@ -8148,7 +8151,7 @@ export function createEngine(
         case "advanceFluid": {
           if (!Number.isInteger(command.steps) || command.steps < 0)
             throw new Error("Steps must be a whole number, zero or more.")
-          advanceFluid(command.steps)
+          await advanceFluid(command.steps)
           if (snapshot.status === "ready") render()
           break
         }

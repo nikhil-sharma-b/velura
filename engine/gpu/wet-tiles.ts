@@ -41,6 +41,10 @@ export interface WetTiles {
    * Answers how many slots that took.
    */
   surround(x: number, y: number): number
+  /** Claims one face neighbour for a run, inheriting its body's deadline.
+   * Does not count as a dab or refresh any deadline; -1 with no room/source.
+   */
+  extend(from: number, dx: number, dy: number): number
   /**
    * The slots of the body to settle so that this tile can take one, in slot
    * order: the body due first, and the lower slot of two due together. A
@@ -51,12 +55,15 @@ export interface WetTiles {
    * With drying paused, `pausedAt` is the step: a body due by then is held
    * (fluid brushes 18), and held bodies go before any still moving, the one
    * a dab last reached longest ago first.
+   * For a run, `runningFrom` protects its own body instead of every body
+   * the target would join: its own goes only when there is no other.
    */
   crowding(
     x: number,
     y: number,
     painted?: ReadonlySet<number>,
-    pausedAt?: number
+    pausedAt?: number,
+    runningFrom?: number
   ): readonly number[]
   /**
    * Pushes the drying deadline of every tile in the same body as this one
@@ -180,6 +187,18 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
   return {
     touch,
     slotAt,
+    extend(from, dx, dy) {
+      const tile = held[from]
+      if (!tile || Math.abs(dx) + Math.abs(dy) !== 1) return -1
+      const existing = slotAt(tile.x + dx, tile.y + dy)
+      if (existing >= 0) return existing
+      const size = body(from)
+      let until = 0
+      for (let i = 0; i < size; i++) until = Math.max(until, deadline[found[i]])
+      const slot = claim(tile.x + dx, tile.y + dy)
+      if (slot >= 0) deadline[slot] = Math.max(deadline[slot], until)
+      return slot
+    },
     surround(x, y) {
       const before = count
       // A ring is room for a bloom, not paint laid: it claims, and is not
@@ -189,7 +208,7 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
           claim(x + dx, y + dy)
       return count - before
     },
-    crowding(x, y, paintedNow, pausedAt) {
+    crowding(x, y, paintedNow, pausedAt, runningFrom) {
       if (count < WET_SLOTS || x < 0 || y < 0 || x >= columns || y >= rows)
         return none
       if (map[y * columns + x] > 0) return none
@@ -210,8 +229,10 @@ export function createWetTiles(columns: number, rows: number): WetTiles {
           due = Math.max(due, deadline[found[i]])
           last = Math.max(last, painted[found[i]])
           if (
-            paintedNow?.has(found[i]) ||
-            (Math.abs(tile.x - x) <= 1 && Math.abs(tile.y - y) <= 1)
+            runningFrom !== undefined
+              ? found[i] === runningFrom
+              : paintedNow?.has(found[i]) ||
+                (Math.abs(tile.x - x) <= 1 && Math.abs(tile.y - y) <= 1)
           )
             joined = true
         }

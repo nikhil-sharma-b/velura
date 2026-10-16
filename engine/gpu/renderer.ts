@@ -471,7 +471,7 @@ export interface Renderer {
    * that dried along the way settled into its surface, in order; with drying
    * paused, a body whose time has come holds instead.
    */
-  advanceFluid(steps: number): StrokeMark[]
+  advanceFluid(steps: number): StrokeMark[] | Promise<StrokeMark[]>
   /**
    * Settles everything wet into its surface at once. Answers what that
    * wrote, or null with nothing wet.
