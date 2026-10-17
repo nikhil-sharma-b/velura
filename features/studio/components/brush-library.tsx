@@ -16,8 +16,8 @@ import { Input } from "@/components/ui/input"
 import type { Brush } from "@/engine/brush/brush"
 
 import {
+  BUILTIN_SET,
   BUILTIN_SET_NAMES,
-  FOLDED_SET_NAMES,
   type BrushSet,
   brushShelf,
   duplicateOf,
@@ -86,24 +86,23 @@ export function BrushLibrary({
   /** What the last import brought in, and what each brush left behind. */
   const [report, setReport] = useState<ImportOutcome | null>(null)
   /**
-   * Sets folded shut, by key. The ported sets start folded: sixty rows of
-   * strokes is a wall, and the six built-ins and the artist's own are what is
-   * reached for most. A search opens whatever it finds.
+   * The one set the artist has held open, by key, or `null` for none. Opening
+   * another closes it: sixty rows of strokes is a wall, and one list at a time
+   * keeps the panel short. Until the artist picks, the set of the brush in the
+   * hand is open; a search opens whatever it finds.
    */
-  const [folded, setFolded] = useState<ReadonlySet<string>>(
-    () =>
-      new Set(FOLDED_SET_NAMES.map((name) => setKey({ name, builtin: true })))
-  )
+  const [chosenKey, setChosenKey] = useState<string | null | undefined>()
   const searching = query.trim() !== ""
   const credits = useRef<HTMLDetailsElement>(null)
-  const toggle = (key: string) =>
-    setFolded((current) => {
-      const next = new Set(current)
-      if (!next.delete(key)) next.add(key)
-      return next
-    })
-
   const shelf = useMemo(() => brushShelf(library.brushes), [library.brushes])
+  const holding = shelf.find((set) =>
+    set.brushes.some((entry) => entry.id === brush.id)
+  )
+  const openKey =
+    chosenKey !== undefined
+      ? chosenKey
+      : setKey(holding ?? { name: BUILTIN_SET, builtin: true })
+  const toggle = (key: string) => setChosenKey(openKey === key ? null : key)
   const sets = useMemo(() => {
     const named = new Set(shelf.map((set) => set.name))
     return [
@@ -232,7 +231,7 @@ export function BrushLibrary({
 
       {shown.map((set) => {
         const key = setKey(set)
-        const open = searching || !folded.has(key)
+        const open = searching || openKey === key
         return (
           <section key={key} className="space-y-1.5">
             <h3

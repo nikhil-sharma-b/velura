@@ -39,15 +39,6 @@ export const BUILTIN_SET_NAMES: readonly string[] = [
   ...SHIPPED_SETS.map((set) => set.name),
 ]
 
-/**
- * The shipped sets the panel opens folded: the ones ported from Krita. Sixty
- * rows of strokes is a wall, and the built-ins, the wet and fluid brushes and
- * the artist's own are what is reached for most.
- */
-export const FOLDED_SET_NAMES: readonly string[] = KRITA_BRUSH_SETS.map(
-  (set) => set.name
-)
-
 export type LibraryBrush = Readonly<{
   id: string
   name: string
