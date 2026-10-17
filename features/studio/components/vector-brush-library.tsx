@@ -167,23 +167,18 @@ export function VectorBrushLibrary({
     })),
   ]
   /**
-   * Groups folded shut. Pens and the artist's own stay open, as does
-   * whichever group holds the brush in hand, so it is never hidden.
+   * The one group the artist has held open, or `null` for none. Opening
+   * another closes it. Until the artist picks, the group holding the brush in
+   * hand is open, so it is never hidden.
    */
-  const [folded, setFolded] = useState<ReadonlySet<string>>(
-    () =>
-      new Set(
-        GROUPS.slice(1)
-          .filter(({ kinds }) => !kinds.includes(current.kind))
-          .map(({ name }) => name)
-      )
-  )
-  const toggle = (name: string) =>
-    setFolded((was) => {
-      const next = new Set(was)
-      if (!next.delete(name)) next.add(name)
-      return next
-    })
+  const [chosen, setChosen] = useState<string | null | undefined>()
+  const kindGroup = GROUPS.find(({ kinds }) => kinds.includes(current.kind))
+  const holding =
+    shelf.find(({ brushes }) => brushes.some((b) => b.id === current.id)) ??
+    shelf.find(({ name }) => name === kindGroup?.name) ??
+    shelf[0]
+  const openName = chosen !== undefined ? chosen : holding.name
+  const toggle = (name: string) => setChosen(openName === name ? null : name)
   async function work(action: () => Promise<unknown>) {
     setBusy(true)
     try {
@@ -206,7 +201,7 @@ export function VectorBrushLibrary({
     <>
       <h2 className="mb-2 text-sm font-medium">Vector brushes</h2>
       {shelf.map(({ name, brushes }) => {
-        const open = !folded.has(name)
+        const open = openName === name
         return (
           <section key={name} className="mb-2">
             <h3 className="mb-1 text-xs font-medium text-muted-foreground">
