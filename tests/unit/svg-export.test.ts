@@ -195,7 +195,7 @@ test("SVG preserves cubic handles and closing segments, but does not fill open p
   expect(svg).toContain('fill-opacity="0.5" fill-rule="evenodd"')
 })
 
-test("an eraser's mark masks what is under it and leaves what is above", () => {
+test("an eraser's mark cuts what is under it and leaves what is above", () => {
   const doc = createBlankDocument({ width: 40, height: 20 })
   const id = addVectorLayer(doc)
   const node = findNode(doc, id)
@@ -241,14 +241,10 @@ test("an eraser's mark masks what is under it and leaves what is above", () => {
     ],
   }
   const { svg } = serializeSvg(doc, { raster: "omit" })
-  const mask =
-    /<mask id="([^"]+)"[^>]*><rect[^>]*fill="#ffffff"\/>(.*?)<\/mask>/.exec(svg)
-  expect(mask).not.toBeNull()
-  expect(mask![2]).toContain('stroke="#000000"')
-  expect(mask![2]).not.toContain("#123456")
+  expect(svg).not.toContain("<mask")
+  expect(svg).not.toContain("#123456")
+  expect(svg).not.toContain('<rect x="0"')
   expect(svg).toMatch(
-    new RegExp(
-      `<g mask="url\\(#${mask![1]}\\)"><rect x="0"[^>]*/></g><rect x="20"`
-    )
+    /<path d="[^"]+" fill="#ff0000" fill-opacity="1" fill-rule="evenodd" stroke="none"\/><rect x="20"/
   )
 })

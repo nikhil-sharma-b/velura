@@ -210,7 +210,7 @@ describe("scatter brushes", () => {
     const layer = findNode(doc, addVectorLayer(doc))
     if (layer.kind !== "vector") throw new Error("Expected a vector layer")
     layer.scene = { objects: [stroke(brush({}))] }
-    const { svg } = serializeSvg(doc, { raster: "omit" })
+    const { svg } = serializeSvg(doc, { raster: "omit", brushData: true })
     const group = svg.match(
       /<g data-vector-brush="([^"]+)" data-spine="([^"]+)">(.*?)<\/g>/
     )
@@ -219,5 +219,45 @@ describe("scatter brushes", () => {
     expect(brushData.definition.kind).toBe("scatter")
     expect(group![2]).toBe("M0 0 L100 0")
     expect(group![3].match(/<path /g)).toHaveLength(6)
+  })
+})
+
+describe("scatter art in SVG", () => {
+  test("is written to hundredths of a pixel", () => {
+    const doc = createBlankDocument({ width: 400, height: 400 })
+    const layer = findNode(doc, addVectorLayer(doc))
+    if (layer.kind !== "vector") throw new Error("Expected a vector layer")
+    const wavy = Array.from({ length: 12 }, (_, i) =>
+      node(10 + i * 17.3, 60 + Math.sin(i / 2.7) * 33.1)
+    )
+    layer.scene = { objects: [stroke(brush({}), wavy)] }
+    const { svg } = serializeSvg(doc, { raster: "omit" })
+    const numbers = [...svg.matchAll(/<path d="([^"]+)"/g)].flatMap((m) =>
+      m[1].match(/-?\d+(\.\d+)?/g)!
+    )
+    expect(numbers.length).toBeGreaterThan(0)
+    for (const n of numbers)
+      expect(n.split(".")[1]?.length ?? 0).toBeLessThanOrEqual(2)
+  })
+
+  test("gets more decimals under a transform that stretches it", () => {
+    const doc = createBlankDocument({ width: 400, height: 400 })
+    const layer = findNode(doc, addVectorLayer(doc))
+    if (layer.kind !== "vector") throw new Error("Expected a vector layer")
+    const object = stroke(
+      brush({}),
+      Array.from({ length: 12 }, (_, i) =>
+        node(10 + i * 17.3, 60 + Math.sin(i / 2.7) * 33.1)
+      )
+    )
+    // Stretched along x only: its average scale is 1, its longest axis 10.
+    layer.scene = {
+      objects: [{ ...object, transform: [10, 0, 0, 0.1, 0, 0] }],
+    }
+    const { svg } = serializeSvg(doc, { raster: "omit" })
+    const places = [...svg.matchAll(/<path d="([^"]+)"/g)]
+      .flatMap((m) => m[1].match(/-?\d+(\.\d+)?/g)!)
+      .map((n) => n.split(".")[1]?.length ?? 0)
+    expect(Math.max(...places)).toBe(3)
   })
 })

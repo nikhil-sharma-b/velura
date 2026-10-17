@@ -271,7 +271,7 @@ export function PreferencesPanel<Context>({
               </Button>
             </div>
           )}
-          <div className="-mx-2 min-h-0 overflow-y-auto">
+          <div className="scroll-rounded -mx-2 min-h-0 overflow-y-auto [--scroll-inset:0.25rem]">
             {categories.map((category) => (
               <div key={category} className="mb-3">
                 <h4 className="sticky top-0 z-10 bg-popover px-2 py-1 text-muted-foreground">

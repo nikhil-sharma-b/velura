@@ -299,7 +299,7 @@ describe("pattern brushes", () => {
     const node = findNode(doc, addVectorLayer(doc))
     if (node.kind !== "vector") throw new Error("Expected a vector layer")
     node.scene = { objects: [stroke(preset("Rope"))] }
-    const { svg } = serializeSvg(doc, { raster: "omit" })
+    const { svg } = serializeSvg(doc, { raster: "omit", brushData: true })
     const group = svg.match(
       /<g data-vector-brush="([^"]+)" data-spine="([^"]+)">(.*?)<\/g>/
     )
@@ -606,5 +606,70 @@ describe("stroked art joins", () => {
       [0, 10],
     ]
     expect(reach(joined("miter", spike), 100, 0)).toBeLessThanOrEqual(5.001)
+  })
+})
+
+/** The longest run of decimals in any number of the exported paths. */
+function decimals(object: VectorObject): { most: number; svg: string } {
+  const doc = createBlankDocument({ width: 400, height: 400 })
+  const layer = findNode(doc, addVectorLayer(doc))
+  if (layer.kind !== "vector") throw new Error("Expected a vector layer")
+  layer.scene = { objects: [object] }
+  const { svg } = serializeSvg(doc, { raster: "omit" })
+  const ds = [...svg.matchAll(/<path d="([^"]+)"/g)].map((m) => m[1])
+  expect(ds.length).toBeGreaterThan(0)
+  const most = Math.max(
+    ...ds
+      .flatMap((d) => d.match(/-?\d+(\.\d+)?/g)!)
+      .map((n) => n.split(".")[1]?.length ?? 0)
+  )
+  return { most, svg }
+}
+
+const wavy = Array.from({ length: 12 }, (_, i) =>
+  node(10 + i * 17.3, 60 + Math.sin(i / 2.7) * 33.1)
+)
+
+describe("pattern art in SVG", () => {
+  test("is written to hundredths of a pixel", () => {
+    expect(decimals(stroke(preset("Rope"), wavy)).most).toBeLessThanOrEqual(2)
+  })
+
+  test("gets more decimals under a transform that scales it up", () => {
+    const scaled = {
+      ...stroke(preset("Rope"), wavy),
+      transform: [10, 0, 0, 10, 0, 0] as const,
+    }
+    const { most } = decimals(scaled as VectorObject)
+    expect(most).toBe(3)
+  })
+
+  test("keeps a spike that doubles back", () => {
+    // A tile with a hairline spike out of its top edge.
+    const spiked = {
+      kind: "path" as const,
+      closed: true,
+      nodes: [
+        [0.1, -0.5],
+        [0.5, -0.5],
+        [0.5, -0.9],
+        [0.5, -0.5],
+        [0.9, -0.5],
+        [0.9, 0.5],
+        [0.1, 0.5],
+      ].map(([x, y]) => ({ x, y, in: null, out: null, type: "cusp" as const })),
+    }
+    const { svg } = decimals(
+      stroke(brush({ tile: { length: 1, paths: [spiked] } }))
+    )
+    for (const [, d] of svg.matchAll(/<path d="([^"]+)"/g))
+      expect(d.split(" L").length).toBeGreaterThanOrEqual(6)
+  })
+
+  test("merges points on a straight run", () => {
+    // A square tile on a straight spine: each copy is a plain rectangle.
+    const { svg } = decimals(stroke(brush({})))
+    for (const [, d] of svg.matchAll(/<path d="([^"]+)"/g))
+      expect(d.split(" L")).toHaveLength(4)
   })
 })

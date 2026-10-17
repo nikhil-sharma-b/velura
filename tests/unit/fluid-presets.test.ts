@@ -22,7 +22,6 @@ import {
   brushShelf,
   BUILTIN_SET_NAMES,
   duplicateOf,
-  FOLDED_SET_NAMES,
   searchShelf,
 } from "@/features/studio/lib/brush-shelf"
 import shipped from "@/features/studio/lib/krita-textures.json"
@@ -198,7 +197,6 @@ describe("the shelf", () => {
       expect(entry.deletable).toBe(false)
     }
     expect(BUILTIN_SET_NAMES).toContain(FLUID_BRUSH_SET.name)
-    expect(FOLDED_SET_NAMES).not.toContain(FLUID_BRUSH_SET.name)
   })
 
   test("finds each fluid brush by name", () => {

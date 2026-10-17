@@ -34,11 +34,14 @@ async function openStudio(page: Page) {
   )
 }
 
-async function openLibrary(page: Page) {
+async function openLibrary(page: Page, name = "Wet") {
   // By attribute: reopened over a docked editor, the trigger may be outside
   // the accessibility tree a role query walks.
   await page.locator('button[aria-label^="Choose brush:"]').click()
   await expect(library(page)).toBeVisible()
+  // One set is open at a time, on the brush in hand: open this one.
+  const set = library(page).getByRole("button", { name, exact: true })
+  if ((await set.getAttribute("aria-expanded")) !== "true") await set.click()
 }
 
 test("the library ships a set of four wet brushes, each with a preview stroke", async ({
@@ -225,7 +228,7 @@ test("a wet brush picked from the library drags the paint it crosses", async ({
   }
 
   // A bar of dry paint to blend.
-  await openLibrary(page)
+  await openLibrary(page, "Built-in")
   await paintWith(page, "Marker").click()
   await drag(
     { x: centre.x - 80, y: centre.y },

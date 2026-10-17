@@ -19,7 +19,6 @@ import {
   BUILTIN_SET,
   BUILTIN_SET_NAMES,
   duplicateOf,
-  FOLDED_SET_NAMES,
   searchShelf,
 } from "@/features/studio/lib/brush-shelf"
 import shipped from "@/features/studio/lib/krita-textures.json"
@@ -160,9 +159,6 @@ describe("the shelf", () => {
       expect(entry.deletable).toBe(false)
     }
     expect(BUILTIN_SET_NAMES).toContain(WET_BRUSH_SET.name)
-    // Four rows are not a wall: the set opens unfolded, unlike Krita's.
-    expect(FOLDED_SET_NAMES).not.toContain(WET_BRUSH_SET.name)
-    expect(FOLDED_SET_NAMES).toContain("Sketch")
   })
 
   test("finds each wet brush by name", () => {

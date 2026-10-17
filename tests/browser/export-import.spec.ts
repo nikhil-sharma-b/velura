@@ -418,3 +418,172 @@ test("SVG facade preserves pen curves and transformed pressure outlines without 
   expect(result.thin).toEqual([0, 0, 0, 0])
   expect(result.outside).toEqual([0, 0, 0, 0])
 })
+
+test("SVG erasing cuts shapes and renders as the masked export did", async ({
+  page,
+}) => {
+  await page.goto(
+    process.env.SVG_HARNESS_URL ?? "http://127.0.0.1:3101/tests/harness/"
+  )
+  await page.waitForFunction(() => !!window.engine)
+  const result = await page.evaluate(async () => {
+    const engine = window.engine
+    await engine.dispatch({
+      type: "resize",
+      width: 128,
+      height: 80,
+      devicePixelRatio: 1,
+    })
+    await engine.dispatch({ type: "initialize" })
+    await engine.dispatch({ type: "clearDocument" })
+    await engine.dispatch({ type: "addVectorLayer" })
+    const id = engine.getSnapshot().activeLayerId
+    const node = (x: number, y: number, width: number) => ({
+      x,
+      y,
+      width,
+      in: null,
+      out: null,
+      type: "cusp" as const,
+    })
+    await engine.dispatch({
+      type: "editVectorLayer",
+      id,
+      commands: [
+        {
+          type: "add",
+          object: {
+            id: "blob",
+            transform: [1, 0, 0, 1, 0, 0],
+            geometry: {
+              kind: "ellipse",
+              cx: 50,
+              cy: 40,
+              rx: 40,
+              ry: 30,
+            },
+            style: {
+              fill: { color: "#0000ff", opacity: 1, rule: "nonzero" },
+              stroke: null,
+            },
+          },
+        },
+        {
+          type: "add",
+          object: {
+            id: "pressure",
+            transform: [1, 0, 0, 1, 0, 0],
+            geometry: {
+              kind: "path",
+              closed: false,
+              nodes: [node(10, 20, 4), node(60, 50, 16), node(118, 30, 8)],
+            },
+            style: {
+              fill: null,
+              stroke: {
+                color: "#ff0000",
+                opacity: 0.5,
+                width: 16,
+                cap: "round",
+                join: "round",
+              },
+            },
+          },
+        },
+      ],
+    })
+    const before = (await engine.exportSvg({ raster: "omit" })).svg
+    const eraser = {
+      transform: [1, 0, 0, 1, 0, 0] as [
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+      ],
+      geometry: { kind: "ellipse" as const, cx: 55, cy: 42, rx: 12, ry: 10 },
+      style: {
+        fill: { color: "#000000", opacity: 1, rule: "nonzero" as const },
+        stroke: null,
+      },
+    }
+    await engine.dispatch({
+      type: "editVectorLayer",
+      id,
+      commands: [
+        { type: "add", object: { id: "hole", ...eraser, erase: true } },
+      ],
+    })
+    const after = (await engine.exportSvg({ raster: "omit" })).svg
+    // What the masked export wrote: everything under a mask the eraser cuts black.
+    const masked = before.replace(
+      /(<svg[^>]*>)([\s\S]*)(<\/svg>)\s*$/,
+      `$1<mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="80"><rect width="128" height="80" fill="#ffffff"/><ellipse cx="55" cy="42" rx="12" ry="10" fill="#000000"/></mask><g mask="url(#m)">$2</g>$3`
+    )
+    const render = async (svg: string) => {
+      const url = URL.createObjectURL(
+        new Blob([svg], { type: "image/svg+xml" })
+      )
+      try {
+        const image = new Image()
+        image.src = url
+        await image.decode()
+        const canvas = new OffscreenCanvas(128, 80),
+          context = canvas.getContext("2d")!
+        context.drawImage(image, 0, 0)
+        return context.getImageData(0, 0, 128, 80).data
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+    }
+    const [cut, reference] = [await render(after), await render(masked)]
+    // Premultiplied, so a near-clear pixel's colour does not count.
+    const value = (data: Uint8ClampedArray, i: number, c: number) =>
+      c === 3 ? data[i + 3] : (data[i + c] * data[i + 3]) / 255
+    const difference = (i: number) => {
+      let most = 0
+      for (let c = 0; c < 4; c++)
+        most = Math.max(
+          most,
+          Math.abs(value(cut, i, c) - value(reference, i, c))
+        )
+      return most
+    }
+    // A pixel whose neighbours all match it in the reference is inside a
+    // shape or its background, away from any edge's anti-aliasing.
+    const interior = (x: number, y: number) => {
+      const i = (y * 128 + x) * 4
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const j = ((y + dy) * 128 + x + dx) * 4
+          for (let c = 0; c < 4; c++)
+            if (reference[i + c] !== reference[j + c]) return false
+        }
+      return true
+    }
+    let edges = 0,
+      inside = 0
+    for (let y = 1; y < 79; y++)
+      for (let x = 1; x < 127; x++) {
+        const d = difference((y * 128 + x) * 4)
+        if (interior(x, y)) inside = Math.max(inside, d)
+        else if (d > 64) edges++
+      }
+    return {
+      masks: (after.match(/<mask/g) ?? []).length,
+      referenceMasks: (masked.match(/<mask/g) ?? []).length,
+      edges,
+      inside,
+      hole: [...cut.slice((42 * 128 + 55) * 4, (42 * 128 + 55) * 4 + 4)],
+    }
+  })
+  expect(result.referenceMasks).toBe(1)
+  expect(result.masks).toBe(0)
+  expect(result.hole).toEqual([0, 0, 0, 0])
+  // Away from edges the two match to rounding. On edges, Chromium
+  // anti-aliases the cut polygons a little differently from the curves:
+  // measured at about 70 pixels of this 128 by 80 image; allow 1.5%.
+  expect(result.inside).toBeLessThanOrEqual(2)
+  expect(result.edges).toBeLessThan(128 * 80 * 0.015)
+})

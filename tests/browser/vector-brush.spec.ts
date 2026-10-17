@@ -123,6 +123,10 @@ test("custom vector brushes can be created, renamed, duplicated, reloaded and de
   )
   await page.getByRole("button", { name: "Vector brush tool" }).click()
   await picker.click()
+  // One group is open at a time, on the brush in hand, which a reload may not
+  // keep.
+  const mine = page.getByRole("button", { name: /^My brushes/ })
+  if ((await mine.getAttribute("aria-expanded")) !== "true") await mine.click()
   await expect(
     page.getByRole("button", { name: "My ink vector brush", exact: true })
   ).toBeVisible()
@@ -133,6 +137,8 @@ test("custom vector brushes can be created, renamed, duplicated, reloaded and de
   await expect(
     page.getByRole("button", { name: "My ink vector brush", exact: true })
   ).toHaveCount(0)
+  const pens = page.getByRole("button", { name: /^Pens/ })
+  if ((await pens.getAttribute("aria-expanded")) !== "true") await pens.click()
   await expect(
     page.getByRole("button", { name: "Solid vector brush", exact: true })
   ).toBeVisible()
@@ -579,7 +585,7 @@ test("make a pattern brush from a selection and draw with it", async ({
   await page
     .getByRole("button", { name: "Make pattern brush", exact: true })
     .click()
-  const pattern = page.getByRole("region", { name: "Pattern" })
+  const pattern = page.getByRole("group", { name: "Pattern" })
   await pattern
     .getByRole("combobox", { name: "Pattern fit" })
     .selectOption("repeat")
@@ -593,6 +599,9 @@ test("make a pattern brush from a selection and draw with it", async ({
   await page.mouse.move(x + 150, y + 80, { steps: 10 })
   await page.mouse.up()
   await page.getByRole("button", { name: "Export or import" }).click()
+  await page
+    .getByRole("checkbox", { name: "Keep brush settings (larger file)" })
+    .check()
   const [download] = await Promise.all([
     page.waitForEvent("download"),
     page.getByRole("button", { name: "Export SVG" }).click(),
@@ -654,7 +663,7 @@ test("a pattern brush's caps are picked from the selection", async ({
   await page
     .getByRole("button", { name: "Make pattern brush", exact: true })
     .click()
-  const pattern = page.getByRole("region", { name: "Pattern" })
+  const pattern = page.getByRole("group", { name: "Pattern" })
   await expect(
     pattern.getByRole("img", { name: "Pattern preview" })
   ).toBeVisible()
@@ -664,7 +673,7 @@ test("a pattern brush's caps are picked from the selection", async ({
   ).toHaveCount(0)
   // Nor do the sections of kinds a pattern ignores show.
   for (const name of ["Calligraphy", "Scatter"])
-    await expect(page.getByRole("region", { name })).toHaveCount(0)
+    await expect(page.getByRole("group", { name })).toHaveCount(0)
   await pattern
     .getByRole("combobox", { name: "Shape 2 role" })
     .selectOption("end")
@@ -678,7 +687,7 @@ test("a pattern brush's caps are picked from the selection", async ({
   // tooltip, up as focus returns to it, covers it.
   await picker.press("Enter")
   await page.getByRole("button", { name: "Edit Capped" }).click()
-  const reopened = page.getByRole("region", { name: "Pattern" })
+  const reopened = page.getByRole("group", { name: "Pattern" })
   const role = reopened.getByRole("combobox", { name: "Shape 2 role" })
   await expect(role).toHaveValue("end")
   await role.selectOption("start")
@@ -691,6 +700,9 @@ test("a pattern brush's caps are picked from the selection", async ({
   await page.mouse.move(x + 150, y + 80, { steps: 10 })
   await page.mouse.up()
   await page.getByRole("button", { name: "Export or import" }).click()
+  await page
+    .getByRole("checkbox", { name: "Keep brush settings (larger file)" })
+    .check()
   const [download] = await Promise.all([
     page.waitForEvent("download"),
     page.getByRole("button", { name: "Export SVG" }).click(),
@@ -735,7 +747,7 @@ test("make a scatter brush from a selection and draw with it", async ({
   await page
     .getByRole("button", { name: "Make scatter brush", exact: true })
     .click()
-  const scatter = page.getByRole("region", { name: "Scatter" })
+  const scatter = page.getByRole("group", { name: "Scatter" })
   await scatter.getByRole("spinbutton", { name: "Scatter spacing" }).fill("300")
   await scatter.getByRole("checkbox", { name: "Align to path" }).check()
   await page.getByRole("textbox", { name: "Vector brush name" }).fill("Tiles")
@@ -748,6 +760,9 @@ test("make a scatter brush from a selection and draw with it", async ({
   await page.mouse.move(x + 150, y + 80, { steps: 10 })
   await page.mouse.up()
   await page.getByRole("button", { name: "Export or import" }).click()
+  await page
+    .getByRole("checkbox", { name: "Keep brush settings (larger file)" })
+    .check()
   const [download] = await Promise.all([
     page.waitForEvent("download"),
     page.getByRole("button", { name: "Export SVG" }).click(),

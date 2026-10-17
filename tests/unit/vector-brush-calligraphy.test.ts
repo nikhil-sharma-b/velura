@@ -227,7 +227,7 @@ test("SVG export draws calligraphy strokes as filled outline paths", () => {
   if (node.kind !== "vector") throw new Error("Expected vector")
   for (const name of ["Broad nib", "Italic", "Pointed tilt nib"]) {
     node.scene = { objects: [stroke(preset(name), { x: 200, y: 80 }, 1)] }
-    const { svg } = serializeSvg(doc, { raster: "omit" })
+    const { svg } = serializeSvg(doc, { raster: "omit", brushData: true })
     expect(svg).toMatch(
       /<path d="M[^"]+" fill="#000000" fill-opacity="1" fill-rule="nonzero" stroke="none"\/>/
     )

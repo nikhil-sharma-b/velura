@@ -52,6 +52,7 @@ export function ExportDialog({
   runCommand(id: string): void
 }) {
   const [raster, setRaster] = useState<"embed" | "omit">("embed")
+  const [brushData, setBrushData] = useState(false)
   const [warnings, setWarnings] = useState<string[]>([])
   const [quality, setQuality] = useState(82)
   const [busy, setBusy] = useState<string | null>(null)
@@ -186,12 +187,21 @@ export function ExportDialog({
               <option value="embed">Embed as PNG images</option>
               <option value="omit">Omit raster layers</option>
             </select>
+            <Label>
+              <input
+                type="checkbox"
+                checked={brushData}
+                disabled={busy !== null}
+                onChange={(event) => setBrushData(event.target.checked)}
+              />
+              Keep brush settings (larger file)
+            </Label>
             <Button
               variant="outline"
               disabled={busy !== null}
               onClick={() =>
                 void runOperation("SVG", async () => {
-                  const result = await engine.exportSvg({ raster })
+                  const result = await engine.exportSvg({ raster, brushData })
                   setWarnings(result.warnings)
                   download(
                     new Blob([result.svg], { type: "image/svg+xml" }),

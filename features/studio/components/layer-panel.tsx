@@ -796,7 +796,7 @@ export function LayerPanel({
         moving from row to row does not flash the whole stack between them.
       */}
       <div
-        className="max-h-48 min-h-12 shrink-0 overflow-y-auto"
+        className="scroll-rounded max-h-48 min-h-12 shrink-0 overflow-y-auto [--scroll-inset:0.25rem]"
         onPointerLeave={(event) => {
           if (event.pointerType !== "touch")
             void engine.dispatch({ type: "highlightLayer", id: null })

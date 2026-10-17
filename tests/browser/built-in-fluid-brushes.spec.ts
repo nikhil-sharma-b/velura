@@ -43,6 +43,9 @@ async function openLibrary(page: Page) {
   // the accessibility tree a role query walks.
   await page.locator('button[aria-label^="Choose brush:"]').click()
   await expect(library(page)).toBeVisible()
+  // One set is open at a time, on the brush in hand: open this one.
+  const set = library(page).getByRole("button", { name: "Fluid", exact: true })
+  if ((await set.getAttribute("aria-expanded")) !== "true") await set.click()
 }
 
 test("the library ships a set of four fluid brushes after the wet ones, each with a preview stroke", async ({
