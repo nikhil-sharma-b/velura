@@ -31,6 +31,7 @@
     "@hookform/resolvers": "^5.4.0",
     "@phosphor-icons/react": "^2.1.10",
     "class-variance-authority": "^0.7.1",
+    "clipper2-js": "^1.2.4",
     "clsx": "^2.1.1",
     "convex": "^1.45.0",
     "next": "16.3.4",

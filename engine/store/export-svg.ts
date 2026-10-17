@@ -3,6 +3,14 @@ import type { PaintDocument, LayerNode } from "../doc/document"
 import type { BezierPath } from "../doc/vector-path"
 import { tessellateObject, type Mesh } from "../geom/tessellate"
 import type { VectorObject } from "../doc/vector-scene"
+import {
+  boundsOverlap,
+  cutMesh,
+  meshRegion,
+  regionPath,
+  unionRegions,
+  type Region,
+} from "../geom/erase-cut"
 
 export type SvgExportOptions = {
   raster: "embed" | "omit"
@@ -125,8 +133,95 @@ function shape(object: VectorObject, brushData = false): string {
 }
 
 /**
+ * How much finer than the canvas a cut shape's curves are flattened. A cut
+ * shape is written as polygons where it was a curve, so its chords stray
+ * 1/16 of a pixel, not the canvas's quarter, which a viewer's anti-aliasing
+ * would show along an ellipse's edge.
+ */
+const CUT_DETAIL = 4
+
+type Painted = {
+  object: VectorObject
+  meshes: ReturnType<typeof tessellateObject>
+  /** The eraser marks drawn after this object that reach it. */
+  erasers: { object: VectorObject; region: Region }[]
+}
+
+/** What an eraser's mark takes away: its fill and stroke together. */
+function eraserRegion(object: VectorObject): Region {
+  const { fill, stroke } = tessellateObject(object, CUT_DETAIL)
+  return unionRegions(
+    [fill, stroke].flatMap((mesh) => (mesh ? [meshRegion(mesh)] : []))
+  )
+}
+
+/**
+ * The object's fill and stroke with its erasers cut out, "" when nothing is
+ * left, or null when no eraser meets it after all (only the boxes met).
+ */
+function cutShape(
+  { object, erasers }: Painted,
+  brushData: boolean
+): string | null {
+  const meshes = tessellateObject(object, CUT_DETAIL)
+  const painted = vectorBrushObject(object)
+  const regions = erasers.map((e) => e.region)
+  const pieces: string[] = []
+  let met = false
+  for (const [mesh, paint] of [
+    [meshes.fill, painted.style.fill],
+    [meshes.stroke, painted.style.stroke],
+  ] as const) {
+    if (!mesh || !paint) continue
+    const cut = cutMesh(mesh, regions)
+    met ||= cut !== null
+    const d = regionPath(cut ?? meshRegion(mesh))
+    if (d)
+      pieces.push(
+        `<path d="${d}" fill="${escape(paint.color)}" fill-opacity="${paint.opacity}" fill-rule="evenodd" stroke="none"/>`
+      )
+  }
+  if (!met) return null
+  const drawn = pieces.join("")
+  return brushData && drawn && object.brush
+    ? `<g data-vector-brush="${escape(JSON.stringify({ ...object.brush, spine: object.geometry }))}">${drawn}</g>`
+    : drawn
+}
+
+/** Whether a mark erases only partly, which only a mask can show. */
+const partial = (mark: VectorObject) =>
+  (mark.style.fill?.opacity ?? 1) < 1 || (mark.style.stroke?.opacity ?? 1) < 1
+
+/** The old way, kept for a shape whose cut fails: a mask per shape, one level deep. */
+function maskedShape(
+  { object, erasers }: Painted,
+  width: number,
+  height: number,
+  defs: string[],
+  id: string,
+  brushData: boolean
+): string {
+  const marks = erasers
+    .map(({ object: mark }) => {
+      const stroke = mark.style.stroke && {
+        ...mark.style.stroke,
+        color: "#000000",
+      }
+      const fill = mark.style.fill && { ...mark.style.fill, color: "#000000" }
+      return shape({ ...mark, style: { fill, stroke } })
+    })
+    .join("")
+  defs.push(
+    `<mask id="${id}" maskUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}"><rect width="${width}" height="${height}" fill="#ffffff"/>${marks}</mask>`
+  )
+  return `<g mask="url(#${id})">${shape(object, brushData)}</g>`
+}
+
+/**
  * A scene's objects bottom first. An eraser's mark takes from everything
- * drawn before it, so what is below one goes under a mask it cuts black.
+ * drawn before it, so each shape it reaches is written with the mark cut
+ * out, and one it covers is left out. A shape no mark reaches is written
+ * as it is.
  */
 function sceneContent(
   objects: readonly VectorObject[],
@@ -134,26 +229,46 @@ function sceneContent(
   height: number,
   defs: string[],
   nextId: () => string,
-  brushData: boolean
+  brushData: boolean,
+  warn: (message: string) => void
 ): string {
-  let content = ""
+  const drawn: Painted[] = []
   for (const object of objects) {
+    const meshes = tessellateObject(object)
     if (!object.erase) {
-      content += shape(object, brushData)
+      drawn.push({ object, meshes, erasers: [] })
       continue
     }
-    const stroke = object.style.stroke && {
-      ...object.style.stroke,
-      color: "#000000",
+    const marks = [meshes.fill, meshes.stroke]
+    let region: Region | null = null
+    for (const below of drawn) {
+      const reached = [below.meshes.fill, below.meshes.stroke].some((m) =>
+        marks.some((mark) =>
+          boundsOverlap(m?.bounds ?? null, mark?.bounds ?? null)
+        )
+      )
+      if (!reached) continue
+      region ??= eraserRegion(object)
+      below.erasers.push({ object, region })
     }
-    const fill = object.style.fill && { ...object.style.fill, color: "#000000" }
-    const id = nextId()
-    defs.push(
-      `<mask id="${id}" maskUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}"><rect width="${width}" height="${height}" fill="#ffffff"/>${shape({ ...object, style: { fill, stroke } })}</mask>`
-    )
-    content = `<g mask="url(#${id})">${content}</g>`
   }
-  return content
+  return drawn
+    .map((painted) => {
+      if (!painted.erasers.length) return shape(painted.object, brushData)
+      if (painted.erasers.some((e) => partial(e.object))) {
+        warn("A partly transparent eraser mark is exported as a mask.")
+        return maskedShape(painted, width, height, defs, nextId(), brushData)
+      }
+      try {
+        return cutShape(painted, brushData) ?? shape(painted.object, brushData)
+      } catch {
+        warn(
+          "An erased shape could not be cut and is exported under a mask instead."
+        )
+        return maskedShape(painted, width, height, defs, nextId(), brushData)
+      }
+    })
+    .join("")
 }
 
 /** Serializes the authored tree, never the display's flattened vector cache. */
@@ -193,7 +308,8 @@ export function serializeSvg(
                   doc.height,
                   defs,
                   () => `${id}-erase-${++erasures}`,
-                  options.brushData ?? false
+                  options.brushData ?? false,
+                  (message) => warnings.push(`${node.name}: ${message}`)
                 )
               : ""
         if (node.kind === "raster") {
