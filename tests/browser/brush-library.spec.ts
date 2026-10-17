@@ -199,6 +199,11 @@ test("an edited brush is saved and comes back on the next visit", async ({
     .click()
   await page.getByRole("button", { name: /^Choose brush:/ }).click()
   await library(page).getByRole("button", { name: "Save as new" }).click()
+  // A search opens every set it finds in, so the built-in and the copy both
+  // show.
+  await library(page)
+    .getByRole("searchbox", { name: "Search brushes" })
+    .fill("Marker")
   await expect(
     library(page).getByRole("button", {
       name: "Paint with Marker",
@@ -212,6 +217,9 @@ test("an edited brush is saved and comes back on the next visit", async ({
     "ready"
   )
   await page.getByRole("button", { name: /^Choose brush:/ }).click()
+  await library(page)
+    .getByRole("searchbox", { name: "Search brushes" })
+    .fill("Marker")
   // Two: the built-in it was copied from, and the saved one, which survived
   // the reload because it is kept rather than held.
   await expect(

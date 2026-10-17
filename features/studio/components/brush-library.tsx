@@ -460,6 +460,8 @@ export function BrushLibrary({
           disabled={!newSet.trim() || BUILTIN_SET_NAMES.includes(newSet.trim())}
           onClick={() => {
             setPendingSets((existing) => [...existing, newSet.trim()])
+            // Opened, so the place to drag a brush into is in view.
+            setChosenKey(setKey({ name: newSet.trim(), builtin: false }))
             setNewSet("")
           }}
         >
