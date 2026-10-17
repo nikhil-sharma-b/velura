@@ -10,7 +10,7 @@ import {
   regionPath,
   unionRegions,
   type Region,
-} from "../geom/erase-cut"
+} from "../geom/region"
 
 export type SvgExportOptions = {
   raster: "embed" | "omit"
@@ -62,22 +62,13 @@ export function pathData(path: BezierPath): string {
   return commands.join(" ")
 }
 
-/** One nonzero fill unions the renderer's stroke triangles without repeatedly
- * applying opacity where bands overlap. Give every triangle the same winding. */
+/**
+ * A stroke's outline: the union of the triangles the canvas draws it with,
+ * as its boundary and any hole it encloses where it loops, not one sliver
+ * per triangle.
+ */
 function strokeOutline(mesh: Mesh): string {
-  const commands: string[] = [],
-    v = mesh.vertices
-  for (let i = 0; i < v.length; i += 6) {
-    const [ax, ay, bx, by, cx, cy] = v.subarray(i, i + 6)
-    const cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
-    if (!cross) continue
-    commands.push(
-      cross > 0
-        ? `M${ax} ${ay} L${bx} ${by} L${cx} ${cy} Z`
-        : `M${ax} ${ay} L${cx} ${cy} L${bx} ${by} Z`
-    )
-  }
-  return commands.join(" ")
+  return regionPath(meshRegion(mesh))
 }
 
 function shape(object: VectorObject, brushData = false): string {

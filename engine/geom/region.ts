@@ -1,8 +1,9 @@
 /**
- * Erasing as geometry, for export: an object's painted area with the
- * eraser marks drawn after it subtracted, as Illustrator and Affinity cut
- * paths when you erase. The canvas still erases by drawing; only files
- * written for other editors need the cut shapes.
+ * Painted areas as polygons, for export: a stroke's outline as one shape
+ * rather than its triangles, and an object with the eraser marks drawn
+ * after it subtracted, as Illustrator and Affinity cut paths when you
+ * erase. The canvas still draws triangles; only files written for other
+ * editors need the shapes.
  *
  * Areas come from the same meshes the canvas draws. A fill's fan triangles,
  * kept with their signs, wind exactly as its outline does, so the polygon
@@ -11,7 +12,11 @@
  */
 
 import {
+  EndType,
   FillRule,
+  JoinType,
+  inflatePaths,
+  simplifyPaths,
   difference,
   intersect,
   union,
@@ -23,6 +28,17 @@ import type { Bounds, Mesh } from "./tessellate"
 
 /** Polygon coordinates are integers: hundredths of a document pixel. */
 const SCALE = 100
+
+/**
+ * How far, 0.05 px, a written outline may stray from the triangles' edge:
+ * points closer than that to the line through their neighbours are
+ * dropped. A fifth of the canvas's own flattening tolerance, so the
+ * outline still matches what the canvas draws.
+ */
+const SIMPLIFY = 0.05 * SCALE
+
+/** The widest seam between a stroke's pieces that is closed: 0.02 px. */
+const SEAM = 0.02 * SCALE
 
 export type Region = Paths64
 
@@ -53,7 +69,14 @@ function meshPaths(mesh: Mesh): { paths: Paths64; rule: FillRule } {
 /** The area a mesh paints, as non-overlapping rings. */
 export function meshRegion(mesh: Mesh): Region {
   const { paths, rule } = meshPaths(mesh)
-  return union(paths, rule)
+  const joined = union(paths, rule)
+  if (mesh.rule !== "union") return joined
+  // A stroke's pieces (band, joins, caps) are placed separately in floats
+  // and can miss each other by a few thousandths of a pixel, which leaves
+  // a cap as its own ring beside the band. Growing the outline by a hair
+  // and shrinking it back closes those seams and nothing visible.
+  const grown = inflatePaths(joined, SEAM, JoinType.Miter, EndType.Polygon, 2)
+  return inflatePaths(grown, -SEAM, JoinType.Miter, EndType.Polygon, 2)
 }
 
 /**
@@ -107,7 +130,12 @@ function tidy(ring: Path64): Path64 {
 /** Rings as SVG path data, in document pixels. Read with either fill rule. */
 export function regionPath(region: Region): string {
   return region
-    .map(tidy)
+    .map((ring) => {
+      // A ring only a few tenths of a pixel across, a tiny dab, could
+      // simplify away to nothing; it keeps its points.
+      const [simple] = simplifyPaths([ring], SIMPLIFY, true)
+      return tidy(simple && simple.length >= 3 ? simple : ring)
+    })
     .filter((ring) => ring.length >= 3)
     .map(
       (ring) =>
