@@ -214,12 +214,28 @@ test("SVG export writes profile strokes as filled outline paths", () => {
   if (node.kind !== "vector") throw new Error("Expected vector")
   for (const name of ["Fineliner", "Brush pen", "Wiggly"]) {
     node.scene = { objects: [stroke(preset(name), 2)] }
-    const { svg } = serializeSvg(doc, { raster: "omit" })
+    const { svg } = serializeSvg(doc, { raster: "omit", brushData: true })
     expect(svg).toMatch(
       /<path d="M[^"]+" fill="#000000" fill-opacity="1" fill-rule="nonzero" stroke="none"\/>/
     )
     expect(svg).toContain("data-vector-brush=")
   }
+})
+
+test("SVG export leaves brush data out unless asked to keep it", () => {
+  const doc = createBlankDocument({ width: 220, height: 100 })
+  const id = addVectorLayer(doc)
+  const node = findNode(doc, id)
+  if (node.kind !== "vector") throw new Error("Expected vector")
+  node.scene = { objects: [stroke(preset("Brush pen"), 2)] }
+  const plain = serializeSvg(doc, { raster: "omit" }).svg
+  const kept = serializeSvg(doc, { raster: "omit", brushData: true }).svg
+  expect(plain).not.toContain("data-vector-brush")
+  expect(plain).not.toContain("data-spine")
+  expect(kept).toContain("data-vector-brush=")
+  // Only the brush data differs: the same paths draw.
+  const paths = (svg: string) => svg.match(/<path [^>]*\/>/g)
+  expect(paths(plain)).toEqual(paths(kept))
 })
 
 test("a closed path's closing segment gets noise too", () => {

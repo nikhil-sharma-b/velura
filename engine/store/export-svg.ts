@@ -4,7 +4,15 @@ import type { BezierPath } from "../doc/vector-path"
 import { tessellateObject, type Mesh } from "../geom/tessellate"
 import type { VectorObject } from "../doc/vector-scene"
 
-export type SvgExportOptions = { raster: "embed" | "omit" }
+export type SvgExportOptions = {
+  raster: "embed" | "omit"
+  /**
+   * Whether a brush stroke keeps its brush, as JSON, beside the paths it
+   * draws. Nothing draws from it, and a pattern brush's art repeats on every
+   * stroke, so a plain export leaves it out.
+   */
+  brushData?: boolean
+}
 export type SvgExportResult = { svg: string; warnings: string[] }
 /** Prepared PNG data URLs, keyed by layer or mask id. Encoding stays outside the pure serializer. */
 export type SvgImages = ReadonlyMap<string, string>
@@ -64,7 +72,7 @@ function strokeOutline(mesh: Mesh): string {
   return commands.join(" ")
 }
 
-function shape(object: VectorObject): string {
+function shape(object: VectorObject, brushData = false): string {
   const painted = vectorBrushObject(object)
   const { style, transform } = painted
   const g = painted.geometry
@@ -80,8 +88,8 @@ function shape(object: VectorObject): string {
       const d = pathData(g)
       const outlines = brushArtOutlines(painted)
       if (outlines && stroke) {
-        // The art is expanded to plain filled paths; the spine and brush ride
-        // along for anything that wants to re-flow it.
+        // The art is expanded to plain filled paths; asked for, the spine and
+        // brush ride along for anything that wants to re-flow it.
         const filled = fill
           ? `<path d="${d}" transform="matrix(${transform.join(" ")})" fill="${escape(fill.color)}" fill-opacity="${fill.opacity}" fill-rule="${fill.rule}"/>`
           : ""
@@ -91,7 +99,10 @@ function shape(object: VectorObject): string {
               `<path d="M${o.map((p) => `${p.x} ${p.y}`).join(" L")} Z" fill="${escape(stroke.color)}" fill-opacity="${stroke.opacity}" fill-rule="nonzero" stroke="none"/>`
           )
           .join("")
-        return `<g data-vector-brush="${escape(JSON.stringify(painted.brush))}" data-spine="${escape(d)}"><g transform="matrix(${transform.join(" ")})">${art}</g>${filled}</g>`
+        const drawn = `<g transform="matrix(${transform.join(" ")})">${art}</g>${filled}`
+        return brushData
+          ? `<g data-vector-brush="${escape(JSON.stringify(painted.brush))}" data-spine="${escape(d)}">${drawn}</g>`
+          : drawn
       }
       if (g.nodes[0].width === undefined) return `<path d="${d}" ${attrs}/>`
       // Pressure widths are already placed by the same mesh the canvas draws,
@@ -104,7 +115,9 @@ function shape(object: VectorObject): string {
         mesh && stroke
           ? `<path d="${strokeOutline(mesh)}" fill="${escape(stroke.color)}" fill-opacity="${stroke.opacity}" fill-rule="nonzero" stroke="none"/>`
           : ""
-      return `<g${object.brush ? ` data-vector-brush="${escape(JSON.stringify({ ...object.brush, spine: object.geometry }))}"` : ""}>${filled}${outline}</g>`
+      return brushData && object.brush
+        ? `<g data-vector-brush="${escape(JSON.stringify({ ...object.brush, spine: object.geometry }))}">${filled}${outline}</g>`
+        : `${filled}${outline}`
     }
     case "polygon":
       return `<${g.closed ? "polygon" : "polyline"} points="${g.points.map((p) => `${p.x},${p.y}`).join(" ")}" ${attrs}/>`
@@ -120,12 +133,13 @@ function sceneContent(
   width: number,
   height: number,
   defs: string[],
-  nextId: () => string
+  nextId: () => string,
+  brushData: boolean
 ): string {
   let content = ""
   for (const object of objects) {
     if (!object.erase) {
-      content += shape(object)
+      content += shape(object, brushData)
       continue
     }
     const stroke = object.style.stroke && {
@@ -178,7 +192,8 @@ export function serializeSvg(
                   doc.width,
                   doc.height,
                   defs,
-                  () => `${id}-erase-${++erasures}`
+                  () => `${id}-erase-${++erasures}`,
+                  options.brushData ?? false
                 )
               : ""
         if (node.kind === "raster") {

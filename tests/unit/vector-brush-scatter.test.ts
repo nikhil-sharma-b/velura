@@ -210,7 +210,7 @@ describe("scatter brushes", () => {
     const layer = findNode(doc, addVectorLayer(doc))
     if (layer.kind !== "vector") throw new Error("Expected a vector layer")
     layer.scene = { objects: [stroke(brush({}))] }
-    const { svg } = serializeSvg(doc, { raster: "omit" })
+    const { svg } = serializeSvg(doc, { raster: "omit", brushData: true })
     const group = svg.match(
       /<g data-vector-brush="([^"]+)" data-spine="([^"]+)">(.*?)<\/g>/
     )

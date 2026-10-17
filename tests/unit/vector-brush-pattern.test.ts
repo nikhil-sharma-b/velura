@@ -299,7 +299,7 @@ describe("pattern brushes", () => {
     const node = findNode(doc, addVectorLayer(doc))
     if (node.kind !== "vector") throw new Error("Expected a vector layer")
     node.scene = { objects: [stroke(preset("Rope"))] }
-    const { svg } = serializeSvg(doc, { raster: "omit" })
+    const { svg } = serializeSvg(doc, { raster: "omit", brushData: true })
     const group = svg.match(
       /<g data-vector-brush="([^"]+)" data-spine="([^"]+)">(.*?)<\/g>/
     )
