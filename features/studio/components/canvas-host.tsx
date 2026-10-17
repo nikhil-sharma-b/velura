@@ -210,6 +210,18 @@ const VECTOR_TOOL_RAIL = {
   line: { label: "Line tool", icon: <LineSegmentIcon /> },
 } satisfies Record<VectorTool, { label: string; icon: React.ReactNode }>
 /** The shape tools, which share one rail slot so they cost one button. */
+/**
+ * How far a rail card's top edge sits above its first button: the card's 1px
+ * border and 6px padding. A panel opened from that button lifts by it, so its
+ * top meets the card's rather than the button's.
+ */
+const RAIL_CARD_INSET = -7
+/**
+ * What the pixel and vector brush panels share, so one is as tall as the
+ * other: the height they may grow to before they scroll, and their look.
+ */
+const BRUSH_PANEL =
+  "scroll-rounded z-50 max-h-[min(36rem,var(--radix-popover-content-available-height))] overflow-y-auto rounded-xl border bg-background shadow-xl"
 const SHAPE_TOOLS = ["rectangle", "ellipse", "polygon", "line"] as const
 type ShapeTool = (typeof SHAPE_TOOLS)[number]
 const VECTOR_RAIL_ORDER = (
@@ -1731,7 +1743,7 @@ export function CanvasHost({
                           size="sm"
                           label={`Choose vector brush: ${snapshot.vectorBrush.name}`}
                           side="right"
-                          className="size-8 rounded-lg p-0"
+                          className="relative size-8 rounded-lg p-0"
                         >
                           <VectorBrushToolIcon
                             kind={
@@ -1740,17 +1752,19 @@ export function CanvasHost({
                                 : "solid"
                             }
                           />
+                          <MenuNotch />
                         </IconButton>
                       </PopoverPrimitive.Trigger>
                       <PopoverPrimitive.Portal>
                         <PopoverPrimitive.Content
                           onCloseAutoFocus={returnFocusForKeysOnly}
                           side="right"
-                          align="end"
+                          align="start"
+                          alignOffset={RAIL_CARD_INSET}
                           sideOffset={10}
                           collisionPadding={12}
                           aria-label="Choose a vector brush"
-                          className="scroll-rounded z-50 max-h-[var(--radix-popover-content-available-height)] w-72 overflow-y-auto rounded-xl border bg-background p-3 shadow-xl"
+                          className={cn(BRUSH_PANEL, "w-72 p-3")}
                         >
                           <VectorBrushLibrary
                             library={vectorBrushLibrary}
@@ -1879,10 +1893,14 @@ export function CanvasHost({
                           onCloseAutoFocus={returnFocusForKeysOnly}
                           side="right"
                           align="start"
+                          alignOffset={RAIL_CARD_INSET}
                           sideOffset={10}
                           collisionPadding={12}
                           aria-label="Choose a brush"
-                          className="scroll-rounded z-50 max-h-[min(36rem,var(--radix-popover-content-available-height))] w-80 max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border bg-background shadow-xl outline-none"
+                          className={cn(
+                            BRUSH_PANEL,
+                            "w-80 max-w-[calc(100vw-24px)] outline-none"
+                          )}
                         >
                           {engine && (
                             <BrushLibrary
