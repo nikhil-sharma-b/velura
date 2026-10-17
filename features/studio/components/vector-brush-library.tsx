@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, type ReactNode } from "react"
+import { Fragment, useState, type ReactNode } from "react"
 import {
   CaretRightIcon,
   MagnifyingGlassIcon,
@@ -9,7 +9,15 @@ import {
 } from "@phosphor-icons/react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import {
+  FieldDescription,
+  FieldGroup,
+  FieldLegend,
+  FieldSeparator,
+  FieldSet,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   Dialog,
   DialogContent,
@@ -383,7 +391,7 @@ export function VectorBrushLibrary({
           if (!open && !busy) setEditing(null)
         }}
       >
-        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
+        <DialogContent className="max-h-[min(34rem,calc(100dvh-4rem))] overflow-y-auto sm:max-w-md">
           <DialogTitle>
             {sourceId ? "Edit vector brush" : "Create vector brush"}
           </DialogTitle>
@@ -408,7 +416,7 @@ export function VectorBrushLibrary({
                 })
               }}
             >
-              <label className="block space-y-1 text-sm">
+              <Label className="flex-col items-stretch gap-1.5">
                 Brush name
                 <Input
                   aria-label="Vector brush name"
@@ -419,50 +427,54 @@ export function VectorBrushLibrary({
                     setEditing({ ...editing, name: event.target.value })
                   }
                 />
-              </label>
-              {VECTOR_BRUSH_KIND_NAMES.filter((kind) =>
-                shows(editing.kind, kind)
-              )
-                .map((kind) => [kind, KINDS[kind]] as const)
-                .map(([kind, { label, Section }]) => (
-                  <section
-                    key={kind}
-                    aria-label={label}
-                    className="rounded-lg border p-3"
-                  >
-                    <h3 className="mb-2 text-sm font-medium">{label}</h3>
-                    <Section
-                      brush={editing}
-                      change={setEditing}
-                      source={
-                        editing.kind === "pattern"
-                          ? (editing.pattern.source?.made ?? null)
-                          : null
-                      }
-                      shapes={
-                        editing.kind === "pattern"
-                          ? (editing.pattern.source?.shapes.map((s) => s.id) ??
-                            [])
-                          : []
-                      }
-                      remake={(next) => {
-                        if (editing.kind !== "pattern") return
-                        try {
-                          setEditing(remakePatternBrush(editing, next))
-                        } catch (error) {
-                          toast.error(
-                            error instanceof Error
-                              ? error.message
-                              : "Could not remake the pattern brush."
-                          )
-                        }
-                      }}
-                    />
-                  </section>
-                ))}
-              <Button type="submit" disabled={busy}>
-                {busy ? "Saving…" : "Save vector brush"}
-              </Button>
+              </Label>
+              <FieldGroup className="gap-4">
+                {VECTOR_BRUSH_KIND_NAMES.filter((kind) =>
+                  shows(editing.kind, kind)
+                )
+                  .map((kind) => [kind, KINDS[kind]] as const)
+                  .map(([kind, { label, Section }], index) => (
+                    <Fragment key={kind}>
+                      {index >= 0 && <FieldSeparator />}
+                      <FieldSet aria-label={label} className="gap-3">
+                        <FieldLegend className="mb-3">{label}</FieldLegend>
+                        <Section
+                          brush={editing}
+                          change={setEditing}
+                          source={
+                            editing.kind === "pattern"
+                              ? (editing.pattern.source?.made ?? null)
+                              : null
+                          }
+                          shapes={
+                            editing.kind === "pattern"
+                              ? (editing.pattern.source?.shapes.map(
+                                  (s) => s.id
+                                ) ?? [])
+                              : []
+                          }
+                          remake={(next) => {
+                            if (editing.kind !== "pattern") return
+                            try {
+                              setEditing(remakePatternBrush(editing, next))
+                            } catch (error) {
+                              toast.error(
+                                error instanceof Error
+                                  ? error.message
+                                  : "Could not remake the pattern brush."
+                              )
+                            }
+                          }}
+                        />
+                      </FieldSet>
+                    </Fragment>
+                  ))}
+              </FieldGroup>
+              <div className="sticky -bottom-4 -mb-4 flex justify-end border-t bg-popover pt-3 pb-4">
+                <Button type="submit" disabled={busy}>
+                  {busy ? "Saving…" : "Save vector brush"}
+                </Button>
+              </div>
             </form>
           )}
         </DialogContent>
@@ -479,6 +491,22 @@ const SHARES = [
   ["wiggle", "Wiggle"],
 ] as const
 
+/**
+ * A setting as the app's settings forms lay it out: the label on the left, the
+ * control on the right at one width, so a column of them reads as a column.
+ */
+function Row({ children }: { children: ReactNode }) {
+  return (
+    <Label className="w-full justify-between gap-3 [&>input:not([type=checkbox])]:w-28 [&>input:not([type=checkbox])]:flex-none [&>select]:w-28 [&>select]:flex-none">
+      {children}
+    </Label>
+  )
+}
+
+/** A native select dressed as an `Input`, so a form's controls match. */
+const SELECT =
+  "h-8 rounded-none border border-input bg-transparent px-2 text-xs outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring dark:bg-input/30"
+
 function ProfileSection({
   params,
   pressureOnly,
@@ -490,16 +518,16 @@ function ProfileSection({
   change(params: Partial<ProfileParams>): void
 }) {
   return (
-    <div className="grid grid-cols-2 gap-2 text-sm">
-      <label className="col-span-2 flex items-center gap-2">
+    <FieldGroup className="gap-2.5">
+      <Row>
+        Pressure controls width
         <input
           type="checkbox"
           checked={params.pressure}
           onChange={(event) => change({ pressure: event.target.checked })}
         />
-        Pressure controls width
-      </label>
-      <label className="flex items-center gap-2">
+      </Row>
+      <Row>
         Pressure curve
         <Input
           type="number"
@@ -512,10 +540,10 @@ function ProfileSection({
             change({ pressureCurve: Number(event.target.value) })
           }
         />
-      </label>
+      </Row>
       {!pressureOnly &&
         (["start", "end"] as const).map((end) => (
-          <label key={end} className="flex items-center gap-2">
+          <Row key={end}>
             {end === "start" ? "Start" : "End"} taper (%)
             <PercentInput
               label={`${end === "start" ? "Start" : "End"} profile taper`}
@@ -525,14 +553,14 @@ function ProfileSection({
                 change({ taper: { ...params.taper, [end]: share } })
               }
             />
-          </label>
+          </Row>
         ))}
       {!pressureOnly && (
-        <label className="flex items-center gap-2">
+        <Row>
           Caps
           <select
             aria-label="Profile caps"
-            className="h-8 rounded-md border bg-transparent px-2"
+            className={SELECT}
             value={params.caps}
             onChange={(event) =>
               change({ caps: event.target.value as ProfileParams["caps"] })
@@ -542,20 +570,20 @@ function ProfileSection({
             <option value="round">Round</option>
             <option value="flat">Flat</option>
           </select>
-        </label>
+        </Row>
       )}
       {!pressureOnly &&
         SHARES.map(([key, label]) => (
-          <label key={key} className="flex items-center gap-2">
+          <Row key={key}>
             {label} (%)
             <PercentInput
               label={label}
               value={params[key]}
               change={(share) => change({ [key]: share })}
             />
-          </label>
+          </Row>
         ))}
-    </div>
+    </FieldGroup>
   )
 }
 
@@ -565,8 +593,9 @@ function CalligraphySection({ brush, change }: SectionProps) {
     change({ ...brush, params: { ...params, ...patch } })
   const on = brush.kind === "calligraphy"
   return (
-    <div className="grid grid-cols-2 gap-2 text-sm">
-      <label className="col-span-2 flex items-center gap-2">
+    <FieldGroup className="gap-2.5">
+      <Row>
+        Draw with a calligraphy nib
         <input
           type="checkbox"
           checked={on}
@@ -579,9 +608,8 @@ function CalligraphySection({ brush, change }: SectionProps) {
             })
           }
         />
-        Draw with a calligraphy nib
-      </label>
-      <label className="flex items-center gap-2">
+      </Row>
+      <Row>
         Nib angle (°)
         <Input
           type="number"
@@ -592,8 +620,8 @@ function CalligraphySection({ brush, change }: SectionProps) {
           value={params.nibAngle}
           onChange={(event) => set({ nibAngle: Number(event.target.value) })}
         />
-      </label>
-      <label className="flex items-center gap-2">
+      </Row>
+      <Row>
         Nib edge (%)
         <PercentInput
           label="Nib edge"
@@ -601,8 +629,8 @@ function CalligraphySection({ brush, change }: SectionProps) {
           value={params.minWidth}
           change={(minWidth) => set({ minWidth })}
         />
-      </label>
-      <label className="col-span-2 flex items-center gap-2">
+      </Row>
+      <Row>
         Fixation (%)
         <PercentInput
           label="Nib fixation"
@@ -610,12 +638,12 @@ function CalligraphySection({ brush, change }: SectionProps) {
           value={params.fixation}
           change={(fixation) => set({ fixation })}
         />
-      </label>
-      <p className="col-span-2 text-xs text-muted-foreground">
+      </Row>
+      <FieldDescription>
         Below 100% the nib follows the pen&apos;s tilt; a mouse keeps it at the
         nib angle. Pressure, taper and caps come from the width profile.
-      </p>
-    </div>
+      </FieldDescription>
+    </FieldGroup>
   )
 }
 
@@ -662,15 +690,15 @@ function PatternSection({
     })
   }
   return (
-    <div className="grid grid-cols-2 gap-2 text-sm">
+    <FieldGroup className="gap-2.5">
       <PatternPreview pattern={pattern} />
       {source && (
         <>
-          <label className="col-span-2 flex items-center gap-2">
+          <Row>
             Spine axis
             <select
               aria-label="Pattern axis"
-              className="h-8 rounded-md border bg-transparent px-2"
+              className={SELECT}
               value={drawn === null ? (axis as string) : `drawn:${drawn}`}
               onChange={(event) => {
                 const value = event.target.value
@@ -693,15 +721,15 @@ function PatternSection({
                 </option>
               ))}
             </select>
-          </label>
+          </Row>
           {shapes.map(
             (id, i) =>
               id !== drawn && (
-                <label key={id} className="flex items-center gap-2">
+                <Row key={id}>
                   Shape {i + 1}
                   <select
                     aria-label={`Shape ${i + 1} role`}
-                    className="h-8 rounded-md border bg-transparent px-2"
+                    className={SELECT}
                     value={roleOf(id)}
                     onChange={(event) => assign(id, event.target.value as Role)}
                   >
@@ -709,16 +737,16 @@ function PatternSection({
                     <option value="start">Start cap</option>
                     <option value="end">End cap</option>
                   </select>
-                </label>
+                </Row>
               )
           )}
         </>
       )}
-      <label className="flex items-center gap-2">
+      <Row>
         Fit
         <select
           aria-label="Pattern fit"
-          className="h-8 rounded-md border bg-transparent px-2"
+          className={SELECT}
           value={pattern.mode}
           onChange={(event) =>
             set({ mode: event.target.value as PatternParams["mode"] })
@@ -727,12 +755,12 @@ function PatternSection({
           <option value="stretch">Stretch</option>
           <option value="repeat">Repeat</option>
         </select>
-      </label>
-      <label className="flex items-center gap-2">
+      </Row>
+      <Row>
         Corners
         <select
           aria-label="Pattern corners"
-          className="h-8 rounded-md border bg-transparent px-2"
+          className={SELECT}
           value={pattern.corners}
           onChange={(event) =>
             set({ corners: event.target.value as PatternParams["corners"] })
@@ -741,12 +769,12 @@ function PatternSection({
           <option value="bend">Bend</option>
           <option value="split">Split</option>
         </select>
-      </label>
-      <p className="col-span-2 text-xs text-muted-foreground">
+      </Row>
+      <FieldDescription>
         The art is a stroke width tall. &ldquo;Pressure controls width&rdquo; in
         the width profile scales its thickness.
-      </p>
-    </div>
+      </FieldDescription>
+    </FieldGroup>
   )
 }
 
@@ -767,8 +795,8 @@ function ScatterSection({ brush, change }: SectionProps) {
   const set = (patch: Partial<ScatterParams>) =>
     change({ ...brush, scatter: { ...scatter, ...patch } })
   return (
-    <div className="grid grid-cols-2 gap-2 text-sm">
-      <label className="flex items-center gap-2">
+    <FieldGroup className="gap-2.5">
+      <Row>
         Spacing (%)
         <PercentInput
           label="Scatter spacing"
@@ -777,8 +805,8 @@ function ScatterSection({ brush, change }: SectionProps) {
           value={scatter.spacing}
           change={(spacing) => set({ spacing })}
         />
-      </label>
-      <label className="flex items-center gap-2">
+      </Row>
+      <Row>
         Size (%)
         <PercentInput
           label="Scatter size"
@@ -787,18 +815,18 @@ function ScatterSection({ brush, change }: SectionProps) {
           value={scatter.size}
           change={(size) => set({ size })}
         />
-      </label>
+      </Row>
       {SCATTER_SHARES.map(([key, label]) => (
-        <label key={key} className="flex items-center gap-2">
+        <Row key={key}>
           {label} (%)
           <PercentInput
             label={label}
             value={scatter[key]}
             change={(share) => set({ [key]: share })}
           />
-        </label>
+        </Row>
       ))}
-      <label className="flex items-center gap-2">
+      <Row>
         Offset jitter (%)
         <PercentInput
           label="Offset jitter"
@@ -806,21 +834,21 @@ function ScatterSection({ brush, change }: SectionProps) {
           value={scatter.offsetJitter}
           change={(offsetJitter) => set({ offsetJitter })}
         />
-      </label>
-      <label className="flex items-center gap-2">
+      </Row>
+      <Row>
+        Align to path
         <input
           type="checkbox"
           checked={scatter.align}
           onChange={(event) => set({ align: event.target.checked })}
         />
-        Align to path
-      </label>
-      <p className="col-span-2 text-xs text-muted-foreground">
+      </Row>
+      <FieldDescription>
         Spacing, size and offset are shares of the stroke width; rotation jitter
         is a share of a half turn either way. &ldquo;Pressure controls
         width&rdquo; in the width profile scales each copy.
-      </p>
-    </div>
+      </FieldDescription>
+    </FieldGroup>
   )
 }
 
