@@ -2,11 +2,13 @@ import { brushArtOutlines, vectorBrushObject } from "../doc/vector-brush"
 import type { PaintDocument, LayerNode } from "../doc/document"
 import type { BezierPath } from "../doc/vector-path"
 import { tessellateObject, type Mesh } from "../geom/tessellate"
+import type { Affine } from "../doc/transform-session"
 import type { VectorObject } from "../doc/vector-scene"
 import {
   boundsOverlap,
   cutMesh,
   meshRegion,
+  outlinePath,
   regionPath,
   unionRegions,
   type Region,
@@ -71,6 +73,18 @@ function strokeOutline(mesh: Mesh): string {
   return regionPath(meshRegion(mesh))
 }
 
+/**
+ * How many decimals brush art is written to. The art is in the object's own
+ * space, under its transform, so its rounding error is multiplied by how
+ * far the transform stretches it along its longest axis; enough decimals
+ * keep that within 0.01 document px. Never fewer than 2.
+ */
+function artPlaces([a, b, c, d]: Affine): number {
+  const stretch = Math.max(Math.hypot(a, b), Math.hypot(c, d))
+  const places = Math.ceil(Math.log10(50 * stretch))
+  return Number.isFinite(places) ? Math.max(2, places) : 2
+}
+
 function shape(object: VectorObject, brushData = false): string {
   const painted = vectorBrushObject(object)
   const { style, transform } = painted
@@ -92,10 +106,14 @@ function shape(object: VectorObject, brushData = false): string {
         const filled = fill
           ? `<path d="${d}" transform="matrix(${transform.join(" ")})" fill="${escape(fill.color)}" fill-opacity="${fill.opacity}" fill-rule="${fill.rule}"/>`
           : ""
+        const places = artPlaces(transform)
         const art = outlines
+          .map((o) => outlinePath(o, places))
+          // A piece of art under a hundredth of a pixel rounds to nothing.
+          .filter(Boolean)
           .map(
-            (o) =>
-              `<path d="M${o.map((p) => `${p.x} ${p.y}`).join(" L")} Z" fill="${escape(stroke.color)}" fill-opacity="${stroke.opacity}" fill-rule="nonzero" stroke="none"/>`
+            (outline) =>
+              `<path d="${outline}" fill="${escape(stroke.color)}" fill-opacity="${stroke.opacity}" fill-rule="nonzero" stroke="none"/>`
           )
           .join("")
         const drawn = `<g transform="matrix(${transform.join(" ")})">${art}</g>${filled}`

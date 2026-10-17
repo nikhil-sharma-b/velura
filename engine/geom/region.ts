@@ -101,8 +101,11 @@ export function unionRegions(regions: readonly Region[]): Region {
 /** A ring without repeated points or points on a straight run, which the triangles leave behind. */
 function tidy(ring: Path64): Path64 {
   const out: Path64 = []
+  // On one line and between its neighbours: a point that doubles back is
+  // a spike, part of the shape, and stays.
   const straight = (a: IPoint64, b: IPoint64, c: IPoint64) =>
-    cross(a, b, c) === 0
+    cross(a, b, c) === 0 &&
+    (a.x - b.x) * (c.x - b.x) + (a.y - b.y) * (c.y - b.y) <= 0
   for (const p of ring) {
     while (
       out.length >= 2 &&
@@ -137,11 +140,41 @@ export function regionPath(region: Region): string {
       return tidy(simple && simple.length >= 3 ? simple : ring)
     })
     .filter((ring) => ring.length >= 3)
-    .map(
-      (ring) =>
-        `M${ring.map((p) => `${p.x / SCALE} ${p.y / SCALE}`).join(" L")} Z`
-    )
+    .map((ring) => ringPath(ring, Math.log10(SCALE)))
     .join(" ")
+}
+
+/** A number as path data writes it: at most `places` decimals, none trailing. */
+function formatNumber(value: number, places: number): string {
+  const step = 10 ** places
+  const rounded = Math.round(value * step) / step
+  return Object.is(rounded, -0) ? "0" : String(rounded)
+}
+
+/** A ring on a grid of 10^-places as path data. */
+function ringPath(ring: Path64, places: number): string {
+  const step = 10 ** places
+  return `M${ring.map((p) => `${formatNumber(p.x / step, places)} ${formatNumber(p.y / step, places)}`).join(" L")} Z`
+}
+
+/**
+ * A closed outline as path data, its points rounded to `places` decimals
+ * and the points left on a straight run by the rounding merged. Nothing
+ * else is dropped: brush art is drawn as its designer made it. "" when
+ * rounding leaves no area.
+ */
+export function outlinePath(
+  points: readonly { x: number; y: number }[],
+  places: number
+): string {
+  const step = 10 ** places
+  const ring = tidy(
+    points.map((p) => ({
+      x: Math.round(p.x * step),
+      y: Math.round(p.y * step),
+    }))
+  )
+  return ring.length >= 3 ? ringPath(ring, places) : ""
 }
 
 /** Whether two boxes share any area: a cheap test before a cut. */
