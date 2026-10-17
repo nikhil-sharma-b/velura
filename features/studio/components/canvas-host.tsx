@@ -46,7 +46,7 @@ import {
   useSyncExternalStore,
 } from "react"
 
-import { Popover as PopoverPrimitive } from "radix-ui"
+import { Popover as PopoverPrimitive } from "./popover"
 import { toast } from "sonner"
 import { isViewPanButton } from "@/engine/input/view-gestures"
 import { Button } from "@/components/ui/button"

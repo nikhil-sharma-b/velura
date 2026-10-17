@@ -1,7 +1,7 @@
 "use client"
 
 import { AngleIcon } from "@phosphor-icons/react"
-import { Popover as PopoverPrimitive } from "radix-ui"
+import { Popover as PopoverPrimitive } from "./popover"
 import { useRef, useState, type KeyboardEvent } from "react"
 
 import { Slider } from "@/components/ui/slider"

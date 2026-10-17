@@ -1,7 +1,7 @@
 "use client"
 
 import { NoteBlankIcon } from "@phosphor-icons/react"
-import { Popover as PopoverPrimitive } from "radix-ui"
+import { Popover as PopoverPrimitive } from "./popover"
 import { useEffect, useRef, useState } from "react"
 
 import { PAPERS, paperSwatch, type Engine, type Paper } from "@/engine"
