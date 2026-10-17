@@ -1,12 +1,6 @@
 "use client"
 
-import {
-  type ComponentProps,
-  createContext,
-  type RefObject,
-  useContext,
-  useRef,
-} from "react"
+import { type ComponentProps, createContext, useContext, useRef } from "react"
 import { Popover as PopoverPrimitive } from "radix-ui"
 
 /**
@@ -14,13 +8,19 @@ import { Popover as PopoverPrimitive } from "radix-ui"
  * press outside it, and the trigger counts as outside. The dismissal unmounts
  * the modal layer, so the click that ends the press reaches the trigger and
  * opens the popover again: a second click on the trigger would close and
- * reopen it, never close it. `dismissedByTrigger` marks that press so the
- * trigger can swallow its click.
+ * reopen it, never close it. A dismissal by a press on the trigger is
+ * marked so the trigger can swallow its click. The refs stay in `Root`;
+ * the parts reach them through these functions.
  */
 type Shared = {
   modal: boolean
-  trigger: RefObject<HTMLElement | null>
-  dismissedByTrigger: RefObject<boolean>
+  setTrigger: (node: HTMLElement | null) => void
+  /** Notes whether a press outside the content landed on the trigger. */
+  markDismissal: (target: EventTarget | null) => void
+  /** Forgets the mark, for a fresh press on the trigger. */
+  clearDismissal: () => void
+  /** Whether the click is the tail of a dismissal, clearing the mark. */
+  takeDismissal: () => boolean
 }
 
 const PopoverContext = createContext<Shared | null>(null)
@@ -31,8 +31,26 @@ function Root({
 }: ComponentProps<typeof PopoverPrimitive.Root>) {
   const trigger = useRef<HTMLElement | null>(null)
   const dismissedByTrigger = useRef(false)
+  const shared: Shared = {
+    modal,
+    setTrigger: (node) => {
+      trigger.current = node
+    },
+    markDismissal: (target) => {
+      dismissedByTrigger.current =
+        target instanceof Node && !!trigger.current?.contains(target)
+    },
+    clearDismissal: () => {
+      dismissedByTrigger.current = false
+    },
+    takeDismissal: () => {
+      const dismissed = dismissedByTrigger.current
+      dismissedByTrigger.current = false
+      return dismissed
+    },
+  }
   return (
-    <PopoverContext value={{ modal, trigger, dismissedByTrigger }}>
+    <PopoverContext value={shared}>
       <PopoverPrimitive.Root modal={modal} {...props} />
     </PopoverContext>
   )
@@ -49,19 +67,18 @@ function Trigger({
     <PopoverPrimitive.Trigger
       {...props}
       ref={(node) => {
-        if (shared) shared.trigger.current = node
+        shared?.setTrigger(node)
         if (typeof ref === "function") ref(node)
         else if (ref) ref.current = node
       }}
       onPointerDown={(event) => {
         // A press that reaches the trigger is a fresh one, not the tail of a
         // dismissal.
-        if (shared) shared.dismissedByTrigger.current = false
+        shared?.clearDismissal()
         onPointerDown?.(event)
       }}
       onClick={(event) => {
-        if (shared?.dismissedByTrigger.current) {
-          shared.dismissedByTrigger.current = false
+        if (shared?.takeDismissal()) {
           event.preventDefault()
           return
         }
@@ -88,17 +105,16 @@ function Anchor({
     <PopoverPrimitive.Anchor
       {...props}
       ref={(node) => {
-        if (shared) shared.trigger.current = node
+        shared?.setTrigger(node)
         if (typeof ref === "function") ref(node)
         else if (ref) ref.current = node
       }}
       onPointerDown={(event) => {
-        if (shared) shared.dismissedByTrigger.current = false
+        shared?.clearDismissal()
         onPointerDown?.(event)
       }}
       onClickCapture={(event) => {
-        if (shared?.dismissedByTrigger.current) {
-          shared.dismissedByTrigger.current = false
+        if (shared?.takeDismissal()) {
           event.stopPropagation()
           return
         }
@@ -119,11 +135,7 @@ function Content({
       onPointerDownOutside={(event) => {
         // Only a modal popover needs this: a non-modal one already ignores a
         // press on its trigger and lets the click toggle it.
-        if (shared?.modal) {
-          shared.dismissedByTrigger.current =
-            event.target instanceof Node &&
-            !!shared.trigger.current?.contains(event.target)
-        }
+        if (shared?.modal) shared.markDismissal(event.target)
         onPointerDownOutside?.(event)
       }}
     />
