@@ -207,7 +207,7 @@ export function VersionPanel({
         </IconButton>
       </header>
 
-      <div className="overflow-y-auto p-2">
+      <div className="scroll-rounded overflow-y-auto p-2 [--scroll-inset:0.25rem]">
         {problem && (
           <p role="alert" className="px-2 pt-1 pb-2 text-xs text-destructive">
             {problem}

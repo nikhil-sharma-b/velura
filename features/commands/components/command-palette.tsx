@@ -212,7 +212,7 @@ export function CommandPalette<Context>({
           id={listId}
           role="listbox"
           aria-label="Commands"
-          className="max-h-80 overflow-y-auto p-1"
+          className="scroll-rounded max-h-80 overflow-y-auto p-1 [--scroll-inset:0.25rem]"
         >
           {entries.length === 0 && (
             <li className="px-2 py-3 text-center text-muted-foreground">
