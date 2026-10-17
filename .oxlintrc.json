@@ -147,7 +147,7 @@
                   "!../**",
                   "!@/engine",
                   "!@/engine/**",
-                  "!clipper2-js",
+                  "!@countertype/clipper2-ts",
                   "**/app",
                   "**/app/**",
                   "**/features",

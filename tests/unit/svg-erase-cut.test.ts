@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { serializeSvg } from "../../engine/store/export-svg"
 import {
   createBlankDocument,
@@ -37,7 +38,7 @@ function eraser(
 }
 
 function exportScene(objects: VectorObject[]): string {
-  const doc = createBlankDocument({ width: 100, height: 100 })
+  const doc = createBlankDocument({ width: 1000, height: 1000 })
   const id = addVectorLayer(doc)
   const node = findNode(doc, id)
   if (node.kind !== "vector") throw new Error("Expected vector")
@@ -217,3 +218,21 @@ test("a partly transparent eraser keeps one mask over the shapes it meets", () =
     /<g mask="url\(#[^"]+\)"><rect x="0"[^>]*\/><\/g><rect x="60"/
   )
 })
+
+test("a dense scribble eraser cuts without hanging", () => {
+  // An eraser mark from the 404 illustration: the first polygon library
+  // looped forever joining its triangles.
+  const scribble = JSON.parse(
+    readFileSync(
+      new URL("../fixtures/scribble-stroke.json", import.meta.url),
+      "utf8"
+    )
+  ) as VectorObject
+  const started = performance.now()
+  const svg = exportScene([rect("under", 670, 860, 30, 20), scribble])
+  expect(performance.now() - started).toBeLessThan(2000)
+  expect(svg).not.toContain("<mask")
+  const [path] = cutPaths(svg)
+  expect(inside(path, 672, 862)).toBe(true)
+  expect(inside(path, 681, 872.5)).toBe(false)
+}, 5000)

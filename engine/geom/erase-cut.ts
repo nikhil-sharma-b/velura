@@ -11,12 +11,14 @@
  */
 
 import {
-  Clipper,
   FillRule,
-  type IPoint64,
+  difference,
+  intersect,
+  union,
+  type Point64 as IPoint64,
   type Path64,
   type Paths64,
-} from "clipper2-js"
+} from "@countertype/clipper2-ts"
 import type { Bounds, Mesh } from "./tessellate"
 
 /** Polygon coordinates are integers: hundredths of a document pixel. */
@@ -51,7 +53,7 @@ function meshPaths(mesh: Mesh): { paths: Paths64; rule: FillRule } {
 /** The area a mesh paints, as non-overlapping rings. */
 export function meshRegion(mesh: Mesh): Region {
   const { paths, rule } = meshPaths(mesh)
-  return Clipper.Union(paths, undefined, rule)
+  return union(paths, rule)
 }
 
 /**
@@ -63,19 +65,19 @@ export function meshRegion(mesh: Mesh): Region {
  */
 export function cutMesh(mesh: Mesh, erasers: readonly Region[]): Region | null {
   const region = meshRegion(mesh),
-    clip = erasers.flat() as Paths64
-  if (!Clipper.Intersect(region, clip, FillRule.NonZero).length) return null
-  return Clipper.Difference(region, clip, FillRule.NonZero)
+    clip = erasers.flat()
+  if (!intersect(region, clip, FillRule.NonZero).length) return null
+  return difference(region, clip, FillRule.NonZero)
 }
 
 /** One region of several, as one eraser's fill and stroke erase together. */
 export function unionRegions(regions: readonly Region[]): Region {
-  return Clipper.Union(regions.flat() as Paths64, undefined, FillRule.NonZero)
+  return union(regions.flat(), FillRule.NonZero)
 }
 
 /** A ring without repeated points or points on a straight run, which the triangles leave behind. */
 function tidy(ring: Path64): Path64 {
-  const out: Path64 = [] as unknown as Path64
+  const out: Path64 = []
   const straight = (a: IPoint64, b: IPoint64, c: IPoint64) =>
     cross(a, b, c) === 0
   for (const p of ring) {
