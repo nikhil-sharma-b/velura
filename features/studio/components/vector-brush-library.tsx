@@ -1,7 +1,12 @@
 "use client"
 
 import { useState, type ReactNode } from "react"
-import { CaretRightIcon } from "@phosphor-icons/react"
+import {
+  CaretRightIcon,
+  MagnifyingGlassIcon,
+  PencilSimpleIcon,
+  TrashIcon,
+} from "@phosphor-icons/react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -157,6 +162,7 @@ export function VectorBrushLibrary({
   const [editing, setEditing] = useState<VectorBrush | null>(null)
   const [sourceId, setSourceId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [query, setQuery] = useState("")
   const shelf = [
     ...(library.brushes.length > 0
       ? [{ name: MINE, brushes: library.brushes }]
@@ -178,6 +184,18 @@ export function VectorBrushLibrary({
     shelf.find(({ name }) => name === kindGroup?.name) ??
     shelf[0]
   const openName = chosen !== undefined ? chosen : holding.name
+  const needle = query.trim().toLowerCase()
+  const searching = needle !== ""
+  const shown = searching
+    ? shelf
+        .map((group) => ({
+          ...group,
+          brushes: group.brushes.filter((b) =>
+            b.name.toLowerCase().includes(needle)
+          ),
+        }))
+        .filter((group) => group.brushes.length > 0)
+    : shelf
   const toggle = (name: string) => setChosen(openName === name ? null : name)
   async function work(action: () => Promise<unknown>) {
     setBusy(true)
@@ -200,14 +218,31 @@ export function VectorBrushLibrary({
   return (
     <>
       <h2 className="mb-2 text-sm font-medium">Vector brushes</h2>
-      {shelf.map(({ name, brushes }) => {
-        const open = openName === name
+      <div className="relative mb-2">
+        <MagnifyingGlassIcon className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          type="search"
+          value={query}
+          aria-label="Search vector brushes"
+          placeholder="Search vector brushes"
+          className="h-7 pl-7 text-xs"
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </div>
+      {searching && shown.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          No vector brush is called that.
+        </p>
+      )}
+      {shown.map(({ name, brushes }) => {
+        const open = searching || openName === name
         return (
           <section key={name} className="mb-2">
             <h3 className="mb-1 text-xs font-medium text-muted-foreground">
               <button
                 type="button"
                 aria-expanded={open}
+                disabled={searching}
                 className="flex w-full items-center gap-1 rounded-sm px-1 py-1 text-left focus-visible:outline-2 focus-visible:outline-primary"
                 onClick={() => toggle(name)}
               >
@@ -225,24 +260,35 @@ export function VectorBrushLibrary({
             </h3>
             {open &&
               brushes.map((brush) => (
-                <div key={brush.id} className="mb-1">
+                <div
+                  key={brush.id}
+                  data-selected={current.id === brush.id}
+                  className="group/row mb-1 flex items-stretch rounded-lg border border-border hover:bg-muted data-[selected=true]:border-primary data-[selected=true]:bg-primary/10"
+                >
                   <button
                     type="button"
                     aria-label={`${brush.name} vector brush`}
                     aria-pressed={current.id === brush.id}
-                    className="flex w-full items-center gap-3 rounded-lg border border-transparent p-3 text-left hover:bg-muted aria-pressed:border-primary aria-pressed:bg-primary/10"
+                    className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2.5 text-left outline-none focus-visible:outline-2 focus-visible:outline-primary"
                     onClick={() => {
                       select(brush)
                       close()
                     }}
                   >
-                    <VectorBrushToolIcon
-                      kind={brush.params.pressure ? "pressure" : "solid"}
-                      className="size-5"
-                    />
-                    <span>
-                      <span className="block text-xs font-medium">
-                        {brush.name} vector brush
+                    <span className="grid size-10 shrink-0 place-items-center rounded-md bg-muted/60 group-data-[selected=true]/row:bg-primary/20">
+                      <VectorBrushToolIcon
+                        kind={brush.params.pressure ? "pressure" : "solid"}
+                        className="size-5"
+                      />
+                    </span>
+                    <span className="min-w-0">
+                      <span
+                        title={brush.name}
+                        className="line-clamp-2 block text-xs font-medium break-words"
+                      >
+                        {name === MINE
+                          ? brush.name
+                          : `${brush.name} vector brush`}
                       </span>
                       <span className="block text-[10px] text-muted-foreground">
                         {describe(brush)}
@@ -250,21 +296,27 @@ export function VectorBrushLibrary({
                     </span>
                   </button>
                   {name === MINE && (
-                    <div className="flex gap-1 px-3">
+                    <div className="flex shrink-0 flex-col justify-center border-l border-border/60 px-1">
                       <Button
-                        size="sm"
+                        size="icon-sm"
                         variant="ghost"
+                        className="text-muted-foreground hover:text-foreground"
+                        title="Edit"
+                        aria-label={`Edit ${brush.name}`}
                         onClick={() => edit(brush, brush.id)}
                       >
-                        Edit {brush.name}
+                        <PencilSimpleIcon />
                       </Button>
                       <Button
-                        size="sm"
+                        size="icon-sm"
                         variant="ghost"
+                        className="text-muted-foreground hover:text-destructive"
+                        title="Delete"
                         disabled={busy}
+                        aria-label={`Delete ${brush.name}`}
                         onClick={() => void work(() => store.remove(brush.id))}
                       >
-                        Delete {brush.name}
+                        <TrashIcon />
                       </Button>
                     </div>
                   )}
