@@ -3,12 +3,17 @@
 import { Fragment, useState, type ReactNode } from "react"
 import {
   CaretRightIcon,
+  CopyIcon,
+  DotsNineIcon,
   MagnifyingGlassIcon,
   PencilSimpleIcon,
+  PlusIcon,
+  SquaresFourIcon,
   TrashIcon,
 } from "@phosphor-icons/react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { ButtonGroup } from "@/components/ui/button-group"
 import {
   FieldDescription,
   FieldGroup,
@@ -336,9 +341,59 @@ export function VectorBrushLibrary({
       {!library.loaded && (
         <p className="text-xs text-muted-foreground">Loading brushes…</p>
       )}
-      <div className="mt-2 flex flex-wrap gap-2">
+      {/* Making a brush comes in two pairs — from a brush, and from art —
+          each joined into one control, with applying the pick set apart
+          below as what the panel is for. */}
+      <div className="mt-2 flex flex-col gap-2 border-t pt-3">
+        <ButtonGroup className="w-full *:flex-1">
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label="New brush"
+            onClick={() => edit({ ...current, name: "My vector brush" }, null)}
+          >
+            <PlusIcon />
+            New
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label="Duplicate brush"
+            onClick={() =>
+              edit({ ...current, name: `${current.name} copy` }, null)
+            }
+          >
+            <CopyIcon />
+            Duplicate
+          </Button>
+        </ButtonGroup>
+        <ButtonGroup className="w-full *:flex-1">
+          {ART_BRUSH_KINDS.map((kind) => (
+            <Button
+              key={kind}
+              size="sm"
+              variant="outline"
+              disabled={!canApply}
+              aria-label={`Make ${kind} brush`}
+              onClick={() => {
+                try {
+                  edit(makeArt(kind), null)
+                } catch (error) {
+                  toast.error(
+                    error instanceof Error
+                      ? error.message
+                      : `Could not make a ${kind} brush.`
+                  )
+                }
+              }}
+            >
+              {kind === "pattern" ? <SquaresFourIcon /> : <DotsNineIcon />}
+              <span className="capitalize">{kind}</span>
+            </Button>
+          ))}
+        </ButtonGroup>
         <Button
-          size="sm"
+          className="w-full"
           disabled={!canApply}
           onClick={() => {
             apply(current)
@@ -347,43 +402,6 @@ export function VectorBrushLibrary({
         >
           Apply brush
         </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => edit({ ...current, name: "My vector brush" }, null)}
-        >
-          New brush
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() =>
-            edit({ ...current, name: `${current.name} copy` }, null)
-          }
-        >
-          Duplicate brush
-        </Button>
-        {ART_BRUSH_KINDS.map((kind) => (
-          <Button
-            key={kind}
-            size="sm"
-            variant="outline"
-            disabled={!canApply}
-            onClick={() => {
-              try {
-                edit(makeArt(kind), null)
-              } catch (error) {
-                toast.error(
-                  error instanceof Error
-                    ? error.message
-                    : `Could not make a ${kind} brush.`
-                )
-              }
-            }}
-          >
-            Make {kind} brush
-          </Button>
-        ))}
       </div>
       <Dialog
         open={editing !== null}
