@@ -158,3 +158,22 @@ test("the theme is chosen in preferences and survives a reload", async ({
     (await openPreferences(page)).getByRole("combobox", { name: "Theme" })
   ).toHaveText("Dark")
 })
+
+test("searching the shortcuts narrows them by command name", async ({
+  page,
+}) => {
+  await openStudio(page)
+  const dialog = await openPreferences(page)
+  const rows = dialog.locator("[data-command]")
+  const all = await rows.count()
+
+  await dialog.getByRole("searchbox", { name: "Search shortcuts" }).fill("eras")
+  await expect(
+    dialog.getByRole("button", { name: "Add a shortcut for Eraser tool" })
+  ).toBeVisible()
+  expect(await rows.count()).toBeLessThan(all)
+
+  await dialog.getByRole("searchbox", { name: "Search shortcuts" }).fill("zzzq")
+  await expect(rows).toHaveCount(0)
+  await expect(dialog.getByText("No shortcuts match")).toBeVisible()
+})

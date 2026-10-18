@@ -9,6 +9,7 @@ import { useTheme } from "next-themes"
 import { useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Kbd } from "@/components/ui/kbd"
 import {
   Select,
@@ -45,6 +46,7 @@ import {
   unbind,
   type RebindMode,
 } from "../lib/overrides"
+import { fuzzyScore } from "../lib/palette"
 import type { Command, Registry } from "../lib/registry"
 import {
   useRasterMagnification,
@@ -86,6 +88,7 @@ export function PreferencesPanel<Context>({
   const { theme, setTheme } = useTheme()
   const [capture, setCapture] = useState<Capture>()
   const [pending, setPending] = useState<Pending>()
+  const [query, setQuery] = useState("")
   // The modifier pressed alone since capture began, so a key already held
   // when it began cannot be recorded by being let go.
   const lone = useRef<string | undefined>(undefined)
@@ -138,7 +141,14 @@ export function PreferencesPanel<Context>({
     lone.current = undefined
   }
 
-  const categories = registry.categories()
+  // The commands whose name the query abbreviates, in the registry's order;
+  // categories left with none are dropped.
+  const commands = registry
+    .list()
+    .filter((command) => fuzzyScore(query, command.label) !== undefined)
+  const categories = registry
+    .categories()
+    .filter((category) => commands.some((c) => c.category === category))
 
   return (
     <Dialog
@@ -147,6 +157,7 @@ export function PreferencesPanel<Context>({
         if (!next) {
           setCapture(undefined)
           setPending(undefined)
+          setQuery("")
         }
         onOpenChange(next)
       }}
@@ -271,6 +282,13 @@ export function PreferencesPanel<Context>({
               </Button>
             </div>
           )}
+          <Input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search shortcuts…"
+            aria-label="Search shortcuts"
+          />
           <div className="scroll-rounded -mx-2 min-h-0 overflow-y-auto [--scroll-inset:0.25rem]">
             {categories.map((category) => (
               <div key={category} className="mb-3">
@@ -278,8 +296,7 @@ export function PreferencesPanel<Context>({
                   {category}
                 </h4>
                 <ul>
-                  {registry
-                    .list()
+                  {commands
                     .filter((command) => command.category === category)
                     .map((command) => {
                       const chords = registry.keybinds(command.id)
@@ -404,6 +421,11 @@ export function PreferencesPanel<Context>({
                 </ul>
               </div>
             ))}
+            {categories.length === 0 && (
+              <p className="px-2 py-3 text-muted-foreground">
+                No shortcuts match “{query}”.
+              </p>
+            )}
           </div>
         </section>
       </DialogContent>

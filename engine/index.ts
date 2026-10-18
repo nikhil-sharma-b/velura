@@ -3151,6 +3151,8 @@ export function createEngine(
         points?: Point[]
         nodes?: PathNode[]
         placing?: boolean
+        /** Where the pen pressed, before snapping, for Alt to put it back. */
+        pressedAt?: Point
         closed?: boolean
         /** When the polygon's last corner was clicked, to tell a double-click. */
         clickedAt?: number
@@ -4132,6 +4134,20 @@ export function createEngine(
       if (drag.tool === "pen" && drag.placing && !drag.ended) {
         const at = drag.nodes!.length - 1,
           node = drag.nodes![at]
+        // Alt at the press samples, so Alt joining a press that has not yet
+        // moved is how an anchor goes down unsnapped.
+        const pressed = drag.pressedAt!
+        if (
+          altHeld &&
+          Math.hypot(point.x - pressed.x, point.y - pressed.y) *
+            snapshot.view.zoom <
+            NODE_DRAG_THRESHOLD
+        ) {
+          drag.nodes![at] = { ...pressed, in: null, out: null, type: "cusp" }
+          drag.point = pressed
+          if (at === 0) drag.anchor = pressed
+          return
+        }
         const dx = drag.point.x - node.x,
           dy = drag.point.y - node.y
         drag.nodes![at] = {
@@ -5944,6 +5960,7 @@ export function createEngine(
               type: "cusp",
             })
             shapeDrag.placing = true
+            shapeDrag.pressedAt = anchor
             shapeDrag.point = point
           }
         } else
@@ -5954,6 +5971,7 @@ export function createEngine(
             point,
             nodes: [{ ...point, in: null, out: null, type: "cusp" }],
             placing: true,
+            pressedAt: anchor,
             ended: false,
           }
         publish({ penNodes: [...shapeDrag.nodes!] })
@@ -6676,8 +6694,14 @@ export function createEngine(
             pressureCurve: () => pressureCurve,
             tiltEnabled: () => tiltEnabled,
             // With a selection tool, Alt/Option subtracts (09) rather than
-            // sampling.
-            altSamples: () => !isSelectionTool(tool) && !isVectorTool(tool),
+            // sampling, and the node and object tools give it to a held
+            // handle. Every tool that draws samples, as the colour panel
+            // promises; Alt still frees a drawn shape from snapping once
+            // the press has begun.
+            altSamples: () =>
+              !isSelectionTool(tool) &&
+              tool !== "node" &&
+              tool !== "objectSelect",
           }
         )
         // A pen over the canvas is about to draw on it: what it will draw

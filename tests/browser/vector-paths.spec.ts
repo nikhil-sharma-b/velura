@@ -370,7 +370,7 @@ test("stabilized pressure strokes suppress tremor and flush the raw endpoint", a
   expect(geometry.nodes.every((n) => Math.abs(n.y - 60) < 0.001)).toBe(true)
 })
 
-test("Alt places unsnapped pen anchors; open paths finish and idle drafts cancel on layer changes", async ({
+test("Alt held after the press places unsnapped pen anchors; open paths finish and idle drafts cancel on layer changes", async ({
   page,
 }) => {
   const box = await open(page)
@@ -378,10 +378,15 @@ test("Alt places unsnapped pen anchors; open paths finish and idle drafts cancel
     await window.engine.dispatch({ type: "setSnapping", enabled: true })
     await window.engine.dispatch({ type: "setTool", tool: "pen" })
   })
-  await page.keyboard.down("Alt")
-  await page.mouse.click(box.x + 3, box.y + 20)
-  await page.mouse.click(box.x + 80, box.y + 20)
-  await page.keyboard.up("Alt")
+  // Alt at the press samples a colour, so it joins once the anchor is down.
+  for (const x of [3, 80]) {
+    await page.mouse.move(box.x + x, box.y + 20)
+    await page.mouse.down()
+    await page.keyboard.down("Alt")
+    await page.mouse.move(box.x + x, box.y + 20)
+    await page.mouse.up()
+    await page.keyboard.up("Alt")
+  }
   await page.evaluate(() => window.engine.dispatch({ type: "finishPenPath" }))
   await waitForObject(page)
   expect((await path(page))!.geometry).toMatchObject({
