@@ -1,6 +1,11 @@
 import type { BrushGrain } from "../brush/brush"
 import type { Accumulation } from "../brush/round-brush"
-import { validateTexture, type GrayscaleTexture } from "../brush/texture"
+import {
+  builtinTextures,
+  PAPER_GRAIN,
+  validateTexture,
+  type GrayscaleTexture,
+} from "../brush/texture"
 import {
   type ColorMatrix,
   type OutputColorSpace,
@@ -175,6 +180,17 @@ export type VectorDraw = {
   rule: "nonzero" | "evenodd" | "union"
   color: readonly [number, number, number, number]
   bounds: Bounds
+  /**
+   * How deep the paper's grain bites the paint, as a pencil's does: 0 is
+   * solid, and the cut is the pixel brushes' (`engine/shaders/grain.ts`).
+   */
+  grain?: number
+  /**
+   * Grain depth and tone, two a vertex, in place of `grain`, where pressure
+   * varies them along a stroke: the paint is then covered by the triangles
+   * themselves, so both follow them, rather than by one quad.
+   */
+  shades?: Float32Array
   /**
    * An eraser's mark: its coverage, times its alpha, is taken from what is
    * drawn under it rather than painted over it.
@@ -1060,6 +1076,8 @@ export function createRenderer(
   // and copied into the layer. Made on first use; most documents never draw
   // a shape and should not pay for the targets.
   const VECTOR_SAMPLES = 4
+  /** Floats a cover vertex takes: position, colour, grain depth, tone. */
+  const COVER_FLOATS = 8
   let vector:
     | {
         stencil: Record<VectorDraw["rule"], GPURenderPipeline>
@@ -1087,8 +1105,13 @@ export function createRenderer(
           visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
           buffer: { type: "uniform" },
         },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: {} },
       ],
     })
+    // The paper a pencil stroke's grain bites: the built-in one the pixel
+    // brushes default to, fixed whatever brush is in the hand.
+    const paper = uploadTexture(builtinTextures()[PAPER_GRAIN])
     const pipelineLayout = device.createPipelineLayout({
       bindGroupLayouts: [layout],
     })
@@ -1135,10 +1158,12 @@ export function createRenderer(
           entryPoint: "coverVertex",
           buffers: [
             {
-              arrayStride: 24,
+              arrayStride: COVER_FLOATS * 4,
               attributes: [
                 { shaderLocation: 0, offset: 0, format: "float32x2" },
                 { shaderLocation: 1, offset: 8, format: "float32x4" },
+                { shaderLocation: 2, offset: 24, format: "float32" },
+                { shaderLocation: 3, offset: 28, format: "float32" },
               ],
             },
           ],
@@ -1239,22 +1264,30 @@ export function createRenderer(
       uniform,
       bindGroup: device.createBindGroup({
         layout,
-        entries: [{ binding: 0, resource: { buffer: uniform } }],
+        entries: [
+          { binding: 0, resource: { buffer: uniform } },
+          { binding: 1, resource: grainSampler },
+          { binding: 2, resource: paper.createView() },
+        ],
       }),
       color: color.createView(),
       depth: depth.createView(),
       resolve,
-      textures: [color, depth, resolve],
+      textures: [color, depth, resolve, paper],
     }
     return vector
   }
 
-  /** A scene's draws on the GPU: every fill's triangles, and its cover quad. */
+  /**
+   * A scene's draws on the GPU: every fill's triangles, and what covers
+   * each, its quad or, grained by vertex, its own triangles again.
+   */
   type VectorBuffers = {
     draws: readonly VectorDraw[]
     triangles: GPUBuffer
-    quads: GPUBuffer
+    covers: GPUBuffer
     firsts: number[]
+    coverFirsts: number[]
   }
 
   function uploadVectorDraws(draws: readonly VectorDraw[]): VectorBuffers {
@@ -1264,13 +1297,33 @@ export function createRenderer(
     const triangles = new Float32Array(
       drawn.reduce((total, draw) => total + draw.vertices.length, 0)
     )
-    const quads = new Float32Array(drawn.length * 6 * 6)
+    const coverCount = (draw: VectorDraw) =>
+      draw.shades ? draw.vertices.length / 2 : 6
+    const covers = new Float32Array(
+      drawn.reduce((total, draw) => total + coverCount(draw), 0) * COVER_FLOATS
+    )
     const firsts: number[] = []
-    let offset = 0
-    drawn.forEach((draw, index) => {
+    const coverFirsts: number[] = []
+    let offset = 0,
+      cover = 0
+    drawn.forEach((draw) => {
       triangles.set(draw.vertices, offset)
       firsts.push(offset / 2)
       offset += draw.vertices.length
+      coverFirsts.push(cover)
+      const at = (x: number, y: number, depth: number, tone: number) =>
+        covers.set([x, y, ...draw.color, depth, tone], cover++ * COVER_FLOATS)
+      const { shades } = draw
+      if (shades) {
+        for (let i = 0; i < shades.length / 2; i++)
+          at(
+            draw.vertices[i * 2],
+            draw.vertices[i * 2 + 1],
+            shades[i * 2],
+            shades[i * 2 + 1]
+          )
+        return
+      }
       const { minX, minY, maxX, maxY } = draw.bounds
       const corners = [
         [minX, minY],
@@ -1280,9 +1333,7 @@ export function createRenderer(
         [maxX, maxY],
         [minX, maxY],
       ]
-      corners.forEach(([x, y], corner) =>
-        quads.set([x, y, ...draw.color], (index * 6 + corner) * 6)
-      )
+      for (const [x, y] of corners) at(x, y, draw.grain ?? 0, 1)
     })
     const buffer = (data: Float32Array) => {
       const created = device.createBuffer({
@@ -1295,15 +1346,16 @@ export function createRenderer(
     return {
       draws: drawn,
       triangles: buffer(triangles),
-      quads: buffer(quads),
+      covers: buffer(covers),
       firsts,
+      coverFirsts,
     }
   }
 
   function releaseVectorDraws(buffers: VectorBuffers) {
     // Destroying waits for the work already submitted against them.
     buffers.triangles.destroy()
-    buffers.quads.destroy()
+    buffers.covers.destroy()
   }
 
   /**
@@ -1400,8 +1452,14 @@ export function createRenderer(
                 : targets.cover
           )
           pass.setStencilReference(0)
-          pass.setVertexBuffer(0, buffers.quads)
-          pass.draw(6, 1, index * 6)
+          // A stroke's own triangles cover each sample once: the first to
+          // land zeroes the count, so those overlapping it fail the test.
+          pass.setVertexBuffer(0, buffers.covers)
+          pass.draw(
+            draw.shades ? draw.vertices.length / 2 : 6,
+            1,
+            buffers.coverFirsts[index]
+          )
         })
         pass.end()
         encoder.copyTextureToTexture(

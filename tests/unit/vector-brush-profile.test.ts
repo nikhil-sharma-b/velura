@@ -1,3 +1,5 @@
+import { pencilShade } from "../../engine/brush/vector-brush"
+import { tessellateStroke } from "../../engine/geom/tessellate"
 import { describe, expect, test } from "bun:test"
 import {
   BUILTIN_VECTOR_BRUSHES,
@@ -69,6 +71,9 @@ describe("profile parameters", () => {
       smoothing: 0,
       tremor: 0,
       wiggle: 0,
+      grain: 0,
+      grainPressure: 0,
+      pressureTone: 0,
       nibAngle: 45,
       fixation: 1,
     })
@@ -81,6 +86,9 @@ describe("profile parameters", () => {
       { minWidth: -1 },
       { caps: "square" },
       { tremor: Number.NaN },
+      { grain: 1.5 },
+      { grainPressure: -0.1 },
+      { pressureTone: 2 },
     ])
       expect(() =>
         parseVectorBrush({
@@ -259,4 +267,61 @@ test("a closed path's closing segment gets noise too", () => {
     (n, i) => i > 0 && Math.abs(n.x - 100) < 8 && n.y > 140
   )
   expect(nodes.slice(last + 1).length).toBeGreaterThan(3)
+})
+
+describe("pencil", () => {
+  test("a lighter touch shows more grain, up to all of it", () => {
+    const params = {
+      ...preset("Pencil").params,
+      pressure: true,
+      minWidth: 0.5,
+      grain: 0.4,
+      grainPressure: 1,
+      pressureTone: 0.6,
+    }
+    // Full width is full pressure; the floor and below, none.
+    expect(pencilShade(params, 1).depth).toBeCloseTo(0.4)
+    expect(pencilShade(params, 1).tone).toBeCloseTo(1)
+    expect(pencilShade(params, 0.75).depth).toBeCloseTo(0.7)
+    expect(pencilShade(params, 0.75).tone).toBeCloseTo(0.7)
+    expect(pencilShade(params, 0.5).depth).toBeCloseTo(1)
+    expect(pencilShade(params, 0.2).tone).toBeCloseTo(0.4)
+    // A nib's width is its angle's: no floor to read past.
+    expect(pencilShade(params, 0.5, true).tone).toBeCloseTo(0.7)
+    // Without pressure, only a taper lightens it.
+    expect(pencilShade({ ...params, pressure: false }, 0.5).tone).toBeCloseTo(
+      0.7
+    )
+  })
+
+  test("a pressure stroke's mesh weighs each vertex by its width", () => {
+    const mesh = tessellateStroke(
+      [
+        { x: 0, y: 0 },
+        { x: 20, y: 0 },
+      ],
+      false,
+      { width: 10, cap: "butt", join: "round" },
+      [10, 5]
+    )
+    expect(mesh.weights).toHaveLength(mesh.vertices.length / 2)
+    expect(Math.max(...mesh.weights!)).toBeCloseTo(1)
+    expect(Math.min(...mesh.weights!)).toBeCloseTo(0.5)
+    const plain = tessellateStroke(
+      [
+        { x: 0, y: 0 },
+        { x: 20, y: 0 },
+      ],
+      false,
+      { width: 10, cap: "butt", join: "round" }
+    )
+    expect(plain.weights).toBeUndefined()
+  })
+
+  test("the Pencil preset carries paper grain, and old brushes have none", () => {
+    expect(parseVectorBrush(preset("Pencil")).params.grain).toBeGreaterThan(0)
+    // One width and one grey whatever the pen does.
+    expect(preset("Pencil").params.pressure).toBe(false)
+    expect(preset("Solid").params.grain).toBe(0)
+  })
 })

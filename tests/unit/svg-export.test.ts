@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { createTiledMask } from "../../engine/doc/tiled-mask"
 import { serializeSvg } from "../../engine/store/export-svg"
+import { BUILTIN_VECTOR_BRUSHES } from "../../engine/brush/vector-brush"
 import {
   createBlankDocument,
   addVectorLayer,
@@ -247,4 +248,50 @@ test("an eraser's mark cuts what is under it and leaves what is above", () => {
   expect(svg).toMatch(
     /<path d="[^"]+" fill="#ff0000" fill-opacity="1" fill-rule="evenodd" stroke="none"\/><rect x="20"/
   )
+})
+
+test("a pencil stroke's paper grain is exported as one shared filter", () => {
+  const doc = createBlankDocument({ width: 40, height: 20 })
+  const id = addVectorLayer(doc)
+  const node = findNode(doc, id)
+  if (node.kind !== "vector") throw new Error("Expected vector")
+  const pencil = BUILTIN_VECTOR_BRUSHES.find((b) => b.id === "vector:pencil")!
+  const line = (id: string) => ({
+    id,
+    geometry: {
+      kind: "path" as const,
+      closed: false,
+      nodes: [
+        { x: 2, y: 10, in: null, out: null, type: "cusp" as const },
+        { x: 38, y: 10, in: null, out: null, type: "cusp" as const },
+      ],
+    },
+    transform: [1, 0, 0, 1, 0, 0] as const,
+    style: {
+      fill: null,
+      stroke: {
+        color: "#202020",
+        opacity: 1,
+        width: 4,
+        cap: "round" as const,
+        join: "round" as const,
+      },
+    },
+    brush: { definition: pencil, seed: 1 },
+  })
+  node.scene = { objects: [line("a"), line("b")] }
+  const result = serializeSvg(doc, { raster: "omit" })
+  const filters = [
+    ...result.svg.matchAll(/<filter id="(velura-pencil-\d+-\d+)"/g),
+  ]
+  expect(filters).toHaveLength(1)
+  expect(result.svg.split(`filter="url(#${filters[0][1]})"`).length - 1).toBe(2)
+  expect(result.svg).toContain("<feTurbulence")
+  expect(result.warnings.some((w) => w.includes("Pencil grain"))).toBe(true)
+})
+
+test("a stroke without grain writes no grain filter", () => {
+  const doc = createBlankDocument({ width: 40, height: 20 })
+  const result = serializeSvg(doc, { raster: "omit" })
+  expect(result.svg).not.toContain("velura-pencil")
 })

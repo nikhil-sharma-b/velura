@@ -1,3 +1,11 @@
+import { grainCarveShader } from "./grain"
+
+/**
+ * The paper a vector stroke's grain bites, as a multiple of the paper
+ * texture's own pixels: the pixel Pencil's, so the two read as one pencil.
+ */
+export const VECTOR_PAPER_SCALE = 0.45
+
 /**
  * Drawing a vector layer's objects into its pixels (19), by stencil and cover.
  *
@@ -45,6 +53,13 @@ fn stencilFragment() -> @location(0) vec4<f32> {
   return vec4<f32>(0.0);
 }
 
+@group(0) @binding(1) var paperSampler: sampler;
+@group(0) @binding(2) var paper: texture_2d<f32>;
+
+${grainCarveShader}
+
+const PAPER_SCALE = ${VECTOR_PAPER_SCALE};
+
 struct Covered {
   @builtin(position) position: vec4<f32>,
   // Premultiplied linear light, as every layer holds it.
@@ -52,14 +67,20 @@ struct Covered {
   // Where this is in the document: the map is affine, so interpolating the
   // corners' is exact.
   @location(1) document: vec2<f32>,
+  // How deep the paper's grain bites, and how much graphite is laid: both
+  // vary along a stroke whose pressure varies them.
+  @location(2) depth: f32,
+  @location(3) tone: f32,
 }
 
 @vertex
 fn coverVertex(
   @location(0) position: vec2<f32>,
   @location(1) color: vec4<f32>,
+  @location(2) depth: f32,
+  @location(3) tone: f32,
 ) -> Covered {
-  return Covered(toClip(position), color, position);
+  return Covered(toClip(position), color, position, depth, tone);
 }
 
 @fragment
@@ -67,6 +88,10 @@ fn coverFragment(input: Covered) -> @location(0) vec4<f32> {
   if (any(input.document < vec2<f32>(0.0)) || any(input.document >= chunk.docSize)) {
     discard;
   }
-  return input.color;
+  // The paper lies still under the document, as it does under a dab. Read
+  // at level 0: the texture has no mips, and this flow is not uniform.
+  let size = vec2<f32>(textureDimensions(paper)) * PAPER_SCALE;
+  let grain = textureSampleLevel(paper, paperSampler, input.document / size, 0.0).r;
+  return input.color * input.tone * grainCarve(grain, input.depth);
 }
 `

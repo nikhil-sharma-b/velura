@@ -10,6 +10,32 @@
 export const GRAIN_CUT = 0.55
 
 /**
+ * How much of the paper at height `grain` takes ink at `depth`, in [0, 1]:
+ * the cut every brush that bites the paper shares, dabs and vector strokes
+ * alike, so a vector pencil reads as the pixel one does.
+ */
+export const grainCarveShader = /* wgsl */ `
+const GRAIN_CUT = ${GRAIN_CUT};
+/**
+ * The height of paper between taking no ink and taking it whole. Wide enough
+ * that the tooth has a gradient rather than a hard threshold, which is the
+ * difference between grain and a stencil.
+ */
+const GRAIN_SLOPE = 0.5;
+
+fn grainCarve(grain: f32, depth: f32) -> f32 {
+  let clamped = clamp(depth, 0.0, 1.0);
+  // The tooth is cut, not dimmed. Depth raises a threshold the paper has to
+  // clear, so the valleys take no ink at all however many dabs pass over them
+  // — which is what keeps a pencil reading as graphite on paper instead of
+  // filling in to a flat tinted blur after a few passes.
+  let cut = clamped * GRAIN_CUT;
+  let carved = smoothstep(cut, min(1.0, cut + GRAIN_SLOPE), grain);
+  return mix(1.0, carved, clamped);
+}
+`
+
+/**
  * The paper's bite (D24, §7.3), shared by the stamp pass and the direct pass
  * so a brush's grain reads the same wet as dry.
  *
@@ -21,13 +47,7 @@ export const GRAIN_CUT = 0.55
  * in the wrong space.
  */
 export const grainShader = /* wgsl */ `
-const GRAIN_CUT = ${GRAIN_CUT};
-/**
- * The height of paper between taking no ink and taking it whole. Wide enough
- * that the tooth has a gradient rather than a hard threshold, which is the
- * difference between grain and a stencil.
- */
-const GRAIN_SLOPE = 0.5;
+${grainCarveShader}
 
 // How much of a dab the paper lets through at one fragment, in [0, 1].
 // \`scale\` is the size of one tile as a multiple of the texture's own pixels,
@@ -56,13 +76,6 @@ fn grainBite(
   // switching spaces is what makes the values between the two a drift: the
   // paper still moves under the brush, only more slowly than the brush does.
   let grain = textureSample(paper, paperSampler, (position - center * movement) / size).r;
-  let clamped = clamp(depth, 0.0, 1.0);
-  // The tooth is cut, not dimmed. Depth raises a threshold the paper has to
-  // clear, so the valleys take no ink at all however many dabs pass over them
-  // — which is what keeps a pencil reading as graphite on paper instead of
-  // filling in to a flat tinted blur after a few passes.
-  let cut = clamped * GRAIN_CUT;
-  let carved = smoothstep(cut, min(1.0, cut + GRAIN_SLOPE), grain);
-  return mix(1.0, carved, clamped);
+  return grainCarve(grain, depth);
 }
 `

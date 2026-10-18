@@ -39,6 +39,11 @@ export type Mesh = {
   rule: CoverageRule
   /** The box every triangle lies in; null when there are none. */
   bounds: Bounds | null
+  /**
+   * A pressure stroke's width at each vertex, as a share of its full width:
+   * how hard the pen pressed there, tapers and all. Absent elsewhere.
+   */
+  weights?: Float32Array
 }
 
 /**
@@ -124,8 +129,9 @@ function outline(
 }
 
 /** Collects triangles and the box round them. */
-function createBuilder(rule: CoverageRule) {
+function createBuilder(rule: CoverageRule, weighted = false) {
   const values: number[] = []
+  const weights: number[] = []
   let bounds: Bounds | null = null
   const grow = (p: Point) => {
     if (!bounds) bounds = { minX: p.x, minY: p.y, maxX: p.x, maxY: p.y }
@@ -137,14 +143,23 @@ function createBuilder(rule: CoverageRule) {
     }
   }
   return {
-    triangle(p: Point, q: Point, r: Point) {
+    /** `w` weighs the three corners, for a builder made `weighted`. */
+    triangle(
+      p: Point,
+      q: Point,
+      r: Point,
+      w: readonly [number, number, number] = [1, 1, 1]
+    ) {
       values.push(p.x, p.y, q.x, q.y, r.x, r.y)
+      if (weighted) weights.push(...w)
       grow(p)
       grow(q)
       grow(r)
     },
     finish(): Mesh {
-      return { vertices: new Float32Array(values), rule, bounds }
+      const mesh: Mesh = { vertices: new Float32Array(values), rule, bounds }
+      if (weighted) mesh.weights = new Float32Array(weights)
+      return mesh
     },
   }
 }
@@ -230,7 +245,7 @@ export function tessellateStroke(
    */
   ends: Readonly<{ start: boolean; end: boolean }> = { start: true, end: true }
 ): Mesh {
-  const mesh = createBuilder("union")
+  const mesh = createBuilder("union", !!widths)
   const corner = new Set(corners)
   const points = distinct(
     input.map((p, i) => ({
@@ -245,13 +260,21 @@ export function tessellateStroke(
     direction(points[i % points.length], points[(i + 1) % points.length])
 
   // An arc of triangles round `center`, from `start` turning by `sweep`.
-  const fan = (center: Point, start: number, sweep: number, half: number) => {
+  const share = (p: { width: number }) =>
+    stroke.width > 0 ? p.width / stroke.width : 1
+  const fan = (
+    center: Point & { width: number },
+    start: number,
+    sweep: number,
+    half: number
+  ) => {
+    const w = share(center)
     const count = arcSegments(half, sweep, detail)
     let previous = add(center, { x: Math.cos(start), y: Math.sin(start) }, half)
     for (let i = 1; i <= count; i++) {
       const angle = start + (sweep * i) / count
       const next = add(center, { x: Math.cos(angle), y: Math.sin(angle) }, half)
-      mesh.triangle(center, previous, next)
+      mesh.triangle(center, previous, next, [w, w, w])
       previous = next
     }
   }
@@ -267,6 +290,7 @@ export function tessellateStroke(
   const join = (i: number) => {
     const center = points[i]
     const half = center.width / 2
+    const w = share(center)
     const incoming = edge((i - 1 + points.length) % points.length)
     const outgoing = edge(i)
     const turn = incoming.x * outgoing.y - incoming.y * outgoing.x
@@ -296,11 +320,11 @@ export function tessellateStroke(
       1 / cosHalf <= MITER_LIMIT
     ) {
       const tip = add(center, bisector, half / cosHalf / length)
-      mesh.triangle(center, o0, tip)
-      mesh.triangle(center, tip, o1)
+      mesh.triangle(center, o0, tip, [w, w, w])
+      mesh.triangle(center, tip, o1, [w, w, w])
       return
     }
-    mesh.triangle(center, o0, o1)
+    mesh.triangle(center, o0, o1, [w, w, w])
   }
 
   const caps = () => {
@@ -320,12 +344,13 @@ export function tessellateStroke(
         fan(at, start, Math.PI, half)
         continue
       }
+      const w = share(at)
       const s1 = add(at, side, half)
       const s2 = add(at, side, -half)
       const s3 = add(s2, forward, half)
       const s4 = add(s1, forward, half)
-      mesh.triangle(s1, s2, s3)
-      mesh.triangle(s1, s3, s4)
+      mesh.triangle(s1, s2, s3, [w, w, w])
+      mesh.triangle(s1, s3, s4, [w, w, w])
     }
   }
 
@@ -377,8 +402,10 @@ export function tessellateStroke(
       const a2 = add(a, sa, -a.width / 2)
       const b1 = add(b, sb, b.width / 2)
       const b2 = add(b, sb, -b.width / 2)
-      mesh.triangle(a1, b1, b2)
-      mesh.triangle(a1, b2, a2)
+      const wa = share(a),
+        wb = share(b)
+      mesh.triangle(a1, b1, b2, [wa, wb, wb])
+      mesh.triangle(a1, b2, a2, [wa, wb, wa])
     }
     caps()
     return mesh.finish()
@@ -408,10 +435,16 @@ export function tessellateStroke(
 export function mergeMeshes(parts: readonly Mesh[], rule: CoverageRule): Mesh {
   const size = parts.reduce((sum, part) => sum + part.vertices.length, 0)
   const vertices = new Float32Array(size)
+  // Weighed only when every piece is.
+  const weights =
+    parts.length && parts.every((part) => part.weights)
+      ? new Float32Array(size / 2)
+      : undefined
   let offset = 0,
     bounds: Bounds | null = null
   for (const part of parts) {
     vertices.set(part.vertices, offset)
+    weights?.set(part.weights!, offset / 2)
     offset += part.vertices.length
     const b = part.bounds
     if (!b) continue
@@ -424,7 +457,9 @@ export function mergeMeshes(parts: readonly Mesh[], rule: CoverageRule): Mesh {
         }
       : { ...b }
   }
-  return { vertices, rule, bounds }
+  return weights
+    ? { vertices, rule, bounds, weights }
+    : { vertices, rule, bounds }
 }
 
 /**

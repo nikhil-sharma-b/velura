@@ -31,6 +31,23 @@ export type ProfileParams = Readonly<{
   /** Seeded noise along the normal. */
   wiggle: number
   /**
+   * How deep the paper's tooth bites the stroke at full pressure, as it does
+   * a pixel brush's: 0 is solid. The paper is fixed to the document, so
+   * overlapping strokes catch the same tooth.
+   */
+  grain: number
+  /**
+   * How much a lighter touch deepens the bite, as graphite skims the tooth:
+   * at 1 the lightest touch bites as deep as the paper goes. A taper is a
+   * lighter touch, so this reaches a brush that ignores pressure too.
+   */
+  grainPressure: number
+  /**
+   * How much a lighter touch, or a taper, lightens the line, as a pencil
+   * leaves less graphite: at 1 the lightest touch leaves none.
+   */
+  pressureTone: number
+  /**
    * A calligraphy nib's angle, in degrees from the x axis; profile brushes
    * ignore it. A calligraphy brush's `minWidth` is the nib's edge.
    */
@@ -197,6 +214,30 @@ export function brushArtOutlines(object: VectorObject): Point[][] | null {
   return object.style.stroke && outlines ? outlines(object) : null
 }
 
+/**
+ * How deep the paper bites and how much graphite is left where a stroke is
+ * `weight` of its full width wide. The pressure is read back from the width
+ * past the brush's floor, so a pencil that barely thins still shades; a
+ * taper reads as a lighter touch, as a pencil lifting off. A calligraphy
+ * nib's width is its angle's, not the hand's, so it has no floor to read past.
+ */
+export function pencilShade(
+  params: ProfileParams,
+  weight: number,
+  calligraphy = false
+): { depth: number; tone: number } {
+  const floor = params.pressure && !calligraphy ? params.minWidth : 0
+  const pressure = Math.max(
+    0,
+    Math.min(1, floor < 1 ? (weight - floor) / (1 - floor) : weight)
+  )
+  const light = 1 - pressure
+  return {
+    depth: params.grain + params.grainPressure * light * (1 - params.grain),
+    tone: 1 - params.pressureTone * light,
+  }
+}
+
 export const MIN_PRESSURE_CURVE = 0.25
 /** More nodes than any brush's art needs; past it, a selection is too busy to deform live. */
 export const MAX_PATTERN_NODES = 2000
@@ -223,6 +264,9 @@ const NEUTRAL: Omit<ProfileParams, "pressure" | "taper"> = {
   smoothing: 0,
   tremor: 0,
   wiggle: 0,
+  grain: 0,
+  grainPressure: 0,
+  pressureTone: 0,
   nibAngle: 45,
   fixation: 1,
 }
@@ -364,6 +408,22 @@ export const BUILTIN_VECTOR_BRUSHES: readonly VectorBrush[] = [
     name: "Marker",
     kind: "profile",
     params: profile({ pressure: false, caps: "flat", tremor: 0.06 }),
+  },
+  {
+    id: "vector:pencil",
+    name: "Pencil",
+    kind: "profile",
+    // One width and one grey whatever the pen does: the paper's tooth makes
+    // the graphite, and only the tapers lift off lighter, as a pencil does.
+    params: profile({
+      caps: "round",
+      pressure: false,
+      taper: { start: 0.08, end: 0.12 },
+      smoothing: 0.2,
+      grain: 0.6,
+      grainPressure: 0.5,
+      pressureTone: 0.45,
+    }),
   },
   {
     id: "vector:wiggly",
@@ -683,6 +743,9 @@ function parseKind<K extends VectorBrushKind>(
       params.smoothing,
       params.tremor,
       params.wiggle,
+      params.grain,
+      params.grainPressure,
+      params.pressureTone,
       params.fixation,
     ].every((v) => share(v)) ||
     !share(params.nibAngle, 180) ||
@@ -702,6 +765,9 @@ function parseKind<K extends VectorBrushKind>(
       smoothing: params.smoothing,
       tremor: params.tremor,
       wiggle: params.wiggle,
+      grain: params.grain,
+      grainPressure: params.grainPressure,
+      pressureTone: params.pressureTone,
       nibAngle: params.nibAngle,
       fixation: params.fixation,
     },

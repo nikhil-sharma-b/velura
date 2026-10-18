@@ -85,6 +85,7 @@ const KINDS: {
   profile: {
     label: "Width profile",
     describe: ({ params }) => {
+      if (params.grain > 0.2) return "Graphite on the paper's tooth"
       if (params.wiggle) return "A line that wanders either side of the spine"
       if (params.tremor > 0.2) return "Blotchy width that swells and pinches"
       if (params.pressure)
@@ -507,6 +508,9 @@ const SHARES = [
   ["smoothing", "Smoothing"],
   ["tremor", "Tremor"],
   ["wiggle", "Wiggle"],
+  ["grain", "Paper grain"],
+  ["grainPressure", "Grain at a light touch or taper"],
+  ["pressureTone", "Lighter at a light touch or taper"],
 ] as const
 
 /**
