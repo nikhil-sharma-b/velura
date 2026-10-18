@@ -3,9 +3,10 @@ import { expect, test, type Page } from "@playwright/test"
 /**
  * The edge of fluid paint (fluid brushes 30), through the engine's command
  * seam and the pixels it presents. The wet surface is simulated at half the
- * document's resolution (D42), but what it shows must not follow that grid:
- * a straight stroke's edge, and the front of a bloom, are as straight and as
- * anti-aliased as a dry brush's, wet or dried.
+ * document's resolution (D42), but a straight stroke's edge must not follow
+ * that grid: it is as straight and as anti-aliased as a dry brush's, wet or
+ * dried. A bloom's front is anti-aliased too, but keeps the cells' edge
+ * (fluid brushes 44, decided against), and must get no more jagged.
  *
  * Each test draws a shallow diagonal, at which a two pixel step would come
  * round every few columns, lets it dry by itself, and fits a line to its
@@ -29,6 +30,12 @@ const RIMMED = {
 const FLOODED = { ...RIMMED, water: 1, edge: 0 }
 /** A dry brush's edge, measured the same way, is within these. */
 const STRAIGHT = { rms: 0.25, max: 0.5 }
+/**
+ * A bloom's front keeps the cells' edge, stepped every two pixels: measured
+ * at 0.48 px RMS and 1.13 px at worst (fluid brushes 44). Within these, so a
+ * front that grows more jagged fails.
+ */
+const CELL_EDGE = { rms: 0.6, max: 1.5 }
 
 type Fluid = typeof RIMMED
 
@@ -194,21 +201,35 @@ test("a dry brush's diagonal edge is straight by this measure", async ({
   expect(edge.max).toBeLessThanOrEqual(STRAIGHT.max)
 })
 
+// Where the dabs laid paint is kept at the document's resolution, so a laid
+// edge follows the brush (fluid brushes 42). A bloom carries paint past where
+// it was laid, and there the edge is still the cells': anti-aliased but
+// stepped every two pixels (fluid brushes 44).
 const CASES = [
   {
     name: "a dried fluid stroke's edge, at radius 4",
     radius: 4,
     fluid: RIMMED,
+    straightness: "follows the stroke, not the cell grid",
+    within: STRAIGHT,
   },
   {
     name: "a dried fluid stroke's edge, at radius 24",
     radius: 24,
     fluid: RIMMED,
+    straightness: "follows the stroke, not the cell grid",
+    within: STRAIGHT,
   },
-  { name: "a dried bloom's front", radius: 12, fluid: FLOODED },
+  {
+    name: "a dried bloom's front",
+    radius: 12,
+    fluid: FLOODED,
+    straightness: "keeps the cells' edge, and no more jagged",
+    within: CELL_EDGE,
+  },
 ]
 
-for (const { name, radius, fluid } of CASES) {
+for (const { name, radius, fluid, straightness, within } of CASES) {
   test(`${name} is anti-aliased`, async ({ page }) => {
     test.slow()
     const edge = upperEdge(await dried(page, { radius, fluid, path: DIAGONAL }))
@@ -216,17 +237,16 @@ for (const { name, radius, fluid } of CASES) {
     expect(edge.unramped).toBe(0)
   })
 
-  test(`${name} follows the stroke, not the cell grid`, async ({ page }) => {
+  test(`${name} ${straightness}`, async ({ page }) => {
     test.slow()
-    // Where the dabs laid paint is kept at the document's resolution, so a
-    // laid edge follows the brush (fluid brushes 42). A bloom carries paint
-    // past where it was laid, and there the edge is still the cells': it is
-    // anti-aliased but stepped every two pixels (fluid brushes 44).
-    test.fail(fluid === FLOODED)
     const edge = upperEdge(await dried(page, { radius, fluid, path: DIAGONAL }))
+    await test.info().attach("edge", {
+      body: JSON.stringify({ rms: edge.rms, max: edge.max }),
+      contentType: "application/json",
+    })
     expect(edge.columns).toBe(120)
-    expect(edge.rms).toBeLessThanOrEqual(STRAIGHT.rms)
-    expect(edge.max).toBeLessThanOrEqual(STRAIGHT.max)
+    expect(edge.rms).toBeLessThanOrEqual(within.rms)
+    expect(edge.max).toBeLessThanOrEqual(within.max)
   })
 }
 
