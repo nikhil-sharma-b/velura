@@ -194,6 +194,29 @@ test("the solid eraser ignores painting brush shape, texture, grain, and dynamic
   expect(grained).toEqual(round)
 })
 
+for (const tool of ["pen", "pressure", "rectangle"] as const) {
+  test(`Alt samples rather than drawing with the ${tool} tool`, async ({
+    page,
+  }) => {
+    const origin = await openCanvas(page)
+    // The default ink is already dark: a red one shows a sample took.
+    await page.evaluate(async (tool) => {
+      await window.engine.dispatch({ type: "setColor", hex: "#d04030" })
+      await window.engine.dispatch({ type: "setTool", tool })
+    }, tool)
+    await page.keyboard.down("Alt")
+    await page.mouse.click(origin.x + GREEN.x, origin.y + GREEN.y)
+    await page.keyboard.up("Alt")
+
+    await expect
+      .poll(() => page.evaluate(() => window.engine.getSnapshot().color.red))
+      .toBeLessThan(0.3)
+    expect(await page.evaluate(() => window.engine.getSnapshot().tool)).toBe(
+      tool
+    )
+  })
+}
+
 async function strokeWithoutHistory(
   page: Page,
   origin: { x: number; y: number },
