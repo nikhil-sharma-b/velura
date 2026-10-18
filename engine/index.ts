@@ -1,6 +1,7 @@
 import {
   BUILTIN_VECTOR_BRUSHES,
   parseVectorBrush,
+  pencilShade,
   type ArtBrush,
   type VectorBrush,
 } from "./brush/vector-brush"
@@ -3312,6 +3313,29 @@ export function createEngine(
   }
 
   /**
+   * A stroke's paper grain and tone as the renderer takes them: one depth,
+   * or a depth and tone a vertex where pressure varies them.
+   */
+  function pencilOf(
+    mesh: Mesh,
+    brush: VectorObject["brush"]
+  ): Pick<VectorDraw, "grain" | "shades"> {
+    const params = brush?.definition.params
+    if (!params) return {}
+    const { weights } = mesh
+    if (!weights || (!params.grainPressure && !params.pressureTone))
+      return params.grain ? { grain: params.grain } : {}
+    const calligraphy = brush.definition.kind === "calligraphy"
+    const shades = new Float32Array(weights.length * 2)
+    weights.forEach((weight, i) => {
+      const { depth, tone } = pencilShade(params, weight, calligraphy)
+      shades[i * 2] = depth
+      shades[i * 2 + 1] = tone
+    })
+    return { shades }
+  }
+
+  /**
    * What the renderer draws of a scene within a region, bottom first: all of
    * it without one.
    */
@@ -3324,7 +3348,8 @@ export function createEngine(
     const add = (
       mesh: Mesh | null,
       paint: { color: string; opacity: number },
-      erase = false
+      erase = false,
+      brush?: VectorObject["brush"]
     ) => {
       if (!mesh?.bounds) return
       const { minX, minY, maxX, maxY } = mesh.bounds
@@ -3342,13 +3367,21 @@ export function createEngine(
         color: workingPaint(paint),
         bounds: mesh.bounds,
         erase,
+        ...pencilOf(mesh, brush),
       })
     }
     for (const object of scene.objects) {
       const { fill, stroke } = meshesOf(object, detail)
       const erase = object.erase === true
       if (object.style.fill) add(fill, object.style.fill, erase)
-      if (object.style.stroke) add(stroke, object.style.stroke, erase)
+      // Grain is the brush's, so it reaches the stroke a brush draws.
+      if (object.style.stroke)
+        add(
+          stroke,
+          object.style.stroke,
+          erase,
+          erase ? undefined : object.brush
+        )
     }
     return draws
   }

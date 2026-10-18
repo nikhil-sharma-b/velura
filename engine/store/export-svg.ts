@@ -1,9 +1,13 @@
+import { pencilShade } from "../brush/vector-brush"
 import { brushArtOutlines, vectorBrushObject } from "../doc/vector-brush"
 import type { PaintDocument, LayerNode } from "../doc/document"
 import type { BezierPath } from "../doc/vector-path"
 import { tessellateObject, type Mesh } from "../geom/tessellate"
 import type { Affine } from "../doc/transform-session"
 import type { VectorObject } from "../doc/vector-scene"
+import { GRAIN_TEXTURE_SIZE } from "../brush/texture"
+import { GRAIN_CUT } from "../shaders/grain"
+import { VECTOR_PAPER_SCALE } from "../shaders/vector"
 import {
   boundsOverlap,
   cutMesh,
@@ -85,6 +89,64 @@ function artPlaces([a, b, c, d]: Affine): number {
   return Number.isFinite(places) ? Math.max(2, places) : 2
 }
 
+/** A pencil filter's id: its grain depth and tone, each to the hundredth. */
+const PENCIL_ID = "velura-pencil-"
+
+/**
+ * The filter attribute that bites a brush stroke with its paper grain and
+ * lightens it by its tone, "" for neither. An eraser's mark takes away
+ * solidly, as on the canvas. A filter holds one depth and one tone, so
+ * those pressure varies along the stroke are written at their means.
+ */
+function grainAttr(object: VectorObject): string {
+  const brush = object.brush
+  const params = brush?.definition.params
+  if (object.erase || !params) return ""
+  let depth = params.grain,
+    tone = 1
+  const weights =
+    params.grainPressure || params.pressureTone
+      ? tessellateObject(object).stroke?.weights
+      : undefined
+  if (weights?.length) {
+    const calligraphy = brush.definition.kind === "calligraphy"
+    depth = tone = 0
+    for (const weight of weights) {
+      const shade = pencilShade(params, weight, calligraphy)
+      depth += shade.depth / weights.length
+      tone += shade.tone / weights.length
+    }
+  }
+  const d = Math.round(depth * 100),
+    t = Math.round(tone * 100)
+  return d > 0 || t < 100 ? ` filter="url(#${PENCIL_ID}${d}-${t})"` : ""
+}
+
+/**
+ * The pencil filters `content` uses, over the whole document. SVG's
+ * turbulence stands in for the paper texture: about its tooth, cut as the
+ * canvas cuts it with the smooth step made straight, but not the same grains.
+ */
+function grainFilters(content: string, width: number, height: number) {
+  const used = new Set(
+    content.match(new RegExp(`${PENCIL_ID}\\d+-\\d+`, "g")) ?? []
+  )
+  // The paper's speckle cells, in document pixels, at the scale it is read.
+  const cell = (GRAIN_TEXTURE_SIZE * VECTOR_PAPER_SCALE) / 32
+  return [...used].map((id) => {
+    const [d, t] = id.slice(PENCIL_ID.length).split("-").map(Number)
+    const depth = d / 100,
+      tone = t / 100
+    const cut = depth * GRAIN_CUT
+    // Turbulence sits about a half, where the paper fills its range: spread
+    // it, cut it at `cut` over the slope's half, then mix by depth and tone.
+    const spread = 2.5
+    const carve = `${2 * spread} 0 0 0 ${2 * (0.5 - spread / 2 - cut)}`
+    const mix = `0 0 0 ${tone * depth} ${tone * (1 - depth)}`
+    return `<filter id="${id}" filterUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}" color-interpolation-filters="linearRGB"><feTurbulence type="fractalNoise" baseFrequency="${1 / cell}" numOctaves="3" seed="0" result="tooth"/><feColorMatrix in="tooth" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ${carve}" result="carved"/><feColorMatrix in="carved" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ${mix}" result="kept"/><feComposite in="SourceGraphic" in2="kept" operator="in"/></filter>`
+  })
+}
+
 function shape(object: VectorObject, brushData = false): string {
   const painted = vectorBrushObject(object)
   const { style, transform } = painted
@@ -116,7 +178,7 @@ function shape(object: VectorObject, brushData = false): string {
               `<path d="${outline}" fill="${escape(stroke.color)}" fill-opacity="${stroke.opacity}" fill-rule="nonzero" stroke="none"/>`
           )
           .join("")
-        const drawn = `<g transform="matrix(${transform.join(" ")})">${art}</g>${filled}`
+        const drawn = `<g${grainAttr(object)}><g transform="matrix(${transform.join(" ")})">${art}</g></g>${filled}`
         return brushData
           ? `<g data-vector-brush="${escape(JSON.stringify(painted.brush))}" data-spine="${escape(d)}">${drawn}</g>`
           : drawn
@@ -130,7 +192,7 @@ function shape(object: VectorObject, brushData = false): string {
         : ""
       const outline =
         mesh && stroke
-          ? `<path d="${strokeOutline(mesh)}" fill="${escape(stroke.color)}" fill-opacity="${stroke.opacity}" fill-rule="nonzero" stroke="none"/>`
+          ? `<path d="${strokeOutline(mesh)}" fill="${escape(stroke.color)}" fill-opacity="${stroke.opacity}" fill-rule="nonzero" stroke="none"${grainAttr(object)}/>`
           : ""
       return brushData && object.brush
         ? `<g data-vector-brush="${escape(JSON.stringify({ ...object.brush, spine: object.geometry }))}">${filled}${outline}</g>`
@@ -177,9 +239,9 @@ function cutShape(
   const regions = erasers.map((e) => e.region)
   const pieces: string[] = []
   let met = false
-  for (const [mesh, paint] of [
-    [meshes.fill, painted.style.fill],
-    [meshes.stroke, painted.style.stroke],
+  for (const [mesh, paint, filter] of [
+    [meshes.fill, painted.style.fill, ""],
+    [meshes.stroke, painted.style.stroke, grainAttr(object)],
   ] as const) {
     if (!mesh || !paint) continue
     const cut = cutMesh(mesh, regions)
@@ -187,7 +249,7 @@ function cutShape(
     const d = regionPath(cut ?? meshRegion(mesh))
     if (d)
       pieces.push(
-        `<path d="${d}" fill="${escape(paint.color)}" fill-opacity="${paint.opacity}" fill-rule="evenodd" stroke="none"/>`
+        `<path d="${d}" fill="${escape(paint.color)}" fill-opacity="${paint.opacity}" fill-rule="evenodd" stroke="none"${filter}/>`
       )
   }
   if (!met) return null
@@ -371,6 +433,13 @@ export function serializeSvg(
       .join("")
   }
   const content = level(doc.layers)
+  const grains = grainFilters(content, doc.width, doc.height)
+  if (grains.length) {
+    defs.push(...grains)
+    warnings.push(
+      "Pencil grain is approximated with SVG turbulence at each stroke's mean pressure; its pattern differs from Velura's."
+    )
+  }
   return {
     svg: `<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" width="${doc.width}" height="${doc.height}" viewBox="0 0 ${doc.width} ${doc.height}"><defs>${defs.join("")}</defs>${content}</svg>`,
     warnings: [...new Set(warnings)],

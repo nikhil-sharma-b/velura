@@ -227,6 +227,9 @@ test("applying to several legacy strokes preserves their spines and undoes as on
         smoothing: 0,
         tremor: 0,
         wiggle: 0,
+        grain: 0,
+        grainPressure: 0,
+        pressureTone: 0,
         nibAngle: 45,
         fixation: 1,
       },
@@ -277,6 +280,7 @@ for (const name of [
   "Marker",
   "Wiggly",
   "Splotchy",
+  "Pencil",
 ]) {
   test(`golden: a ${name} profile stroke`, async ({ page }) => {
     await page.goto(

@@ -50,7 +50,9 @@ export const BUILTIN_TEXTURE_IDS: readonly string[] = Object.freeze([
 
 /** Big enough to read as a surface, small enough to stay a cheap upload. */
 const TIP_SIZE = 128
-const GRAIN_SIZE = 256
+/** The paper texture's edge, in texels. */
+export const GRAIN_TEXTURE_SIZE = 256
+const GRAIN_SIZE = GRAIN_TEXTURE_SIZE
 
 /**
  * A hash of two lattice coordinates in [0, 1). Integer arithmetic only, so the
