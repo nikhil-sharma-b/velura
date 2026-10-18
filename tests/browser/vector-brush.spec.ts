@@ -599,6 +599,7 @@ test("make a pattern brush from a selection and draw with it", async ({
   await page.mouse.move(x + 150, y + 80, { steps: 10 })
   await page.mouse.up()
   await page.getByRole("button", { name: "Export or import" }).click()
+  await page.getByRole("radio", { name: "SVG" }).check()
   await page
     .getByRole("checkbox", { name: "Keep brush settings (larger file)" })
     .check()
@@ -700,6 +701,7 @@ test("a pattern brush's caps are picked from the selection", async ({
   await page.mouse.move(x + 150, y + 80, { steps: 10 })
   await page.mouse.up()
   await page.getByRole("button", { name: "Export or import" }).click()
+  await page.getByRole("radio", { name: "SVG" }).check()
   await page
     .getByRole("checkbox", { name: "Keep brush settings (larger file)" })
     .check()
@@ -760,6 +762,7 @@ test("make a scatter brush from a selection and draw with it", async ({
   await page.mouse.move(x + 150, y + 80, { steps: 10 })
   await page.mouse.up()
   await page.getByRole("button", { name: "Export or import" }).click()
+  await page.getByRole("radio", { name: "SVG" }).check()
   await page
     .getByRole("checkbox", { name: "Keep brush settings (larger file)" })
     .check()

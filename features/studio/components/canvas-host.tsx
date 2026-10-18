@@ -147,6 +147,7 @@ import { NumberField, SliderSetting } from "./slider-setting"
 import { LayerPanel } from "./layer-panel"
 import { ShapeStylePanel } from "./shape-style-panel"
 import { VersionPanel, type VersionPreviewState } from "./version-panel"
+import { NewArtworkButton } from "./new-artwork-button"
 import { ExportDialog } from "./export-dialog"
 import { PaperPicker } from "./paper-picker"
 import { BoardControl } from "./board-control"
@@ -1611,12 +1612,23 @@ export function CanvasHost({
                 />
               </>
             )}
-            {engine && (
-              <ExportDialog
-                engine={engine}
-                runCommand={(id) => runStudioCommand(id, commandContext)}
-              />
+            {/* Without a library to start another piece from, the slot
+                that leads back to one starts a new artwork instead. */}
+            {!libraryHref && engine && (
+              <>
+                <NewArtworkButton
+                  disabled={historyBusy || snapshot.status !== "ready"}
+                  onConfirm={() =>
+                    runStudioCommand("document.clear", commandContext)
+                  }
+                />
+                <span
+                  aria-hidden
+                  className="mx-0.5 w-px self-stretch bg-studio-edge"
+                />
+              </>
             )}
+            {engine && <ExportDialog engine={engine} />}
             {/* The document's paper (fluid brushes 15): the document's, like
                 export, not the brush's. Not while a version is being opened
                 or taken back, which would carry the choice into it. */}
