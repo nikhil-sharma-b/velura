@@ -1,6 +1,11 @@
 import type { BrushGrain } from "../brush/brush"
 import type { Accumulation } from "../brush/round-brush"
-import type { GrayscaleTexture } from "../brush/texture"
+import {
+  builtinTextures,
+  PAPER_GRAIN,
+  validateTexture,
+  type GrayscaleTexture,
+} from "../brush/texture"
 import {
   type ColorMatrix,
   type OutputColorSpace,
@@ -11,8 +16,11 @@ import {
   type PixelRect,
   TILE_CHANNELS,
   TILE_SIZE,
+  TILE_TEXELS,
   type TileCoord,
   tileBounds,
+  tileCoordFromKey,
+  tileKey,
 } from "../doc/tile-grid"
 import {
   cacheKey,
@@ -21,23 +29,80 @@ import {
   type CompositeItem,
 } from "../doc/document"
 import type { LinearColor, TiledLayer } from "../doc/tiled-layer"
+import type { SelectionMask } from "../doc/selection"
 import type { TiledMask } from "../doc/tiled-mask"
+import type { WetCopy } from "../doc/undo-stack"
 import { blendShader, type BlendMode } from "../shaders/blend-modes"
 import { displayTransformShader } from "../shaders/display-transform"
-import { stampShader } from "../shaders/stamp"
 import { surfaceCompositeShader } from "../shaders/surface-composite"
+import {
+  clearSelectionShader,
+  copySelectionShader,
+} from "../shaders/clear-selection"
+import {
+  blurKernel,
+  MAX_BLUR_RADIUS,
+  normalizeFilter,
+  type Filter,
+} from "../filters/filter"
+import { filterShader } from "../shaders/filter"
+import { marchingAntsShader } from "../shaders/marching-ants"
 import { placedImageShader } from "../shaders/placed-image"
 import { thumbnailShader } from "../shaders/thumbnail"
+import { vectorShader } from "../shaders/vector"
+import type { Bounds } from "../geom/tessellate"
 import {
   IDENTITY_MATRIX,
   invertMatrix,
   type ViewMatrix,
 } from "../view/view-transform"
-import { STAMP, STAMP_STRIDE } from "./stamp-instance"
-import { createStampLog } from "./stamp-log"
+import {
+  DEFAULT_RASTER_MAGNIFICATION,
+  samplesNearest,
+  type RasterMagnification,
+} from "../view/magnification"
+import { createBufferedStroke, type StrokeMode } from "./buffered-stroke"
+import { createDirectStroke, type FrozenArtwork } from "./direct-stroke"
+import {
+  createFluidStroke,
+  type FluidOpening,
+  type WetViews,
+} from "./fluid-stroke"
+import { createFreezeLedger, FREEZE_CHUNK } from "./freeze-ledger"
+import { DEFAULT_PAPER, type Paper } from "../doc/paper"
+import { FLAT_BOARD, sameBoard, type Board } from "../doc/board"
+import { createPaper, writePaper } from "./paper"
+import type { StrokeMark } from "./stroke-renderer"
+import { LAYER_FORMAT, type Surface } from "./surface"
 
-const LAYER_FORMAT: GPUTextureFormat = "rgba16float"
 const BYTES_PER_TEXEL = TILE_CHANNELS * 2
+
+/**
+ * How long a readback copies tiles out of its buffer before it lets the
+ * frame in: a tile is about a tenth of a millisecond, so this is some ten
+ * tiles, and well inside what a frame has to spare.
+ */
+const READBACK_SLICE_MS = 1
+
+/**
+ * Lets whatever else is waiting on this thread run: a frame, the pen. One
+ * channel for every wait, since a readback takes them between the frames of
+ * a stroke, where nothing is to be allocated that need not be (D30).
+ */
+let yieldChannel: MessageChannel | undefined
+const yielded: (() => void)[] = []
+function yieldToFrame(): Promise<void> {
+  if (!yieldChannel) {
+    yieldChannel = new MessageChannel()
+    yieldChannel.port1.onmessage = () => yielded.shift()?.()
+  }
+  const channel = yieldChannel
+  return new Promise((resolve) => {
+    yielded.push(resolve)
+    channel.port2.postMessage(null)
+  })
+}
+
 /**
  * mat3x3 occupies three 16-byte columns, then one vec4 of background, then the
  * four floats the present pass needs to know about the stack it is showing,
@@ -72,24 +137,29 @@ const USE_TIP_OFFSET = 12
 const GRAIN_OFFSET = 32
 /** Where the rim falloff sits: after the viewport. */
 const FEATHER_OFFSET = 8
+/** Where the selection flag sits: the last float, after the grain. */
+const USE_SELECTION_OFFSET = 44
 /** Greyscale, because a tip is coverage and grain is how much gets through. */
 const TEXTURE_FORMAT: GPUTextureFormat = "r8unorm"
-/** Five f32 composite controls, padded to uniform-struct alignment. */
-const COMPOSITE_UNIFORM_BYTES = 32
 /**
- * Dabs of one stroke the buffer can replay. A long stroke at a quarter-tip
- * spacing is a few thousand; past this the stroke still draws, but discarding
- * its tail is refused rather than allocating on a frame of drawing (D30).
+ * Eight f32 composite controls, then the target-to-document matrix as three
+ * 16-byte columns and the document's size, padded to the struct's alignment
+ * (`engine/shaders/composite-space.wgsl`).
  */
-export const MAX_STAMPS_PER_STROKE = 1 << 16
+const COMPOSITE_UNIFORM_BYTES = 96
 /**
- * Dabs drawn in one submission. A 120 Hz frame of the fastest plausible stroke
- * is a few hundred; the ceiling exists so the instance buffer can be allocated
- * once, and the caller draws early rather than overrunning it.
+ * Pages of frozen artwork kept from one stroke to the next (live brushes
+ * 21), 8 MiB each: what a 512 px stroke across an 8192² document reaches.
+ * A stroke that reaches further allocates as it goes and gives them back.
  */
-export const MAX_STAMPS_PER_DRAW = 2048
-
-export type StrokeMode = "paint" | "erase"
+const FROZEN_PAGES_KEPT = 16
+/** The vector shader's chunk: a mat3x3 and two vec2s (`engine/shaders/vector.ts`). */
+const VECTOR_UNIFORM_BYTES = 64
+export {
+  MAX_STAMPS_PER_DRAW,
+  MAX_STAMPS_PER_STROKE,
+  type StrokeMode,
+} from "./buffered-stroke"
 
 /**
  * What a layer-list thumbnail shows: a layer's own pixels, a mask's coverage,
@@ -99,6 +169,41 @@ export type ThumbnailSubject =
   | { kind: "layer"; id: string }
   | { kind: "mask"; id: string }
   | { kind: "group"; item: CompositeItem }
+
+/**
+ * One object's fill or stroke as the renderer draws it (19): triangles from
+ * `engine/geom/tessellate.ts`, the rule that turns them into coverage, and
+ * the paint, premultiplied linear light.
+ */
+export type VectorDraw = {
+  vertices: Float32Array
+  rule: "nonzero" | "evenodd" | "union"
+  color: readonly [number, number, number, number]
+  bounds: Bounds
+  /**
+   * How deep the paper's grain bites the paint, as a pencil's does: 0 is
+   * solid, and the cut is the pixel brushes' (`engine/shaders/grain.ts`).
+   */
+  grain?: number
+  /**
+   * Grain depth and tone, two a vertex, in place of `grain`, where pressure
+   * varies them along a stroke: the paint is then covered by the triangles
+   * themselves, so both follow them, rather than by one quad.
+   */
+  shades?: Float32Array
+  /**
+   * An eraser's mark: its coverage, times its alpha, is taken from what is
+   * drawn under it rather than painted over it.
+   */
+  erase?: boolean
+}
+
+/**
+ * The edge of the square a vector redraw is done in, a piece at a time. A
+ * multisampled target the size of the document would be four times a
+ * layer's size again; one this size is 32 MB whatever the document is.
+ */
+export const VECTOR_CHUNK = 1024
 
 export interface Renderer {
   /** (Re)allocates every render target; layers must be uploaded again after. */
@@ -164,10 +269,11 @@ export interface Renderer {
   setInk(color: LinearColor): void
   /**
    * Composites the stroke buffer into the active layer, once, at stroke
-   * opacity. Returns the region the mark landed in, which is the region undo
-   * has to remember, or null when the stroke drew nothing.
+   * opacity. Returns the region the mark landed in and the tiles of it its
+   * dabs drew into, which are what undo has to remember, or null when the
+   * stroke drew nothing.
    */
-  endStroke(): PixelRect | null
+  endStroke(): StrokeMark | null
   /**
    * Abandons the stroke in flight: the buffer is emptied and nothing is
    * composited. This is what a navigation gesture starting mid-mark needs —
@@ -195,8 +301,50 @@ export interface Renderer {
     /** The quad's corners in document pixels, clockwise from its top left. */
     corners: readonly { x: number; y: number }[]
   }): void
+  /**
+   * Takes a snapshot of part of a layer's own pixels as a source to draw
+   * through `drawPlacedImage`, for transforming a painted layer (13). The
+   * snapshot is what every preview is drawn from, so however many
+   * adjustments the artist makes the layer is resampled once. Answers
+   * nothing; release it with `closePlacedImage`.
+   */
+  openLayerImage(id: string, surfaceId: string, region: PixelRect): void
+  /**
+   * Lifts what the selection covers of a layer (14): the layer scaled by the
+   * coverage, cut to `region`, becomes a source to draw through
+   * `drawPlacedImage`, and from then on every such draw lands over the layer
+   * as it is with those pixels taken out — so a move leaves the vacated area
+   * empty and a soft edge leaves its unselected share behind. The layer
+   * itself is untouched until the first draw. Needs a selection.
+   */
+  openSelectionImage(id: string, surfaceId: string, region: PixelRect): void
+  /**
+   * Puts a layer snapshot back exactly where it was taken from, texel for
+   * texel, over an emptied surface: what cancelling a layer transform is. A
+   * lifted selection puts back the whole layer as it was lifted from.
+   */
+  restoreLayerImage(id: string, surfaceId: string): void
   /** Lets go of an original's texture. */
   closePlacedImage(id: string): void
+  /**
+   * Redraws `region` of a vector layer's surface from its objects (19): the
+   * region becomes exactly `draws`, bottom first, antialiased, and the rest
+   * of the surface is left alone. The caller passes what touches the region;
+   * anything else is clipped away.
+   */
+  rasterizeVector(
+    surfaceId: string,
+    draws: readonly VectorDraw[],
+    region: PixelRect
+  ): void
+  /**
+   * Keeps a vector layer's whole scene as geometry, bottom first, or forgets
+   * it with null (sharp-zoom 02). The screen draws the layer from this
+   * through the view rather than sampling its pixels, so its edges are sharp
+   * at any zoom; the pixels stay the document's own, and what export,
+   * thumbnails and rasterising read.
+   */
+  setVectorScene(surfaceId: string, draws: readonly VectorDraw[] | null): void
   /**
    * Reads whole tiles back off a surface, zero-filled where they hang past the
    * canvas and where the surface holds nothing. Asynchronous and off the
@@ -210,11 +358,178 @@ export interface Renderer {
   ): void
   /**
    * How the document is placed on screen (D28), as the document-to-screen
-   * affine. View state, never pixels: the surfaces are untouched and only the
-   * present pass reads it, so exporting simply presents with the identity.
+   * affine, and the size of the screen it is placed on — the target `render`
+   * draws into, until another size is given; the document's own until one
+   * is. View state, never document pixels: the layers are untouched, and the
+   * screen is composited through it (sharp-zoom 01).
    */
-  setView(matrix: ViewMatrix): void
-  render(view: GPUTextureView): void
+  setView(
+    matrix: ViewMatrix,
+    viewport?: { width: number; height: number }
+  ): void
+  /**
+   * How raster pixels look magnified on screen (sharp-zoom 03): layers, masks
+   * and the stroke are fetched nearest past the threshold in "pixels", and
+   * filtered otherwise. Only the screen reads through the view, so export
+   * and thumbnails never see it.
+   */
+  setRasterMagnification(mode: RasterMagnification): void
+  /**
+   * The document's selection (07), or null for none. Only the tiles that
+   * changed since the last one are written, and no texture is held at all
+   * while nothing is selected.
+   */
+  setSelection(mask: SelectionMask | null): void
+  /**
+   * The selection's coverage as the GPU holds it, one byte per document
+   * pixel, top row first; null while nothing is selected. For tests and for
+   * what will lift selected pixels, never per frame.
+   */
+  readSelection(): Promise<Uint8Array | null>
+  /**
+   * Empties a surface wherever the selection covers it, in proportion to the
+   * coverage. Returns the region it touched, or null with nothing selected.
+   */
+  clearSelected(surfaceId: string): PixelRect | null
+  /**
+   * Starts a filter on one surface (18): keeps its pixels as they are, which
+   * every preview starts from and a cancel puts back. False when the surface
+   * holds nothing.
+   */
+  beginFilter(surfaceId: string): boolean
+  /**
+   * Redraws the filtering surface from what it held at the start, through
+   * `filter` and within the selection. Answers the region that can differ.
+   */
+  previewFilter(filter: Filter): PixelRect | null
+  /**
+   * Ends the filter: kept, the surface holds the last preview; not kept, it
+   * holds what it did before the filter began.
+   */
+  endFilter(keep: boolean): void
+  /**
+   * Starts a direct stroke on one surface (smudge 01, D41): a wet brush's,
+   * which lays `lay`, or with null a smudge or a blender, which lay nothing. Nothing is copied yet: each
+   * tile is kept as it is when a dab first writes to it, which is what a
+   * cancel puts back. Sampling all layers freezes visible artwork before
+   * any dab writes. False for a smudge when its pickup source holds nothing.
+   */
+  beginDirect(
+    surfaceId: string,
+    lay: LinearColor | null,
+    retain?: boolean,
+    sampleAllLayers?: boolean
+  ): boolean
+  cleanBrush(): void
+  brushDirty(): boolean
+  /**
+   * Draws `count` dabs (see `SMUDGE`) straight into the surface of the
+   * direct stroke. Smudge and a blender drag the pixel one dab behind; a wet
+   * brush that lays does so from its reservoir by flow, and picks ground
+   * paint into it by pickup.
+   */
+  drawDirect(dabs: Float32Array, count: number): void
+  /**
+   * Ends the direct stroke: kept, the surface holds the mark, and the region
+   * it reached and the tiles its dabs wrote to are returned; not kept, the
+   * surface holds what it did before.
+   */
+  endDirect(keep: boolean): StrokeMark | null
+  /**
+   * Starts a fluid stroke on one surface (D42): its dabs lay `water` and
+   * `ink` into the surface's wet tiles, `load` of the ink at full flow, and
+   * the surface's own pixels are left alone until that paint settles. Only
+   * one surface is wet at a time: another's wet paint is dried first.
+   */
+  beginFluid(surfaceId: string, stroke: Omit<FluidOpening, "surface">): void
+  /**
+   * Draws `count` dabs (see `STAMP`) into the wet surface. Answers what was
+   * written by each body settled early to make room, past the wet tile limit.
+   */
+  drawFluid(dabs: Float32Array, count: number): readonly StrokeMark[]
+  /**
+   * Ends the fluid stroke. Kept, its paint stays wet, and the wet fields as
+   * they were at pen-down are answered, the caller's to release: null where
+   * it laid nothing. Not kept, the wet fields are what they were at
+   * pen-down. Either way no pixel of the surface has changed.
+   */
+  endFluid(keep: boolean): WetCopy | null
+  /** Copies the wet fields as they now are, on the GPU (D30). */
+  copyFluid(): WetCopy
+  /** Makes a copy the wet fields of a surface again. The copy is kept. */
+  restoreFluid(copy: WetCopy, surfaceId: string): void
+  releaseFluid(copy: WetCopy): void
+  /** Whether any paint is wet. */
+  fluidWet(): boolean
+  /** Whether the tile under a document pixel of one surface is wet. */
+  fluidWetAt(surfaceId: string, x: number, y: number): boolean
+  /**
+   * The paper fluid brushes paint on from here (fluid brushes 15). Wet paint
+   * reads it as it is, so the caller dries any first.
+   */
+  setPaper(paper: Paper): void
+  /**
+   * The board the paper lies on (fluid brushes 38). Wet paint runs down it
+   * from the next step; nothing dries for it.
+   */
+  setBoard(board: Board): void
+  /** All the water standing in the wet fields, for tests (fluid brushes 38). */
+  readFluidWater(): Promise<number>
+  /**
+   * How many tiles a step of the simulation runs over: those wet, less
+   * those held while drying is paused.
+   */
+  fluidTileCount(): number
+  /** Pauses drying, or lets it go on (fluid brushes 18). */
+  setFluidDryingPaused(paused: boolean): void
+  /**
+   * Runs the simulation on by `steps` steps (D42). Answers what each body
+   * that dried along the way settled into its surface, in order; with drying
+   * paused, a body whose time has come holds instead.
+   */
+  advanceFluid(
+    steps: number,
+    settled?: (mark: StrokeMark) => void
+  ): StrokeMark[] | Promise<StrokeMark[]>
+  /**
+   * Settles everything wet into its surface at once. Answers what that
+   * wrote, or null with nothing wet.
+   */
+  dryFluid(): StrokeMark | null
+  /** Allocates the wet fields ahead of the first fluid stroke (D30). */
+  prepareFluid(): void
+  /**
+   * Draws what the selection covers of one surface into another, in
+   * proportion to the coverage (11). Returns the region it wrote, or null
+   * with nothing selected or nothing there to copy.
+   */
+  copySelected(sourceId: string, targetId: string): PixelRect | null
+  /**
+   * Draws the document through the view. `overlay` is what goes over it on
+   * screen and nowhere else: the selection's marching ants, marched `ants`
+   * pixels along. A readback leaves it out.
+   */
+  render(view: GPUTextureView, overlay?: { ants: number }): void
+  /**
+   * Draws nothing into what the next stroke's first frame draws into: the
+   * surface it paints, the stroke buffer, the brush's load. A large texture
+   * left a second or two is slow the next time it is a pass's target, which
+   * is the frame a stroke opens in; this is what keeps it from being left
+   * (live brushes 24). Changes no pixel.
+   *
+   * With `sampling`, what a stroke sampling all layers reads as it opens is
+   * kept as well (live brushes 31): the other visible layers, the pages the
+   * picture is frozen into and the target a chunk of it is flattened in.
+   */
+  keepWarm(sampling?: boolean): void
+  /** Ready a bounded set of sampled pages and the carry before pen-down. */
+  prepareSampling(): void
+  /**
+   * Draws the document at its own size, unviewed, into a target that size:
+   * the artwork as it exports, whatever the view. `plan`, when given, is
+   * drawn in place of the one in force, which the screen keeps.
+   */
+  renderArtwork(view: GPUTextureView, plan?: CompositePlan): void
   /**
    * Draws one thumbnail into a small target, reading the surfaces the
    * compositor already holds: nothing crosses back to the CPU. Answers
@@ -250,6 +565,16 @@ export type GrainSettings = Omit<BrushGrain, "textureId">
  * document with many *painted* layers fit, and they replace this allocation
  * without moving the seam — the compositor still sees below, active, above.
  */
+/** A half float's value, from its bits. */
+function fromHalf(bits: number) {
+  const exponent = (bits >> 10) & 31
+  const fraction = bits & 1023
+  const sign = bits >> 15 ? -1 : 1
+  if (exponent === 0) return sign * fraction * 2 ** -24
+  if (exponent === 31) return fraction ? Number.NaN : sign * Infinity
+  return sign * (1 + fraction / 1024) * 2 ** (exponent - 15)
+}
+
 export function createRenderer(
   device: GPUDevice,
   options: {
@@ -262,17 +587,29 @@ export function createRenderer(
     /** Premultiplied linear-light ink, and the dab rim falloff in pixels. */
     ink: readonly [number, number, number, number]
     feather: number
+    /** See `DirectStrokeContext.runSize`; a test's, and absent otherwise. */
+    directRunSize?: number
+    /** See `DirectStrokeContext.wetTarget`; a pixel-equivalence test control. */
+    directWetTarget?: "layer" | "scratch"
+    /** See `DirectStrokeContext.legacyPickup`; bounds the numerical change. */
+    directLegacyPickup?: boolean
+    /** Opt-in story 21 transport experiment, never an artist preset. */
+    experimentalFluidReach?: boolean
   }
 ): Renderer {
-  const presentPipelines = new Map<BlendMode, GPURenderPipeline>()
-  function presentPipeline(mode: BlendMode): GPURenderPipeline {
-    const existing = presentPipelines.get(mode)
+  // A pipeline for each mode, and another for a layer with wet paint on it
+  // (D42), made the first time one is: wet paint is a shader of its own and
+  // not a branch every pixel of every layer takes.
+  const presentPipelines = new Map<string, GPURenderPipeline>()
+  function presentPipeline(mode: BlendMode, isWet: boolean): GPURenderPipeline {
+    const key = isWet ? `${mode}:wet` : mode
+    const existing = presentPipelines.get(key)
     if (existing) return existing
     const shader = device.createShaderModule({
-      code: displayTransformShader(mode),
+      code: displayTransformShader(mode, isWet),
     })
     const pipeline = device.createRenderPipeline({
-      label: `present:${mode}`,
+      label: `present:${key}`,
       layout: "auto",
       vertex: { module: shader, entryPoint: "vertexMain" },
       fragment: {
@@ -282,17 +619,19 @@ export function createRenderer(
       },
       primitive: { topology: "triangle-list" },
     })
-    presentPipelines.set(mode, pipeline)
+    presentPipelines.set(key, pipeline)
     return pipeline
   }
-  let pipeline: GPURenderPipeline
-  const blendPipelines = new Map<BlendMode, GPURenderPipeline>()
-  function blendPipeline(mode: BlendMode): GPURenderPipeline {
-    const existing = blendPipelines.get(mode)
+  const blendPipelines = new Map<string, GPURenderPipeline>()
+  function blendPipeline(mode: BlendMode, isWet: boolean): GPURenderPipeline {
+    const key = isWet ? `${mode}:wet` : mode
+    const existing = blendPipelines.get(key)
     if (existing) return existing
-    const shader = device.createShaderModule({ code: blendShader(mode) })
+    const shader = device.createShaderModule({
+      code: blendShader(mode, undefined, isWet),
+    })
     const pipeline = device.createRenderPipeline({
-      label: `blend:${mode}`,
+      label: `blend:${key}`,
       layout: "auto",
       vertex: { module: shader, entryPoint: "vertexMain" },
       fragment: {
@@ -302,135 +641,48 @@ export function createRenderer(
       },
       primitive: { topology: "triangle-list" },
     })
-    blendPipelines.set(mode, pipeline)
+    blendPipelines.set(key, pipeline)
     return pipeline
   }
 
-  const uniform = device.createBuffer({
-    size: UNIFORM_BYTES,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  })
-  device.queue.writeBuffer(
-    uniform,
-    0,
-    packUniform(
-      workingToOutputMatrix(options.outputColorSpace),
-      options.background,
-      options.workspaceBackground ?? options.background
-    )
+  /** What every present uniform starts as, before a view or a plan. */
+  const presentDefaults = packUniform(
+    workingToOutputMatrix(options.outputColorSpace),
+    options.background,
+    options.workspaceBackground ?? options.background
   )
 
-  const stampModule = device.createShaderModule({ code: stampShader })
-  /**
-   * One pipeline per accumulation mode: the difference between a marker and a
-   * pencil is entirely the blend state, so the shader is shared.
-   *
-   * `coverage` takes the per-channel maximum. The ink colour is constant
-   * across a stroke, so a premultiplied dab is `colour x alpha` and the
-   * channel-wise maximum is exactly the maximum coverage — a crossing does not
-   * darken. `buildup` is ordinary premultiplied "over", so each dab adds.
-   */
-  const stampBlends: Record<Accumulation, GPUBlendState> = {
-    coverage: {
-      color: { operation: "max", srcFactor: "one", dstFactor: "one" },
-      alpha: { operation: "max", srcFactor: "one", dstFactor: "one" },
+  /** The stroke every brush draws, through the stroke buffer (D27). */
+  const buffered = createBufferedStroke(device, {
+    size: () => documentSize,
+    buffer: () => stroke,
+    binding: () => stampBindGroup,
+    target: () => paintTarget,
+    land(buffer, target, opacity, region, mode) {
+      // A document surface into another, so through the artwork's space.
+      artwork.compositeSurface(
+        buffer,
+        target,
+        opacity,
+        region,
+        mode === "erase" ? erasePipeline : compositePipeline
+      )
     },
-    buildup: {
-      color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-      alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+    showOpacity(opacity) {
+      for (const compositor of compositors)
+        compositor.writePresent(
+          STROKE_OPACITY_OFFSET,
+          new Float32Array([opacity])
+        )
     },
-  }
-  // Explicit, because two pipelines share one bind group: an automatic layout
-  // belongs to the pipeline that produced it and the other would reject it.
-  const stampBindGroupLayout = device.createBindGroupLayout({
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.FRAGMENT,
-        sampler: { type: "filtering" },
-      },
-      {
-        binding: 3,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-      {
-        binding: 4,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: "float" },
-      },
-    ],
+    showMode(mode) {
+      for (const compositor of compositors)
+        compositor.writePresent(
+          STROKE_MODE_OFFSET,
+          new Float32Array([mode === "erase" ? 1 : 0])
+        )
+    },
   })
-  const stampPipelineLayout = device.createPipelineLayout({
-    bindGroupLayouts: [stampBindGroupLayout],
-  })
-  const stampPipelineFor = (accumulation: Accumulation) =>
-    device.createRenderPipeline({
-      layout: stampPipelineLayout,
-      vertex: {
-        module: stampModule,
-        entryPoint: "vertexMain",
-        buffers: [
-          {
-            arrayStride: STAMP_STRIDE * 4,
-            stepMode: "instance",
-            attributes: [
-              {
-                shaderLocation: 0,
-                offset: STAMP.CENTER_X * 4,
-                format: "float32x2",
-              },
-              {
-                shaderLocation: 1,
-                offset: STAMP.RADIUS * 4,
-                format: "float32",
-              },
-              {
-                shaderLocation: 2,
-                offset: STAMP.OPACITY * 4,
-                format: "float32",
-              },
-              {
-                shaderLocation: 3,
-                offset: STAMP.ANGLE * 4,
-                format: "float32",
-              },
-              {
-                shaderLocation: 4,
-                offset: STAMP.ROUNDNESS * 4,
-                format: "float32",
-              },
-              {
-                shaderLocation: 5,
-                offset: STAMP.GRAIN_DEPTH * 4,
-                format: "float32",
-              },
-            ],
-          },
-        ],
-      },
-      fragment: {
-        module: stampModule,
-        entryPoint: "fragmentMain",
-        targets: [{ format: LAYER_FORMAT, blend: stampBlends[accumulation] }],
-      },
-      primitive: { topology: "triangle-list" },
-    })
-
-  const stampPipelines: Record<Accumulation, GPURenderPipeline> = {
-    coverage: stampPipelineFor("coverage"),
-    buildup: stampPipelineFor("buildup"),
-  }
 
   const compositeModule = device.createShaderModule({
     code: surfaceCompositeShader,
@@ -446,6 +698,11 @@ export function createRenderer(
         binding: 1,
         visibility: GPUShaderStage.FRAGMENT,
         texture: { sampleType: "float" },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: "filtering" },
       },
     ],
   })
@@ -515,6 +772,37 @@ export function createRenderer(
     primitive: { topology: "triangle-list" },
   })
   /**
+   * A lifted selection (14) is a mark on the layer rather than all of it, so
+   * it goes over what the lift left: premultiplied source-over.
+   */
+  const floatingImagePipeline = device.createRenderPipeline({
+    label: "floating selection",
+    layout: "auto",
+    vertex: { module: placedImageModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: placedImageModule,
+      entryPoint: "fragmentMain",
+      targets: [
+        {
+          format: LAYER_FORMAT,
+          blend: {
+            color: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+          },
+        },
+      ],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  /**
    * Four corners then the surface size. A `vec2` in a uniform array takes a
    * whole 16-byte slot, so the corners occupy 64 bytes and the size follows
    * them rather than sharing one.
@@ -538,8 +826,34 @@ export function createRenderer(
   /** Originals on the GPU, by asset id, while a transform holds them open. */
   const placedImages = new Map<
     string,
-    { texture: GPUTexture; bindGroup: GPUBindGroup }
+    {
+      texture: GPUTexture
+      bindGroup: GPUBindGroup
+      /** A layer's own pixels: premultiplied linear already (13). */
+      premultiplied: boolean
+      /** Where a layer snapshot was taken from. */
+      region?: PixelRect
+      /**
+       * A lifted selection's layer (14): as lifted, for a cancel, and with
+       * the lifted pixels taken out, which every draw lands over.
+       */
+      lifted?: { original: Surface; base: Surface }
+    }
   >()
+
+  function placedImageBindGroup(
+    texture: GPUTexture,
+    pipeline: GPURenderPipeline = placedImagePipeline
+  ) {
+    return device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: placedImageUniform } },
+        { binding: 1, resource: texture.createView() },
+        { binding: 2, resource: placedImageSampler },
+      ],
+    })
+  }
 
   const thumbnailModule = device.createShaderModule({ code: thumbnailShader })
   const thumbnailPipeline = device.createRenderPipeline({
@@ -597,7 +911,11 @@ export function createRenderer(
 
   function uploadTexture(source: GrayscaleTexture): GPUTexture {
     const texture = device.createTexture({
-      size: { width: source.width, height: source.height },
+      size: {
+        width: source.width,
+        height: source.height,
+        depthOrArrayLayers: source.frameCount ?? 1,
+      },
       format: TEXTURE_FORMAT,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     })
@@ -605,7 +923,11 @@ export function createRenderer(
       { texture },
       source.data,
       { bytesPerRow: source.width, rowsPerImage: source.height },
-      { width: source.width, height: source.height }
+      {
+        width: source.width,
+        height: source.height,
+        depthOrArrayLayers: source.frameCount ?? 1,
+      }
     )
     return texture
   }
@@ -628,6 +950,28 @@ export function createRenderer(
   // then owned by whatever brush is in the hand, so a resize must rewrite the
   // current value rather than the one this renderer was created with.
   let feather = options.feather
+  /**
+   * The dab's shape as the direct stroke reads it, kept in step with the tip
+   * and the feather: `usesTip` says the texture is the shape, not the disc.
+   */
+  const tipShape = {
+    texture: tipTexture,
+    sampler: tipSampler,
+    usesTip: false,
+    feather,
+  }
+
+  /**
+   * The paper as the direct stroke reads it, kept in step with `setGrain`: a
+   * smooth surface, at no depth, until a brush names one.
+   */
+  const grainSurface = {
+    texture: grainTexture,
+    sampler: grainSampler,
+    scale: 1,
+    depth: 0,
+    movement: 0,
+  }
 
   const stampUniform = device.createBuffer({
     size: STAMP_UNIFORM_BYTES,
@@ -641,65 +985,511 @@ export function createRenderer(
     0,
     new Float32Array([1, 1, feather, 0, ...options.ink, 1, 0, 0, 0])
   )
-  const stampInstances = device.createBuffer({
-    size: MAX_STAMPS_PER_DRAW * STAMP_STRIDE * 4,
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-  })
-  const compositeUniform = device.createBuffer({
-    size: COMPOSITE_UNIFORM_BYTES,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  })
-  const compositeValues = new Float32Array(COMPOSITE_UNIFORM_BYTES / 4)
-  const blendBindGroups = new Map<string, GPUBindGroup>()
   let stampBindGroup: GPUBindGroup | undefined
-
-  /**
-   * A canvas-sized linear-light surface, with the bind group that draws it
-   * into another one. Layers, the two caches and the stroke buffer are all
-   * this: what differs is only when they are written and what reads them.
-   */
-  type Surface = {
-    id: number
-    texture: GPUTexture
-    view: GPUTextureView
-    /** Reads this surface, for the pass that flattens it into another. */
-    readBindGroup: GPUBindGroup
-    /** Nothing has been written since it was allocated. */
-    empty: boolean
-  }
 
   /** One texture per layer that holds something; absent layers hold none. */
   const surfaces = new Map<string, Surface>()
   let stroke: Surface | undefined
-  // Everything under and over the active layer, flattened (D19). Undefined
-  // when there is nothing on that side, which is a document of one layer.
-  let below: Surface | undefined
-  let above: Surface | undefined
-  // Blend modes above the pen depend on its live pixels and cannot be flattened
-  // independently. Normal-only upper stacks retain the constant-cost path.
-  let liveAbove: CompositeItem[] = []
-  let activeItem: CompositeItem | undefined
   let paintTarget: Surface | undefined
-  let blendScratch: Surface | undefined
-  let frame: Surface | undefined
-  let complexOutput: Surface | undefined
-  let complexStages: CompositePlan["stages"]
-  let stageBelow: (Surface | undefined)[] = []
-  let stageAbove: (Surface | undefined)[] = []
-  let stageClipBase: (Surface | undefined)[] = []
-  let stageLiveAbove: boolean[] = []
-  let stageFrames: Surface[] = []
-  const groupCaches = new Map<string, Surface>()
-  const validGroupCaches = new Set<string>()
-  const coverageCaches = new Map<string, Surface>()
   let active: Surface | undefined
-  let presentBindGroup: GPUBindGroup | undefined
-  /** The plan in force. Undefined forces the next one to be applied in full. */
-  let composition: string | undefined
-  /** What the caches were built from, which is only part of that plan. */
-  let cachedFrom: string | undefined
+  /** A plan that has an active layer, which every plan applied must. */
+  type ActivePlan = CompositePlan & { active: CompositeItem }
+  /** The plan in force, which each compositor builds its caches from. */
+  let plan: ActivePlan | undefined
+  const clearSelectionModule = device.createShaderModule({
+    code: clearSelectionShader,
+  })
+  const clearSelectionPipeline = device.createRenderPipeline({
+    label: "clear selection",
+    layout: "auto",
+    vertex: { module: clearSelectionModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: clearSelectionModule,
+      entryPoint: "fragmentMain",
+      targets: [
+        {
+          format: LAYER_FORMAT,
+          // The eraser's blend: colour and alpha lose the same coverage.
+          blend: {
+            color: { srcFactor: "zero", dstFactor: "one-minus-src-alpha" },
+            alpha: { srcFactor: "zero", dstFactor: "one-minus-src-alpha" },
+          },
+        },
+      ],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  const copySelectionModule = device.createShaderModule({
+    code: copySelectionShader,
+  })
+  const copySelectionPipeline = device.createRenderPipeline({
+    label: "copy selection",
+    layout: "auto",
+    vertex: { module: copySelectionModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: copySelectionModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format: LAYER_FORMAT }],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  const antsShader = device.createShaderModule({ code: marchingAntsShader })
+  const antsPipeline = device.createRenderPipeline({
+    label: "marching-ants",
+    layout: "auto",
+    vertex: { module: antsShader, entryPoint: "vertexMain" },
+    fragment: {
+      module: antsShader,
+      entryPoint: "fragmentMain",
+      targets: [{ format: options.format }],
+    },
+    primitive: { topology: "triangle-list" },
+  })
+  const antsUniform = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
+  const antsValues = new Float32Array(4)
+  /** Written over a tile the new selection no longer holds. */
+  const EMPTY_SELECTION_TILE = new Uint8Array(TILE_TEXELS)
+  let selection:
+    | {
+        texture: GPUTexture
+        /** As the fluid stroke reads it: one view, asked for often. */
+        view: GPUTextureView
+        bindGroup: GPUBindGroup
+        /** The coverage each tile was last written from, by identity. */
+        tiles: Map<string, Uint8Array>
+        /** The mask's own bounds: nothing outside them is selected. */
+        bounds: PixelRect
+      }
+    | undefined
+  function releaseSelection() {
+    selection?.texture.destroy()
+    selection = undefined
+  }
   let width = 0
   let height = 0
+  /** The same two, as the strokes read them: one object, so asking allocates nothing. */
+  const documentSize = { width, height }
+  // Vector layers (19): stencil-and-cover into a multisampled chunk, resolved
+  // and copied into the layer. Made on first use; most documents never draw
+  // a shape and should not pay for the targets.
+  const VECTOR_SAMPLES = 4
+  /** Floats a cover vertex takes: position, colour, grain depth, tone. */
+  const COVER_FLOATS = 8
+  let vector:
+    | {
+        stencil: Record<VectorDraw["rule"], GPURenderPipeline>
+        /** Cover by any count (nonzero, union), or by an odd one (evenodd). */
+        cover: GPURenderPipeline
+        coverOdd: GPURenderPipeline
+        erase: GPURenderPipeline
+        eraseOdd: GPURenderPipeline
+        uniform: GPUBuffer
+        bindGroup: GPUBindGroup
+        color: GPUTextureView
+        depth: GPUTextureView
+        resolve: GPUTexture
+        textures: GPUTexture[]
+      }
+    | undefined
+
+  function vectorTargets() {
+    if (vector) return vector
+    const shader = device.createShaderModule({ code: vectorShader })
+    const layout = device.createBindGroupLayout({
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      ],
+    })
+    // The paper a pencil stroke's grain bites: the built-in one the pixel
+    // brushes default to, fixed whatever brush is in the hand.
+    const paper = uploadTexture(builtinTextures()[PAPER_GRAIN])
+    const pipelineLayout = device.createPipelineLayout({
+      bindGroupLayouts: [layout],
+    })
+    const multisample = { count: VECTOR_SAMPLES }
+    const stencilPipeline = (
+      label: string,
+      face: GPUStencilFaceState,
+      back: GPUStencilFaceState = face
+    ) =>
+      device.createRenderPipeline({
+        label: `vector-stencil:${label}`,
+        layout: pipelineLayout,
+        vertex: {
+          module: shader,
+          entryPoint: "stencilVertex",
+          buffers: [
+            {
+              arrayStride: 8,
+              attributes: [
+                { shaderLocation: 0, offset: 0, format: "float32x2" },
+              ],
+            },
+          ],
+        },
+        fragment: {
+          module: shader,
+          entryPoint: "stencilFragment",
+          targets: [{ format: LAYER_FORMAT, writeMask: 0 }],
+        },
+        primitive: { topology: "triangle-list", cullMode: "none" },
+        depthStencil: {
+          format: "stencil8",
+          stencilFront: face,
+          stencilBack: back,
+        },
+        multisample,
+      })
+    const coverPipeline = (label: string, readMask: number, erase = false) =>
+      device.createRenderPipeline({
+        label: `vector-cover:${label}`,
+        layout: pipelineLayout,
+        vertex: {
+          module: shader,
+          entryPoint: "coverVertex",
+          buffers: [
+            {
+              arrayStride: COVER_FLOATS * 4,
+              attributes: [
+                { shaderLocation: 0, offset: 0, format: "float32x2" },
+                { shaderLocation: 1, offset: 8, format: "float32x4" },
+                { shaderLocation: 2, offset: 24, format: "float32" },
+                { shaderLocation: 3, offset: 28, format: "float32" },
+              ],
+            },
+          ],
+        },
+        fragment: {
+          module: shader,
+          entryPoint: "coverFragment",
+          targets: [
+            {
+              format: LAYER_FORMAT,
+              // Premultiplied "over": each object lands on those below it.
+              // An eraser's mark is "destination out": those below lose what
+              // it covers, and nothing of its own colour lands.
+              blend: erase
+                ? {
+                    color: {
+                      srcFactor: "zero",
+                      dstFactor: "one-minus-src-alpha",
+                    },
+                    alpha: {
+                      srcFactor: "zero",
+                      dstFactor: "one-minus-src-alpha",
+                    },
+                  }
+                : {
+                    color: {
+                      srcFactor: "one",
+                      dstFactor: "one-minus-src-alpha",
+                    },
+                    alpha: {
+                      srcFactor: "one",
+                      dstFactor: "one-minus-src-alpha",
+                    },
+                  },
+            },
+          ],
+        },
+        primitive: { topology: "triangle-list" },
+        depthStencil: {
+          format: "stencil8",
+          // Drawn where the count is not zero; and zeroed under the whole
+          // quad either way, so the next object's count starts from nothing.
+          stencilFront: {
+            compare: "not-equal",
+            passOp: "zero",
+            failOp: "zero",
+          },
+          stencilBack: { compare: "not-equal", passOp: "zero", failOp: "zero" },
+          stencilReadMask: readMask,
+        },
+        multisample,
+      })
+    const size = { width: VECTOR_CHUNK, height: VECTOR_CHUNK }
+    const color = device.createTexture({
+      size,
+      format: LAYER_FORMAT,
+      sampleCount: VECTOR_SAMPLES,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    })
+    const depth = device.createTexture({
+      size,
+      format: "stencil8",
+      sampleCount: VECTOR_SAMPLES,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    })
+    const resolve = device.createTexture({
+      size,
+      format: LAYER_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    })
+    const uniform = device.createBuffer({
+      size: VECTOR_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    })
+    vector = {
+      stencil: {
+        // Front faces count up and back faces down: the winding number.
+        nonzero: stencilPipeline(
+          "nonzero",
+          { compare: "always", passOp: "increment-wrap" },
+          { compare: "always", passOp: "decrement-wrap" }
+        ),
+        // Every crossing flips the low bit: the winding number's parity.
+        evenodd: stencilPipeline("evenodd", {
+          compare: "always",
+          passOp: "invert",
+        }),
+        // A stroke's triangles overlap; any of them covering is enough.
+        union: stencilPipeline("union", {
+          compare: "always",
+          passOp: "replace",
+        }),
+      },
+      cover: coverPipeline("any", 0xff),
+      coverOdd: coverPipeline("odd", 1),
+      erase: coverPipeline("erase-any", 0xff, true),
+      eraseOdd: coverPipeline("erase-odd", 1, true),
+      uniform,
+      bindGroup: device.createBindGroup({
+        layout,
+        entries: [
+          { binding: 0, resource: { buffer: uniform } },
+          { binding: 1, resource: grainSampler },
+          { binding: 2, resource: paper.createView() },
+        ],
+      }),
+      color: color.createView(),
+      depth: depth.createView(),
+      resolve,
+      textures: [color, depth, resolve, paper],
+    }
+    return vector
+  }
+
+  /**
+   * A scene's draws on the GPU: every fill's triangles, and what covers
+   * each, its quad or, grained by vertex, its own triangles again.
+   */
+  type VectorBuffers = {
+    draws: readonly VectorDraw[]
+    triangles: GPUBuffer
+    covers: GPUBuffer
+    firsts: number[]
+    coverFirsts: number[]
+  }
+
+  function uploadVectorDraws(draws: readonly VectorDraw[]): VectorBuffers {
+    const drawn = draws.filter((draw) => draw.vertices.length >= 6)
+    // Every fill's triangles in one buffer, and a covering quad per fill
+    // in another: two uploads however many objects there are.
+    const triangles = new Float32Array(
+      drawn.reduce((total, draw) => total + draw.vertices.length, 0)
+    )
+    const coverCount = (draw: VectorDraw) =>
+      draw.shades ? draw.vertices.length / 2 : 6
+    const covers = new Float32Array(
+      drawn.reduce((total, draw) => total + coverCount(draw), 0) * COVER_FLOATS
+    )
+    const firsts: number[] = []
+    const coverFirsts: number[] = []
+    let offset = 0,
+      cover = 0
+    drawn.forEach((draw) => {
+      triangles.set(draw.vertices, offset)
+      firsts.push(offset / 2)
+      offset += draw.vertices.length
+      coverFirsts.push(cover)
+      const at = (x: number, y: number, depth: number, tone: number) =>
+        covers.set([x, y, ...draw.color, depth, tone], cover++ * COVER_FLOATS)
+      const { shades } = draw
+      if (shades) {
+        for (let i = 0; i < shades.length / 2; i++)
+          at(
+            draw.vertices[i * 2],
+            draw.vertices[i * 2 + 1],
+            shades[i * 2],
+            shades[i * 2 + 1]
+          )
+        return
+      }
+      const { minX, minY, maxX, maxY } = draw.bounds
+      const corners = [
+        [minX, minY],
+        [maxX, minY],
+        [maxX, maxY],
+        [minX, minY],
+        [maxX, maxY],
+        [minX, maxY],
+      ]
+      for (const [x, y] of corners) at(x, y, draw.grain ?? 0, 1)
+    })
+    const buffer = (data: Float32Array) => {
+      const created = device.createBuffer({
+        size: Math.max(16, data.byteLength),
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      })
+      if (data.byteLength) device.queue.writeBuffer(created, 0, data)
+      return created
+    }
+    return {
+      draws: drawn,
+      triangles: buffer(triangles),
+      covers: buffer(covers),
+      firsts,
+      coverFirsts,
+    }
+  }
+
+  function releaseVectorDraws(buffers: VectorBuffers) {
+    // Destroying waits for the work already submitted against them.
+    buffers.triangles.destroy()
+    buffers.covers.destroy()
+  }
+
+  /**
+   * Draws a scene into `area` of `texture` through `toTarget`, document
+   * pixels to the texture's, a chunk at a time. `area` becomes exactly the
+   * scene; the rest of the texture is left alone.
+   */
+  function drawVector(
+    buffers: VectorBuffers,
+    texture: GPUTexture,
+    toTarget: ViewMatrix,
+    area: PixelRect
+  ) {
+    const targets = vectorTargets()
+    const [a, b, c, d, e, f] = toTarget
+    // Where each draw's bounds land in the target: a box around the four
+    // corners, which is the whole of it under rotation.
+    const boxes = buffers.draws.map(({ bounds }) => {
+      const xs: number[] = []
+      const ys: number[] = []
+      for (const x of [bounds.minX, bounds.maxX])
+        for (const y of [bounds.minY, bounds.maxY]) {
+          xs.push(a * x + c * y + e)
+          ys.push(b * x + d * y + f)
+        }
+      return {
+        minX: Math.min(...xs),
+        minY: Math.min(...ys),
+        maxX: Math.max(...xs),
+        maxY: Math.max(...ys),
+      }
+    })
+    for (let y = area.y; y < area.y + area.height; y += VECTOR_CHUNK)
+      for (let x = area.x; x < area.x + area.width; x += VECTOR_CHUNK) {
+        const piece = {
+          x,
+          y,
+          width: Math.min(VECTOR_CHUNK, area.x + area.width - x),
+          height: Math.min(VECTOR_CHUNK, area.y + area.height - y),
+        }
+        // Written before the submit that reads it, and the next chunk's
+        // after: the queue keeps them in that order.
+        device.queue.writeBuffer(
+          targets.uniform,
+          0,
+          new Float32Array([
+            ...packMatrix([a, b, c, d, e - x, f - y]),
+            VECTOR_CHUNK,
+            VECTOR_CHUNK,
+            width,
+            height,
+          ])
+        )
+        const encoder = device.createCommandEncoder()
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [
+            {
+              view: targets.color,
+              resolveTarget: targets.resolve.createView(),
+              clearValue: { r: 0, g: 0, b: 0, a: 0 },
+              loadOp: "clear",
+              storeOp: "discard",
+            },
+          ],
+          depthStencilAttachment: {
+            view: targets.depth,
+            stencilClearValue: 0,
+            stencilLoadOp: "clear",
+            stencilStoreOp: "discard",
+          },
+        })
+        pass.setScissorRect(0, 0, piece.width, piece.height)
+        pass.setBindGroup(0, targets.bindGroup)
+        buffers.draws.forEach((draw, index) => {
+          const box = boxes[index]
+          if (
+            box.maxX < piece.x ||
+            box.maxY < piece.y ||
+            box.minX > piece.x + piece.width ||
+            box.minY > piece.y + piece.height
+          )
+            return
+          pass.setPipeline(targets.stencil[draw.rule])
+          pass.setStencilReference(draw.rule === "union" ? 1 : 0)
+          pass.setVertexBuffer(0, buffers.triangles)
+          pass.draw(draw.vertices.length / 2, 1, buffers.firsts[index])
+          pass.setPipeline(
+            draw.erase
+              ? draw.rule === "evenodd"
+                ? targets.eraseOdd
+                : targets.erase
+              : draw.rule === "evenodd"
+                ? targets.coverOdd
+                : targets.cover
+          )
+          pass.setStencilReference(0)
+          // A stroke's own triangles cover each sample once: the first to
+          // land zeroes the count, so those overlapping it fail the test.
+          pass.setVertexBuffer(0, buffers.covers)
+          pass.draw(
+            draw.shades ? draw.vertices.length / 2 : 6,
+            1,
+            buffers.coverFirsts[index]
+          )
+        })
+        pass.end()
+        encoder.copyTextureToTexture(
+          { texture: targets.resolve },
+          { texture, origin: { x: piece.x, y: piece.y } },
+          { width: piece.width, height: piece.height }
+        )
+        device.queue.submit([encoder.finish()])
+      }
+  }
+
+  /**
+   * Vector layers' scenes as geometry (sharp-zoom 02), by surface id, and a
+   * version that moves whenever one is replaced, so a compositor can tell a
+   * drawing of it is stale.
+   */
+  const vectorScenes = new Map<
+    string,
+    { buffers: VectorBuffers; version: number }
+  >()
+  let nextVectorVersion = 0
+
+  function forgetVectorScene(id: string): boolean {
+    const held = vectorScenes.get(id)
+    if (!held) return false
+    releaseVectorDraws(held.buffers)
+    vectorScenes.delete(id)
+    return true
+  }
+
   /**
    * Bound where a cache does not exist, so the present bind group is always
    * complete. The shader is told not to read it, but a binding must resolve.
@@ -711,9 +1501,9 @@ export function createRenderer(
   })
   const placeholderView = placeholder.createView()
   /**
-   * The present pass reads the document through the view (D28), so it filters
-   * rather than fetching texels. Clamped, because the shader has already
-   * decided that anything off the canvas is backdrop.
+   * Document surfaces are read through the view (D28), so they are filtered
+   * rather than fetched. Clamped, because the shader has already decided
+   * that anything off the canvas is backdrop.
    */
   const viewSampler = device.createSampler({
     magFilter: "linear",
@@ -721,31 +1511,19 @@ export function createRenderer(
     addressModeU: "clamp-to-edge",
     addressModeV: "clamp-to-edge",
   })
+  /** Raster pixels as squares, when the view magnifies them (sharp-zoom 03). */
+  const pixelSampler = device.createSampler({
+    magFilter: "nearest",
+    minFilter: "nearest",
+    addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
+  })
+  let magnification: RasterMagnification = DEFAULT_RASTER_MAGNIFICATION
 
-  /**
-   * Writes the view the present pass reads: the screen-to-document affine, as
-   * the three columns a WGSL `mat3x3` is laid out in.
-   */
-  function writeView(matrix: ViewMatrix) {
-    const [a, b, c, d, e, f] = invertMatrix(matrix)
-    device.queue.writeBuffer(
-      uniform,
-      VIEW_OFFSET,
-      new Float32Array([a, b, 0, 0, c, d, 0, 0, e, f, 1, 0])
-    )
+  /** An affine as the three 16-byte columns a WGSL `mat3x3` is laid out in. */
+  function packMatrix([a, b, c, d, e, f]: ViewMatrix): number[] {
+    return [a, b, 0, 0, c, d, 0, 0, e, f, 1, 0]
   }
-
-  /** The document's size, which the view is inverted against. */
-  function writeDocSize(sizeWidth: number, sizeHeight: number) {
-    device.queue.writeBuffer(
-      uniform,
-      DOC_SIZE_OFFSET,
-      new Float32Array([sizeWidth, sizeHeight])
-    )
-  }
-  /** Applied when the stroke is composited, and shown in flight at the same value. */
-  let strokeOpacity = 1
-  let strokeMode: StrokeMode = "paint"
 
   const SURFACE_USAGE =
     GPUTextureUsage.TEXTURE_BINDING |
@@ -755,28 +1533,30 @@ export function createRenderer(
 
   let nextSurfaceId = 0
 
-  function createSurface(): Surface {
-    if (width === 0) throw new Error("The render target has not been sized.")
+  function allocateSurface(
+    size: { width: number; height: number },
+    document: boolean
+  ): Surface {
+    if (size.width === 0)
+      throw new Error("The render target has not been sized.")
     const texture = device.createTexture({
-      size: { width, height },
+      size,
       format: LAYER_FORMAT,
       usage: SURFACE_USAGE,
     })
-    const view = texture.createView()
     return {
       id: ++nextSurfaceId,
       texture,
-      view,
-      readBindGroup: device.createBindGroup({
-        layout: compositePipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: compositeUniform } },
-          { binding: 1, resource: view },
-        ],
-      }),
+      view: texture.createView(),
+      document,
       // WebGPU zeroes a new texture, and zero is transparent black.
       empty: true,
     }
+  }
+
+  /** A document-sized surface: a layer, a mask, or scratch for one. */
+  function createSurface(): Surface {
+    return allocateSurface({ width, height }, true)
   }
 
   function ensureSurface(id: string): Surface {
@@ -788,10 +1568,288 @@ export function createRenderer(
   }
 
   /**
+   * Empties `target` wherever the selection covers it, in proportion to the
+   * coverage (08). Answers the region it touched.
+   */
+  function drawClearSelected(target: Surface): PixelRect {
+    const region = selection!.bounds
+    const encoder = device.createCommandEncoder()
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: target.view, loadOp: "load", storeOp: "store" },
+      ],
+    })
+    pass.setPipeline(clearSelectionPipeline)
+    pass.setBindGroup(
+      0,
+      device.createBindGroup({
+        layout: clearSelectionPipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: selection!.texture.createView() }],
+      })
+    )
+    pass.setScissorRect(region.x, region.y, region.width, region.height)
+    pass.draw(3)
+    pass.end()
+    device.queue.submit([encoder.finish()])
+    return region
+  }
+
+  // The filter in progress (18): the surface it writes, and that surface as
+  // it was when the filter began.
+  let filtering: { target: Surface; original: Surface } | undefined
+  let blurIntermediate: Surface | undefined
+  const filterLayout = device.createBindGroupLayout({
+    label: "filter",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform" },
+      },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "read-only-storage" },
+      },
+    ],
+  })
+  const filterModule = device.createShaderModule({ code: filterShader })
+  const filterPipelines = Object.fromEntries(
+    (["colourMain", "blurAcrossMain", "blurDownMain"] as const).map(
+      (entryPoint) => [
+        entryPoint,
+        device.createRenderPipeline({
+          label: `filter:${entryPoint}`,
+          layout: device.createPipelineLayout({
+            bindGroupLayouts: [filterLayout],
+          }),
+          vertex: { module: filterModule, entryPoint: "vertexMain" },
+          fragment: {
+            module: filterModule,
+            entryPoint,
+            targets: [{ format: LAYER_FORMAT }],
+          },
+          primitive: { topology: "triangle-list" },
+        }),
+      ]
+    )
+  ) as Record<
+    "colourMain" | "blurAcrossMain" | "blurDownMain",
+    GPURenderPipeline
+  >
+  const filterUniform = device.createBuffer({
+    size: 32,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
+  const filterKernel = device.createBuffer({
+    size: 4 * (MAX_BLUR_RADIUS + 1),
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  })
+  /** Bound for the selection while nothing is selected; the shader skips it. */
+  const noSelection = device.createTexture({
+    size: { width: 1, height: 1 },
+    format: TEXTURE_FORMAT,
+    usage: GPUTextureUsage.TEXTURE_BINDING,
+  })
+
+  function endFilter(keep: boolean) {
+    if (!filtering) return
+    const { target, original } = filtering
+    if (!keep) copySurface(original, target)
+    original.texture.destroy()
+    blurIntermediate?.texture.destroy()
+    blurIntermediate = undefined
+    filtering = undefined
+  }
+
+  /** The filter's settings and inputs, reading `between` as given. */
+  function filterBindGroup(original: Surface, between: GPUTextureView) {
+    return device.createBindGroup({
+      layout: filterLayout,
+      entries: [
+        { binding: 0, resource: { buffer: filterUniform } },
+        { binding: 1, resource: original.view },
+        { binding: 2, resource: between },
+        {
+          binding: 3,
+          resource: (selection?.texture ?? noSelection).createView(),
+        },
+        { binding: 4, resource: { buffer: filterKernel } },
+      ],
+    })
+  }
+
+  function drawFilter(filter: Filter): PixelRect {
+    const { target, original } = filtering!
+    const f = normalizeFilter(filter)
+    const params = new ArrayBuffer(32)
+    const ints = new Uint32Array(params)
+    const floats = new Float32Array(params)
+    ints[1] = selection ? 1 : 0
+    if (f.kind === "hsl") {
+      ints[0] = 0
+      floats.set([f.hue / 360, f.saturation / 100, f.lightness / 100], 4)
+    } else if (f.kind === "brightnessContrast") {
+      ints[0] = 1
+      floats.set([f.brightness / 200, 1 + f.contrast / 100], 4)
+    } else {
+      const kernel = blurKernel(f.radius)
+      new Int32Array(params)[2] = kernel.length - 1
+      device.queue.writeBuffer(filterKernel, 0, kernel)
+    }
+    device.queue.writeBuffer(filterUniform, 0, params)
+    const region = selection ? selection.bounds : { x: 0, y: 0, width, height }
+    if (f.kind === "blur") blurIntermediate ??= createSurface()
+    const bindGroup = filterBindGroup(
+      original,
+      blurIntermediate?.view ?? placeholderView
+    )
+    const encoder = device.createCommandEncoder()
+    const draw = (
+      pipeline: GPURenderPipeline,
+      view: GPUTextureView,
+      group: GPUBindGroup,
+      scissor: PixelRect
+    ) => {
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{ view, loadOp: "load", storeOp: "store" }],
+      })
+      pass.setPipeline(pipeline)
+      pass.setBindGroup(0, group)
+      pass.setScissorRect(scissor.x, scissor.y, scissor.width, scissor.height)
+      pass.draw(3)
+      pass.end()
+    }
+    if (f.kind === "blur") {
+      // The across pass reaches above and below the region as far as the
+      // down pass will read it.
+      const reach = Math.ceil(f.radius)
+      const top = Math.max(0, region.y - reach)
+      const bottom = Math.min(height, region.y + region.height + reach)
+      // The across pass writes `between`, which it must not also read.
+      const acrossGroup = filterBindGroup(original, placeholderView)
+      draw(
+        filterPipelines.blurAcrossMain,
+        blurIntermediate!.view,
+        acrossGroup,
+        {
+          x: region.x,
+          y: top,
+          width: region.width,
+          height: bottom - top,
+        }
+      )
+      draw(filterPipelines.blurDownMain, target.view, bindGroup, region)
+    } else {
+      draw(filterPipelines.colourMain, target.view, bindGroup, region)
+    }
+    device.queue.submit([encoder.finish()])
+    return region
+  }
+
+  /** The stroke that reads and writes its surface as it goes (D29). */
+  const direct = createDirectStroke(device, {
+    size: () => documentSize,
+    tip: () => tipShape,
+    grain: () => grainSurface,
+    selection: () => selection,
+    noSelection,
+    runSize: options.directRunSize,
+    wetTarget: options.directWetTarget,
+    legacyPickup: options.directLegacyPickup,
+  })
+
+  /**
+   * The paper every fluid brush paints on (D42): made once, with the
+   * renderer, and read by the simulation, the screen and settle alike.
+   */
+  const paper = createPaper(device)
+  const paperView = paper.createView()
+  let paperShown: Paper = DEFAULT_PAPER
+  let boardShown: Board = FLAT_BOARD
+
+  /** What a wet layer's pipeline binds of its wet paint; a dry one's, nothing. */
+  const wetEntries = (wet: WetViews | undefined): GPUBindGroupEntry[] =>
+    wet
+      ? [
+          { binding: 7, resource: wet.slots },
+          { binding: 8, resource: wet.deposited },
+          { binding: 9, resource: wet.suspended },
+          { binding: 10, resource: paperView },
+          { binding: 11, resource: wet.selection },
+          { binding: 12, resource: wet.coverage },
+        ]
+      : []
+
+  /** The stroke that lays paint into a layer's wet surface (D42). */
+  const fluid = createFluidStroke(
+    device,
+    {
+      size: () => documentSize,
+      feather: () => feather,
+      tip: () => tipShape,
+      paper: () => paperView,
+      selection: () => selection?.view,
+      wetChanged() {
+        for (const compositor of compositors) compositor.refreshWet()
+      },
+      wetMoved() {
+        for (const compositor of compositors) compositor.showWet()
+      },
+    },
+    options.experimentalFluidReach
+  )
+
+  /**
+   * Draws what the selection covers of `source` into `target`, in
+   * proportion to the coverage (11). Answers the region it wrote.
+   */
+  function drawCopySelected(source: Surface, target: Surface): PixelRect {
+    const region = selection!.bounds
+    const encoder = device.createCommandEncoder()
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: target.view, loadOp: "load", storeOp: "store" },
+      ],
+    })
+    pass.setPipeline(copySelectionPipeline)
+    pass.setBindGroup(
+      0,
+      device.createBindGroup({
+        layout: copySelectionPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: selection!.texture.createView() },
+          { binding: 1, resource: source.view },
+        ],
+      })
+    )
+    pass.setScissorRect(region.x, region.y, region.width, region.height)
+    pass.draw(3)
+    pass.end()
+    device.queue.submit([encoder.finish()])
+    return region
+  }
+
+  /** A whole surface copied into another, texel for texel. */
+  function copySurface(from: Surface, to: Surface) {
+    const encoder = device.createCommandEncoder()
+    encoder.copyTextureToTexture(
+      { texture: from.texture },
+      { texture: to.texture },
+      { width, height }
+    )
+    device.queue.submit([encoder.finish()])
+    to.empty = from.empty
+  }
+
+  /**
    * Empties a surface. A clear is a load operation, which a scissor rectangle
    * does not narrow, so this is always the whole surface — it runs when a
-   * stroke starts, ends or rewinds and when a cache is rebuilt, never on a
-   * frame of drawing.
+   * cache is rebuilt, never on a frame of drawing. The stroke buffer is
+   * cleared by region instead, by the buffered stroke.
    */
   function clearSurface(surface: Surface) {
     const encoder = device.createCommandEncoder()
@@ -810,397 +1868,164 @@ export function createRenderer(
     surface.empty = true
   }
 
-  /** Draws one surface over another at an opacity, optionally scissored. */
-  function compositeSurface(
-    source: Surface,
-    destination: Surface,
-    opacity: number,
-    region?: PixelRect,
-    selectedPipeline = compositePipeline
-  ) {
-    // The uniform is written per composite rather than per surface: these
-    // passes are rare, and one buffer is cheaper than a bind group each.
-    compositeValues[0] = opacity
-    compositeValues[1] = 0
-    compositeValues[2] = 0
-    compositeValues[3] = 0
-    device.queue.writeBuffer(compositeUniform, 0, compositeValues)
-    const encoder = device.createCommandEncoder()
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        { view: destination.view, loadOp: "load", storeOp: "store" },
-      ],
-    })
-    pass.setPipeline(selectedPipeline)
-    pass.setBindGroup(0, source.readBindGroup)
-    if (region)
-      pass.setScissorRect(region.x, region.y, region.width, region.height)
-    pass.draw(3)
-    pass.end()
-    device.queue.submit([encoder.finish()])
-    destination.empty = false
-  }
-
-  function blendBindings(
-    mode: BlendMode,
-    source: Surface,
-    maskId: string | undefined,
-    clipBase: Surface | undefined,
-    usesStroke: boolean
-  ): GPUBindGroup {
-    blendScratch ??= createSurface()
-    const mask = maskId ? surfaces.get(maskId) : undefined
-    const bindingKey = `${mode}:${source.id}:${mask?.id ?? 0}:${clipBase?.id ?? 0}:${usesStroke ? 1 : 0}`
-    const existing = blendBindGroups.get(bindingKey)
-    if (existing) return existing
-    const bindings = device.createBindGroup({
-      layout: blendPipeline(mode).getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: compositeUniform } },
-        { binding: 1, resource: source.view },
-        { binding: 2, resource: blendScratch.view },
-        {
-          binding: 3,
-          resource: usesStroke ? stroke!.view : placeholderView,
-        },
-        { binding: 4, resource: mask?.view ?? placeholderView },
-        { binding: 5, resource: clipBase?.view ?? placeholderView },
-      ],
-    })
-    blendBindGroups.set(bindingKey, bindings)
-    return bindings
-  }
-
-  /** Snapshot the destination: WebGPU cannot sample a render attachment. */
-  function blendSurface(
-    source: Surface,
-    destination: Surface,
-    item: Pick<CompositeItem, "opacity" | "blend">,
-    inFlight = false,
-    maskId?: string,
-    clipBase?: Surface,
-    maskInFlight = false
-  ) {
-    blendScratch ??= createSurface()
-    const pipeline = blendPipeline(item.blend)
-    const bindings = blendBindings(
-      item.blend,
-      source,
-      maskId,
-      clipBase,
-      inFlight || maskInFlight
-    )
-    const encoder = device.createCommandEncoder()
-    encoder.copyTextureToTexture(
-      { texture: destination.texture },
-      { texture: blendScratch.texture },
-      { width, height }
-    )
-    compositeValues[0] = item.opacity
-    compositeValues[1] = inFlight
-      ? strokeOpacity
-      : maskInFlight
-        ? -strokeOpacity
-        : 0
-    compositeValues[2] = maskId && surfaces.has(maskId) ? 1 : 0
-    compositeValues[3] = clipBase ? 1 : 0
-    compositeValues[4] = strokeMode === "erase" ? 1 : 0
-    device.queue.writeBuffer(compositeUniform, 0, compositeValues)
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        { view: destination.view, loadOp: "load", storeOp: "store" },
-      ],
-    })
-    pass.setPipeline(pipeline)
-    pass.setBindGroup(0, bindings)
-    pass.draw(3)
-    pass.end()
-    device.queue.submit([encoder.finish()])
-    destination.empty = false
-  }
-
-  function itemSurface(item: CompositeItem): Surface | undefined {
-    if (item.kind !== "group") return surfaces.get(item.id)
-    const children = item.children ?? []
-    const target = groupCaches.get(item.id) ?? createSurface()
-    groupCaches.set(item.id, target)
-    if (validGroupCaches.has(item.id)) return target.empty ? undefined : target
-    if (!target.empty) clearSurface(target)
-    renderItems(children, target)
-    validGroupCaches.add(item.id)
-    return target.empty ? undefined : target
-  }
+  /**
+   * Where a compositor draws (sharp-zoom 01): a target of its own size, and
+   * the affine taking a target pixel back to the document point under it.
+   */
+  type Space = { width: number; height: number; toDoc: ViewMatrix }
 
   /**
-   * A group flattened for its thumbnail, through the same caches the
-   * compositor keeps, rebuilt from the layers as they stand. The compositor's
-   * own bookkeeping is put back after:
-   * a group around the active layer is never drawn from its cache while
-   * painting, so one built here would go stale unnoticed, and it is a
-   * canvas-sized texture the compositor never asked for.
+   * Flattens the stack into one target (D19), and presents it. There are two:
+   * the screen, drawn through the view at the window's own resolution, and
+   * the document at its own size, which export and group thumbnails read.
+   * Layers, masks and the stroke are the document's and shared; everything a
+   * compositor flattens is its own, in its own target, and is rebuilt when
+   * its space moves as well as when the plan does. With `geometry`, vector
+   * layers are drawn into it from their scenes wherever it is not the
+   * document texel for texel (sharp-zoom 02); without, from their pixels.
    */
-  function groupThumbnailSurface(item: CompositeItem): {
-    surface: Surface | undefined
-    release(): void
-  } {
-    const held = new Set(groupCaches.keys())
-    const valid = new Set(validGroupCaches)
-    // Every group under this one is rebuilt too: one around the active layer
-    // is not kept current while painting, so its cache may be behind.
-    validGroupCaches.clear()
-    const surface = itemSurface(item)
-    validGroupCaches.clear()
-    for (const id of valid) validGroupCaches.add(id)
-    return {
-      surface,
-      // Destroying a texture waits for work already submitted against it, so
-      // this may run as soon as the pass reading it is on the queue.
-      release() {
-        for (const [id, cache] of groupCaches)
-          if (!held.has(id)) {
-            cache.texture.destroy()
-            groupCaches.delete(id)
-            blendBindGroups.clear()
-          }
-      },
-    }
-  }
-
-  /** The alpha shape clipping reads, after the base item's mask and opacity. */
-  function coverageSurface(
-    item: CompositeItem,
-    source: Surface,
-    maskInFlight = false
-  ): Surface {
-    if (!item.maskId && item.opacity === 1 && !maskInFlight) return source
-    const target = coverageCaches.get(item.id) ?? createSurface()
-    coverageCaches.set(item.id, target)
-    if (!target.empty) clearSurface(target)
-    blendSurface(
-      source,
-      target,
-      { opacity: item.opacity, blend: "normal" },
-      false,
-      item.maskId,
-      undefined,
-      maskInFlight
-    )
-    return target
-  }
-
-  function renderItems(
-    items: readonly CompositeItem[],
-    target: Surface,
-    initialClipBase?: Surface
-  ) {
-    let clipBase = initialClipBase
-    for (const item of items) {
-      const source = itemSurface(item)
-      if (!source) continue
-      if (item.blend === "normal" && !item.maskId && !item.clip)
-        compositeSurface(source, target, item.opacity)
-      else
-        blendSurface(
-          source,
-          target,
-          item,
-          false,
-          item.maskId,
-          item.clip ? clipBase : undefined
-        )
-      if (!item.clip) clipBase = coverageSurface(item, source)
-    }
-  }
-
-  function prepareItems(
-    items: readonly CompositeItem[],
-    initialClipBase?: Surface
-  ) {
-    let clipBase = initialClipBase
-    for (const item of items) {
-      const source = itemSurface(item)
-      if (!source) continue
-      if (item.blend !== "normal" || item.maskId || item.clip)
-        blendBindings(
-          item.blend,
-          source,
-          item.maskId,
-          item.clip ? clipBase : undefined,
-          false
-        )
-      if (!item.clip) clipBase = coverageSurface(item, source)
-    }
-  }
-
-  /**
-   * Flattens one side of the stack into its cache, allocating the cache only
-   * if there is anything to put in it. Layers with no texture have never held
-   * a pixel, so they are skipped rather than drawn as transparent.
-   */
-  function buildCache(
-    items: readonly CompositeItem[],
-    cache: Surface | undefined
-  ): Surface | undefined {
-    const drawable = items.filter(
-      (item) => item.kind === "group" || surfaces.has(item.id)
-    )
-    if (drawable.length === 0) {
-      cache?.texture.destroy()
-      return undefined
-    }
-    const target = cache ?? createSurface()
-    if (!target.empty) clearSurface(target)
-    renderItems(drawable, target)
-    return target
-  }
-
-  function refreshPresentBindGroup() {
-    if (!active || !stroke) return
-    presentBindGroup = device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: uniform } },
-        {
-          binding: 1,
-          resource:
-            complexOutput?.view ??
-            frame?.view ??
-            below?.view ??
-            placeholderView,
-        },
-        { binding: 2, resource: frame ? placeholderView : active.view },
-        { binding: 3, resource: frame ? placeholderView : stroke.view },
-        { binding: 4, resource: above?.view ?? placeholderView },
-        { binding: 5, resource: viewSampler },
-      ],
+  function createCompositor({
+    geometry,
+    windowed = false,
+  }: {
+    geometry: boolean
+    /**
+     * The target is a window onto the document, texel for texel, a whole
+     * number of pixels in: document surfaces are fetched and not resampled.
+     */
+    windowed?: boolean
+  }) {
+    let space: Space = { width: 0, height: 0, toDoc: IDENTITY_MATRIX }
+    /** Whether document surfaces are resampled into this target. */
+    let resampling = false
+    /** What document surfaces are read through: filtered, or as pixels. */
+    let docSampler = viewSampler
+    // Vector layers drawn from their geometry into this target, and the
+    // version of the scene each was drawn from: -1 once the space moves.
+    const vectorSurfaces = new Map<
+      string,
+      { surface: Surface; version: number }
+    >()
+    const presentUniform = device.createBuffer({
+      size: UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     })
-  }
+    device.queue.writeBuffer(presentUniform, 0, presentDefaults)
+    const compositeUniform = device.createBuffer({
+      size: COMPOSITE_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    })
+    const compositeValues = new Float32Array(COMPOSITE_UNIFORM_BYTES / 4)
+    // Bind groups hold views, so both are keyed by the surfaces they read and
+    // forgotten whenever a texture they could hold is replaced.
+    const readBindGroups = new Map<number, GPUBindGroup>()
+    const blendBindGroups = new Map<string, GPUBindGroup>()
+    // Chosen by the plan: a blend mode's pipeline is made when one is used.
+    let pipeline: GPURenderPipeline | undefined
+    // Everything under and over the active layer, flattened (D19). Undefined
+    // when there is nothing on that side, which is a document of one layer.
+    let below: Surface | undefined
+    let above: Surface | undefined
+    // Blend modes above the pen depend on its live pixels and cannot be
+    // flattened independently. Normal-only upper stacks retain the
+    // constant-cost path.
+    let liveAbove: CompositeItem[] = []
+    let activeItem: CompositeItem | undefined
+    let blendScratch: Surface | undefined
+    let frame: Surface | undefined
+    /** What `flatten` draws into. */
+    let flat: Surface | undefined
+    let complexOutput: Surface | undefined
+    let complexStages: CompositePlan["stages"]
+    let stageBelow: (Surface | undefined)[] = []
+    let stageAbove: (Surface | undefined)[] = []
+    let stageClipBase: (Surface | undefined)[] = []
+    let stageLiveAbove: boolean[] = []
+    let stageFrames: Surface[] = []
+    const groupCaches = new Map<string, Surface>()
+    const validGroupCaches = new Set<string>()
+    const coverageCaches = new Map<string, Surface>()
+    let presentBindGroup: GPUBindGroup | undefined
+    /** The mode the present pass draws the active layer in, once planned. */
+    let presentMode: BlendMode | undefined
+    /** The present pass's binding for each copy of the wet fields. */
+    const presentBindGroups = new Map<number, GPUBindGroup>()
+    /** The plan applied. Undefined forces the next one to be applied in full. */
+    let composition: string | undefined
+    /** That plan as given, so a frame can tell it is still the one in force. */
+    let applied: ActivePlan | undefined
+    /** What the caches were built from, which is only part of that plan. */
+    let cachedFrom: string | undefined
 
-  // The stroke in flight. The log lets the buffer be rewound; the bounds keep
-  // clearing and compositing to the region the stroke actually covers.
-  const log = createStampLog(MAX_STAMPS_PER_STROKE)
-  let accumulation: Accumulation = "coverage"
-  // Mutated rather than replaced: an empty region is one that has not been
-  // grown yet, so the bounds start inverted.
-  const painted = { left: 0, top: 0, right: 0, bottom: 0 }
-
-  function resetPainted() {
-    painted.left = Infinity
-    painted.top = Infinity
-    painted.right = -Infinity
-    painted.bottom = -Infinity
-  }
-  resetPainted()
-
-  /** Grows the painted region to hold `count` dabs, rims included. */
-  function growPainted(instances: Float32Array, count: number) {
-    for (let i = 0; i < count; i++) {
-      const offset = i * STAMP_STRIDE
-      const x = instances[offset + STAMP.CENTER_X]
-      const y = instances[offset + STAMP.CENTER_Y]
-      const radius = instances[offset + STAMP.RADIUS]
-      painted.left = Math.min(painted.left, x - radius)
-      painted.top = Math.min(painted.top, y - radius)
-      painted.right = Math.max(painted.right, x + radius)
-      painted.bottom = Math.max(painted.bottom, y + radius)
+    function createTarget(): Surface {
+      return allocateSurface(space, false)
     }
-  }
 
-  /** Rebuilt whenever a texture is replaced: a bind group holds views, not ids. */
-  function refreshStampBindGroup() {
-    stampBindGroup = device.createBindGroup({
-      layout: stampBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: stampUniform } },
-        { binding: 1, resource: tipSampler },
-        { binding: 2, resource: grainSampler },
-        { binding: 3, resource: tipTexture.createView() },
-        { binding: 4, resource: grainTexture.createView() },
-      ],
-    })
-  }
+    /**
+     * Writes where this compositor draws into both of its uniforms. Document
+     * surfaces need resampling unless the target is the document itself,
+     * texel for texel — which is the export, and an unnavigated screen.
+     */
+    function writeSpace() {
+      const [a, b, c, d, e, f] = space.toDoc
+      const turned = a !== 1 || b !== 0 || c !== 0 || d !== 1
+      const resample = windowed
+        ? turned || !Number.isInteger(e) || !Number.isInteger(f)
+        : turned ||
+          e !== 0 ||
+          f !== 0 ||
+          space.width !== width ||
+          space.height !== height
+      resampling = resample
+      compositeValues[5] = resample ? 1 : 0
+      // Target pixels per document pixel, whatever the turn or flip.
+      const zoom = 1 / Math.hypot(a, b)
+      const sampler = samplesNearest(magnification, zoom)
+        ? pixelSampler
+        : viewSampler
+      if (sampler !== docSampler) {
+        docSampler = sampler
+        // Every bind group holds the sampler, and the caches were read
+        // through the old one.
+        forgetBindGroups()
+        invalidate()
+      }
+      compositeValues.set(packMatrix(space.toDoc), 8)
+      compositeValues[20] = width
+      compositeValues[21] = height
+      device.queue.writeBuffer(
+        presentUniform,
+        VIEW_OFFSET,
+        new Float32Array(packMatrix(space.toDoc))
+      )
+      device.queue.writeBuffer(
+        presentUniform,
+        DOC_SIZE_OFFSET,
+        new Float32Array([width, height])
+      )
+    }
 
-  /** The present pass shows the stroke in flight at the opacity it will land at. */
-  function writeStrokeOpacity(opacity: number) {
-    strokeOpacity = opacity
-    device.queue.writeBuffer(
-      uniform,
-      STROKE_OPACITY_OFFSET,
-      new Float32Array([opacity])
-    )
-  }
-
-  function writeStrokeMode(mode: StrokeMode) {
-    strokeMode = mode
-    device.queue.writeBuffer(
-      uniform,
-      STROKE_MODE_OFFSET,
-      new Float32Array([mode === "erase" ? 1 : 0])
-    )
-  }
-
-  /** The painted region in whole pixels, clipped to the buffer. Null if empty. */
-  function paintedScissor() {
-    if (!stroke || painted.right <= painted.left) return null
-    const x = Math.max(0, Math.floor(painted.left))
-    const y = Math.max(0, Math.floor(painted.top))
-    const right = Math.min(width, Math.ceil(painted.right))
-    const bottom = Math.min(height, Math.ceil(painted.bottom))
-    if (right <= x || bottom <= y) return null
-    return { x, y, width: right - x, height: bottom - y }
-  }
-
-  function clearStroke() {
-    if (!stroke) throw new Error("The render target has not been sized.")
-    clearSurface(stroke)
-  }
-
-  /** Draws `count` dabs of the current stroke into the buffer. */
-  function drawStamps(instances: Float32Array, offset: number, count: number) {
-    if (!stroke || !stampBindGroup)
-      throw new Error("The render target has not been sized.")
-    device.queue.writeBuffer(
-      stampInstances,
-      0,
-      instances,
-      offset * STAMP_STRIDE,
-      count * STAMP_STRIDE
-    )
-    const encoder = device.createCommandEncoder()
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        // The buffer holds the stroke so far: dabs blend onto it.
-        { view: stroke.view, loadOp: "load", storeOp: "store" },
-      ],
-    })
-    pass.setPipeline(stampPipelines[accumulation])
-    pass.setBindGroup(0, stampBindGroup)
-    pass.setVertexBuffer(0, stampInstances)
-    pass.draw(6, count)
-    pass.end()
-    device.queue.submit([encoder.finish()])
-    stroke.empty = false
-  }
-
-  return {
-    resize(nextWidth, nextHeight) {
-      for (const surface of surfaces.values()) surface.texture.destroy()
-      surfaces.clear()
+    /** Lets go of every texture this compositor drew, and what read them. */
+    function releaseTargets() {
       for (const surface of groupCaches.values()) surface.texture.destroy()
       groupCaches.clear()
       validGroupCaches.clear()
       for (const surface of coverageCaches.values()) surface.texture.destroy()
       coverageCaches.clear()
-      blendBindGroups.clear()
-      stroke?.texture.destroy()
+      for (const held of vectorSurfaces.values()) held.surface.texture.destroy()
+      vectorSurfaces.clear()
       below?.texture.destroy()
       above?.texture.destroy()
       blendScratch?.texture.destroy()
       frame?.texture.destroy()
+      flat?.texture.destroy()
       for (const surface of stageFrames) surface.texture.destroy()
-      stageFrames = []
+      flat = undefined
+      below = undefined
+      above = undefined
       blendScratch = undefined
       frame = undefined
+      stageFrames = []
       complexOutput = undefined
       complexStages = undefined
       stageBelow = []
@@ -1209,23 +2034,935 @@ export function createRenderer(
       stageLiveAbove = []
       liveAbove = []
       activeItem = undefined
-      below = undefined
-      above = undefined
-      active = undefined
       presentBindGroup = undefined
-      // The caches are gone with the textures they flattened, so the next plan
-      // rebuilds them even if it is the same plan.
+      presentBindGroups.clear()
+      forgetBindGroups()
+      invalidate()
+    }
+
+    function forgetBindGroups() {
+      readBindGroups.clear()
+      blendBindGroups.clear()
+    }
+
+    /** The caches were flattened from pixels that have since changed. */
+    function invalidate() {
       composition = undefined
       cachedFrom = undefined
-      log.reset()
-      resetPainted()
+    }
+
+    function readBindGroup(source: Surface): GPUBindGroup {
+      const existing = readBindGroups.get(source.id)
+      if (existing) return existing
+      const created = device.createBindGroup({
+        layout: compositeBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: compositeUniform } },
+          { binding: 1, resource: source.view },
+          { binding: 2, resource: docSampler },
+        ],
+      })
+      readBindGroups.set(source.id, created)
+      return created
+    }
+
+    /** Draws one surface over another at an opacity, optionally scissored. */
+    function compositeSurface(
+      source: Surface,
+      destination: Surface,
+      opacity: number,
+      region?: PixelRect,
+      selectedPipeline = compositePipeline
+    ) {
+      // The uniform is written per composite rather than per surface: these
+      // passes are rare, and one buffer is cheaper than a bind group each.
+      compositeValues[0] = opacity
+      compositeValues[1] = 0
+      compositeValues[2] = 0
+      compositeValues[3] = 0
+      compositeValues[4] = 0
+      compositeValues[6] = source.document ? 1 : 0
+      compositeValues[7] = 0
+      device.queue.writeBuffer(compositeUniform, 0, compositeValues)
+      const encoder = device.createCommandEncoder()
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          { view: destination.view, loadOp: "load", storeOp: "store" },
+        ],
+      })
+      pass.setPipeline(selectedPipeline)
+      pass.setBindGroup(0, readBindGroup(source))
+      if (region)
+        pass.setScissorRect(region.x, region.y, region.width, region.height)
+      pass.draw(3)
+      pass.end()
+      device.queue.submit([encoder.finish()])
+      destination.empty = false
+    }
+
+    function blendBindings(
+      mode: BlendMode,
+      source: Surface,
+      maskId: string | undefined,
+      clipBase: Surface | undefined,
+      usesStroke: boolean
+    ): GPUBindGroup {
+      blendScratch ??= createTarget()
+      const mask = maskId ? surfaces.get(maskId) : undefined
+      // Wet paint is the layer's own, so it is read wherever the layer is.
+      const wet = fluid.wet(source)
+      const bindingKey = `${mode}:${source.id}:${mask?.id ?? 0}:${clipBase?.id ?? 0}:${usesStroke ? 1 : 0}:${wet?.key ?? 0}`
+      const existing = blendBindGroups.get(bindingKey)
+      if (existing) return existing
+      const bindings = device.createBindGroup({
+        layout: blendPipeline(mode, !!wet).getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: compositeUniform } },
+          { binding: 1, resource: source.view },
+          { binding: 2, resource: blendScratch.view },
+          {
+            binding: 3,
+            resource: usesStroke ? stroke!.view : placeholderView,
+          },
+          { binding: 4, resource: mask?.view ?? placeholderView },
+          { binding: 5, resource: clipBase?.view ?? placeholderView },
+          { binding: 6, resource: docSampler },
+          ...wetEntries(wet),
+        ],
+      })
+      blendBindGroups.set(bindingKey, bindings)
+      return bindings
+    }
+
+    /** Snapshot the destination: WebGPU cannot sample a render attachment. */
+    function blendSurface(
+      source: Surface,
+      destination: Surface,
+      item: Pick<CompositeItem, "opacity" | "blend">,
+      inFlight = false,
+      maskId?: string,
+      clipBase?: Surface,
+      maskInFlight = false
+    ) {
+      blendScratch ??= createTarget()
+      const pipeline = blendPipeline(item.blend, !!fluid.wet(source))
+      const bindings = blendBindings(
+        item.blend,
+        source,
+        maskId,
+        clipBase,
+        inFlight || maskInFlight
+      )
+      const encoder = device.createCommandEncoder()
+      encoder.copyTextureToTexture(
+        { texture: destination.texture },
+        { texture: blendScratch.texture },
+        { width: space.width, height: space.height }
+      )
+      compositeValues[0] = item.opacity
+      compositeValues[1] = inFlight
+        ? buffered.opacity()
+        : maskInFlight
+          ? -buffered.opacity()
+          : 0
+      compositeValues[2] = maskId && surfaces.has(maskId) ? 1 : 0
+      compositeValues[3] = clipBase ? 1 : 0
+      compositeValues[4] = buffered.mode() === "erase" ? 1 : 0
+      compositeValues[6] = source.document ? 1 : 0
+      compositeValues[7] = clipBase?.document ? 1 : 0
+      device.queue.writeBuffer(compositeUniform, 0, compositeValues)
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          { view: destination.view, loadOp: "load", storeOp: "store" },
+        ],
+      })
+      pass.setPipeline(pipeline)
+      pass.setBindGroup(0, bindings)
+      pass.draw(3)
+      pass.end()
+      device.queue.submit([encoder.finish()])
+      destination.empty = false
+    }
+
+    /** Whether a layer is drawn into this target from its geometry. */
+    function fromGeometry(id: string): boolean {
+      return geometry && resampling && vectorScenes.has(id)
+    }
+
+    /**
+     * What a layer is composited from: its own pixels, or for a vector layer
+     * on a magnified screen its scene drawn into this target through the
+     * view, redrawn only when the scene or the view has moved since.
+     */
+    function layerSurface(id: string): Surface | undefined {
+      const surface = surfaces.get(id)
+      const scene = vectorScenes.get(id)
+      if (!surface || !scene || !fromGeometry(id)) return surface
+      let held = vectorSurfaces.get(id)
+      if (!held) {
+        held = { surface: createTarget(), version: -1 }
+        vectorSurfaces.set(id, held)
+      }
+      if (held.version !== scene.version) {
+        drawVector(
+          scene.buffers,
+          held.surface.texture,
+          invertMatrix(space.toDoc),
+          { x: 0, y: 0, width: space.width, height: space.height }
+        )
+        held.version = scene.version
+        held.surface.empty = false
+      }
+      return held.surface
+    }
+
+    /** The active layer as it is composited. */
+    function activeSource(): Surface {
+      return (activeItem && layerSurface(activeItem.id)) ?? active!
+    }
+
+    function itemSurface(item: CompositeItem): Surface | undefined {
+      if (item.kind !== "group") return layerSurface(item.id)
+      const children = item.children ?? []
+      const target = groupCaches.get(item.id) ?? createTarget()
+      groupCaches.set(item.id, target)
+      if (validGroupCaches.has(item.id))
+        return target.empty ? undefined : target
+      if (!target.empty) clearSurface(target)
+      renderItems(children, target)
+      validGroupCaches.add(item.id)
+      return target.empty ? undefined : target
+    }
+
+    /**
+     * A group flattened for its thumbnail, through the same caches the
+     * compositor keeps, rebuilt from the layers as they stand. The
+     * compositor's own bookkeeping is put back after: a group around the
+     * active layer is never drawn from its cache while painting, so one built
+     * here would go stale unnoticed, and it is a texture the compositor never
+     * asked for.
+     */
+    function groupThumbnailSurface(item: CompositeItem): {
+      surface: Surface | undefined
+      release(): void
+    } {
+      const held = new Set(groupCaches.keys())
+      const valid = new Set(validGroupCaches)
+      // Every group under this one is rebuilt too: one around the active
+      // layer is not kept current while painting, so its cache may be behind.
+      validGroupCaches.clear()
+      const surface = itemSurface(item)
+      validGroupCaches.clear()
+      for (const id of valid) validGroupCaches.add(id)
+      return {
+        surface,
+        // Destroying a texture waits for work already submitted against it,
+        // so this may run as soon as the pass reading it is on the queue.
+        release() {
+          for (const [id, cache] of groupCaches)
+            if (!held.has(id)) {
+              cache.texture.destroy()
+              groupCaches.delete(id)
+              forgetBindGroups()
+            }
+        },
+      }
+    }
+
+    /** The alpha shape clipping reads, after the base item's mask and opacity. */
+    function coverageSurface(
+      item: CompositeItem,
+      source: Surface,
+      maskInFlight = false
+    ): Surface {
+      if (!item.maskId && item.opacity === 1 && !maskInFlight) return source
+      const target = coverageCaches.get(item.id) ?? createTarget()
+      coverageCaches.set(item.id, target)
+      if (!target.empty) clearSurface(target)
+      blendSurface(
+        source,
+        target,
+        { opacity: item.opacity, blend: "normal" },
+        false,
+        item.maskId,
+        undefined,
+        maskInFlight
+      )
+      return target
+    }
+
+    function renderItems(
+      items: readonly CompositeItem[],
+      target: Surface,
+      initialClipBase?: Surface
+    ) {
+      let clipBase = initialClipBase
+      for (const item of items) {
+        const source = itemSurface(item)
+        if (!source) continue
+        if (item.blend === "normal" && !item.maskId && !item.clip)
+          compositeSurface(source, target, item.opacity)
+        else
+          blendSurface(
+            source,
+            target,
+            item,
+            false,
+            item.maskId,
+            item.clip ? clipBase : undefined
+          )
+        if (!item.clip) clipBase = coverageSurface(item, source)
+      }
+    }
+
+    function prepareItems(
+      items: readonly CompositeItem[],
+      initialClipBase?: Surface
+    ) {
+      let clipBase = initialClipBase
+      for (const item of items) {
+        const source = itemSurface(item)
+        if (!source) continue
+        if (item.blend !== "normal" || item.maskId || item.clip)
+          blendBindings(
+            item.blend,
+            source,
+            item.maskId,
+            item.clip ? clipBase : undefined,
+            false
+          )
+        if (!item.clip) clipBase = coverageSurface(item, source)
+      }
+    }
+
+    /**
+     * Flattens one side of the stack into its cache, allocating the cache
+     * only if there is anything to put in it. Layers with no texture have
+     * never held a pixel, so they are skipped rather than drawn as transparent.
+     */
+    function buildCache(
+      items: readonly CompositeItem[],
+      cache: Surface | undefined
+    ): Surface | undefined {
+      const drawable = items.filter(
+        (item) => item.kind === "group" || surfaces.has(item.id)
+      )
+      if (drawable.length === 0) {
+        cache?.texture.destroy()
+        return undefined
+      }
+      const target = cache ?? createTarget()
+      if (!target.empty) clearSurface(target)
+      renderItems(drawable, target)
+      return target
+    }
+
+    function refreshPresentBindGroup() {
+      presentBindGroups.clear()
+      showWet()
+    }
+
+    /**
+     * Binds the present pass to the wet fields as they now are. A step of
+     * the simulation moves on to the fields' other copy, so the binding for
+     * each copy is kept and a step makes none.
+     */
+    function showWet() {
+      if (!active || !stroke || !presentMode) return
+      const wet = fluid.wet(active)
+      pipeline = presentPipeline(presentMode, !!wet)
+      presentBindGroup = presentBindGroups.get(wet?.key ?? 0)
+      if (presentBindGroup) return
+      presentBindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: presentUniform } },
+          {
+            binding: 1,
+            resource:
+              complexOutput?.view ??
+              frame?.view ??
+              below?.view ??
+              placeholderView,
+          },
+          { binding: 2, resource: frame ? placeholderView : active.view },
+          { binding: 3, resource: frame ? placeholderView : stroke.view },
+          { binding: 4, resource: above?.view ?? placeholderView },
+          { binding: 5, resource: docSampler },
+          ...wetEntries(wet),
+        ],
+      })
+      presentBindGroups.set(wet?.key ?? 0, presentBindGroup)
+    }
+
+    /**
+     * Brings the caches up to the plan, and does nothing at all when they
+     * were built from this plan in this space already — which is why
+     * painting, whose plan cannot change, never rebuilds a cache.
+     */
+    function apply(next: ActivePlan) {
+      applied = next
+      const key = compositionKey(next)
+      if (key === composition) return
+      composition = key
+      validGroupCaches.clear()
+      const plannedStages = next.stages
+      const complex =
+        !!plannedStages &&
+        (plannedStages.length > 1 ||
+          !!next.active.maskId ||
+          next.active.clip ||
+          next.paintTargetId !== next.active.id)
+      if (complex) {
+        complexStages = plannedStages
+        liveAbove = []
+        activeItem = { ...next.active }
+        presentMode = "normal"
+        stageBelow = complexStages!.map((stage, index) =>
+          buildCache(stage.below, stageBelow[index])
+        )
+        stageClipBase = complexStages!.map((stage) => {
+          const base = [...stage.below].reverse().find((item) => !item.clip)
+          const source = base ? itemSurface(base) : undefined
+          return base && source ? coverageSurface(base, source) : undefined
+        })
+        stageLiveAbove = complexStages!.map(
+          (stage) =>
+            stage.above[0]?.clip === true ||
+            stage.above.some((item) => item.blend !== "normal")
+        )
+        stageAbove = complexStages!.map((stage, index) =>
+          stageLiveAbove[index]
+            ? undefined
+            : buildCache(stage.above, stageAbove[index])
+        )
+        while (stageFrames.length < complexStages!.length)
+          stageFrames.push(createTarget())
+        complexOutput = stageFrames[complexStages!.length - 1]
+        let source = activeSource()
+        let sourceItem = activeItem
+        for (let index = 0; index < complexStages!.length; index++) {
+          const clipBase = sourceItem!.clip ? stageClipBase[index] : undefined
+          blendBindings(
+            sourceItem!.blend,
+            source!,
+            sourceItem!.maskId,
+            clipBase,
+            index === 0
+          )
+          if (stageLiveAbove[index]) {
+            const aboveBase = sourceItem!.clip
+              ? stageClipBase[index]
+              : coverageSurface(
+                  sourceItem!,
+                  source!,
+                  index === 0 && paintTarget !== active
+                )
+            prepareItems(complexStages![index].above, aboveBase)
+          }
+          source = stageFrames[index]
+          sourceItem = complexStages![index].container ?? sourceItem
+        }
+        device.queue.writeBuffer(
+          presentUniform,
+          ACTIVE_OPACITY_OFFSET,
+          new Float32Array([0, 1, 0])
+        )
+        refreshPresentBindGroup()
+        return
+      }
+      complexStages = undefined
+      complexOutput = undefined
+      // Flattening is the expensive half, and most plans do not change what
+      // goes into it: fading the active layer or selecting nothing new leaves
+      // both caches exactly as they are.
+      activeItem = { ...next.active }
+      // A vector layer drawn from its geometry is in this target, where the
+      // present pass cannot read it, so it is composited into the frame.
+      const activeInTarget = fromGeometry(next.active.id)
+      liveAbove =
+        activeInTarget || next.above.some((item) => item.blend !== "normal")
+          ? next.above.map((item) => ({ ...item }))
+          : []
+      if (liveAbove.length || activeInTarget) frame ??= createTarget()
+      else {
+        frame?.texture.destroy()
+        frame = undefined
+      }
+      presentMode = frame ? "normal" : next.active.blend
+      const caches = cacheKey(next)
+      if (caches !== cachedFrom) {
+        cachedFrom = caches
+        below = buildCache(next.below, below)
+        above = buildCache(frame ? [] : next.above, above)
+      }
+      device.queue.writeBuffer(
+        presentUniform,
+        ACTIVE_OPACITY_OFFSET,
+        new Float32Array([
+          frame ? 0 : next.active.opacity,
+          frame || below ? 1 : 0,
+          above ? 1 : 0,
+        ])
+      )
+      refreshPresentBindGroup()
+    }
+
+    /**
+     * Draws the plan into `view`, which is this compositor's target.
+     * `overlay` is the selection's marching ants, marched `ants` pixels along.
+     */
+    function draw(
+      view: GPUTextureView,
+      overlay?: { ants: number },
+      using: ActivePlan | undefined = plan
+    ) {
+      // A view that moved, or pixels a cache was flattened from, rebuild the
+      // caches here: once per frame however many changes led up to it.
+      if (using && (using !== applied || composition === undefined))
+        apply(using)
+      if (!presentBindGroup || !pipeline)
+        throw new Error("No composition has been set to present.")
+      if (complexStages) {
+        let current = activeSource()
+        let currentItem = activeItem!
+        for (let index = 0; index < complexStages.length; index++) {
+          const target = stageFrames[index]
+          clearSurface(target)
+          if (stageBelow[index]) compositeSurface(stageBelow[index]!, target, 1)
+          blendSurface(
+            current,
+            target,
+            currentItem,
+            index === 0 && paintTarget === active,
+            currentItem.maskId,
+            currentItem.clip ? stageClipBase[index] : undefined,
+            index === 0 && paintTarget !== active
+          )
+          if (stageLiveAbove[index]) {
+            const aboveBase = currentItem.clip
+              ? stageClipBase[index]
+              : coverageSurface(
+                  currentItem,
+                  current,
+                  index === 0 && paintTarget !== active
+                )
+            renderItems(complexStages[index].above, target, aboveBase)
+          } else if (stageAbove[index]) {
+            compositeSurface(stageAbove[index]!, target, 1)
+          }
+          current = target
+          const container = complexStages[index].container
+          if (container) currentItem = container
+        }
+        complexOutput = current
+      } else if (frame) {
+        clearSurface(frame)
+        if (below) compositeSurface(below, frame, 1)
+        blendSurface(activeSource(), frame, activeItem!, true)
+        for (const item of liveAbove) {
+          const source = itemSurface(item)
+          if (source) blendSurface(source, frame, item)
+        }
+      }
+      const encoder = device.createCommandEncoder()
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view,
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+      })
+      pass.setPipeline(pipeline)
+      pass.setBindGroup(0, presentBindGroup)
+      pass.draw(3)
+      if (overlay && selection) {
+        antsValues[0] = overlay.ants
+        device.queue.writeBuffer(antsUniform, 0, antsValues)
+        pass.setPipeline(antsPipeline)
+        pass.setBindGroup(0, selection.bindGroup)
+        pass.draw(3)
+      }
+      pass.end()
+      device.queue.submit([encoder.finish()])
+    }
+
+    return {
+      presentUniform,
+      /**
+       * Flattens items into this compositor's own target, from the layers
+       * as they stand, and answers it. Kept between calls and drawn over by
+       * the next.
+       */
+      flatten(items: readonly CompositeItem[]): Surface {
+        validGroupCaches.clear()
+        flat ??= createTarget()
+        if (!flat.empty) clearSurface(flat)
+        renderItems(items, flat)
+        return flat
+      },
+      /** Keeps what `flatten` draws into from going cold (live brushes 31). */
+      warm(encoder: GPUCommandEncoder) {
+        if (flat) warmSurface(encoder, flat.view)
+      },
+      compositeSurface,
+      groupThumbnailSurface,
+      apply,
+      draw,
+      invalidate,
+      releaseTargets,
+      /**
+       * Moves the compositor to a new target. A new size reallocates every
+       * texture it drew; any change at all rebuilds the caches on next draw.
+       */
+      setSpace(next: Space) {
+        const resized =
+          next.width !== space.width || next.height !== space.height
+        const moved = next.toDoc.some(
+          (value, index) => value !== space.toDoc[index]
+        )
+        space = next
+        writeSpace()
+        if (resized) releaseTargets()
+        else if (moved) {
+          for (const held of vectorSurfaces.values()) held.version = -1
+          invalidate()
+        }
+      },
+      /** Rewritten when the document is resized, which every space reads. */
+      writeSpace,
+      /** Writes part of the present uniform, at a byte offset. */
+      writePresent(offset: number, values: Float32Array) {
+        device.queue.writeBuffer(presentUniform, offset, values)
+      },
+      /** Drops what this compositor kept for one layer, if anything. */
+      forget(id: string): boolean {
+        const group = groupCaches.get(id)
+        const coverage = coverageCaches.get(id)
+        const drawn = vectorSurfaces.get(id)?.surface
+        group?.texture.destroy()
+        coverage?.texture.destroy()
+        drawn?.texture.destroy()
+        groupCaches.delete(id)
+        validGroupCaches.delete(id)
+        coverageCaches.delete(id)
+        vectorSurfaces.delete(id)
+        if (group || coverage || drawn) forgetBindGroups()
+        return !!group || !!coverage || !!drawn
+      },
+      forgetBindGroups,
+      /** A layer became wet or dry: what reads it binds its wet paint anew. */
+      refreshWet() {
+        blendBindGroups.clear()
+        refreshPresentBindGroup()
+      },
+      /** The simulation moved on to the wet fields' other copy. */
+      showWet,
+      destroy() {
+        releaseTargets()
+        presentUniform.destroy()
+        compositeUniform.destroy()
+      },
+    }
+  }
+
+  /** Rebuilt whenever a texture is replaced: a bind group holds views, not ids. */
+  function refreshStampBindGroup() {
+    stampBindGroup = device.createBindGroup({
+      layout: buffered.bindingLayout,
+      entries: [
+        { binding: 0, resource: { buffer: stampUniform } },
+        { binding: 1, resource: tipSampler },
+        { binding: 2, resource: grainSampler },
+        {
+          binding: 3,
+          resource: tipTexture.createView({ dimension: "2d-array" }),
+        },
+        { binding: 4, resource: grainTexture.createView() },
+        {
+          binding: 5,
+          resource: selection?.texture.createView() ?? placeholderView,
+        },
+      ],
+    })
+    device.queue.writeBuffer(
+      stampUniform,
+      USE_SELECTION_OFFSET,
+      new Float32Array([selection ? 1 : 0])
+    )
+  }
+
+  /** The screen, through the view: what the artist sees. */
+  const screen = createCompositor({ geometry: true })
+  /**
+   * The document at its own size: the artwork as it exports, and where a group's
+   * thumbnail is flattened in. It keeps nothing between uses.
+   */
+  const artwork = createCompositor({ geometry: false })
+  /**
+   * A chunk of the document at a time, for the artwork a stroke samples
+   * (live brushes 21). Its targets are a chunk's size and kept between
+   * strokes, so freezing one allocates nothing once the first has.
+   */
+  const pickup = createCompositor({ geometry: false, windowed: true })
+  /**
+   * Pages of frozen artwork, a chunk each, waiting for a stroke to fill
+   * them: a stroke takes what it reaches from here and gives back up to
+   * `FROZEN_PAGES_KEPT`, so what is held is the size of the strokes and
+   * not of the document.
+   */
+  const frozenPages: GPUTexture[] = []
+  /** Four chunks cover the opening neighbourhood of the wet sweep's brushes. */
+  const FIRST_FROZEN_PAGES = 4
+
+  /** A pass that loads, stores and draws nothing: what keeps a texture warm. */
+  function warmSurface(encoder: GPUCommandEncoder, view: GPUTextureView) {
+    encoder
+      .beginRenderPass({
+        colorAttachments: [{ view, loadOp: "load", storeOp: "store" }],
+      })
+      .end()
+  }
+
+  function createFrozenPage(): GPUTexture {
+    return device.createTexture({
+      label: "frozen artwork",
+      size: { width: FREEZE_CHUNK, height: FREEZE_CHUNK },
+      format: LAYER_FORMAT,
+      // Only ever copied, but a pass is what keeps a texture warm (live
+      // brushes 31).
+      usage:
+        GPUTextureUsage.COPY_SRC |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.RENDER_ATTACHMENT,
+    })
+  }
+
+  function prepareSampling() {
+    direct.prepareSampling()
+    const wanted = Math.min(
+      FIRST_FROZEN_PAGES,
+      Math.ceil(width / FREEZE_CHUNK) * Math.ceil(height / FREEZE_CHUNK)
+    )
+    if (frozenPages.length >= wanted) return
+    pickup.setSpace({
+      width: FREEZE_CHUNK,
+      height: FREEZE_CHUNK,
+      toDoc: IDENTITY_MATRIX,
+    })
+    // Only transparent scratch pixels: the artwork is still frozen at the
+    // first dab, so edits after enabling sampling remain visible to it.
+    const blank = pickup.flatten([])
+    const encoder = device.createCommandEncoder()
+    while (frozenPages.length < wanted) {
+      const page = createFrozenPage()
+      encoder.copyTextureToTexture(
+        { texture: blank.texture },
+        { texture: page },
+        [FREEZE_CHUNK, FREEZE_CHUNK]
+      )
+      frozenPages.push(page)
+    }
+    device.queue.submit([encoder.finish()])
+  }
+  const compositors = [screen, artwork, pickup]
+  /** The window the screen compositor fills, once one has been given. */
+  let viewport: { width: number; height: number } | undefined
+  /** Screen pixels to document pixels. */
+  let screenToDocument: ViewMatrix = IDENTITY_MATRIX
+
+  /** Puts the screen where the view says, and the artwork at the document. */
+  function placeCompositors() {
+    screen.setSpace({
+      width: viewport?.width ?? width,
+      height: viewport?.height ?? height,
+      toDoc: screenToDocument,
+    })
+    artwork.setSpace({ width, height, toDoc: IDENTITY_MATRIX })
+  }
+
+  /**
+   * The visible stack as it exports, bottom to top, with the active layer in
+   * its place and each group around it holding its children.
+   */
+  function visibleStack(): CompositeItem[] {
+    if (!plan?.active) return []
+    let current = plan.active
+    let items: CompositeItem[] = []
+    for (const stage of plan.stages ?? [
+      { below: plan.below, above: plan.above, container: null },
+    ]) {
+      items = [...stage.below, current, ...stage.above]
+      if (stage.container) current = { ...stage.container, children: items }
+    }
+    return items
+  }
+
+  /** Whether an item has a pixel to show: a layer's own, or any child's. */
+  function hasPixels(item: CompositeItem): boolean {
+    if (item.kind === "group") return (item.children ?? []).some(hasPixels)
+    const surface = surfaces.get(item.id)
+    return !!surface && !surface.empty
+  }
+
+  /**
+   * Keeps what a sampling stroke's opening frame reads from going cold (live
+   * brushes 31): every visible layer but the one painted and the masks over
+   * them, which a chunk is copied or flattened from; the pages the first chunks are frozen into;
+   * and the target they are flattened in. A layer left two seconds was half
+   * of that frame at 8192², read from as much as drawn into.
+   */
+  function warmSampling(encoder: GPUCommandEncoder) {
+    const warmItems = (items: readonly CompositeItem[]) => {
+      for (const item of items) {
+        if (item.opacity <= 0) continue
+        const ids =
+          item.kind === "group" ? [item.maskId] : [item.id, item.maskId]
+        for (const id of ids) {
+          const surface = id ? surfaces.get(id) : undefined
+          if (surface && surface !== paintTarget && !surface.empty)
+            warmSurface(encoder, surface.view)
+        }
+        if (item.kind === "group") warmItems(item.children ?? [])
+      }
+    }
+    warmItems(visibleStack())
+    // A stroke takes its pages from the end.
+    for (const page of frozenPages.slice(-FIRST_FROZEN_PAGES))
+      warmSurface(encoder, page.createView())
+    pickup.warm(encoder)
+  }
+
+  /**
+   * The visible artwork as it stands, for a stroke to sample (live brushes
+   * 15), frozen a chunk at a time as the stroke first reads there (21).
+   * Only the stroke's own layer changes under it, and a dab reads at least
+   * where it writes, so each chunk is still the picture at pen-down when it
+   * is flattened. The stack is the one in force as the stroke opens.
+   */
+  function freezeArtwork(): FrozenArtwork {
+    const items = visibleStack()
+    const visible = items.filter((item) => item.opacity > 0 && hasPixels(item))
+    const only = visible.length === 1 ? visible[0] : undefined
+    // One unmodified layer is its own picture: a copy, with nothing shaded.
+    const copied =
+      only &&
+      only.kind !== "group" &&
+      only.opacity === 1 &&
+      only.blend === "normal" &&
+      !only.maskId &&
+      !only.clip
+        ? only.id
+        : undefined
+    const ledger = createFreezeLedger(width, height)
+    const across = Math.ceil(width / FREEZE_CHUNK)
+    /** The page each chunk reached is in, by its place along the rows. */
+    const pages = new Map<number, GPUTexture>()
+    return {
+      empty: visible.length === 0,
+      reach(left, top, right, bottom) {
+        for (const chunk of ledger.take(left, top, right, bottom)) {
+          const page = frozenPages.pop() ?? createFrozenPage()
+          pages.set(
+            (chunk.y / FREEZE_CHUNK) * across + chunk.x / FREEZE_CHUNK,
+            page
+          )
+          let from = copied ? surfaces.get(copied) : undefined
+          let origin = { x: chunk.x, y: chunk.y }
+          if (!from) {
+            pickup.setSpace({
+              width: FREEZE_CHUNK,
+              height: FREEZE_CHUNK,
+              toDoc: [1, 0, 0, 1, chunk.x, chunk.y],
+            })
+            from = pickup.flatten(items)
+            origin = { x: 0, y: 0 }
+          }
+          const encoder = device.createCommandEncoder()
+          encoder.copyTextureToTexture(
+            { texture: from.texture, origin },
+            { texture: page },
+            { width: chunk.width, height: chunk.height }
+          )
+          device.queue.submit([encoder.finish()])
+        }
+      },
+      copy(encoder, left, top, wide, high, to) {
+        const right = left + wide
+        const bottom = top + high
+        const lastColumn = Math.floor((right - 1) / FREEZE_CHUNK)
+        const lastRow = Math.floor((bottom - 1) / FREEZE_CHUNK)
+        for (let row = Math.floor(top / FREEZE_CHUNK); row <= lastRow; row++)
+          for (
+            let column = Math.floor(left / FREEZE_CHUNK);
+            column <= lastColumn;
+            column++
+          ) {
+            const x = Math.max(left, column * FREEZE_CHUNK)
+            const y = Math.max(top, row * FREEZE_CHUNK)
+            encoder.copyTextureToTexture(
+              {
+                texture: pages.get(row * across + column)!,
+                origin: {
+                  x: x - column * FREEZE_CHUNK,
+                  y: y - row * FREEZE_CHUNK,
+                },
+              },
+              { texture: to, origin: { x: x - left, y: y - top } },
+              {
+                width: Math.min(right, (column + 1) * FREEZE_CHUNK) - x,
+                height: Math.min(bottom, (row + 1) * FREEZE_CHUNK) - y,
+              }
+            )
+          }
+      },
+      release() {
+        for (const page of pages.values())
+          if (frozenPages.length < FROZEN_PAGES_KEPT) frozenPages.push(page)
+          else page.destroy()
+        pages.clear()
+      },
+    }
+  }
+
+  /** Pixels some cache was flattened from have changed. */
+  function invalidateCaches() {
+    for (const compositor of compositors) compositor.invalidate()
+  }
+
+  return {
+    prepareSampling,
+    resize(nextWidth, nextHeight) {
+      releaseSelection()
+      fluid.drop()
+      fluid.selectionChanged()
+      direct.invalidateBinding()
+      direct.drop()
+      for (const page of frozenPages.splice(0)) page.destroy()
+      for (const surface of surfaces.values()) surface.texture.destroy()
+      surfaces.clear()
+      for (const id of [...vectorScenes.keys()]) forgetVectorScene(id)
+      stroke?.texture.destroy()
+      active = undefined
+      paintTarget = undefined
+      // The caches are gone with the textures they flattened, so the next plan
+      // rebuilds them even if it is the same plan.
+      for (const compositor of compositors) compositor.releaseTargets()
       width = nextWidth
       height = nextHeight
-      writeDocSize(nextWidth, nextHeight)
+      documentSize.width = nextWidth
+      documentSize.height = nextHeight
+      placeCompositors()
+      // The view is the artist's and outlives the document's size; the
+      // matrix both are measured against is rewritten all the same.
+      for (const compositor of compositors) compositor.writeSpace()
       // The stroke buffer matches a layer texel for texel, so a dab lands at
-      // the same pixel in both and the composite is a straight copy. §6.2 wants
-      // it bounded to the stroke's region; it narrows to a tiled surface with
-      // the per-layer atlases (D-6.1), which is what bounds a layer too.
+      // the same pixel in both and the composite is a straight copy. Its
+      // storage stays document-sized until the per-layer atlases (D-6.1); its
+      // clears are already bounded to what each stroke painted (§6.2).
       stroke = createSurface()
       // Only the viewport changes with a resize; the tip flag, the ink and the
       // grain settings are the brush's and outlive it.
@@ -1235,9 +2972,7 @@ export function createRenderer(
         new Float32Array([width, height, feather])
       )
       refreshStampBindGroup()
-      // A fresh texture is already transparent, but the previous stroke's
-      // opacity is not; both passes read it from a uniform.
-      writeStrokeOpacity(1)
+      buffered.resize()
     },
     uploadLayer(id, layer) {
       // A layer with no tiles has never held a pixel, and allocating a
@@ -1271,8 +3006,7 @@ export function createRenderer(
       surface.empty = false
       // A layer whose pixels arrived from outside a stroke may be inside a
       // cache, and the cache was flattened before they existed.
-      composition = undefined
-      cachedFrom = undefined
+      invalidateCaches()
     },
     uploadMask(id, mask) {
       if (!surfaces.has(id) && mask.tileCount() === 0) return
@@ -1302,8 +3036,7 @@ export function createRenderer(
       mask.clearDirty()
       if (!wrote) return
       surface.empty = false
-      composition = undefined
-      cachedFrom = undefined
+      invalidateCaches()
     },
     duplicateLayer(sourceId, copyId) {
       const source = surfaces.get(sourceId)
@@ -1320,153 +3053,53 @@ export function createRenderer(
       copy.empty = source.empty
     },
     releaseLayer(id) {
-      surfaces.get(id)?.texture.destroy()
-      groupCaches.get(id)?.texture.destroy()
-      coverageCaches.get(id)?.texture.destroy()
+      forgetVectorScene(id)
+      const released = surfaces.get(id)
+      if (released) {
+        direct.drop(released)
+        fluid.drop(released)
+      }
+      released?.texture.destroy()
       const releasedSurface = surfaces.delete(id)
-      const releasedGroup = groupCaches.delete(id)
-      validGroupCaches.delete(id)
-      const releasedCoverage = coverageCaches.delete(id)
-      if (releasedSurface || releasedGroup || releasedCoverage) {
-        blendBindGroups.clear()
-        composition = undefined
-        cachedFrom = undefined
+      let releasedCache = false
+      for (const compositor of compositors)
+        releasedCache = compositor.forget(id) || releasedCache
+      if (releasedSurface || releasedCache) {
+        for (const compositor of compositors) compositor.forgetBindGroups()
+        invalidateCaches()
       }
     },
-    setComposition(plan) {
+    setComposition(next) {
       if (!stroke) throw new Error("The render target has not been sized.")
-      if (!plan.active) throw new Error("A composition needs an active layer.")
-      const key = compositionKey(plan)
-      if (key === composition) return
-      composition = key
-      validGroupCaches.clear()
-      active = ensureSurface(plan.active.id)
-      paintTarget = ensureSurface(plan.paintTargetId ?? plan.active.id)
-      const plannedStages = plan.stages
-      const complex =
-        !!plannedStages &&
-        (plannedStages.length > 1 ||
-          !!plan.active.maskId ||
-          plan.active.clip ||
-          plan.paintTargetId !== plan.active.id)
-      if (complex) {
-        complexStages = plannedStages
-        liveAbove = []
-        activeItem = { ...plan.active }
-        pipeline = presentPipeline("normal")
-        stageBelow = complexStages!.map((stage, index) =>
-          buildCache(stage.below, stageBelow[index])
-        )
-        stageClipBase = complexStages!.map((stage) => {
-          const base = [...stage.below].reverse().find((item) => !item.clip)
-          const source = base ? itemSurface(base) : undefined
-          return base && source ? coverageSurface(base, source) : undefined
-        })
-        stageLiveAbove = complexStages!.map(
-          (stage) =>
-            stage.above[0]?.clip === true ||
-            stage.above.some((item) => item.blend !== "normal")
-        )
-        stageAbove = complexStages!.map((stage, index) =>
-          stageLiveAbove[index]
-            ? undefined
-            : buildCache(stage.above, stageAbove[index])
-        )
-        while (stageFrames.length < complexStages!.length)
-          stageFrames.push(createSurface())
-        complexOutput = stageFrames[complexStages!.length - 1]
-        let source = active
-        let sourceItem = activeItem
-        for (let index = 0; index < complexStages!.length; index++) {
-          const clipBase = sourceItem!.clip ? stageClipBase[index] : undefined
-          blendBindings(
-            sourceItem!.blend,
-            source!,
-            sourceItem!.maskId,
-            clipBase,
-            index === 0
-          )
-          if (stageLiveAbove[index]) {
-            const aboveBase = sourceItem!.clip
-              ? stageClipBase[index]
-              : coverageSurface(
-                  sourceItem!,
-                  source!,
-                  index === 0 && paintTarget !== active
-                )
-            prepareItems(complexStages![index].above, aboveBase)
-          }
-          source = stageFrames[index]
-          sourceItem = complexStages![index].container ?? sourceItem
-        }
-        device.queue.writeBuffer(
-          uniform,
-          ACTIVE_OPACITY_OFFSET,
-          new Float32Array([0, 1, 0])
-        )
-        refreshPresentBindGroup()
-        return
-      }
-      complexStages = undefined
-      complexOutput = undefined
-      // Flattening is the expensive half, and most plans do not change what
-      // goes into it: fading the active layer or selecting nothing new leaves
-      // both caches exactly as they are.
-      activeItem = { ...plan.active }
-      liveAbove = plan.above.some((item) => item.blend !== "normal")
-        ? plan.above.map((item) => ({ ...item }))
-        : []
-      if (liveAbove.length) frame ??= createSurface()
-      else {
-        frame?.texture.destroy()
-        frame = undefined
-      }
-      pipeline = presentPipeline(frame ? "normal" : plan.active.blend)
-      const caches = cacheKey(plan)
-      if (caches !== cachedFrom) {
-        cachedFrom = caches
-        below = buildCache(plan.below, below)
-        above = buildCache(frame ? [] : plan.above, above)
-      }
+      if (!next.active) throw new Error("A composition needs an active layer.")
+      plan = { ...next, active: next.active }
       // The active layer is drawn into, so it needs storage whether or not it
       // has ever held a pixel.
-      device.queue.writeBuffer(
-        uniform,
-        ACTIVE_OPACITY_OFFSET,
-        new Float32Array([
-          frame ? 0 : plan.active.opacity,
-          frame || below ? 1 : 0,
-          above ? 1 : 0,
-        ])
-      )
-      refreshPresentBindGroup()
+      active = ensureSurface(next.active.id)
+      paintTarget = ensureSurface(next.paintTargetId ?? next.active.id)
+      // The screen is brought up to the plan now, where a change of plan is
+      // paid for; the artwork only when something reads it.
+      screen.apply(plan)
     },
     beginStroke(options) {
-      if (!stroke) throw new Error("The render target has not been sized.")
-      if (
-        !Number.isFinite(options.opacity) ||
-        options.opacity < 0 ||
-        options.opacity > 1
-      )
-        throw new Error("Stroke opacity must be a finite value in [0, 1].")
-      clearStroke()
-      resetPainted()
-      log.reset()
-      accumulation = options.accumulation
-      writeStrokeOpacity(options.opacity)
-      writeStrokeMode(options.mode)
+      buffered.begin(options)
     },
     stamp(instances, count) {
-      if (count <= 0) return
-      if (count > MAX_STAMPS_PER_DRAW)
-        throw new Error("Too many dabs for one draw.")
-      log.append(instances, count)
-      growPainted(instances, count)
-      drawStamps(instances, 0, count)
+      buffered.draw(instances, count)
     },
     setTip(texture) {
+      if (texture) {
+        validateTexture(texture)
+        if ((texture.frameCount ?? 1) > device.limits.maxTextureArrayLayers)
+          throw new Error(
+            "The tip set exceeds the device's texture layer limit."
+          )
+      }
       tipTexture.destroy()
       tipTexture = texture ? uploadTexture(texture) : createWhiteTexture()
+      tipShape.texture = tipTexture
+      tipShape.usesTip = !!texture
+      direct.invalidateBinding()
       device.queue.writeBuffer(
         stampUniform,
         USE_TIP_OFFSET,
@@ -1478,6 +3111,7 @@ export function createRenderer(
       if (!Number.isFinite(next) || next < 0)
         throw new Error("Brush feather must be a finite width of zero or more.")
       feather = next
+      tipShape.feather = next
       device.queue.writeBuffer(
         stampUniform,
         FEATHER_OFFSET,
@@ -1485,6 +3119,8 @@ export function createRenderer(
       )
     },
     setGrain(texture, { scale, depth, movement }) {
+      if (texture && (texture.frameCount ?? 1) !== 1)
+        throw new Error("Grain must be a single-frame texture.")
       if (!Number.isFinite(scale) || scale <= 0)
         throw new Error("Grain scale must be positive.")
       if (!Number.isFinite(depth) || depth < 0 || depth > 1)
@@ -1493,12 +3129,21 @@ export function createRenderer(
         throw new Error("Grain movement must be a finite value in [0, 1].")
       grainTexture.destroy()
       grainTexture = texture ? uploadTexture(texture) : createWhiteTexture()
+      grainSurface.texture = grainTexture
+      grainSurface.scale = scale
+      // A brush with no grain texture keeps a depth of zero whatever it
+      // asked for: white paper bites nothing, and saying so is cheaper.
+      grainSurface.depth = texture ? depth : 0
+      grainSurface.movement = movement
+      direct.invalidateBinding()
       device.queue.writeBuffer(
         stampUniform,
         GRAIN_OFFSET,
-        // A brush with no grain texture keeps a depth of zero whatever it
-        // asked for: white paper bites nothing, and saying so is cheaper.
-        new Float32Array([scale, texture ? depth : 0, movement])
+        new Float32Array([
+          grainSurface.scale,
+          grainSurface.depth,
+          grainSurface.movement,
+        ])
       )
       refreshStampBindGroup()
     },
@@ -1513,46 +3158,13 @@ export function createRenderer(
       device.queue.writeBuffer(stampUniform, 16, new Float32Array(color))
     },
     discardStamps(count) {
-      // Coverage blending forgets what a dab covered, so the tail comes off by
-      // replaying the stroke without it — which needs the whole stroke logged.
-      if (!log.replayable()) return false
-      if (count <= 0) return true
-      log.discard(count)
-      clearStroke()
-      // The surviving dabs cover no more than the discarded ones did, so the
-      // bounds stay valid; they are conservative, never wrong.
-      log.replay(MAX_STAMPS_PER_DRAW, drawStamps)
-      return true
+      return buffered.discard(count)
     },
     cancelStroke() {
-      if (!stroke) return
-      log.reset()
-      resetPainted()
-      clearStroke()
-      writeStrokeOpacity(1)
+      buffered.end(false)
     },
     endStroke() {
-      if (!stroke || !paintTarget)
-        throw new Error("There is no active layer to paint into.")
-      const region = paintedScissor()
-      log.reset()
-      resetPainted()
-      if (!region) return null
-      // The mark goes into the layer at the stroke's opacity, once (D27).
-      compositeSurface(
-        stroke,
-        paintTarget,
-        strokeOpacity,
-        region,
-        strokeMode === "erase" ? erasePipeline : compositePipeline
-      )
-      // The mark now lives in the layer's texture; the buffer must not show it
-      // a second time through the present pass.
-      clearStroke()
-      // Nothing between strokes should depend on the last stroke's opacity.
-      writeStrokeOpacity(1)
-      writeStrokeMode("paint")
-      return region
+      return buffered.end(true)
     },
     openPlacedImage(id, image) {
       this.closePlacedImage(id)
@@ -1575,15 +3187,94 @@ export function createRenderer(
       )
       placedImages.set(id, {
         texture,
-        bindGroup: device.createBindGroup({
-          layout: placedImagePipeline.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: { buffer: placedImageUniform } },
-            { binding: 1, resource: texture.createView() },
-            { binding: 2, resource: placedImageSampler },
-          ],
-        }),
+        bindGroup: placedImageBindGroup(texture),
+        premultiplied: false,
       })
+    },
+    openLayerImage(id, surfaceId, region) {
+      this.closePlacedImage(id)
+      const surface = ensureSurface(surfaceId)
+      const texture = device.createTexture({
+        size: { width: region.width, height: region.height },
+        format: LAYER_FORMAT,
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.COPY_SRC,
+      })
+      // Texel for texel, on the GPU: the layer never crosses to the CPU.
+      const encoder = device.createCommandEncoder()
+      encoder.copyTextureToTexture(
+        { texture: surface.texture, origin: { x: region.x, y: region.y } },
+        { texture },
+        { width: region.width, height: region.height }
+      )
+      device.queue.submit([encoder.finish()])
+      placedImages.set(id, {
+        texture,
+        bindGroup: placedImageBindGroup(texture),
+        premultiplied: true,
+        region,
+      })
+    },
+    openSelectionImage(id, surfaceId, region) {
+      this.closePlacedImage(id)
+      if (!selection) throw new Error("Nothing is selected to lift.")
+      const surface = ensureSurface(surfaceId)
+      const original = createSurface()
+      copySurface(surface, original)
+      const base = createSurface()
+      copySurface(surface, base)
+      drawClearSelected(base)
+      // The lifted pixels are drawn at their own place on a scratch surface,
+      // then cut down to the region: the copy pass writes where it reads.
+      const scratch = createSurface()
+      clearSurface(scratch)
+      drawCopySelected(surface, scratch)
+      const texture = device.createTexture({
+        size: { width: region.width, height: region.height },
+        format: LAYER_FORMAT,
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.COPY_SRC,
+      })
+      const encoder = device.createCommandEncoder()
+      encoder.copyTextureToTexture(
+        { texture: scratch.texture, origin: { x: region.x, y: region.y } },
+        { texture },
+        { width: region.width, height: region.height }
+      )
+      device.queue.submit([encoder.finish()])
+      scratch.texture.destroy()
+      placedImages.set(id, {
+        texture,
+        bindGroup: placedImageBindGroup(texture, floatingImagePipeline),
+        premultiplied: true,
+        region,
+        lifted: { original, base },
+      })
+    },
+    restoreLayerImage(id, surfaceId) {
+      const image = placedImages.get(id)
+      if (!image?.region) throw new Error(`No layer snapshot is open as ${id}.`)
+      const surface = ensureSurface(surfaceId)
+      if (image.lifted) {
+        copySurface(image.lifted.original, surface)
+        invalidateCaches()
+        return
+      }
+      clearSurface(surface)
+      const { region } = image
+      const encoder = device.createCommandEncoder()
+      encoder.copyTextureToTexture(
+        { texture: image.texture },
+        { texture: surface.texture, origin: { x: region.x, y: region.y } },
+        { width: region.width, height: region.height }
+      )
+      device.queue.submit([encoder.finish()])
+      surface.empty = false
+      invalidateCaches()
     },
     drawPlacedImage({ surfaceId, imageId, corners }) {
       const image = placedImages.get(imageId)
@@ -1597,7 +3288,10 @@ export function createRenderer(
       }
       placedImageValues[16] = width
       placedImageValues[17] = height
+      placedImageValues[18] = image.premultiplied ? 1 : 0
       device.queue.writeBuffer(placedImageUniform, 0, placedImageValues)
+      // A lifted selection lands over the layer it was lifted from.
+      if (image.lifted) copySurface(image.lifted.base, surface)
       const encoder = device.createCommandEncoder()
       // Cleared and drawn in one pass. The clear is the whole surface rather
       // than the region the picture covers, and it can be: a layer holding a
@@ -1609,26 +3303,69 @@ export function createRenderer(
           {
             view: surface.view,
             clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: "clear",
+            loadOp: image.lifted ? "load" : "clear",
             storeOp: "store",
           },
         ],
       })
-      pass.setPipeline(placedImagePipeline)
+      pass.setPipeline(
+        image.lifted ? floatingImagePipeline : placedImagePipeline
+      )
       pass.setBindGroup(0, image.bindGroup)
       pass.draw(6)
       pass.end()
       device.queue.submit([encoder.finish()])
       surface.empty = false
       // These pixels may sit inside a cache that was flattened before them.
-      composition = undefined
-      cachedFrom = undefined
+      invalidateCaches()
     },
     closePlacedImage(id) {
       const held = placedImages.get(id)
       if (!held) return
       held.texture.destroy()
+      held.lifted?.original.texture.destroy()
+      held.lifted?.base.texture.destroy()
       placedImages.delete(id)
+    },
+    rasterizeVector(surfaceId, draws, region) {
+      const canvas = { x: 0, y: 0, width, height }
+      const area = intersectRect(
+        {
+          x: Math.floor(region.x),
+          y: Math.floor(region.y),
+          width: Math.ceil(region.width),
+          height: Math.ceil(region.height),
+        },
+        canvas
+      )
+      if (!area) return
+      const surface = ensureSurface(surfaceId)
+      const buffers = uploadVectorDraws(draws)
+      try {
+        drawVector(buffers, surface.texture, IDENTITY_MATRIX, area)
+      } finally {
+        releaseVectorDraws(buffers)
+      }
+      surface.empty = false
+      // The active layer is read live; any other may be inside a cache that
+      // was flattened before these pixels.
+      if (surface !== active) {
+        invalidateCaches()
+      }
+    },
+    setVectorScene(surfaceId, draws) {
+      const had = forgetVectorScene(surfaceId)
+      if (draws)
+        vectorScenes.set(surfaceId, {
+          buffers: uploadVectorDraws(draws),
+          version: ++nextVectorVersion,
+        })
+      if (!had && !draws) return
+      // The active layer's drawing is checked each frame; any other may be
+      // inside a cache, and one gaining or losing its scene changes how the
+      // plan is composited.
+      if (surfaces.get(surfaceId) !== active || had !== !!draws)
+        invalidateCaches()
     },
     async readTiles(id, coords) {
       const surface = surfaces.get(id)
@@ -1667,13 +3404,22 @@ export function createRenderer(
         device.queue.submit([encoder.finish()])
         await buffer.mapAsync(GPUMapMode.READ)
         const mapped = new Uint16Array(buffer.getMappedRange())
-        return coords.map((_, index) => {
+        // A thrown stroke's tiles are hundreds of megabytes to copy out, and
+        // the pen may be down again by now: a little at a time, with the
+        // frame let in between (live brushes 28).
+        const tiles: Uint16Array[] = []
+        let sliceStarted = performance.now()
+        for (let index = 0; index < coords.length; index++) {
           const texels = blank()
-          if (!regions[index]) return texels
+          tiles.push(texels)
+          if (!regions[index]) continue
           const start = (index * tileBytes) / 2
           texels.set(mapped.subarray(start, start + texels.length))
-          return texels
-        })
+          if (performance.now() - sliceStarted < READBACK_SLICE_MS) continue
+          await yieldToFrame()
+          sliceStarted = performance.now()
+        }
+        return tiles
       } finally {
         buffer.destroy()
       }
@@ -1695,78 +3441,259 @@ export function createRenderer(
       }
       surface.empty = false
       // These pixels may sit inside a cache that was flattened before them.
-      composition = undefined
-      cachedFrom = undefined
+      invalidateCaches()
     },
-    setView(matrix) {
-      writeView(matrix)
+    setRasterMagnification(mode) {
+      if (mode === magnification) return
+      magnification = mode
+      for (const compositor of compositors) compositor.writeSpace()
     },
-    render(view) {
-      if (!presentBindGroup)
-        throw new Error("No composition has been set to present.")
-      if (complexStages) {
-        let current = active!
-        let currentItem = activeItem!
-        for (let index = 0; index < complexStages.length; index++) {
-          const target = stageFrames[index]
-          clearSurface(target)
-          if (stageBelow[index]) compositeSurface(stageBelow[index]!, target, 1)
-          blendSurface(
-            current,
-            target,
-            currentItem,
-            index === 0 && paintTarget === active,
-            currentItem.maskId,
-            currentItem.clip ? stageClipBase[index] : undefined,
-            index === 0 && paintTarget !== active
-          )
-          if (stageLiveAbove[index]) {
-            const aboveBase = currentItem.clip
-              ? stageClipBase[index]
-              : coverageSurface(
-                  currentItem,
-                  current,
-                  index === 0 && paintTarget !== active
-                )
-            renderItems(complexStages[index].above, target, aboveBase)
-          } else if (stageAbove[index]) {
-            compositeSurface(stageAbove[index]!, target, 1)
-          }
-          current = target
-          const container = complexStages[index].container
-          if (container) currentItem = container
-        }
-        complexOutput = current
-      } else if (frame) {
-        clearSurface(frame)
-        if (below) compositeSurface(below, frame, 1)
-        blendSurface(active!, frame, activeItem!, true)
-        for (const item of liveAbove) {
-          const source = surfaces.get(item.id)
-          if (source) blendSurface(source, frame, item)
-        }
+    setView(matrix, size) {
+      screenToDocument = invertMatrix(matrix)
+      if (size) viewport = { width: size.width, height: size.height }
+      // Before the first resize there is no document to place.
+      if (width > 0) placeCompositors()
+    },
+    setSelection(mask) {
+      if (!mask) {
+        if (!selection) return
+        releaseSelection()
+        // Dabs stop being clipped once nothing is selected.
+        if (stampBindGroup) refreshStampBindGroup()
+        direct.invalidateBinding()
+        fluid.selectionChanged()
+        return
       }
-      const encoder = device.createCommandEncoder()
-      const pass = encoder.beginRenderPass({
-        colorAttachments: [
+      if (!selection) {
+        if (width === 0)
+          throw new Error("The render target has not been sized.")
+        const texture = device.createTexture({
+          size: { width, height },
+          format: "r8unorm",
+          usage:
+            GPUTextureUsage.TEXTURE_BINDING |
+            GPUTextureUsage.COPY_DST |
+            GPUTextureUsage.COPY_SRC,
+        })
+        const view = texture.createView()
+        selection = {
+          texture,
+          view,
+          bindGroup: device.createBindGroup({
+            layout: antsPipeline.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: { buffer: screen.presentUniform } },
+              { binding: 1, resource: view },
+              { binding: 2, resource: { buffer: antsUniform } },
+            ],
+          }),
+          tiles: new Map(),
+          bounds: mask.bounds,
+        }
+        // From the next dab on, the stroke is clipped to the new texture.
+        refreshStampBindGroup()
+        direct.invalidateBinding()
+        fluid.selectionChanged()
+      }
+      const canvas = { x: 0, y: 0, width, height }
+      const write = (coord: TileCoord, coverage: Uint8Array) => {
+        const visible = intersectRect(tileBounds(coord), canvas)
+        if (!visible) return
+        device.queue.writeTexture(
           {
-            view,
-            clearValue: { r: 0, g: 0, b: 0, a: 1 },
-            loadOp: "clear",
-            storeOp: "store",
+            texture: selection!.texture,
+            origin: { x: visible.x, y: visible.y },
           },
-        ],
+          coverage,
+          { bytesPerRow: TILE_SIZE, rowsPerImage: TILE_SIZE },
+          { width: visible.width, height: visible.height }
+        )
+      }
+      const next = new Map<string, Uint8Array>()
+      for (const tile of mask.tiles()) {
+        const key = tileKey(tile.x, tile.y)
+        next.set(key, tile.coverage)
+        // Masks share the tiles an operation left alone, so an unchanged
+        // tile is the same array and costs no upload.
+        if (selection.tiles.get(key) !== tile.coverage)
+          write(tile, tile.coverage)
+      }
+      for (const key of selection.tiles.keys())
+        if (!next.has(key)) {
+          write(tileCoordFromKey(key), EMPTY_SELECTION_TILE)
+        }
+      selection.tiles = next
+      selection.bounds = mask.bounds
+    },
+    clearSelected(surfaceId) {
+      if (!selection) return null
+      const target = surfaces.get(surfaceId)
+      if (!target || target.empty) return null
+      return drawClearSelected(target)
+    },
+    beginFilter(surfaceId) {
+      const target = surfaces.get(surfaceId)
+      if (!target || target.empty) return false
+      if (filtering) endFilter(false)
+      const original = createSurface()
+      copySurface(target, original)
+      filtering = { target, original }
+      return true
+    },
+    previewFilter(filter) {
+      if (!filtering) return null
+      return drawFilter(filter)
+    },
+    endFilter,
+    cleanBrush: () => direct.cleanBrush(),
+    brushDirty: () => direct.brushDirty(),
+    beginDirect(surfaceId, lay, retain, sampleAllLayers = false) {
+      // A wet brush may be the first thing to paint on its layer. The paint
+      // target has its surface already, so nothing is allocated at pen-down.
+      const target =
+        lay || sampleAllLayers
+          ? ensureSurface(surfaceId)
+          : surfaces.get(surfaceId)
+      if (!target) return false
+      let source: FrozenArtwork | undefined
+      if (sampleAllLayers) source = freezeArtwork()
+      return direct.begin({ target, lay, retain, source })
+    },
+    drawDirect(dabs, count) {
+      direct.draw(dabs, count)
+    },
+    endDirect(keep) {
+      return direct.end(keep)
+    },
+    beginFluid(surfaceId, opening) {
+      fluid.begin({ surface: ensureSurface(surfaceId), ...opening })
+    },
+    drawFluid: (dabs, count) => fluid.draw(dabs, count),
+    endFluid(keep) {
+      fluid.end(keep)
+      return fluid.takeCopy()
+    },
+    copyFluid: () => fluid.copy(),
+    restoreFluid(copy, surfaceId) {
+      fluid.restore(copy, ensureSurface(surfaceId))
+    },
+    releaseFluid: (copy) => fluid.release(copy),
+    fluidWet: () => fluid.isWet(),
+    fluidWetAt(surfaceId, x, y) {
+      const surface = surfaces.get(surfaceId)
+      return !!surface && fluid.wetAt(surface, x, y)
+    },
+    setPaper(chosen) {
+      if (chosen === paperShown) return
+      writePaper(device, paper, chosen)
+      paperShown = chosen
+    },
+    setBoard(chosen) {
+      if (sameBoard(chosen, boardShown)) return
+      fluid.setBoard(chosen)
+      boardShown = chosen
+    },
+    fluidTileCount: () => fluid.tileCount(),
+    advanceFluid: (steps, settled) => fluid.advance(steps, settled),
+    setFluidDryingPaused: (paused) => fluid.setPaused(paused),
+    dryFluid: () => fluid.dry(),
+    prepareFluid() {
+      if (width > 0) fluid.prepare()
+    },
+    copySelected(sourceId, targetId) {
+      if (!selection) return null
+      const source = surfaces.get(sourceId)
+      if (!source || source.empty) return null
+      const target = ensureSurface(targetId)
+      const region = drawCopySelected(source, target)
+      target.empty = false
+      invalidateCaches()
+      return region
+    },
+    async readFluidWater() {
+      const texture = fluid.waterField()
+      if (!texture) return 0
+      // A freed slot is blanked, so the whole field holds only what is wet.
+      const bytesPerRow = texture.width * 8
+      const buffer = device.createBuffer({
+        size: bytesPerRow * texture.height,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
       })
-      pass.setPipeline(pipeline)
-      pass.setBindGroup(0, presentBindGroup)
-      pass.draw(3)
-      pass.end()
+      try {
+        const encoder = device.createCommandEncoder()
+        encoder.copyTextureToBuffer(
+          { texture },
+          { buffer, bytesPerRow },
+          { width: texture.width, height: texture.height }
+        )
+        device.queue.submit([encoder.finish()])
+        await buffer.mapAsync(GPUMapMode.READ)
+        const halves = new Uint16Array(buffer.getMappedRange())
+        let total = 0
+        for (let at = 0; at < halves.length; at += 4)
+          total += fromHalf(halves[at])
+        return total
+      } finally {
+        buffer.destroy()
+      }
+    },
+    async readSelection() {
+      if (!selection) return null
+      const bytesPerRow = Math.ceil(width / 256) * 256
+      const buffer = device.createBuffer({
+        size: bytesPerRow * height,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      })
+      try {
+        const encoder = device.createCommandEncoder()
+        encoder.copyTextureToBuffer(
+          { texture: selection.texture },
+          { buffer, bytesPerRow },
+          { width, height }
+        )
+        device.queue.submit([encoder.finish()])
+        await buffer.mapAsync(GPUMapMode.READ)
+        const mapped = new Uint8Array(buffer.getMappedRange())
+        const data = new Uint8Array(width * height)
+        for (let y = 0; y < height; y++)
+          data.set(
+            mapped.subarray(y * bytesPerRow, y * bytesPerRow + width),
+            y * width
+          )
+        return data
+      } finally {
+        buffer.destroy()
+      }
+    },
+    keepWarm(sampling = false) {
+      const encoder = device.createCommandEncoder({
+        label: "idle texture warming",
+      })
+      if (paintTarget) warmSurface(encoder, paintTarget.view)
+      buffered.warm(encoder)
+      direct.warm(encoder)
+      if (sampling) warmSampling(encoder)
       device.queue.submit([encoder.finish()])
+    },
+    render(view, overlay) {
+      screen.draw(view, overlay)
+    },
+    renderArtwork(view, instead) {
+      if (instead && !instead.active)
+        throw new Error("A composition needs an active layer.")
+      artwork.draw(
+        view,
+        undefined,
+        instead ? { ...instead, active: instead.active! } : plan
+      )
+      // Export is occasional, and the screen is what has to stay fast: the
+      // artwork's caches are a document-sized copy nobody reads in between.
+      artwork.releaseTargets()
     },
     drawThumbnail(target, size, subject, crop) {
       const group =
         subject.kind === "group"
-          ? groupThumbnailSurface(subject.item)
+          ? artwork.groupThumbnailSurface(subject.item)
           : { surface: surfaces.get(subject.id), release() {} }
       const source = group.surface
       // A mask that has never been painted hides nothing, which is a picture
@@ -1819,41 +3746,31 @@ export function createRenderer(
       return !!view
     },
     destroy() {
+      releaseSelection()
+      direct.destroy()
+      fluid.destroy()
+      paper.destroy()
+      for (const page of frozenPages.splice(0)) page.destroy()
+      vector?.textures.forEach((texture) => texture.destroy())
+      vector?.uniform.destroy()
+      vector = undefined
+      antsUniform.destroy()
       thumbnailUniform.destroy()
       for (const surface of surfaces.values()) surface.texture.destroy()
       surfaces.clear()
-      for (const surface of groupCaches.values()) surface.texture.destroy()
-      groupCaches.clear()
-      validGroupCaches.clear()
-      for (const surface of coverageCaches.values()) surface.texture.destroy()
-      coverageCaches.clear()
-      blendBindGroups.clear()
+      for (const id of [...vectorScenes.keys()]) forgetVectorScene(id)
+      buffered.destroy()
       stroke?.texture.destroy()
-      below?.texture.destroy()
-      above?.texture.destroy()
-      blendScratch?.texture.destroy()
-      frame?.texture.destroy()
-      for (const surface of stageFrames) surface.texture.destroy()
-      stageFrames = []
-      blendScratch = undefined
-      frame = undefined
-      liveAbove = []
-      activeItem = undefined
       stroke = undefined
-      below = undefined
-      above = undefined
       active = undefined
-      presentBindGroup = undefined
+      paintTarget = undefined
+      plan = undefined
+      for (const compositor of compositors) compositor.destroy()
       stampBindGroup = undefined
-      composition = undefined
-      cachedFrom = undefined
       placeholder.destroy()
       tipTexture.destroy()
       grainTexture.destroy()
-      uniform.destroy()
       stampUniform.destroy()
-      stampInstances.destroy()
-      compositeUniform.destroy()
     },
   }
 }

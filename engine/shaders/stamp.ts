@@ -1,3 +1,5 @@
+import { grainShader } from "./grain"
+import { hslShader } from "./hsl"
 /**
  * The stamp pass. One instanced quad per dab, drawn into the linear-light
  * target with premultiplied `over` blending — no colour encoding happens here,
@@ -8,34 +10,14 @@
  * squashed in the vertex stage and the texture is read from the quad's own
  * coordinates, so the tip turns and stretches with the dab for free.
  *
- * Grain is the opposite, and deliberately so (D24, §7.3). It is sampled from
- * the fragment's canvas position, never from the dab's, so the paper stays
- * where it is while the brush moves across it. Sampling grain in stamp space
- * is what makes texture swim with the cursor — which is why grain movement,
- * the one thing that does travel with the dab, is a deliberate fraction the
- * brush asks for rather than the accident of sampling in the wrong space.
+ * Grain is the opposite, and deliberately so (D24, §7.3): it is sampled from
+ * the fragment's canvas position. `grainShader` says how.
  */
-/**
- * How much of the paper full grain depth cuts away. Below one, so the deepest
- * grain still leaves the highest peaks taking ink whole: a stroke that thinned
- * to nothing at full depth would make the top of the range unusable.
- *
- * Declared here rather than in the WGSL so the editor's preview (D32) can say
- * how much of a mark the paper takes without guessing at a number it has no
- * way to read out of a shader source string.
- */
-export const GRAIN_CUT = 0.55
-
 export const stampShader = /* wgsl */ `
-const TAU = 6.283185307179586;
+${hslShader}
+${grainShader}
 
-const GRAIN_CUT = ${GRAIN_CUT};
-/**
- * The height of paper between taking no ink and taking it whole. Wide enough
- * that the tooth has a gradient rather than a hard threshold, which is the
- * difference between grain and a stencil.
- */
-const GRAIN_SLOPE = 0.5;
+const TAU = 6.283185307179586;
 
 struct Stamp {
   // Canvas size in pixels, for the pixel -> clip space mapping.
@@ -53,7 +35,8 @@ struct Stamp {
   // How much the grain travels with the dab: zero is paper fixed to the
   // canvas, one is a tooth the brush carries with it.
   grainMovement: f32,
-  padding: f32,
+  // One when a selection (08) clips the stroke, zero when nothing is selected.
+  useSelection: f32,
 }
 
 @group(0) @binding(0) var<uniform> stamp: Stamp;
@@ -62,8 +45,11 @@ struct Stamp {
 // is what lets one tile cover the whole canvas.
 @group(0) @binding(1) var tipSampler: sampler;
 @group(0) @binding(2) var grainSampler: sampler;
-@group(0) @binding(3) var tipTexture: texture_2d<f32>;
+@group(0) @binding(3) var tipTexture: texture_2d_array<f32>;
 @group(0) @binding(4) var grainTexture: texture_2d<f32>;
+// The selection's coverage, one texel per document pixel. Read only when
+// \`useSelection\` says there is one; a placeholder is bound otherwise.
+@group(0) @binding(5) var selectionTexture: texture_2d<f32>;
 
 struct Instance {
   // Dab centre in canvas pixels.
@@ -75,6 +61,8 @@ struct Instance {
   // Width of the tip against its length, in (0, 1].
   @location(4) roundness: f32,
   @location(5) grainDepth: f32,
+  @location(6) colorOffsets: vec3<f32>,
+  @location(7) tipFrame: f32,
 }
 
 struct Varyings {
@@ -87,6 +75,8 @@ struct Varyings {
   // The dab's centre in canvas pixels, so the fragment can measure its own
   // offset from it. Flat, because a centre is one value for the whole dab.
   @location(4) @interpolate(flat) center: vec2<f32>,
+  @location(5) @interpolate(flat) color: vec4<f32>,
+  @location(6) @interpolate(flat) tipFrame: i32,
 }
 
 @vertex
@@ -116,16 +106,27 @@ fn vertexMain(instance: Instance, @builtin(vertex_index) index: u32) -> Varyings
     0.0,
     1.0
   );
+  out.tipFrame = i32(instance.tipFrame);
   out.local = local;
   out.radius = instance.radius;
   out.opacity = instance.opacity;
   out.grainDepth = instance.grainDepth;
   out.center = instance.center;
+  out.color = stamp.color;
+  // Keep the neutral path bit-for-bit unchanged, including wide-gamut ink.
+  if (any(instance.colorOffsets != vec3<f32>(0.0)) && stamp.color.a > 0.0) {
+    out.color = vec4<f32>(adjustHsl(stamp.color.rgb / stamp.color.a, instance.colorOffsets) * stamp.color.a, stamp.color.a);
+  }
   return out;
 }
 
+struct Fragment {
+  @location(0) color: vec4<f32>,
+  @builtin(frag_depth) depth: f32,
+}
+
 @fragment
-fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
+fn fragmentMain(varyings: Varyings) -> Fragment {
   let distance = length(varyings.local);
   // The feather is authored in pixels, so it stays one pixel wide whatever
   // the dab's size: small dabs would otherwise be all falloff and no core.
@@ -137,36 +138,38 @@ fn fragmentMain(varyings: Varyings) -> @location(0) vec4<f32> {
   }
   // Stamp space: the quad's own coordinates, so the tip turned and stretched
   // with it in the vertex stage and nothing more is needed here.
-  let tip = textureSample(tipTexture, tipSampler, varyings.local * 0.5 + 0.5).r;
+  let tip = textureSample(tipTexture, tipSampler, varyings.local * 0.5 + 0.5, varyings.tipFrame).r;
   // A tip replaces the disc rather than being cut by it, so a textured brush
   // has exactly the edge its texture draws — which is what a ragged dry tip
   // needs. A tip is expected to fall to nothing at its own rim.
   let shape = mix(disc, tip, stamp.useTip);
 
-  // Canvas space: the fragment's position on the surface, not on the dab. The
-  // stroke buffer, the layer and the document are all allocated in device
-  // pixels, so this is the document pixel today. When navigation lands (D28)
-  // this has to become the inverse view transform of the fragment, or the
-  // paper will swim as the canvas is panned.
-  // The scale is positive by the time it reaches here — the renderer refuses
-  // anything else — so this does not defend against zero a second time.
-  let grainSize = vec2<f32>(textureDimensions(grainTexture)) * stamp.grainScale;
-  // Movement subtracts the dab's own travel from the sample position, so at
-  // one the coordinate depends only on where the fragment sits *within* the
-  // dab and the tooth rides along with the brush. Subtracting rather than
-  // switching spaces is what makes the values between the two a drift: the
-  // paper still moves under the brush, only more slowly than the brush does.
-  let grainPosition = varyings.position.xy - varyings.center * stamp.grainMovement;
-  let grain = textureSample(grainTexture, grainSampler, grainPosition / grainSize).r;
-  let depth = clamp(stamp.grainDepth * varyings.grainDepth, 0.0, 1.0);
-  // The tooth is cut, not dimmed. Depth raises a threshold the paper has to
-  // clear, so the valleys take no ink at all however many dabs pass over them
-  // — which is what keeps a pencil reading as graphite on paper instead of
-  // filling in to a flat tinted blur after a few passes.
-  let cut = depth * GRAIN_CUT;
-  let carved = smoothstep(cut, min(1.0, cut + GRAIN_SLOPE), grain);
-  let bite = mix(1.0, carved, depth);
+  // Canvas space: the paper stays where it is while the dab moves over it.
+  let bite = grainBite(
+    grainTexture,
+    grainSampler,
+    varyings.position.xy,
+    varyings.center,
+    stamp.grainScale,
+    stamp.grainMovement,
+    stamp.grainDepth * varyings.grainDepth
+  );
 
-  return stamp.color * (shape * bite * varyings.opacity);
+  // The selection clips the dab where it lands, so the stroke buffer never
+  // holds ink outside it: the live preview, the commit and an eraser's
+  // destination-out all inherit the clip without knowing it exists.
+  var selected = 1.0;
+  if (stamp.useSelection > 0.0) {
+    selected = textureLoad(selectionTexture, vec2<i32>(varyings.position.xy), 0).r;
+  }
+
+  let color = varyings.color * (shape * bite * varyings.opacity * selected);
+  // Depth is inverse coverage. Coverage's depth test keeps the strongest
+  // dab's entire colour, with later dabs winning ties. Never write empty ink.
+  if (color.a <= 0.0) { discard; }
+  var out: Fragment;
+  out.color = color;
+  out.depth = 1.0 - color.a;
+  return out;
 }
 `

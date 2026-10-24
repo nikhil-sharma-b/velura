@@ -1,3 +1,5 @@
+import { type BrushScatter, validateScatter } from "../engine/brush/scatter"
+
 /**
  * The painting workload the benchmark drives (D30).
  *
@@ -38,6 +40,13 @@ export type Workload = {
 export type WorkloadOptions = {
   width: number
   height: number
+  /**
+   * The window the document is painted through, in device pixels, with the
+   * view fitted to it. Absent, the window is the document's own size — the
+   * arrangement before the view transform (sharp-zoom 01), kept for the
+   * ladders that measure how a frame scales with the document.
+   */
+  viewport?: { width: number; height: number }
   /** How many marks the pen makes. */
   strokes: number
   /** The stylus's reporting rate. 240 Hz is the fastest plausible pen (D26). */
@@ -52,6 +61,103 @@ export type WorkloadOptions = {
    * a cache above it and a cache below it. Defaults to one.
    */
   layers?: number
+  /**
+   * Paints inside a large selection feathered by this many pixels (11): an
+   * ellipse over most of the canvas, so every dab is clipped by soft
+   * coverage. Absent, nothing is selected.
+   */
+  feather?: number
+  /** Exercise all three per-dab colour targets. */
+  colourDynamics?: boolean
+  /**
+   * Paints with a brush that scatters (§7.1). `count` multiplies the dabs
+   * every spacing step lays, so this is the stamp pass at its heaviest.
+   * Absent, the brush lays one dab per step.
+   */
+  scatter?: BrushScatter
+  /**
+   * Smudges the workload instead of painting it (smudge 01): the strokes are
+   * painted once, untimed, so there is paint to smear, and then drawn again
+   * with the smudge tool along the same paths. What a smudge stroke keeps for
+   * a cancel must not weigh on the frame it opens in, which this measures.
+   */
+  smudge?: boolean
+  /**
+   * The smudge tool's radius in canvas pixels (live brushes 19): a small one
+   * lays its dabs closest, so that is where the dabs in a frame are most.
+   * Absent, the tool's default.
+   */
+  smudgeRadius?: number
+  /**
+   * Puts the pen down again without waiting for history to put the stroke
+   * before away (live brushes 28), as a person paints: the next stroke's
+   * frames then share the thread with the readback, the hashing and the
+   * compression of the last. Absent, each stroke waits, so a row measures
+   * the stroke alone.
+   */
+  unwaited?: boolean
+  /**
+   * Milliseconds the pen waits before each pen-down, after history (live
+   * brushes 31): a person pauses between strokes, and what a stroke draws
+   * into may have gone cold by then. Absent, no wait but history's.
+   */
+  pauseMs?: number
+  /**
+   * Presses undo after each stroke and times it to the step being taken
+   * back, then redoes it (live brushes 32): this many milliseconds after the
+   * stroke reached history, or once history has "settled" as the baseline.
+   * History is still hashing and compressing a thrown stroke for seconds
+   * after pen-up, and an undo pressed then waits for some of it.
+   */
+  undoAfter?: number | "settled"
+  /**
+   * Paints the workload a second time over itself with a wet brush
+   * `diameter` pixels across (live brushes 10, 11): the strokes are painted
+   * once, untimed, so there is paint underneath, and then drawn again along
+   * the same paths in another colour. Every wet dab is a neighbourhood copy
+   * and a draw of its own. `spacing` is the brush's, as a fraction of its
+   * diameter; absent, an eighth. `dry` paints with the same brush not wet,
+   * whose dabs share one draw: what the wet one is weighed against.
+   * `scatter` is the brush's for the second painting alone (live brushes
+   * 12), the ground being laid without: its count multiplies the dabs of
+   * every spacing step, each still a copy and a draw of its own.
+   */
+  wet?: {
+    diameter: number
+    pickup: number
+    /** Flow for the measured stroke; zero benchmarks a blender. */
+    flow?: number
+    spacing?: number
+    dry?: boolean
+    sampleAllLayers?: boolean
+    scatter?: BrushScatter
+  }
+  /**
+   * Paints the workload with a fluid brush `diameter` pixels across (fluid
+   * brushes 10), the simulation running under it. A frame's dabs are one
+   * batch drawn into the wet surface and one pour, however many there are.
+   * `spacing` is the brush's, as a fraction of its diameter; absent, an
+   * eighth. `tip` gives it a tip of several frames and `scatter` throws its
+   * dabs. `dry` paints with the same brush not fluid: what it is weighed
+   * against. `flooded` first floods the whole document with fluid paint
+   * that does not dry while the strokes are drawn (fluid brushes 13): on a
+   * document a whole number of tiles a side, every tile is wet under the
+   * pen, the worst case for a step.
+   */
+  fluid?: {
+    /** Opt-in story 21 experiment; never enabled by normal benchmark rows. */
+    experimentalReach?: boolean
+    /** Full-steepness board for the runs cost comparison (fluid brushes 39). */
+    steep?: boolean
+    flooded?: boolean
+    diameter: number
+    spacing?: number
+    tip?: boolean
+    scatter?: BrushScatter
+    dry?: boolean
+    /** A blot brush in place of the fluid one (fluid brushes 17). */
+    blot?: boolean
+  }
 }
 
 /**
@@ -62,6 +168,8 @@ export type WorkloadOptions = {
 export const BENCHMARK_WORKLOAD: WorkloadOptions = Object.freeze({
   width: 8192,
   height: 8192,
+  // A 1440p window: the document is 8192², the screen presenting it is not.
+  viewport: Object.freeze({ width: 2560, height: 1440 }),
   strokes: 12,
   sampleRateHz: 240,
   penSpeed: 4000,
@@ -78,7 +186,7 @@ const SPEED_SWING = 0.45
  * Mulberry32. Small, fast, and — the only property that matters here — the
  * same sequence everywhere, which a benchmark's comparability rests on.
  */
-function createRandom(seed: number): () => number {
+export function createRandom(seed: number): () => number {
   let state = seed >>> 0
   return () => {
     state = (state + 0x6d2b79f5) >>> 0
@@ -176,6 +284,37 @@ export function createWorkload(options: WorkloadOptions): Workload {
     (!Number.isInteger(options.layers) || options.layers < 1)
   )
     throw new Error("A workload must have at least one layer.")
+  if (
+    options.feather !== undefined &&
+    (!Number.isFinite(options.feather) || options.feather < 0)
+  )
+    throw new Error("A workload's feather must be finite and not negative.")
+  if (options.scatter !== undefined) validateScatter(options.scatter)
+  if (options.wet !== undefined) {
+    const { diameter, pickup, flow, spacing, scatter } = options.wet
+    positive(diameter, "brush diameter")
+    if (spacing !== undefined) positive(spacing, "brush spacing")
+    if (scatter !== undefined) validateScatter(scatter)
+    if (!Number.isFinite(pickup) || pickup < 0 || pickup > 1)
+      throw new Error("A workload's pickup must be in [0, 1].")
+    if (flow !== undefined && (!Number.isFinite(flow) || flow < 0 || flow > 1))
+      throw new Error("A workload's flow must be in [0, 1].")
+    if (options.smudge)
+      throw new Error("A workload is smudged or painted wet, not both.")
+  }
+  if (options.fluid !== undefined) {
+    const { diameter, spacing, scatter } = options.fluid
+    positive(diameter, "brush diameter")
+    if (spacing !== undefined) positive(spacing, "brush spacing")
+    if (scatter !== undefined) validateScatter(scatter)
+    if (options.smudge || options.wet)
+      throw new Error("A workload is smudged, painted wet or fluid: one.")
+  }
+  if (options.smudgeRadius !== undefined) {
+    positive(options.smudgeRadius, "smudge radius")
+    if (!options.smudge)
+      throw new Error("A workload's smudge radius needs a smudged workload.")
+  }
   const random = createRandom(options.seed)
   const strokes: BenchStroke[] = []
   for (let i = 0; i < options.strokes; i++)

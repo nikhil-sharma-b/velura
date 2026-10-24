@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test"
 
 import { type Brush, DEFAULT_BRUSH } from "../../engine/brush/brush"
 import type { Modulator } from "../../engine/brush/dynamics"
-import { previewStroke } from "../../features/studio/lib/brush-preview"
+import {
+  adjustHsl,
+  previewStroke,
+} from "../../features/studio/lib/brush-preview"
 
 const BOX = { width: 200, height: 80 }
 
@@ -84,6 +87,96 @@ describe("the brush editor's preview stroke", () => {
     for (const dab of preview.dabs) expect(dab.opacity).toBeCloseTo(0.5, 6)
   })
 
+  test("a wet brush previews wet: its dabs laid by flow, with no stroke opacity or coverage over them", () => {
+    const rendering = {
+      accumulation: "coverage" as const,
+      opacity: 0.4,
+      flow: 0.5,
+    }
+    const dry = previewStroke(brush({ rendering }), BOX)
+    expect(dry.opacity).toBeCloseTo(0.4, 6)
+    expect(dry.accumulation).toBe("coverage")
+    const wet = previewStroke(
+      brush({ rendering: { ...rendering, wet: { pickup: 0.5 } } }),
+      BOX
+    )
+    expect(wet.opacity).toBe(1)
+    expect(wet.accumulation).toBe("buildup")
+    for (const dab of wet.dabs) expect(dab.opacity).toBeCloseTo(0.5, 6)
+  })
+
+  test("a wet brush that lays nothing previews by its pickup, as the graph moves it", () => {
+    const blender = brush({
+      rendering: { ...DEFAULT_BRUSH.rendering, flow: 0, wet: { pickup: 0.8 } },
+      dynamics: [
+        {
+          source: "pressure",
+          target: "pickup",
+          range: [0, 1],
+          mix: "multiply",
+        },
+      ],
+    })
+    const preview = previewStroke(blender, BOX)
+    const opacities = preview.dabs.map((dab) => dab.opacity)
+    // Nothing at the press, the whole pickup through the body of the stroke.
+    expect(opacities[0]).toBeCloseTo(0, 6)
+    expect(Math.max(...opacities)).toBeCloseTo(0.8, 6)
+    // Dry, flow zero is still a brush that draws nothing.
+    const dry = previewStroke(
+      brush({ rendering: { ...DEFAULT_BRUSH.rendering, flow: 0 } }),
+      BOX
+    )
+    for (const dab of dry.dabs) expect(dab.opacity).toBe(0)
+  })
+
+  test("a wet brush previews with its scatter and without its colour jitter, as it draws", () => {
+    const wetRendering = { ...DEFAULT_BRUSH.rendering, wet: { pickup: 0.5 } }
+    const jittery = brush({
+      scatter: { amount: 2, count: 3, axes: "both" },
+      dynamics: [
+        { source: "random", target: "hue", range: [0, 1], mix: "add" },
+        { source: "random", target: "lightness", range: [-1, 1], mix: "add" },
+      ],
+    })
+    expect(previewStroke(jittery, BOX).tinted).toBe(true)
+    const wet = previewStroke({ ...jittery, rendering: wetRendering }, BOX)
+    expect(wet.tinted).toBe(false)
+    // Thrown off the path, one at a time along the step (live brushes 29),
+    // where the same brush with nothing to throw them by keeps them on it.
+    const stacked = previewStroke(
+      {
+        ...jittery,
+        rendering: wetRendering,
+        scatter: { amount: 0, count: 3, axes: "both" },
+      },
+      BOX
+    )
+    expect(wet.dabs.length).toBe(stacked.dabs.length)
+    // Each from its own place on the path, and no three from one.
+    for (let i = 1; i < stacked.dabs.length; i++)
+      expect(stacked.dabs[i].x).toBeGreaterThan(stacked.dabs[i - 1].x)
+    expect(
+      wet.dabs.some(
+        (dab, i) =>
+          Math.hypot(dab.x - stacked.dabs[i].x, dab.y - stacked.dabs[i].y) > 1
+      )
+    ).toBe(true)
+  })
+
+  test("a blender previews without its scatter, as it draws", () => {
+    const rendering = {
+      ...DEFAULT_BRUSH.rendering,
+      flow: 0,
+      wet: { pickup: 0.5 },
+    }
+    const thrown = previewStroke(
+      brush({ rendering, scatter: { amount: 2, count: 3, axes: "both" } }),
+      BOX
+    )
+    expect(thrown.dabs).toEqual(previewStroke(brush({ rendering }), BOX).dabs)
+  })
+
   test("is the same stroke every time, so a redraw does not reshuffle it", () => {
     const speckle: Modulator = {
       source: "random",
@@ -99,19 +192,42 @@ describe("the brush editor's preview stroke", () => {
     expect(second.dabs).not.toEqual(plain.dabs)
   })
 
-  test("shows only what the canvas can draw: scatter moves nothing yet", () => {
-    // The graph evaluates scatter, but no renderer consumes it (see
-    // `DynamicsTarget`). A preview that threw its dabs off the path would be
-    // showing a stroke the artist has no way to actually make.
-    const scattered = previewStroke(
+  test("a scatter mapping without a scatter amount moves nothing", () => {
+    // The target scales the brush's own amount, and a brush made before
+    // scatter existed has none: it draws as it always did.
+    const mapped = previewStroke(
       brush({
         dynamics: [
-          { source: "random", target: "scatter", range: [0, 4], mix: "add" },
+          {
+            source: "random",
+            target: "scatter",
+            range: [0, 4],
+            mix: "multiply",
+          },
         ],
       }),
       BOX
     )
-    expect(scattered.dabs).toEqual(previewStroke(brush(), BOX).dabs)
+    expect(mapped.dabs).toEqual(previewStroke(brush(), BOX).dabs)
+  })
+
+  test("scatter throws dabs off the path, count of them per step", () => {
+    const plain = previewStroke(brush(), BOX)
+    const scattered = previewStroke(
+      brush({ scatter: { amount: 2, count: 3, axes: "both" } }),
+      BOX
+    )
+    expect(scattered.dabs.length).toBe(plain.dabs.length * 3)
+    expect(scattered.dabs).not.toEqual(
+      plain.dabs.flatMap((dab) => [dab, dab, dab])
+    )
+    // The same on every redraw, or the preview would shimmer under a slider.
+    expect(
+      previewStroke(
+        brush({ scatter: { amount: 2, count: 3, axes: "both" } }),
+        BOX
+      ).dabs
+    ).toEqual(scattered.dabs)
   })
 
   test("a brush with no grain previews with no bite", () => {
@@ -123,5 +239,37 @@ describe("the brush editor's preview stroke", () => {
       BOX
     )
     expect(grained.grainDepth).toBeCloseTo(0.8, 6)
+  })
+})
+
+describe("colour in the preview", () => {
+  test("each dab carries the colour offsets the canvas would", () => {
+    const jitter: Modulator = {
+      source: "random",
+      target: "hue",
+      range: [0, 0.5],
+      mix: "add",
+    }
+    const preview = previewStroke(
+      brush({
+        dynamics: [jitter],
+        color: { hue: 0.5, saturation: 1, lightness: 1 },
+      }),
+      BOX
+    )
+    const hues = preview.dabs.map((dab) => dab.hue)
+    expect(Math.max(...hues)).toBeLessThanOrEqual(0.25)
+    expect(new Set(hues).size).toBeGreaterThan(1)
+    expect(preview.tinted).toBe(true)
+    expect(previewStroke(brush(), BOX).tinted).toBe(false)
+  })
+
+  test("the shift is the stamp shader's", () => {
+    expect(adjustHsl([1, 0, 0], 0, 0, 0)).toEqual([1, 0, 0])
+    const cyan = adjustHsl([1, 0, 0], 0.5, 0, 0)
+    expect(cyan.map((v) => Math.round(v * 100) / 100)).toEqual([0, 1, 1])
+    expect(adjustHsl([1, 0, 0], 0, -1, 0)).toEqual([0.5, 0.5, 0.5])
+    expect(adjustHsl([0.5, 0.5, 0.5], 0, 0, 1)).toEqual([1, 1, 1])
+    expect(adjustHsl([0.5, 0.5, 0.5], 0, 0, -1)).toEqual([0, 0, 0])
   })
 })

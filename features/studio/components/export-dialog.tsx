@@ -4,17 +4,6 @@ import { DownloadSimpleIcon, UploadSimpleIcon } from "@phosphor-icons/react"
 import { useRef, useState } from "react"
 
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -43,14 +32,38 @@ function download(blob: Blob, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
+type ExportFormat = "png" | "jpeg" | "svg" | "velura"
+
+const FORMATS: { id: ExportFormat; name: string; description: string }[] = [
+  { id: "png", name: "PNG", description: "Full size, keeps transparency" },
+  { id: "jpeg", name: "JPEG", description: "Smaller file, for sharing" },
+  { id: "svg", name: "SVG", description: "Shapes stay sharp at any size" },
+  {
+    id: "velura",
+    name: "Velura backup",
+    description: "Every layer, editable later",
+  },
+]
+
 export function ExportDialog({ engine }: { engine: Engine }) {
+  const [format, setFormat] = useState<ExportFormat>("png")
+  const [raster, setRaster] = useState<"embed" | "omit">("embed")
+  const [brushData, setBrushData] = useState(false)
+  const [warnings, setWarnings] = useState<string[]>([])
   const [quality, setQuality] = useState(82)
   const [busy, setBusy] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
 
+  // An image is of the dried picture: `readPixels` leaves wet paint wet.
+  async function finalPixels() {
+    await engine.dispatch({ type: "dryNow" })
+    return await engine.readPixels()
+  }
+
   async function runOperation(label: string, work: () => Promise<void>) {
     setProblem(null)
+    setWarnings([])
     setBusy(label)
     try {
       await work()
@@ -63,6 +76,43 @@ export function ExportDialog({ engine }: { engine: Engine }) {
     } finally {
       setBusy(null)
     }
+  }
+
+  const chosen = FORMATS.find((option) => option.id === format)!
+
+  function exportFormat() {
+    const name = chosen.name
+    if (format === "png")
+      return void runOperation(`Exporting ${name}`, async () => {
+        const blob = await encodeExportImage(await finalPixels(), {
+          format: "png",
+        })
+        download(blob, "untitled-artwork.png")
+      })
+    if (format === "jpeg")
+      return void runOperation(`Exporting ${name}`, async () => {
+        const blob = await encodeExportImage(await finalPixels(), {
+          format: "jpeg",
+          quality: quality / 100,
+        })
+        download(blob, "untitled-artwork.jpg")
+      })
+    if (format === "svg")
+      return void runOperation(`Exporting ${name}`, async () => {
+        const result = await engine.exportSvg({ raster, brushData })
+        setWarnings(result.warnings)
+        download(
+          new Blob([result.svg], { type: "image/svg+xml" }),
+          "untitled-artwork.svg"
+        )
+      })
+    void runOperation(`Exporting ${name}`, async () => {
+      const bytes = await engine.exportDocument()
+      download(
+        new Blob([bytes as BlobPart], { type: "application/x-velura" }),
+        "untitled-artwork.velura"
+      )
+    })
   }
 
   return (
@@ -87,107 +137,114 @@ export function ExportDialog({ engine }: { engine: Engine }) {
         </Tooltip>
       </TooltipProvider>
       <DialogContent>
-        <DialogHeader>
+        <DialogHeader className="p-0">
           <DialogTitle>Export or import</DialogTitle>
           <DialogDescription>
-            Make a finished image, or keep every editable layer in a Velura
-            backup.
+            Save this artwork as an image, or as a backup that keeps every layer
+            editable.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-2 px-4">
-          <Button
-            disabled={busy !== null}
-            onClick={() =>
-              void runOperation("PNG", async () => {
-                const blob = await encodeExportImage(
-                  await engine.readPixels(),
-                  { format: "png" }
-                )
-                download(blob, "untitled-artwork.png")
-              })
-            }
-          >
-            Export full-size PNG
-          </Button>
-          <div className="grid gap-2 rounded-none border p-3">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="jpeg-quality">JPEG quality</Label>
-              <span className="text-muted-foreground tabular-nums">
-                {quality}%
-              </span>
-            </div>
-            <Slider
-              id="jpeg-quality"
-              aria-label="JPEG quality"
-              value={[quality]}
-              min={10}
-              max={100}
-              step={1}
-              onValueChange={([value]) => setQuality(value)}
-            />
-            <Button
-              variant="outline"
-              disabled={busy !== null}
-              onClick={() =>
-                void runOperation("JPEG", async () => {
-                  const blob = await encodeExportImage(
-                    await engine.readPixels(),
-                    {
-                      format: "jpeg",
-                      quality: quality / 100,
-                    }
-                  )
-                  download(blob, "untitled-artwork.jpg")
-                })
-              }
-            >
-              Export smaller JPEG
-            </Button>
-          </div>
-          <Button
-            variant="outline"
-            disabled={busy !== null}
-            onClick={() =>
-              void runOperation("Velura backup", async () => {
-                const bytes = await engine.exportDocument()
-                download(
-                  new Blob([bytes as BlobPart], {
-                    type: "application/x-velura",
-                  }),
-                  "untitled-artwork.velura"
-                )
-              })
-            }
-          >
-            Export editable .velura backup
-          </Button>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button variant="destructive" disabled={busy !== null}>
-                Clear canvas
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Start a new artwork?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This removes every layer and mark from this canvas. Its size
-                  stays the same, ready for a new piece.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Keep artwork</AlertDialogCancel>
-                <AlertDialogAction
-                  variant="destructive"
-                  onClick={() =>
-                    void engine.dispatch({ type: "clearDocument" })
-                  }
+        <div className="grid gap-4">
+          <fieldset className="grid gap-2" disabled={busy !== null}>
+            <legend className="sr-only">Format</legend>
+            {/* One choice of format, so the dialog has one export button and
+                shows only the options that format has. */}
+            <div className="grid grid-cols-2 gap-px border bg-border">
+              {FORMATS.map((option) => (
+                <label
+                  key={option.id}
+                  className="relative grid cursor-pointer gap-0.5 bg-popover p-3 has-checked:bg-primary/10 has-checked:shadow-[inset_0_0_0_1px_var(--color-primary)] has-focus-visible:outline-2 has-focus-visible:-outline-offset-2 has-focus-visible:outline-primary has-disabled:cursor-default has-disabled:opacity-60"
                 >
-                  Clear canvas
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+                  <input
+                    type="radio"
+                    name="export-format"
+                    value={option.id}
+                    checked={format === option.id}
+                    onChange={() => setFormat(option.id)}
+                    aria-describedby={`export-format-${option.id}`}
+                    // Unseen but covering the tile, so the tile is the radio
+                    // to a pointer as it is to a screen reader.
+                    className="absolute inset-0 cursor-pointer appearance-none opacity-0 disabled:cursor-default"
+                  />
+                  <span className="font-medium">{option.name}</span>
+                  <span
+                    id={`export-format-${option.id}`}
+                    className="text-xs text-muted-foreground"
+                  >
+                    {option.description}
+                  </span>
+                </label>
+              ))}
+            </div>
+            {format === "jpeg" && (
+              <div className="grid gap-2 py-1">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="jpeg-quality">Quality</Label>
+                  <span className="text-muted-foreground tabular-nums">
+                    {quality}%
+                  </span>
+                </div>
+                <Slider
+                  id="jpeg-quality"
+                  aria-label="JPEG quality"
+                  value={[quality]}
+                  min={10}
+                  max={100}
+                  step={1}
+                  onValueChange={([value]) => setQuality(value)}
+                />
+              </div>
+            )}
+            {format === "svg" && (
+              <div className="grid gap-2 py-1">
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor="svg-raster">Paint layers</Label>
+                  <select
+                    id="svg-raster"
+                    value={raster}
+                    onChange={(event) =>
+                      setRaster(event.target.value as "embed" | "omit")
+                    }
+                    className="bg-transparent text-right"
+                  >
+                    <option value="embed">Embed as PNG images</option>
+                    <option value="omit">Leave out</option>
+                  </select>
+                </div>
+                <Label>
+                  <input
+                    type="checkbox"
+                    checked={brushData}
+                    onChange={(event) => setBrushData(event.target.checked)}
+                  />
+                  Keep brush settings (larger file)
+                </Label>
+              </div>
+            )}
+          </fieldset>
+          <Button disabled={busy !== null} onClick={exportFormat}>
+            <DownloadSimpleIcon />
+            {busy ? `${busy}…` : `Export ${chosen.name}`}
+          </Button>
+          {warnings.length > 0 && (
+            <Alert>
+              <AlertDescription>
+                <ul>
+                  {warnings.map((warning, index) => (
+                    <li key={index}>{warning}</li>
+                  ))}
+                </ul>
+              </AlertDescription>
+            </Alert>
+          )}
+          {problem && (
+            <Alert variant="destructive">
+              <AlertDescription>{problem}</AlertDescription>
+            </Alert>
+          )}
+          <p className="sr-only" aria-live="polite">
+            {busy && `${busy}…`}
+          </p>
           <input
             ref={input}
             className="sr-only"
@@ -197,30 +254,25 @@ export function ExportDialog({ engine }: { engine: Engine }) {
               const file = event.currentTarget.files?.[0]
               event.currentTarget.value = ""
               if (!file) return
-              void runOperation("Import", async () => {
+              void runOperation("Opening", async () => {
                 await engine.importDocument(
                   new Uint8Array(await file.arrayBuffer())
                 )
               })
             }}
           />
-          <Button
-            variant="ghost"
-            disabled={busy !== null}
-            onClick={() => input.current?.click()}
-          >
-            <UploadSimpleIcon /> Import .velura backup
-          </Button>
-          {busy && (
-            <p className="text-center text-muted-foreground" aria-live="polite">
-              {busy}…
-            </p>
-          )}
-          {problem && (
-            <Alert variant="destructive">
-              <AlertDescription>{problem}</AlertDescription>
-            </Alert>
-          )}
+          {/* Bringing a backup in is not an export: it sits apart, below a
+              rule, and quieter. */}
+          <div className="-mx-4 flex items-center border-t px-2 pt-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy !== null}
+              onClick={() => input.current?.click()}
+            >
+              <UploadSimpleIcon /> Import .velura backup
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

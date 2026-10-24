@@ -6,6 +6,8 @@ import {
   SprayBottleIcon,
   MarkerCircleIcon,
   EraserIcon,
+  HandPointingIcon,
+  SquareIcon,
   WaveformIcon,
 } from "@phosphor-icons/react"
 
@@ -48,6 +50,48 @@ export function EraserToolIcon({
   return (
     <span className="relative inline-flex size-5 items-center justify-center">
       <EraserIcon className={className} weight="regular" />
+      <WaveformIcon
+        aria-hidden="true"
+        className="absolute -right-1 -bottom-1 size-2.5 rounded-full bg-primary p-px text-primary-foreground"
+        weight="bold"
+      />
+    </span>
+  )
+}
+
+/** A fingertip, which is what smears paint. */
+export function SmudgeToolIcon({ className }: { className?: string }) {
+  return <HandPointingIcon className={className} weight="fill" />
+}
+
+/** The eraser that takes whole shapes, badged with one. */
+export function ShapeEraserIcon({ className }: { className?: string }) {
+  return (
+    <span className="relative inline-flex size-5 items-center justify-center">
+      <EraserIcon className={className} weight="regular" />
+      <SquareIcon
+        aria-hidden="true"
+        className="absolute -right-1 -bottom-1 size-2.5 rounded-full bg-primary p-px text-primary-foreground"
+        weight="fill"
+      />
+    </span>
+  )
+}
+
+/** The vector brush, badged like the eraser when its width follows pressure. */
+export function VectorBrushToolIcon({
+  kind,
+  className,
+}: {
+  kind: "solid" | "pressure"
+  className?: string
+}) {
+  if (kind === "solid")
+    return <PaintBrushIcon className={className} weight="fill" />
+
+  return (
+    <span className="relative inline-flex size-5 items-center justify-center">
+      <PaintBrushIcon className={className} weight="regular" />
       <WaveformIcon
         aria-hidden="true"
         className="absolute -right-1 -bottom-1 size-2.5 rounded-full bg-primary p-px text-primary-foreground"

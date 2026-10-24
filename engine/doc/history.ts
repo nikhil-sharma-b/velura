@@ -10,14 +10,16 @@ import {
   tileKey,
   tilesCoveringRect,
 } from "./tile-grid"
-import { createTileStore, type TileStore } from "./tile-store"
+import { createTileStore, isBlank, type TileStore } from "./tile-store"
+import type { SceneChange } from "./vector-scene"
 import {
   createUndoStack,
   type SurfaceChange,
   type UndoEntry,
+  type WetCopy,
 } from "./undo-stack"
 
-export type { UndoEntry } from "./undo-stack"
+export type { UndoEntry, WetCopy } from "./undo-stack"
 
 /**
  * What one surface holds right now, as content hashes. History keeps this
@@ -71,7 +73,22 @@ export type OperationPixels = {
    * sharing a key extend the step already on the stack.
    */
   coalesceAs?: string
+  /**
+   * What the operation did to vector layers' scenes (19), as the commands
+   * that did it and the ones that undo it. The scenes are already changed;
+   * the step only has to know how to go back and forth.
+   */
+  scenes?: readonly SceneChange[]
 }
+
+/**
+ * Puts scene edits into effect, for undo (`inverse`) or redo (`forward`).
+ * Called after the step's structure is back, so the layers exist to edit.
+ */
+export type ApplyScenes = (
+  changes: readonly SceneChange[],
+  direction: "undo" | "redo"
+) => void
 
 /** Texels for one tile, or null where the tile holds nothing at all. */
 export type TileWrite = TileCoord & { texels: Uint16Array | null }
@@ -82,12 +99,28 @@ export type TileWrite = TileCoord & { texels: Uint16Array | null }
  * through the sparse CPU surfaces, which are only ever an upload source.
  */
 export interface SurfaceBridge {
-  /** Whole tiles, zero-filled outside the canvas, in the order asked for. */
+  /**
+   * Whole tiles, zero-filled outside the canvas, in the order asked for.
+   * They are history's to keep: it stores them as they are.
+   */
   readTiles(
     surfaceId: string,
     coords: readonly TileCoord[]
   ): Promise<Uint16Array[]>
   writeTiles(surfaceId: string, tiles: readonly TileWrite[]): void
+}
+
+/**
+ * The wet fields a fluid stroke's entry is about (D42). They are GPU state
+ * and stay there: history asks for a copy, hands one back to be restored,
+ * and says when it is done with one. Nothing is read back.
+ */
+export interface WetBridge {
+  /** Copies the wet fields as they now are. */
+  capture(): WetCopy
+  /** Makes a copy the wet fields of a surface again. */
+  restore(copy: WetCopy, surfaceId: string): void
+  release(copy: WetCopy): void
 }
 
 export interface DocumentHistory {
@@ -101,8 +134,36 @@ export interface DocumentHistory {
     tiles: readonly (TileCoord & { texels: Uint16Array })[],
     canvas: { width: number; height: number }
   ): void
-  /** One stroke, one step: reads back what the mark left in `region` (D27). */
-  recordStroke(surfaceId: string, region: PixelRect): void
+  /**
+   * One stroke, one step: reads back what the mark left in `region` (D27).
+   * Given the `tiles` its dabs drew into, those are read and no others: a
+   * thrown stroke's region is mostly tiles it never reached (live brushes
+   * 30).
+   */
+  recordStroke(
+    surfaceId: string,
+    region: PixelRect,
+    tiles?: readonly TileCoord[]
+  ): void
+  /**
+   * One fluid stroke whose paint is still wet, one step (D42): no tile
+   * changed and nothing is read back. The step holds `before`, the wet
+   * fields as they were at pen-down, which history now owns. Undo restores
+   * it, and redo the copy undo took as it did.
+   */
+  recordWetStroke(surfaceId: string, before: WetCopy, label?: string): void
+  /**
+   * Wet paint settled into `region`, one step, recorded as a stroke is. It
+   * takes the wet strokes out of history: their copies describe fields that
+   * no longer exist.
+   */
+  recordSettle(
+    surfaceId: string,
+    region: PixelRect,
+    tiles?: readonly TileCoord[]
+  ): void
+  /** Wet paint went without a tile changing: its strokes go with it. */
+  forgetWetStrokes(): void
   /** One discrete layer operation, as the tree before and after it. */
   recordOperation(
     label: string,
@@ -125,13 +186,34 @@ export interface DocumentHistory {
     }[],
     canvas: { width: number; height: number }
   ): void
-  undo(applyStructure: (structure: DocumentStructure) => void): Promise<boolean>
-  redo(applyStructure: (structure: DocumentStructure) => void): Promise<boolean>
+  undo(
+    applyStructure: (structure: DocumentStructure) => void,
+    applyScenes?: ApplyScenes
+  ): Promise<boolean>
+  redo(
+    applyStructure: (structure: DocumentStructure) => void,
+    applyScenes?: ApplyScenes
+  ): Promise<boolean>
   canUndo(): boolean
   canRedo(): boolean
   depth(): number
   /** Steps that can still be taken back, which is where the cursor sits. */
   stepsBack(): number
+  /**
+   * The step undo would take back next, as an opaque identity: the same
+   * object for as long as that step exists, whatever is trimmed from the
+   * bottom of the stack or pushed and undone above it.
+   */
+  topStep(): object | undefined
+  /** How many of the steps that can be taken back are wet strokes. */
+  wetSteps(): number
+  /** Bytes of the wet copies history is holding, which are GPU memory. */
+  wetBytes(): number
+  /**
+   * Waits for every step queued to have been recorded, and not for the store
+   * to have put their tiles away. What a step would be is only known then.
+   */
+  recorded(): Promise<void>
   /** Logical bytes of the tiles history is keeping alive. */
   bytes(): number
   residentBytes(): number
@@ -139,7 +221,10 @@ export interface DocumentHistory {
   spilledBytes(): number
   /** Forgets everything: a resize re-tiles the document past recognition. */
   clear(): void
-  /** Waits for recording that is still in flight. */
+  /**
+   * Waits for recording that is still in flight, and for the store to have
+   * compressed and spilled what that left it with.
+   */
   settle(): Promise<void>
   /**
    * Every surface's tiles by content hash, as of the last recorded step. This
@@ -166,13 +251,14 @@ export const DEFAULT_HISTORY_BUDGET_BYTES = 512 * 1024 * 1024
 /** Roughly the ten most recent entries' worth of tiles, kept raw. */
 export const DEFAULT_HOT_BYTES = 64 * 1024 * 1024
 export const DEFAULT_WARM_BYTES = 128 * 1024 * 1024
+/**
+ * GPU memory for wet strokes' copies. A copy is the wet tiles' fields and no
+ * more, some 400 KB a tile: ten strokes over a wash at the wet tile limit,
+ * and hundreds over an ordinary one.
+ */
+export const DEFAULT_WET_BUDGET_BYTES = 256 * 1024 * 1024
 
 const TILE_VALUES = TILE_SIZE * TILE_SIZE * TILE_CHANNELS
-
-function isBlank(texels: Uint16Array): boolean {
-  for (let i = 0; i < texels.length; i++) if (texels[i] !== 0) return false
-  return true
-}
 
 /**
  * A tile as the GPU holds it: the part of it outside the canvas was never
@@ -205,6 +291,9 @@ export function createDocumentHistory(options: {
   bridge: SurfaceBridge
   store?: TileStore
   budgetBytes?: number
+  /** The wet fields, where fluid strokes are painted; none are recorded without. */
+  wet?: WetBridge
+  wetBudgetBytes?: number
   /** Told whenever undoing or redoing becomes possible or stops being. */
   onChange?: () => void
   /**
@@ -230,6 +319,8 @@ export function createDocumentHistory(options: {
   const stack = createUndoStack({
     store,
     budgetBytes: options.budgetBytes ?? DEFAULT_HISTORY_BUDGET_BYTES,
+    wetBudgetBytes: options.wetBudgetBytes ?? DEFAULT_WET_BUDGET_BYTES,
+    releaseWet: (copy) => options.wet?.release(copy),
   })
   /**
    * What each surface holds right now, by tile. This is the "before" half of
@@ -247,13 +338,20 @@ export function createDocumentHistory(options: {
   let generation = 0
 
   function enqueue(
-    work: (stillCurrent: () => boolean) => void | Promise<void>
+    work: (stillCurrent: () => boolean) => void | Promise<void>,
+    /** Run in its place where the document has gone by the time it is due. */
+    outlived?: () => void
   ) {
     const queuedIn = generation
     const stillCurrent = () => queuedIn === generation
     queue = queue
-      .then(() => (stillCurrent() ? work(stillCurrent) : undefined))
-      .catch((error) => options.onError?.(error))
+      .then(() => (stillCurrent() ? work(stillCurrent) : outlived?.()))
+      // A step of a document that is gone was not going to be recorded, so
+      // failing to is nothing to tell the artist: its store's worker goes
+      // with it, and takes what it was hashing along.
+      .catch((error) => {
+        if (stillCurrent()) options.onError?.(error)
+      })
   }
 
   function tilesOf(surfaceId: string): Map<string, string> {
@@ -287,6 +385,7 @@ export function createDocumentHistory(options: {
     // a slider nudged back to where it started must not cost an undo.
     const empty =
       entry.surfaces.every((surface) => surface.tiles.length === 0) &&
+      !entry.scenes?.some((change) => change.forward.length > 0) &&
       (!entry.structure ||
         sameStructure(entry.structure.before, entry.structure.after))
     if (!empty) stack.push(entry)
@@ -348,7 +447,7 @@ export function createDocumentHistory(options: {
   }
 
   /**
-   * What a region of a surface holds now, as the step that put it there.
+   * What tiles of a surface hold now, as the step that put them there.
    *
    * The pixels are read back off the GPU rather than handed over, which is
    * what a stroke needs — the mark was drawn there, not computed here — and
@@ -357,20 +456,24 @@ export function createDocumentHistory(options: {
    */
   async function captureReadback(
     surfaceId: string,
-    region: PixelRect,
+    coords: readonly TileCoord[],
     stillCurrent: () => boolean
   ): Promise<SurfaceChange | undefined> {
-    const coords = tilesCoveringRect(region)
     if (coords.length === 0) return undefined
-    const texels = await bridge.readTiles(surfaceId, coords)
+    // Hashed before anything is stored, and not here: a thrown stroke reads
+    // back hundreds of tiles, and going over every byte of them on this
+    // thread is frames of the stroke after it (live brushes 28).
+    const { tiles: texels, hashes } = await store.digest(
+      await bridge.readTiles(surfaceId, coords)
+    )
     // The readback is a wait, and the document may have been replaced
     // during it.
     if (!stillCurrent()) return undefined
     const tiles = coords.flatMap((coord, position) => {
       const key = tileKey(coord.x, coord.y)
       const before = index.get(surfaceId)?.get(key)
-      const painted = texels[position]
-      const after = isBlank(painted) ? undefined : store.put(painted)
+      const hash = hashes[position]
+      const after = hash ? store.adopt(texels[position], hash) : undefined
       if (before === after) {
         if (after) store.release(after)
         return []
@@ -452,6 +555,26 @@ export function createDocumentHistory(options: {
     await writePixels(entry, side)
   }
 
+  /**
+   * Waits for every step queued to have been recorded, and not for the store
+   * to have put their tiles away. Undo and redo wait on this alone: a step's
+   * tiles are whole from the moment they are stored, and compressing a thrown
+   * stroke's is two seconds an undo would spend waiting for tiles it is about
+   * to ask for raw (live brushes 32).
+   */
+  async function recorded() {
+    let pending = queue
+    // Recording can queue more recording: a stroke's pen-up lands on a frame
+    // of its own. Undo acts the moment this returns, and popping past a step
+    // still being recorded leaves that step's pixels on a layer the tree no
+    // longer has.
+    while (true) {
+      await pending
+      if (pending === queue) break
+      pending = queue
+    }
+  }
+
   return {
     store,
     recordUpload(surfaceId, tiles, canvas) {
@@ -468,11 +591,53 @@ export function createDocumentHistory(options: {
         options.onCommit?.()
       })
     },
-    recordStroke(surfaceId, region) {
+    recordStroke(surfaceId, region, tiles) {
       enqueue(async (stillCurrent) => {
-        const change = await captureReadback(surfaceId, region, stillCurrent)
+        const change = await captureReadback(
+          surfaceId,
+          tiles ?? tilesCoveringRect(region),
+          stillCurrent
+        )
         if (!change) return
         pushEntry({ label: "stroke", surfaces: [change] })
+      })
+    },
+    recordWetStroke(surfaceId, before, label = "fluid stroke") {
+      if (!options.wet)
+        throw new Error("A wet stroke needs the wet fields to restore it to.")
+      enqueue(
+        () => {
+          stack.push({
+            label,
+            surfaces: [],
+            wet: { surfaceId, before },
+          })
+          // No commit: the document's pixels are what they were.
+          options.onChange?.()
+          // A copy no step came to hold is still history's to let go.
+        },
+        () => options.wet?.release(before)
+      )
+    },
+    recordSettle(surfaceId, region, tiles) {
+      enqueue(async (stillCurrent) => {
+        const change = await captureReadback(
+          surfaceId,
+          tiles ?? tilesCoveringRect(region),
+          stillCurrent
+        )
+        if (!change) return
+        // With the step that replaces them, so undo is never seen to close
+        // between the two.
+        const dropped = stack.dropWet()
+        const steps = stack.depth()
+        pushEntry({ label: "settle", surfaces: [change] })
+        if (dropped && stack.depth() === steps) options.onChange?.()
+      })
+    },
+    forgetWetStrokes() {
+      enqueue(() => {
+        if (stack.dropWet()) options.onChange?.()
       })
     },
     recordReplacement(label, structure, surfaces, canvas) {
@@ -519,7 +684,7 @@ export function createDocumentHistory(options: {
         for (const surface of operation?.readback ?? []) {
           const change = await captureReadback(
             surface.surfaceId,
-            surface.region,
+            tilesCoveringRect(surface.region),
             stillCurrent
           )
           if (!change) return
@@ -537,32 +702,55 @@ export function createDocumentHistory(options: {
         if (written.length > 0)
           await writePixels({ label, surfaces: written }, "after")
         const key = operation?.coalesceAs
+        const scenes = operation?.scenes?.length ? operation.scenes : undefined
         // Extending the step in place keeps the state it started from, which
         // is where undoing the whole run has to land.
         if (
           key &&
           surfaces.length === 0 &&
-          stack.extendTop(key, structure.after)
+          stack.extendTop(key, structure.after, scenes)
         )
           return
-        pushEntry({ label, surfaces, structure, coalesceAs: key })
+        pushEntry({
+          label,
+          surfaces,
+          structure,
+          coalesceAs: key,
+          ...(scenes ? { scenes } : {}),
+        })
       })
     },
-    async undo(applyStructure) {
-      await this.settle()
+    async undo(applyStructure, applyScenes) {
+      await recorded()
       const entry = stack.undo()
       if (!entry) return false
+      if (entry.wet) {
+        // The fields as they are, for redo, before they are what they were.
+        const after = options.wet!.capture()
+        options.wet!.restore(entry.wet.before, entry.wet.surfaceId)
+        stack.keepWetAfter(entry, after)
+        options.onChange?.()
+        return true
+      }
       if (entry.structure) applyStructure(entry.structure.before)
+      if (entry.scenes) applyScenes?.(entry.scenes, "undo")
       await applyPixels(entry, "before")
       options.onChange?.()
       options.onCommit?.()
       return true
     },
-    async redo(applyStructure) {
-      await this.settle()
+    async redo(applyStructure, applyScenes) {
+      await recorded()
       const entry = stack.redo()
       if (!entry) return false
+      if (entry.wet) {
+        if (entry.wet.after)
+          options.wet!.restore(entry.wet.after, entry.wet.surfaceId)
+        options.onChange?.()
+        return true
+      }
       if (entry.structure) applyStructure(entry.structure.after)
+      if (entry.scenes) applyScenes?.(entry.scenes, "redo")
       await applyPixels(entry, "after")
       options.onChange?.()
       options.onCommit?.()
@@ -582,6 +770,10 @@ export function createDocumentHistory(options: {
     canRedo: () => stack.canRedo(),
     depth: () => stack.depth(),
     stepsBack: () => stack.stepsBack(),
+    topStep: () => stack.top(),
+    wetSteps: () => stack.wetSteps(),
+    wetBytes: () => stack.wetBytes(),
+    recorded,
     bytes: () => stack.bytes(),
     residentBytes: () => store.residentBytes(),
     spilledBytes: () => store.spilledBytes(),
@@ -597,9 +789,7 @@ export function createDocumentHistory(options: {
       let pending = queue
       // Recording can queue more recording, and so can anything that runs
       // while the store settles — a stroke's pen-up lands on a frame of its
-      // own. The queue is looked at last, after every wait: undo acts the
-      // moment this returns, and popping past a step still being recorded
-      // leaves that step's pixels on a layer the tree no longer has.
+      // own. The queue is looked at last, after every wait.
       while (true) {
         await pending
         await store.settle()

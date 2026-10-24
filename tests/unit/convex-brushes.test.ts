@@ -95,6 +95,78 @@ describe("brushes on the account", () => {
     expect(await artist.query(api.brushes.list, {})).toEqual([])
   })
 
+  test("a wet brush comes back wet, and a dry one with no wet setting", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    await artist.mutation(api.brushes.save, { name: "Dry", definition: pencil })
+    await artist.mutation(api.brushes.save, {
+      name: "Oil",
+      definition: {
+        ...pencil,
+        rendering: { ...pencil.rendering, wet: { pickup: 0.4 } },
+      },
+    })
+
+    const [dry, oil] = await artist.query(api.brushes.list, {})
+    expect(dry.definition.rendering).toEqual(pencil.rendering)
+    expect(oil.definition.rendering.wet).toEqual({ pickup: 0.4 })
+    expect(
+      artist.mutation(api.brushes.save, {
+        name: "Bad",
+        definition: {
+          ...pencil,
+          rendering: { ...pencil.rendering, wet: { pickup: 2 } },
+        },
+      })
+    ).rejects.toThrow("pickup")
+  })
+
+  test("a fluid brush comes back fluid, and never wet as well", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const fluid = {
+      water: 0.5,
+      drying: 0.4,
+      bleed: 0.3,
+      edge: 0.2,
+      granulation: 0.1,
+    }
+    await artist.mutation(api.brushes.save, {
+      name: "Wash",
+      definition: { ...pencil, rendering: { ...pencil.rendering, fluid } },
+    })
+    const [wash] = await artist.query(api.brushes.list, {})
+    expect(wash.definition.rendering.fluid).toEqual(fluid)
+    expect(
+      artist.mutation(api.brushes.save, {
+        name: "Bad",
+        definition: {
+          ...pencil,
+          rendering: { ...pencil.rendering, fluid, wet: { pickup: 0.4 } },
+        },
+      })
+    ).rejects.toThrow("one of wet, fluid or blot")
+  })
+
+  test("a mapping onto water comes back as it was saved", async () => {
+    const t = setup()
+    const artist = asUser(t, await createUser(t, "artist@example.com"))
+    const dynamics = [
+      {
+        source: "pressure" as const,
+        target: "water" as const,
+        range: [0.2, 1] as [number, number],
+        mix: "multiply" as const,
+      },
+    ]
+    await artist.mutation(api.brushes.save, {
+      name: "Wash",
+      definition: { ...pencil, dynamics },
+    })
+    const [wash] = await artist.query(api.brushes.list, {})
+    expect(wash.definition.dynamics).toEqual(dynamics)
+  })
+
   test("signing out leaves the shelf empty rather than throwing", async () => {
     const t = setup()
     expect(await t.query(api.brushes.list, {})).toEqual([])
@@ -245,5 +317,42 @@ describe("the brush a document was left with", () => {
       async (ctx) => await ctx.db.query("brushUse").collect()
     )
     expect(rows.length).toBe(1)
+  })
+
+  test("carries the smudge's size and strength, and keeps them when a write names none", async () => {
+    const t = setup()
+    const userId = await createUser(t, "artist@example.com")
+    const artist = asUser(t, userId)
+    const documentId = await document(t, userId)
+    await artist.mutation(api.brushes.recordLastUsed, {
+      documentId,
+      brushId: pencil.id,
+      radius: 18,
+      smudge: { radius: 40, strength: 0.35 },
+    })
+    expect(await artist.query(api.brushes.lastUsed, { documentId })).toEqual({
+      brushId: pencil.id,
+      radius: 18,
+      smudge: { radius: 40, strength: 0.35 },
+    })
+    // A client from before smudge had settings names none, and takes none away.
+    await artist.mutation(api.brushes.recordLastUsed, {
+      documentId,
+      brushId: pencil.id,
+      radius: 20,
+    })
+    expect(await artist.query(api.brushes.lastUsed, { documentId })).toEqual({
+      brushId: pencil.id,
+      radius: 20,
+      smudge: { radius: 40, strength: 0.35 },
+    })
+    await expect(
+      artist.mutation(api.brushes.recordLastUsed, {
+        documentId,
+        brushId: pencil.id,
+        radius: 20,
+        smudge: { radius: 40, strength: 1.5 },
+      })
+    ).rejects.toThrow()
   })
 })

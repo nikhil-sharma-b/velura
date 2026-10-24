@@ -3,16 +3,18 @@ import {
   addGroup,
   addLayer,
   addMask,
+  addVectorLayer,
   cacheKey,
   compositionKey,
   createDocument,
   duplicateLayer,
-  findLayer,
+  findRasterLayer,
   findNode,
   HIGHLIGHT_DIM,
   makeLayerPaintable,
   moveLayer,
   planComposite,
+  rasteriseLayer,
   removeLayer,
   removeMask,
   resizeDocument,
@@ -36,7 +38,7 @@ describe("the layer tree", () => {
     expect(doc.activeLayerId).toBe(doc.layers[0].id)
     // The seeded scene lives in the bottom layer's own surface.
     expect(
-      findLayer(doc, doc.layers[0].id).surface.tileCount()
+      findRasterLayer(doc, doc.layers[0].id).surface.tileCount()
     ).toBeGreaterThan(0)
   })
 
@@ -60,7 +62,7 @@ describe("the layer tree", () => {
 
   test("duplicating a layer copies its pixels and settings into an independent layer", () => {
     const doc = document()
-    const original = findLayer(doc, doc.layers[0].id)
+    const original = findRasterLayer(doc, doc.layers[0].id)
     setLayer(doc, original.id, {
       name: "Ink",
       opacity: 0.4,
@@ -70,7 +72,7 @@ describe("the layer tree", () => {
     })
 
     const copyId = duplicateLayer(doc, original.id)
-    const copy = findLayer(doc, doc.layers[1].id)
+    const copy = findRasterLayer(doc, doc.layers[1].id)
 
     expect(copy).toMatchObject({
       id: copyId,
@@ -153,7 +155,7 @@ describe("the layer tree", () => {
 
   test("masks are reversible paint targets and can be removed", () => {
     const doc = document()
-    const layer = findLayer(doc, doc.activeLayerId)
+    const layer = findRasterLayer(doc, doc.activeLayerId)
     const maskId = addMask(doc, layer.id)
     layer.mask!.surface.fillRect({ x: 0, y: 0, width: 1, height: 1 }, 0.5)
     expect(layer.mask!.surface.tiles()[0].texels).toHaveLength(256 * 256)
@@ -303,7 +305,7 @@ describe("the composition key", () => {
   test("does not change when pixels do", () => {
     const doc = document()
     const before = key(doc)
-    findLayer(doc, doc.layers[0].id).surface.fillRect(
+    findRasterLayer(doc, doc.layers[0].id).surface.fillRect(
       { x: 0, y: 0, width: 8, height: 8 },
       [1, 0, 0, 1]
     )
@@ -359,11 +361,54 @@ describe("resizing", () => {
     expect(doc.width).toBe(128)
     expect(doc.layers).toHaveLength(2)
     expect(doc.layers[1]).toMatchObject({ id: top, opacity: 0.4, name: "Ink" })
-    expect(findLayer(doc, doc.layers[1].id).surface.width).toBe(128)
+    expect(findRasterLayer(doc, doc.layers[1].id).surface.width).toBe(128)
     expect(
-      findLayer(doc, doc.layers[0].id).surface.tileCount()
+      findRasterLayer(doc, doc.layers[0].id).surface.tileCount()
     ).toBeGreaterThan(0)
     expect(doc.activeLayerId).toBe(top)
+  })
+})
+
+describe("rasterising a vector layer", () => {
+  test("puts a paint layer in its place, under the same id and settings", () => {
+    const doc = document()
+    const id = addVectorLayer(doc)
+    setLayer(doc, id, { name: "Shapes", opacity: 0.5, blend: "multiply" })
+    addMask(doc, id)
+    const mask = findNode(doc, id).mask
+    const index = doc.layers.findIndex((layer) => layer.id === id)
+
+    rasteriseLayer(doc, id)
+
+    const layer = findRasterLayer(doc, id)
+    expect(doc.layers[index]).toBe(layer)
+    expect(layer).toMatchObject({
+      name: "Shapes",
+      opacity: 0.5,
+      blend: "multiply",
+      image: false,
+      locked: false,
+    })
+    expect(layer.mask).toBe(mask)
+    expect(layer.surface.tileCount()).toBe(0)
+    expect(doc.activeLayerId).toBe(id)
+  })
+
+  test("works inside a group", () => {
+    const doc = document()
+    const id = addVectorLayer(doc)
+    const group = addGroup(doc, [id])
+    rasteriseLayer(doc, id)
+    const parent = findNode(doc, group)
+    expect(parent.kind === "group" && parent.children[0]?.kind).toBe("raster")
+  })
+
+  test("refuses anything that is not a vector layer", () => {
+    const doc = document()
+    const id = addLayer(doc)
+    expect(() => rasteriseLayer(doc, id)).toThrow()
+    const group = addGroup(doc, [id])
+    expect(() => rasteriseLayer(doc, group)).toThrow()
   })
 })
 
@@ -371,7 +416,7 @@ describe("painting on a placed image", () => {
   test("clears the image flag and leaves every other setting alone", () => {
     const doc = document()
     const id = addLayer(doc)
-    const layer = findLayer(doc, id)
+    const layer = findRasterLayer(doc, id)
     layer.image = true
     setLayer(doc, id, { name: "Reference", opacity: 0.4, blend: "multiply" })
     addMask(doc, id)
@@ -399,7 +444,7 @@ describe("painting on a placed image", () => {
   test("a copy of an unconverted image layer is still an image layer", () => {
     const doc = document()
     const id = addLayer(doc)
-    findLayer(doc, id).image = true
-    expect(findLayer(doc, duplicateLayer(doc, id)).image).toBe(true)
+    findRasterLayer(doc, id).image = true
+    expect(findRasterLayer(doc, duplicateLayer(doc, id)).image).toBe(true)
   })
 })

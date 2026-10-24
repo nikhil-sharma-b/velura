@@ -22,6 +22,11 @@ import luminosity from "./blend/luminosity.wgsl"
 import nonSeparable from "./blend/non-separable.wgsl"
 import nonSeparableComposite from "./blend/non-separable-composite.wgsl"
 import transfer from "./transfer.wgsl"
+import space from "./composite-space.wgsl"
+import wet from "./wet.wgsl"
+import wetLayer from "./wet-layer.wgsl"
+import dryLayer from "./dry-layer.wgsl"
+import { pigmentShader } from "./pigment"
 import { preprocess } from "./preprocess"
 
 /** Adding a mode only adds its snippet and registry entry, never renderer logic. */
@@ -59,7 +64,16 @@ export const blendModes = {
 } as const
 export type BlendMode = keyof typeof blendModes
 
-export function blendShader(mode: BlendMode, template = surface): string {
+/**
+ * A mode's shader. `isWet` is whether the layer it draws has wet paint on
+ * it (D42): the shader that glazes it is another shader, not a branch in
+ * this one, so a layer with none pays nothing for it.
+ */
+export function blendShader(
+  mode: BlendMode,
+  template = surface,
+  isWet = false
+): string {
   const definition = blendModes[mode]
   const compositeSource =
     "composite" in definition ? definition.composite : composite
@@ -69,5 +83,9 @@ export function blendShader(mode: BlendMode, template = surface): string {
     "non-separable": nonSeparable,
     stroke,
     transfer,
+    space,
+    pigment: pigmentShader,
+    wet,
+    wetLayer: isWet ? wetLayer : dryLayer,
   })
 }

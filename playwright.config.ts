@@ -6,6 +6,15 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CI ? 2 : undefined,
+  // CI's default is the dot reporter, which says nothing of where a shard's
+  // minutes went. The list reporter prints each test with the time it took.
+  reporter: process.env.CI ? "list" : undefined,
+  // CI rasterizes WebGPU on two CPU cores, so pointer-driven tests on the
+  // full-size canvas take several times longer than on a real GPU.
+  timeout: process.env.CI ? 60_000 : 30_000,
+  // The same reason stretches each wait: an engine starting after a reload,
+  // or a dialog animating out, can take longer than the default 5s there.
+  expect: { timeout: process.env.CI ? 15_000 : 5_000 },
   use: {
     baseURL: "http://localhost:3000",
     trace: "retain-on-failure",
@@ -14,12 +23,27 @@ export default defineConfig({
         "--enable-unsafe-webgpu",
         "--use-angle=swiftshader",
         "--enable-unsafe-swiftshader",
+        // Linux CI has no GPU. Without Vulkan-backed SwiftShader, headless
+        // Chromium cannot back a WebGPU canvas swap chain, and the device is
+        // lost on the first present.
+        ...(process.platform === "linux"
+          ? [
+              "--enable-features=Vulkan",
+              "--use-vulkan=swiftshader",
+              "--use-webgpu-adapter=swiftshader",
+            ]
+          : []),
       ],
     },
   },
   webServer: [
     {
-      command: "bun run dev --hostname localhost --port 3000",
+      // CI serves the build it has already made: on a two-core runner that is
+      // also rasterizing WebGPU in software, a dev server compiling each page
+      // on first visit starves the tests into timeouts.
+      command: process.env.CI
+        ? "bun run start --hostname localhost --port 3000"
+        : "bun run dev --hostname localhost --port 3000",
       url: "http://localhost:3000",
       reuseExistingServer: !process.env.CI,
     },

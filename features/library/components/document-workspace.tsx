@@ -16,7 +16,14 @@ import { Spinner } from "@/components/ui/spinner"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import { createConvexRemoteIndex } from "@/features/library/lib/convex-remote-index"
+import {
+  recordLocalPreview,
+  recordSyncStatus,
+} from "@/features/library/lib/preview-cache"
+import { tabSessionId } from "@/features/library/lib/tab-session"
+import { PreferencesSync } from "@/features/commands/components/preferences-sync"
 import { useConvexPaletteStore } from "@/features/color/lib/convex-palette-store"
+import { useConvexVectorBrushStore } from "@/features/studio/lib/convex-vector-brush-store"
 import { useConvexBrushStore } from "@/features/studio/lib/convex-brush-store"
 import { CanvasHost } from "@/features/studio/components/canvas-host"
 
@@ -35,6 +42,7 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
         <RedirectToSignIn />
       </Unauthenticated>
       <Authenticated>
+        <PreferencesSync />
         {/* The segment is unvalidated text until Convex resolves it; a bad or
             foreign id throws in the query and lands on the error boundary. */}
         <OwnedDocument documentId={documentId as Id<"documents">} />
@@ -43,9 +51,9 @@ export function DocumentWorkspace({ documentId }: { documentId: string }) {
   )
 }
 
-/** One id per tab, for the life of the tab: what a heartbeat is filed under. */
+/** One id per tab, kept across reloads: what a heartbeat is filed under. */
 function useSessionId(): string {
-  return useMemo(() => crypto.randomUUID(), [])
+  return useMemo(() => tabSessionId(), [])
 }
 
 /** Keeps this tab's presence row alive while the document stays open (18). */
@@ -77,6 +85,7 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
   // Brushes likewise belong to the artist rather than to this document, which
   // is what makes a tool shaped on one machine available on the next (25).
   const brushes = useConvexBrushStore()
+  const vectorBrushes = useConvexVectorBrushStore()
   const sessionId = useSessionId()
   useHeartbeat(documentId, sessionId)
   const openElsewhere = useQuery(api.sessions.openElsewhere, {
@@ -89,10 +98,15 @@ function OwnedDocument({ documentId }: { documentId: Id<"documents"> }) {
   return (
     <CanvasHost
       documentId={documentId}
+      documentName={document.name}
+      libraryHref="/library"
       documentSize={documentSize}
       remote={remote}
+      onPreview={(preview) => recordLocalPreview(documentId, preview)}
+      onSyncStatus={(status) => recordSyncStatus(documentId, status)}
       palettes={palettes}
       brushes={brushes}
+      vectorBrushes={vectorBrushes}
       openElsewhere={openElsewhere ?? false}
     />
   )

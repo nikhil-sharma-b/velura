@@ -204,3 +204,64 @@ test("a placed image can be moved from the panel, and the move cancelled", async
     layers.getByRole("button", { name: "Move, scale or rotate Reference" })
   ).toBeHidden()
 })
+
+test("a placed photo dims the brush and eraser until it is painted on", async ({
+  page,
+}) => {
+  const layers = await openStudio(page)
+  const brush = page.getByRole("button", { name: "Brush tool", exact: true })
+  const eraser = page.getByRole("button", { name: "Eraser tool" })
+  await expect(brush).toHaveCSS("opacity", "1")
+
+  await layers.locator('input[type="file"]').setInputFiles({
+    name: "Reference.png",
+    mimeType: "image/png",
+    buffer: redPng(),
+  })
+  await expect(
+    layers.getByRole("button", { name: "Selected Reference" })
+  ).toBeVisible()
+  // Neither can mark the photo, so both say so before a stroke is tried.
+  await expect(brush).toHaveCSS("opacity", "0.4")
+  await expect(eraser).toHaveCSS("opacity", "0.4")
+
+  await page.keyboard.press("ControlOrMeta+k")
+  await page
+    .getByRole("combobox", { name: "Search commands" })
+    .fill("Paint on image")
+  await page.keyboard.press("Enter")
+  await expect(brush).toHaveCSS("opacity", "1")
+  await expect(eraser).toHaveCSS("opacity", "1")
+})
+
+test("a locked layer dims every tool but the selection tools", async ({
+  page,
+}) => {
+  await openStudio(page)
+  const dim = async (name: string, opacity: string) =>
+    expect(page.getByRole("button", { name, exact: true })).toHaveCSS(
+      "opacity",
+      opacity
+    )
+  const palette = async (command: string) => {
+    await page.keyboard.press("ControlOrMeta+k")
+    await page.getByRole("combobox", { name: "Search commands" }).fill(command)
+    await page.keyboard.press("Enter")
+  }
+
+  await palette("Lock or unlock layer")
+  await dim("Brush tool", "0.4")
+  await dim("Eraser tool", "0.4")
+  await expect(page.getByRole("group", { name: "Vector tools" })).toHaveCSS(
+    "opacity",
+    "0.4"
+  )
+  await expect(page.getByRole("group", { name: "Selection tools" })).toHaveCSS(
+    "opacity",
+    "1"
+  )
+
+  await palette("Lock or unlock layer")
+  await dim("Brush tool", "1")
+  await dim("Eraser tool", "1")
+})

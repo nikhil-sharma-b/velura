@@ -1,13 +1,21 @@
 import { describe, expect, test } from "bun:test"
 
-import { type Brush, DEFAULT_BRUSH } from "../../engine/brush/brush"
+import {
+  type Brush,
+  DEFAULT_BLOT,
+  DEFAULT_BRUSH,
+  DEFAULT_FLUID,
+  validateBrushMedium,
+} from "../../engine/brush/brush"
 import { type Modulator, validateDynamics } from "../../engine/brush/dynamics"
 import {
   brushCommand,
+  convertLegacyScatter,
   editBrush,
   featherOf,
   hardnessOf,
   isBrushEdited,
+  legacyScatterMappings,
   MAX_FEATHER,
   newModulator,
 } from "../../features/studio/lib/brush-draft"
@@ -97,9 +105,132 @@ describe("the working brush an editor holds", () => {
       flow: 0.3,
       accumulation: "buildup",
       tipTextureId: null,
+      tipSelection: null,
       grain: null,
+      color: null,
+      scatter: null,
+      wet: null,
+      fluid: null,
+      blot: null,
       dynamics: [],
     })
+  })
+
+  test("wet is turned on and off, and reaches the engine either way", () => {
+    const wet = editBrush(saved(), { rendering: { wet: { pickup: 0.5 } } })
+    expect(wet.rendering.wet).toEqual({ pickup: 0.5 })
+    expect(brushCommand(wet).wet).toEqual({ pickup: 0.5 })
+    // Another control's edit leaves it wet.
+    expect(editBrush(wet, { rendering: { flow: 0.2 } }).rendering.wet).toEqual({
+      pickup: 0.5,
+    })
+
+    const dry = editBrush(wet, { rendering: { wet: null } })
+    expect("wet" in dry.rendering).toBe(false)
+    expect(isBrushEdited(saved(), dry)).toBe(false)
+    expect(brushCommand(dry).wet).toBe(null)
+  })
+
+  test("a fluid brush reaches the engine fluid, and a plain one says it is not", () => {
+    const fluid = { ...DEFAULT_FLUID, water: 0.7 }
+    const brush = saved()
+    brush.rendering.fluid = fluid
+    expect(brushCommand(brush).fluid).toEqual(fluid)
+    // Another control's edit leaves it fluid.
+    expect(
+      editBrush(brush, { rendering: { flow: 0.2 } }).rendering.fluid
+    ).toEqual(fluid)
+    expect(brushCommand(saved()).fluid).toBe(null)
+  })
+
+  test("fluid is turned on and off, and off is the brush it was", () => {
+    const original = editBrush(saved(), {
+      rendering: { opacity: 0.6, accumulation: "buildup" },
+    })
+    const fluid = editBrush(original, {
+      rendering: { fluid: { ...DEFAULT_FLUID } },
+    })
+    expect(fluid.rendering.fluid).toEqual(DEFAULT_FLUID)
+    expect(fluid.rendering.fluid).not.toBe(DEFAULT_FLUID)
+    // One setting moves and the other four stay.
+    const wetter = editBrush(fluid, {
+      rendering: { fluid: { ...fluid.rendering.fluid!, water: 0.9 } },
+    })
+    expect(wetter.rendering.fluid).toEqual({ ...DEFAULT_FLUID, water: 0.9 })
+    expect(brushCommand(wetter).fluid).toEqual({ ...DEFAULT_FLUID, water: 0.9 })
+
+    const plain = editBrush(wetter, { rendering: { fluid: null } })
+    expect("fluid" in plain.rendering).toBe(false)
+    expect(isBrushEdited(original, plain)).toBe(false)
+    expect(brushCommand(plain).fluid).toBe(null)
+  })
+
+  test("a blot brush reaches the engine a blot, and a plain one says it is not", () => {
+    const blot = editBrush(saved(), {
+      rendering: { blot: { ...DEFAULT_BLOT } },
+    })
+    expect(brushCommand(blot).blot).toEqual(DEFAULT_BLOT)
+    expect(brushCommand(saved()).blot).toBe(null)
+    const plain = editBrush(blot, { rendering: { blot: null } })
+    expect("blot" in plain.rendering).toBe(false)
+    expect(isBrushEdited(saved(), plain)).toBe(false)
+  })
+
+  test("a brush made a blot is neither wet nor fluid, and either takes blot off", () => {
+    const fluid = editBrush(saved(), {
+      rendering: { fluid: { ...DEFAULT_FLUID } },
+    })
+    const blot = editBrush(fluid, { rendering: { blot: { ...DEFAULT_BLOT } } })
+    expect("fluid" in blot.rendering).toBe(false)
+    expect(blot.rendering.blot).toEqual(DEFAULT_BLOT)
+    expect(() => validateBrushMedium(blot.rendering)).not.toThrow()
+    const wet = editBrush(saved(), { rendering: { wet: { pickup: 0.5 } } })
+    expect(
+      "wet" in
+        editBrush(wet, { rendering: { blot: { ...DEFAULT_BLOT } } }).rendering
+    ).toBe(false)
+
+    expect(
+      "blot" in
+        editBrush(blot, { rendering: { fluid: { ...DEFAULT_FLUID } } })
+          .rendering
+    ).toBe(false)
+    expect(
+      "blot" in
+        editBrush(blot, { rendering: { wet: { pickup: 0.5 } } }).rendering
+    ).toBe(false)
+  })
+
+  test("a brush made fluid is no longer wet, and one made wet no longer fluid", () => {
+    const wet = editBrush(saved(), { rendering: { wet: { pickup: 0.5 } } })
+    const fluid = editBrush(wet, { rendering: { fluid: { ...DEFAULT_FLUID } } })
+    expect("wet" in fluid.rendering).toBe(false)
+    expect(fluid.rendering.fluid).toEqual(DEFAULT_FLUID)
+    expect(() => validateBrushMedium(fluid.rendering)).not.toThrow()
+
+    const wetAgain = editBrush(fluid, { rendering: { wet: { pickup: 0.3 } } })
+    expect("fluid" in wetAgain.rendering).toBe(false)
+    expect(wetAgain.rendering.wet).toEqual({ pickup: 0.3 })
+    expect(() => validateBrushMedium(wetAgain.rendering)).not.toThrow()
+
+    // Fluid off and wet back in one edit, as the editor restores a wet brush.
+    const restored = editBrush(fluid, {
+      rendering: { fluid: null, wet: { pickup: 0.5 } },
+    })
+    expect(isBrushEdited(wet, restored)).toBe(false)
+  })
+
+  test("scatter travels with the brush, and a brush without it clears it", () => {
+    const scattered = {
+      ...saved(),
+      scatter: { amount: 3, count: 4, axes: "both" as const },
+    }
+    expect(brushCommand(scattered).scatter).toEqual({
+      amount: 3,
+      count: 4,
+      axes: "both",
+    })
+    expect(brushCommand(saved()).scatter).toBe(null)
   })
 
   test("a texture the brush no longer names is cleared, not left behind", () => {
@@ -130,7 +261,7 @@ describe("the working brush an editor holds", () => {
       range: [0, 1],
       mix: "multiply",
     })
-    expect(newModulator("scatter").mix).toBe("add")
+    expect(newModulator("scatter").mix).toBe("multiply")
     expect(newModulator("angle").mix).toBe("add")
     expect(newModulator("hue").mix).toBe("add")
     for (const target of ["size", "scatter", "angle", "hue", "flow"] as const)
@@ -191,5 +322,97 @@ describe("the working brush an editor holds", () => {
       expect(hardnessOf(featherOf(hardness))).toBeCloseTo(hardness, 6)
     // A brush from elsewhere may carry a softer edge than the slider spans.
     expect(hardnessOf(MAX_FEATHER * 4)).toBe(0)
+  })
+})
+
+describe("scatter and colour sections", () => {
+  test("a scatter that throws nothing is no scatter section at all", () => {
+    const scattered = editBrush(saved(), {
+      scatter: { amount: 2, count: 3, axes: "both" },
+    })
+    expect(scattered.scatter).toEqual({ amount: 2, count: 3, axes: "both" })
+    const undone = editBrush(scattered, {
+      scatter: { amount: 0, count: 1, axes: "across" },
+    })
+    expect("scatter" in undone).toBe(false)
+    expect(isBrushEdited(saved(), undone)).toBe(false)
+  })
+
+  test("unit colour scales are no colour section at all", () => {
+    const tinted = editBrush(saved(), {
+      color: { hue: 0.2, saturation: 1, lightness: 1 },
+    })
+    expect(tinted.color).toEqual({ hue: 0.2, saturation: 1, lightness: 1 })
+    const undone = editBrush(tinted, {
+      color: { hue: 1, saturation: 1, lightness: 1 },
+    })
+    expect("color" in undone).toBe(false)
+  })
+
+  test("both reach the engine", () => {
+    const brush = editBrush(saved(), {
+      scatter: { amount: 1, count: 2, axes: "across" },
+      color: { hue: 0.5, saturation: 0, lightness: 1 },
+    })
+    expect(brushCommand(brush)).toMatchObject({
+      scatter: { amount: 1, count: 2, axes: "across" },
+      color: { hue: 0.5, saturation: 0, lightness: 1 },
+    })
+  })
+})
+
+describe("scatter mappings from before scatter had an amount", () => {
+  const legacy = (mix: Modulator["mix"], range: [number, number]) =>
+    ({ source: "random", target: "scatter", mix, range }) as Modulator
+
+  test("are the offsets on a brush with nothing to scale", () => {
+    const brush = { ...saved(), dynamics: [legacy("add", [0, 2])] }
+    expect(legacyScatterMappings(brush)).toEqual([0])
+    // A multiply is the model as it is now, and an amount makes any mix live.
+    const scaled = { ...saved(), dynamics: [legacy("multiply", [0, 1])] }
+    expect(legacyScatterMappings(scaled)).toEqual([])
+    const live = {
+      ...brush,
+      scatter: { amount: 1, count: 1, axes: "across" as const },
+    }
+    expect(legacyScatterMappings(live)).toEqual([])
+  })
+
+  test("convert to an amount and scales that throw the dabs as far", () => {
+    const brush = {
+      ...saved(),
+      dynamics: [
+        {
+          ...legacy("add", [0, 2]),
+          curve: [
+            { x: 0, y: 0.5 },
+            { x: 1, y: 1 },
+          ],
+        },
+        legacy("replace", [1, 0.5]),
+        newModulator("size"),
+      ],
+    } as Brush
+    const converted = convertLegacyScatter(brush)
+    expect(converted.scatter).toEqual({ amount: 2, count: 1, axes: "across" })
+    expect(converted.dynamics[0]).toMatchObject({
+      mix: "multiply",
+      range: [0, 1],
+      curve: [
+        { x: 0, y: 0.5 },
+        { x: 1, y: 1 },
+      ],
+    })
+    expect(converted.dynamics[1]).toMatchObject({
+      mix: "replace",
+      range: [0.5, 0.25],
+    })
+    expect(converted.dynamics[2]).toEqual(newModulator("size"))
+    validateDynamics(converted.dynamics)
+    expect(legacyScatterMappings(converted)).toEqual([])
+  })
+
+  test("a brush with nothing to convert is returned as it was", () => {
+    expect(convertLegacyScatter(saved())).toEqual(saved())
   })
 })

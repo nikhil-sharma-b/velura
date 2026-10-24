@@ -6,6 +6,16 @@ const descriptions: Record<string, string> = {
   "builtin:round": "Soft paint · press for a fuller stroke",
   "builtin:airbrush": "Soft spray · overlapping passes build tone",
   "builtin:marker": "Chisel tip · broad strokes and narrow edges",
+  "builtin:oil-round": "Wet paint · press to cover, ease off to blend",
+  "builtin:oil-flat": "Wet bristles · broad strokes that turn with the hand",
+  "builtin:blender": "No paint · softens and drags what is there",
+  "builtin:dry-bristle": "Nearly dry · streaks colours into each other",
+  "builtin:watercolour-wash": "Wide and wet · colours feather where they meet",
+  "builtin:watercolour-detail": "Small and drier · lines that keep their edge",
+  "builtin:ink-wash": "Dark ink · press for black, ease off to grey",
+  "builtin:water": "Clean water · softens wet edges, blooms in a wash",
+  "builtin:tissue": "No paint · lifts a wet wash out, water and colour",
+  "builtin:thirsty-brush": "No paint · drinks the water, stops a wash running",
 }
 
 export function brushDescription(id: string): string {

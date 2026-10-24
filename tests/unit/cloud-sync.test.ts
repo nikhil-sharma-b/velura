@@ -30,7 +30,7 @@ function createFakeRemote() {
       return hashes.map((hash) => ({ hash, url: `https://r2.test/${hash}` }))
     },
     async presignPreviewUpload() {
-      return "https://r2.test/preview.png"
+      return { url: "https://r2.test/preview.png", key: "preview-key" }
     },
     async commitPreview() {},
     async commitFlush(payload) {
@@ -95,6 +95,99 @@ describe("flush", () => {
     ])
     expect(commits).toHaveLength(2)
     expect(sync.metrics()).toEqual({ putCount: 2, mutationCount: 4 })
+  })
+
+  test("hands the preview to the host as soon as it is made, and says which version it became", async () => {
+    const { remote, puts } = createFakeRemote()
+    remote.commitPreview = async () => 7
+    const seen: {
+      bytes: Uint8Array
+      committed: Promise<number | undefined>
+    }[] = []
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: [] }),
+      tiles: async (hash) => texelsFor(hash),
+      preview: async () => new Uint8Array([137, 80, 78, 71]),
+      onPreview: (preview) => seen.push(preview),
+      put: fakePut(puts, new Map()),
+    })
+
+    await sync.flush()
+
+    expect(seen).toHaveLength(1)
+    expect([...seen[0]!.bytes]).toEqual([137, 80, 78, 71])
+    expect(await seen[0]!.committed).toBe(7)
+  })
+
+  test("a preview whose flush fails is reported as never committed", async () => {
+    const { remote, puts } = createFakeRemote()
+    remote.commitFlush = async () => {
+      throw new Error("Simulated network outage.")
+    }
+    const seen: Promise<number | undefined>[] = []
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: [] }),
+      tiles: async (hash) => texelsFor(hash),
+      preview: async () => new Uint8Array([137, 80, 78, 71]),
+      onPreview: (preview) => seen.push(preview.committed),
+      put: fakePut(puts, new Map()),
+    })
+
+    await sync.flush()
+
+    expect(seen).toHaveLength(1)
+    await expect(seen[0]!).rejects.toThrow("Simulated network outage.")
+  })
+
+  test("says it is syncing the moment a flush starts, and not once it ends", async () => {
+    const { remote, puts } = createFakeRemote()
+    const seen: string[] = []
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: [] }),
+      tiles: async (hash) => texelsFor(hash),
+      put: fakePut(puts, new Map()),
+      onStatusChange: () => seen.push(sync.status()),
+    })
+
+    await sync.flush()
+
+    expect(seen[0]).toBe("syncing")
+    expect(seen.at(-1)).toBe("fully-synced")
+  })
+
+  test("names as removed only the tiles this device knew the document had", async () => {
+    const { remote, puts, commits } = createFakeRemote()
+    let doc = surfaces([
+      { surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" },
+      { surfaceId: "layer-1", x: 1, y: 0, hash: "hash-b" },
+    ])
+    const sync = createCloudSync({
+      remote,
+      snapshot: () => ({ structure: STRUCTURE, surfaces: doc }),
+      tiles: async (hash) => texelsFor(hash),
+      put: fakePut(puts, new Map()),
+    })
+    // What this device opened: its own two tiles. A tile another device
+    // wrote that this one never saw is not in here, and must never be
+    // named as removed by it.
+    sync.seedKnown(doc)
+
+    await sync.flush()
+    expect(commits.at(-1)!.removed).toEqual([])
+
+    // An erase back to nothing, or a restore to an earlier state.
+    doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])
+    await sync.flush()
+    expect(commits.at(-1)!.removed).toEqual([
+      { surfaceId: "layer-1", x: 1, y: 0 },
+    ])
+
+    // Once said, not said again.
+    await sync.flush()
+    expect(commits.at(-1)!.removed).toEqual([])
   })
 
   test("uploads a new hash once, then never again once the server knows it", async () => {

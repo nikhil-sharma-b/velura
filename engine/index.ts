@@ -1,10 +1,105 @@
+import {
+  BUILTIN_VECTOR_BRUSHES,
+  parseVectorBrush,
+  pencilShade,
+  type ArtBrush,
+  type VectorBrush,
+} from "./brush/vector-brush"
+import {
+  applyVectorBrush,
+  createTiltDirection,
+  createVelocityThinning,
+  makePatternBrush,
+  makeScatterBrush,
+  type PatternSource,
+} from "./doc/vector-brush"
+import {
+  selectTipFrame,
+  validateTipSelection,
+  type TipSelectionMode,
+} from "./brush/tip-sets"
+import {
+  createPressureFit,
+  MAX_TAPER,
+  type Taper,
+  nextNodeType,
+  type NodeType,
+  type BezierPath,
+  type PathNode,
+  type SegmentShape,
+  type PressurePoint,
+  type NodeEdit,
+} from "./doc/vector-path"
+import {
+  dragNodes,
+  editNode,
+  lockAxis,
+  moveNodes,
+  breakNodes,
+  deleteNodes,
+  deleteSegments,
+  insertNodes,
+  joinNodes,
+  joinableEnds,
+  nodeCommand,
+  segmentCommand,
+  isHandle,
+  pressNode,
+  retractHandle,
+  pruneNodes,
+  boxNodes,
+  allNodes,
+  stepNode,
+  transformNodes,
+  type NodeTransform,
+  type NodeClick,
+  type NodeGrab,
+  type VectorNode,
+  DOUBLE_CLICK_MS,
+} from "./doc/node-tool"
+import {
+  serializeSvg,
+  type SvgExportOptions,
+  type SvgExportResult,
+} from "./store/export-svg"
+import { svgPngImage } from "./store/svg-images"
+import {
+  objectEraser,
+  selectionStyle,
+  selectObjects,
+  type ShapeStyle,
+  objectsBounds,
+  objectBounds as vectorObjectBounds,
+  transformObjects,
+} from "./doc/vector-objects"
 import { eraserBrush, type EraserKind } from "./brush/eraser"
 import {
+  DEFAULT_SMUDGE,
+  isSmudge,
+  smudgeDabStrength,
+  smudgeSpacing,
+  type Smudge,
+} from "./brush/smudge"
+import {
   type Brush,
+  type BrushColor,
+  validateBrushColor,
   type BrushGrain,
+  type BrushWet,
+  validateBrushWet,
+  type BrushFluid,
+  type BrushBlot,
+  copyBrushBlot,
+  copyBrushFluid,
+  validateBrushBlot,
+  validateBrushFluid,
+  validateBrushMedium,
   brushSpacing,
   dabSpacing,
+  wetDabSpacing,
+  thrownScatter,
   cloneBrush,
+  isBlender,
   DEFAULT_BRUSH,
 } from "./brush/brush"
 import {
@@ -14,12 +109,19 @@ import {
   NEUTRAL_STAMP_PARAMS,
   type StampParams,
   validateDynamics,
+  type StampContext,
 } from "./brush/dynamics"
 import {
   type Accumulation,
   BRUSH_COLOR,
   BRUSH_FEATHER,
 } from "./brush/round-brush"
+import {
+  type BrushScatter,
+  createScatterPlacer,
+  MAX_SCATTER_COUNT,
+  validateScatter,
+} from "./brush/scatter"
 import { createStampContextTracker } from "./brush/stamp-context"
 import {
   BUILTIN_TEXTURE_IDS,
@@ -30,6 +132,7 @@ import {
   chooseOutputColorSpace,
   decodeTransfer,
   displayTransform,
+  encodeTransfer,
   type OutputColorSpace,
   srgbToWorking,
 } from "./color/display-transform"
@@ -39,10 +142,12 @@ import {
   addGroup,
   addLayer,
   addMask,
+  addVectorLayer,
   createDocument,
   createBlankDocument,
   duplicateLayer,
   findLayer,
+  findRasterLayer,
   type Layer,
   type LayerGroup,
   type LayerMask,
@@ -51,8 +156,11 @@ import {
   moveLayer,
   findNodeIn,
   groupContents,
-  rasterLayers,
+  leafLayers,
+  type LeafLayer,
+  type VectorLayer,
   makeLayerPaintable,
+  rasteriseLayer,
   type PaintDocument,
   planComposite,
   removeLayer,
@@ -70,11 +178,13 @@ import {
   DEFAULT_WARM_BYTES,
   type DocumentHistory,
   type OperationPixels,
+  type SurfaceTileIndex,
 } from "./doc/history"
 import { BACKGROUND, WORKSPACE_BACKGROUND } from "./doc/scene"
 import {
   adoptStrandedSurfaces,
   captureStructure,
+  parseSavedScenes,
   type DocumentStructure,
   type NodeStructure,
   restoreStructure,
@@ -83,9 +193,22 @@ import {
   structureSurfaceIds,
 } from "./doc/structure"
 import {
+  applySceneEdit,
+  MAX_POLYGON_POINTS,
+  type SceneChange,
+  type SceneCommand,
+  type VectorObject,
+  type VectorScene,
+  type VectorStyle,
+} from "./doc/vector-scene"
+import { tessellateObject, type Mesh } from "./geom/tessellate"
+import { createLiveStrokeMesh } from "./geom/live-stroke"
+import {
   centeredPlacement,
+  flippedPlacement,
   type ImagePlacement,
   placementBounds,
+  quadBounds,
   placementQuad,
   resolution,
   samePlacement,
@@ -100,14 +223,32 @@ import {
   type ImageSourceCodec,
   type OpenImage,
 } from "./doc/image-source"
-import { createOpfsSpill, createTileStore } from "./doc/tile-store"
+import {
+  createOpfsSpill,
+  createTileStore,
+  type TileWork,
+} from "./doc/tile-store"
+import { createTileWorker } from "./doc/tile-worker"
 import {
   intersectRect,
   type PixelRect,
   type TileCoord,
+  TILE_SIZE,
+  tileBounds,
   tileIndexForPixel,
+  tileKey,
+  tilesCoveringRect,
   unionRect,
 } from "./doc/tile-grid"
+import { decodeFloat16 } from "./doc/float16"
+import {
+  defaultFilter,
+  FILTER_LABELS,
+  isIdentityFilter,
+  normalizeFilter,
+  type Filter,
+  type FilterKind,
+} from "./filters/filter"
 import type { SurfaceTiles, TileRef } from "./store/document-store"
 import { type BlobStore, createLocalBlobStore } from "./store/blob-store"
 import { createDocumentStore, type DocumentStore } from "./store/document-store"
@@ -131,22 +272,86 @@ import {
 } from "./store/flush-scheduler"
 import { encodePreview } from "./store/preview"
 import { decodeVeluraFile, encodeVeluraFile } from "./store/velura-file"
+import {
+  affineFromPlacement,
+  affineQuad,
+  beginTransform,
+  type Affine,
+  type TransformSession,
+} from "./doc/transform-session"
+import {
+  layerStartPlacement,
+  coveredBounds,
+  liftsAnything,
+  type TileTexels,
+} from "./doc/layer-transform"
+import {
+  resolveSnap,
+  alignedPlacement,
+  placementExtent,
+  snapTargets,
+  type AlignAnchor,
+  type Extent,
+  type SnapTargets,
+} from "./doc/snap"
+import { DEFAULT_PAPER, PAPERS, type Paper } from "./doc/paper"
+import { FLAT_BOARD, normaliseBoard, sameBoard, type Board } from "./doc/board"
+import {
+  addGuide,
+  guideSnapTargets,
+  moveGuide,
+  removeGuide,
+  type Guide,
+  type GuideAxis,
+} from "./doc/guides"
 import { createStrokeResampler } from "./geom/path"
 import { createStabilizer } from "./geom/stabilizer"
+import {
+  assistLine,
+  createStrokeAssist,
+  type StraightEdge,
+} from "./geom/stroke-assist"
 import {
   createRenderer,
   MAX_STAMPS_PER_DRAW,
   type Renderer,
   type ThumbnailSubject,
+  type VectorDraw,
 } from "./gpu/renderer"
+import type { StrokeMark } from "./gpu/stroke-renderer"
 import { createThumbnailScheduler, thumbnailOwners } from "./view/thumbnails"
 import {
   createContentBounds,
   frameContent,
   tileBox,
 } from "./view/content-bounds"
+import {
+  MAX_SMUDGE_DABS_PER_DRAW,
+  SMUDGE,
+  SMUDGE_STRIDE,
+} from "./gpu/smudge-dab"
+import { createFluidClock } from "./gpu/fluid-clock"
 import { STAMP, STAMP_STRIDE } from "./gpu/stamp-instance"
+import { createWarmKeeper } from "./gpu/warm-keeper"
 import { attachPointerSampler } from "./input/pointer-sampler"
+import {
+  dragRect,
+  combineSelections,
+  ellipseSelection,
+  invertSelection,
+  featherSelection,
+  transformSelection,
+  lassoSelection,
+  translateSelection,
+  wandSelection,
+  type WandPixels,
+  type Point,
+  rectSelection,
+  sameSelection,
+  type SelectionMode,
+  selectAll,
+  type SelectionMask,
+} from "./doc/selection"
 import {
   DEFAULT_PRESSURE_CURVE,
   validatePressureCurve,
@@ -155,6 +360,7 @@ import type { Curve } from "./brush/curve"
 import { createSampleBuffer } from "./input/sample-buffer"
 import { attachViewGestures } from "./input/view-gestures"
 import { explainFailure, type ExplainedFailure } from "./errors"
+
 import {
   type CanvasView,
   DEFAULT_VIEW,
@@ -164,10 +370,22 @@ import {
   IDENTITY_MATRIX,
   panView,
   rotateView,
+  applyMatrix as applyViewMatrix,
+  invertMatrix as invertViewMatrix,
   screenToDoc,
   type ViewMatrix,
   zoomView,
 } from "./view/view-transform"
+import {
+  DEFAULT_RASTER_MAGNIFICATION,
+  RASTER_MAGNIFICATIONS,
+  type RasterMagnification,
+} from "./view/magnification"
+
+/** What a node edit's key says when there is nothing for it to do. */
+const CANNOT_INSERT = "Select both ends of a segment to insert a node in it."
+const CANNOT_BREAK =
+  "An open path's end node has nothing to break. Select a node inside the path."
 
 export {
   docToScreen,
@@ -176,17 +394,112 @@ export {
   MIN_ZOOM,
   type ViewMatrix,
 } from "./view/view-transform"
+export {
+  DEFAULT_RASTER_MAGNIFICATION,
+  RASTER_MAGNIFICATIONS,
+  type RasterMagnification,
+} from "./view/magnification"
 export { blendModes, type BlendMode } from "./shaders/blend-modes"
+export {
+  defaultFilter,
+  FILTER_LABELS,
+  MAX_BLUR_RADIUS,
+  type Filter,
+  type FilterKind,
+} from "./filters/filter"
+
+/**
+ * What may be sent with a filter open without closing it (18): the filter's
+ * own commands, and moving the view to look at the preview.
+ */
+const FILTER_PASSTHROUGH: ReadonlySet<EngineCommand["type"]> = new Set([
+  "previewFilter",
+  "applyFilter",
+  "cancelFilter",
+  "resize",
+  "panView",
+  "zoomView",
+  "rotateView",
+  "flipView",
+  "fitView",
+  "resetView",
+])
+
+/**
+ * What may be sent with paint wet and leave it wet (D42): settings, the
+ * view, how the layer is shown, and the commands that deal with wet paint
+ * themselves. Anything else needs the layer's pixels to be final, moves the
+ * active layer, or changes the selection that holds the paint in, and dries
+ * it first.
+ */
+const WET_PASSTHROUGH: ReadonlySet<EngineCommand["type"]> = new Set([
+  "initialize",
+  "resize",
+  "setStabilization",
+  "setTool",
+  "setPressureCurve",
+  "setTiltEnabled",
+  "setEraser",
+  "setSmudge",
+  "setColor",
+  "cleanBrush",
+  "setCleanBrushAfterStroke",
+  "setSampleAllLayers",
+  "setBrush",
+  "registerTexture",
+  "setVectorBrush",
+  "setVectorBrushPressure",
+  "setVectorEraser",
+  "setVectorBrushTaper",
+  "setSnapping",
+  "addGuide",
+  "moveGuide",
+  "removeGuide",
+  "clearGuides",
+  "setGuidesVisible",
+  "setBoard",
+  "setRulersVisible",
+  "setRasterMagnification",
+  "setStraightEdge",
+  "setLayer",
+  "setMaskEnabled",
+  "highlightLayer",
+  "panView",
+  "zoomView",
+  "rotateView",
+  "flipView",
+  "fitView",
+  "resetView",
+  "setWandOptions",
+  "abandonSelectionGesture",
+  "undo",
+  "redo",
+  "dryNow",
+  "setDryingPaused",
+  "advanceFluid",
+])
 export {
   encodeExportImage,
   type ImageExportOptions,
 } from "./store/export-image"
 export type {
   Brush,
+  BrushColor,
   BrushGrain,
   BrushShape,
   BrushRendering,
+  BrushWet,
+  BrushFluid,
 } from "./brush/brush"
+export {
+  BUILTIN_VECTOR_BRUSHES,
+  parseVectorBrush,
+  type ArtBrush,
+  type ArtBrushKind,
+  type VectorBrush,
+  type VectorBrushKind,
+} from "./brush/vector-brush"
+export type { BrushScatter, ScatterAxes } from "./brush/scatter"
 export {
   BUILTIN_BRUSHES,
   BUILTIN_BRUSH_PREFIX,
@@ -195,6 +508,16 @@ export {
   isBuiltinBrush,
 } from "./brush/presets"
 export type { Curve, CurvePoint } from "./brush/curve"
+export {
+  canBreak,
+  canJoin,
+  handlesShown,
+  selectedSegments,
+  type NodeTransform,
+  type VectorNode,
+} from "./doc/node-tool"
+export type { JoinMode, NodeType, SegmentShape } from "./doc/vector-path"
+export { MAX_TAPER, type Taper } from "./doc/vector-path"
 export {
   DEFAULT_PRESSURE_CURVE,
   DEFAULT_PRESSURE_PRESET,
@@ -218,6 +541,18 @@ const DEFAULT_CLOUD_IDLE_MS = 30_000
  * enough that the artist, looking over at the list, finds it already true.
  */
 const THUMBNAIL_QUIET_MS = 300
+
+/**
+ * Between the warmings of what a stroke draws into (live brushes 24). A
+ * texture went cold between one and two seconds unused where it was
+ * measured, so this is under the one.
+ */
+const WARM_INTERVAL_MS = 800
+/**
+ * How long after the pen was last over the canvas, or a frame last drew, the
+ * warming goes on: the pauses of someone painting, and not an open tab's.
+ */
+const WARM_LIFETIME_MS = 30_000
 /** Product canvas ceiling; a device may impose a lower texture limit. */
 const MAX_DOCUMENT_EDGE = 8192
 
@@ -235,8 +570,107 @@ export {
   scaledPlacement,
 } from "./doc/image-placement"
 export type { ImageAsset, ImageAssetRef, PlacedImage } from "./doc/image-source"
+export type { AlignAnchor, Extent, Snap, SnapTargets } from "./doc/snap"
+export { placementExtent, resolveSnap } from "./doc/snap"
+export type { Guide, GuideAxis } from "./doc/guides"
+export { DEFAULT_PAPER, PAPERS, type Paper } from "./doc/paper"
+export { FLAT_BOARD, boardDown, type Board } from "./doc/board"
+export { paperSwatch } from "./gpu/paper"
+export type { StraightEdge } from "./geom/stroke-assist"
+export type {
+  FillRule,
+  LineCap,
+  LineJoin,
+  SceneCommand,
+  VectorFill,
+  VectorGeometry,
+  VectorObject,
+  VectorScene,
+  VectorStroke,
+  VectorStyle,
+} from "./doc/vector-scene"
 
-export type PaintTool = "brush" | "eraser"
+/**
+ * Tools that work on a paint layer's pixels. The brush and the eraser lay a
+ * mark; smudge lays nothing and smears what the layer already holds.
+ */
+export type PaintTool = "brush" | "eraser" | "smudge"
+
+/** What the eraser takes on a vector layer: pixels, or objects whole. */
+export type VectorEraserMode = "pixel" | "object"
+/** Tools that draw out a selection (07) instead of making a mark. */
+const SELECTION_TOOLS = [
+  "rectSelect",
+  "ellipseSelect",
+  "lasso",
+  "polygonLasso",
+  "magicWand",
+  "moveSelection",
+] as const
+export type SelectionTool = (typeof SELECTION_TOOLS)[number]
+
+export type { SelectionMode }
+
+/**
+ * What the magic wand reads (10): the active layer's own pixels, or the
+ * picture as it is composited.
+ */
+export type WandSample = "layer" | "composite"
+export type WandOptions = Readonly<{
+  /** Levels, 0–255, a pixel may differ from the clicked one per channel. */
+  tolerance: number
+  sample: WandSample
+}>
+export const DEFAULT_WAND: WandOptions = Object.freeze({
+  tolerance: 32,
+  sample: "layer",
+})
+
+export const isSelectionTool = (tool: Tool): tool is SelectionTool =>
+  (SELECTION_TOOLS as readonly Tool[]).includes(tool)
+
+/** Tools that draw shapes onto a vector layer (19) instead of paint. */
+const VECTOR_TOOLS = [
+  "rectangle",
+  "ellipse",
+  "line",
+  "polygon",
+  "objectSelect",
+  "pen",
+  "node",
+  "pressure",
+] as const
+export type VectorTool = (typeof VECTOR_TOOLS)[number]
+export const isVectorTool = (tool: Tool): tool is VectorTool =>
+  (VECTOR_TOOLS as readonly Tool[]).includes(tool)
+
+export type Tool = PaintTool | SelectionTool | VectorTool
+
+export type { ShapeStyle }
+
+/** The tools whose marks are lines: outlined whatever the style, never filled. */
+export const drawsOutlineOnly = (tool: Tool) =>
+  tool === "line" || tool === "pressure"
+
+/** What a new shape from this tool is given: the style, as the tool can take it. */
+export function toolShapeStyle(tool: Tool, style: ShapeStyle): ShapeStyle {
+  if (!drawsOutlineOnly(tool) || (style.stroke && !style.fill)) return style
+  return Object.freeze({ ...style, fill: false, stroke: true })
+}
+
+const sameShapeStyle = (a: ShapeStyle, b: ShapeStyle) =>
+  (Object.keys(a) as (keyof ShapeStyle)[]).every((key) => a[key] === b[key])
+
+export const DEFAULT_SHAPE_STYLE: ShapeStyle = Object.freeze({
+  fill: true,
+  stroke: false,
+  strokeWidth: 4,
+  strokeCap: "butt",
+  strokeJoin: "miter",
+  fillColor: null,
+  strokeColor: null,
+  opacity: 1,
+})
 
 /** Display-encoded colour sampled from the composited canvas. */
 export type EngineColor = Readonly<{
@@ -264,12 +698,31 @@ const SAMPLE_CAPACITY = 512
 /** Fresh strokes follow the hand directly until the artist asks for smoothing. */
 export const DEFAULT_STABILIZATION = 0
 
+/**
+ * The finest a vector's curves are cut, in pieces per document pixel's
+ * tolerance: the most zoom and a dense display ask of them.
+ */
+const MAX_VECTOR_DETAIL = 256
+
+/** How near a guide, in CSS pixels, a stroke opens to be held to it (17). */
+const GUIDE_STROKE_REACH = 8
+/** How far, in CSS pixels on screen, a freehand stroke's fit may stray from the hand. */
+const FIT_SCREEN_TOLERANCE = 2
+/**
+ * The vector brush's stroke while the pen is down: a thin line along the
+ * samples, as Inkscape's pencil sketches, the stroke itself put down as the
+ * pen lifts — so it appears once, as fitted, rather than shifting into place.
+ */
+const SKETCH_COLOR = "#2f7cf6"
+/** How wide, in CSS pixels on screen, the sketch line is. */
+const SKETCH_WIDTH = 1.5
+
 export type EngineCommand =
   | { type: "initialize" }
   | { type: "resize"; width: number; height: number; devicePixelRatio: number }
   /** Stabilizer strength in [0, 1]; zero restores the raw unfiltered path. */
   | { type: "setStabilization"; strength: number }
-  | { type: "setTool"; tool: PaintTool }
+  | { type: "setTool"; tool: Tool }
   /**
    * The artist's pen response curve, applied to every force reading before a
    * brush sees it. Null restores the default. See `engine/input/pressure-curve`
@@ -285,12 +738,20 @@ export type EngineCommand =
   | { type: "setTiltEnabled"; enabled: boolean }
   | { type: "setEraser"; kind?: EraserKind; radius?: number; opacity?: number }
   /**
+   * The smudge tool's own size and strength (smudge 02), apart from the
+   * brush's. Unnamed ones are left alone.
+   */
+  | { type: "setSmudge"; radius?: number; strength?: number }
+  /**
    * The ink, as authored sRGB hex. Hex rather than the working space because
    * that is the one colour notation the artist can also type, and the picker
    * (`features/color`) already owns the perceptual space above it — the engine
    * only needs the one conversion into linear light.
    */
   | { type: "setColor"; hex: string }
+  | { type: "cleanBrush" }
+  | { type: "setCleanBrushAfterStroke"; enabled: boolean }
+  | { type: "setSampleAllLayers"; enabled: boolean }
   /**
    * The brush. Every field is optional and unnamed ones are left alone, so a
    * control that owns one property need not know the rest of the brush.
@@ -321,8 +782,29 @@ export type EngineCommand =
        * which is what makes the round brush reachable again from a textured one.
        */
       tipTextureId?: string | null
+      tipSelection?: TipSelectionMode | null
+      /** Colour jitter amplitudes. Null restores unit scales. */
+      color?: BrushColor | null
       /** The paper, by texture id, with its scale and depth. Null is smooth. */
       grain?: BrushGrain | null
+      /** Dabs thrown off the path, and how many. Null lays one, on it. */
+      scatter?: BrushScatter | null
+      /**
+       * Makes the brush wet, with how much it picks up (D41). Null dries it:
+       * it draws through the stroke buffer again.
+       */
+      wet?: BrushWet | null
+      /**
+       * Makes the brush fluid (D42): its paint goes into the layer's wet
+       * surface. Null takes that away. Never beside `wet`.
+       */
+      fluid?: BrushFluid | null
+      /**
+       * Makes the brush a blot (fluid brushes 17): it lays nothing and takes
+       * water and pigment out of the wet surface. Null takes that away.
+       * Never beside `wet` or `fluid`.
+       */
+      blot?: BrushBlot | null
       /** Replaces the dynamics graph outright; see `evaluateDynamics`. */
       dynamics?: Modulator[]
     }
@@ -334,6 +816,105 @@ export type EngineCommand =
   | { type: "registerTexture"; id: string; texture: GrayscaleTexture }
   /** Adds an empty layer above the active one and selects it. */
   | { type: "addLayer" }
+  /**
+   * Adds an empty vector layer above the active one and selects it (19): a
+   * layer of shapes that stay editable and are drawn from their geometry
+   * every time they change, composited like any other layer.
+   */
+  | { type: "addVectorLayer" }
+  /**
+   * Edits a vector layer's objects (19): the commands in order, as one undo
+   * step. What the shape tools send when a drag ends, and the seam everything
+   * that edits objects later goes through.
+   */
+  | { type: "selectVectorObjects"; ids: readonly string[] }
+  | { type: "selectVectorRegion"; region: Point | Extent; additive?: boolean }
+  | { type: "deleteVectorObjects" }
+  | { type: "duplicateVectorObjects" }
+  | { type: "reorderVectorObjects"; to: "front" | "back" }
+  | { type: "beginVectorTransform" }
+  | { type: "adjustVectorTransform"; matrix: Affine; snap?: boolean }
+  | { type: "adjustVectorPlacement"; placement: ImagePlacement }
+  | { type: "commitVectorTransform" }
+  | { type: "cancelVectorTransform" }
+  | {
+      type: "alignVectorObjects"
+      anchor: AlignAnchor
+      to: "canvas" | "selection"
+    }
+  | { type: "finishPenPath" }
+  /** Closes the polygon being clicked out, if it has three corners yet. */
+  | { type: "closePolygon" }
+  | { type: "editVectorNode"; objectId: string; edit: NodeEdit }
+  /**
+   * Deletes the selected nodes, refitting the curve around them to keep its
+   * shape unless `refit` is false (Delete, Ctrl+Delete). A path left with
+   * fewer than two nodes goes.
+   */
+  | { type: "deleteVectorNode"; refit?: boolean }
+  /** Adds a node at the middle of every selected segment (Insert). */
+  | { type: "insertVectorNodes" }
+  /**
+   * Breaks every path at its selected nodes (Shift+B): a closed path opens,
+   * an open one parts into paths of its own.
+   */
+  | { type: "breakVectorNodes" }
+  /**
+   * Joins the two selected ends of open paths (Shift+J), merged into one
+   * node or, with `segment`, linked by a straight segment (Alt+J).
+   */
+  | { type: "joinVectorNodes"; segment?: boolean }
+  /** Deletes every selected segment, opening or parting its path (Alt+Delete). */
+  | { type: "deleteVectorSegments" }
+  /** Makes every selected segment straight, or bendable (Shift+L, Shift+U). */
+  | { type: "setVectorSegmentShape"; shape: SegmentShape }
+  /** Makes every selected node cusp, smooth, symmetric or auto-smooth. */
+  | { type: "setVectorNodeType"; nodeType: NodeType }
+  /** Selects the one node after or before the last selected (Tab). */
+  | { type: "stepVectorNode"; direction: 1 | -1 }
+  /**
+   * Moves the selected nodes by a document offset (arrow keys). A `repeat`
+   * — the key held — joins the nudge before it as one undo step.
+   */
+  | { type: "nudgeVectorNodes"; dx: number; dy: number; repeat?: boolean }
+  /**
+   * Scales, turns or flips the selected nodes about their centre, or one
+   * node's handles about it (`<` `>` `[` `]` `H` `V`). A `repeat` joins the
+   * step before it as one undo step.
+   */
+  | {
+      type: "transformVectorNodes"
+      transform: NodeTransform
+      repeat?: boolean
+    }
+  | { type: "editVectorLayer"; id: string; commands: readonly SceneCommand[] }
+  /**
+   * Turns a vector layer into a paint layer holding exactly what it showed
+   * (20), as one undo step. The shapes stop being shapes: undo is the way
+   * back to them.
+   */
+  | { type: "rasteriseLayer"; id: string }
+  /** Whether the vector brush follows the pen's pressure or keeps full width. */
+  | { type: "setVectorBrush"; brush: VectorBrush }
+  | { type: "applyVectorBrush"; brush: VectorBrush }
+  | { type: "setVectorBrushPressure"; pressure: boolean }
+  /** Whether the eraser on a vector layer takes pixels or whole objects. */
+  | { type: "setVectorEraser"; mode: VectorEraserMode }
+  /** How much of a solid vector brush stroke narrows to each tip; unnamed ends are kept. */
+  | { type: "setVectorBrushTaper"; start?: number; end?: number }
+  /** How the shape tools draw what comes next; unnamed fields are kept. */
+  | {
+      type: "setShapeStyle"
+      fill?: boolean
+      stroke?: boolean
+      strokeWidth?: number
+      strokeCap?: ShapeStyle["strokeCap"]
+      strokeJoin?: ShapeStyle["strokeJoin"]
+      fillColor?: string
+      strokeColor?: string
+      /** The fill's opacity and the outline's, set together, in [0, 1]. */
+      opacity?: number
+    }
   /**
    * Brings an image in on a layer of its own, above the active one, and
    * selects it (D3): a photographed reference, a scan to trace, a plate to
@@ -373,8 +954,26 @@ export type EngineCommand =
   | { type: "duplicateLayer"; id: string }
   /** Removes a layer. The document always keeps at least one. */
   | { type: "removeLayer"; id: string }
+  /**
+   * Empties a paintable layer's pixels. The layer itself — its name, blend,
+   * mask and place in the tree — stays, and the emptying is one undo step.
+   */
+  | { type: "clearLayer"; id: string }
   /** Starts a blank artwork at the current document size. */
   | { type: "clearDocument" }
+  /**
+   * Filters (18): hue/saturation, brightness/contrast and Gaussian blur on a
+   * paintable layer's own pixels, in linear light. `beginFilter` keeps the
+   * pixels as they are; each `previewFilter` redraws them from that, at its
+   * settings and within the selection, feather and all; `applyFilter` makes
+   * the last preview one undo step and `cancelFilter` puts every pixel back.
+   * Anything else sent while a filter is open cancels it first, except
+   * moving the view.
+   */
+  | { type: "beginFilter"; id: string; kind: FilterKind }
+  | { type: "previewFilter"; filter: Filter }
+  | { type: "applyFilter" }
+  | { type: "cancelFilter" }
   /** Chooses where the pen paints, which is what the caches are built around. */
   | { type: "selectLayer"; id: string }
   /** Moves a layer to a position in the stack, counted from the bottom. */
@@ -414,6 +1013,78 @@ export type EngineCommand =
   | { type: "commitImageTransform" }
   /** Ends the transform, putting the picture back where it was picked up. */
   | { type: "cancelImageTransform" }
+  /**
+   * Picks a painted layer up to be moved, scaled, turned or mirrored (13).
+   *
+   * The layer's pixels are snapshotted on the GPU as it is picked up — the
+   * tight box round them — and every `adjustLayerTransform` after that is
+   * drawn from the snapshot, never from the last preview, so a dozen
+   * adjustments are as sharp as one. `commitLayerTransform` resamples once
+   * and records one step; `cancelLayerTransform` puts the pixels back
+   * texel for texel. A placed image has its own original to go back to and
+   * is moved with `beginImageTransform` instead; a group has no pixels.
+   * The mask stays put, for the reason a placed image's does.
+   */
+  | { type: "beginLayerTransform"; id: string }
+  /** Where the layer's content sits as of this moment of the drag. */
+  | { type: "adjustLayerTransform"; placement: ImagePlacement }
+  | { type: "commitLayerTransform" }
+  | { type: "cancelLayerTransform" }
+  /**
+   * Mirrors a layer's content in place, as one step: a picked-up placed
+   * image or painted layer is flipped within its transform instead.
+   */
+  | { type: "flipLayer"; id: string; axis: "horizontal" | "vertical" }
+  /**
+   * Lines a layer's content up with the canvas or the selection (15), along
+   * one axis, as one step — or, mid-transform, as one more adjustment of it.
+   * Against the canvas with a selection, only a painted layer's selected
+   * pixels move; a placed image, and anything aligned against the
+   * selection, moves whole.
+   */
+  | {
+      type: "alignLayer"
+      id: string
+      anchor: AlignAnchor
+      to: "canvas" | "selection"
+    }
+  /** Whether transform drags snap to edges, centres and other content (15). */
+  | { type: "setSnapping"; enabled: boolean }
+  /**
+   * Guides (16): lines in document pixels, `x` a vertical line and `y` a
+   * horizontal one. Laying one down, moving it and taking it away are each
+   * one step, saved with the document.
+   */
+  | { type: "addGuide"; axis: GuideAxis; position: number }
+  | { type: "moveGuide"; id: string; position: number }
+  | { type: "removeGuide"; id: string }
+  | { type: "clearGuides" }
+  /** Hides guides without deleting them; hidden guides are not snapped to. */
+  | { type: "setGuidesVisible"; visible: boolean }
+  /**
+   * The paper the document's fluid brushes paint on (fluid brushes 15): one
+   * step that undoes. Wet paint dries first.
+   */
+  | { type: "setPaper"; paper: Paper }
+  /**
+   * The board the document's paper lies on (fluid brushes 38): steepness in
+   * [0, 1], 0 flat, and down in degrees clockwise from the paper's bottom
+   * edge. One step that undoes. Wet paint does not dry for it: it runs the
+   * new way from the next step, and undo puts the board back, not the paint.
+   */
+  | { type: "setBoard"; steepness: number; direction: number }
+  /** Whether the rulers are shown along the canvas's edges (16). */
+  | { type: "setRulersVisible"; visible: boolean }
+  /**
+   * How raster layers look magnified on screen (sharp-zoom 03): hard-edged
+   * pixels past 200%, or filtered at every zoom. Never what export reads.
+   */
+  | { type: "setRasterMagnification"; mode: RasterMagnification }
+  /**
+   * Stroke assist (17): a straight-edge in document pixels, angle in radians,
+   * that every stroke, brush or eraser, is held to; null takes it away.
+   */
+  | { type: "setStraightEdge"; edge: StraightEdge | null }
   /**
    * A layer's own settings. Every field is optional and unnamed ones are left
    * alone, so a control that owns one property need not know the rest.
@@ -455,8 +1126,76 @@ export type EngineCommand =
    * a stroke clears it.
    */
   | { type: "highlightLayer"; id: string | null }
+  /**
+   * Replaces the selection (07) with a shape in document pixels: a rectangle
+   * snapped to whole pixels, or the ellipse inscribed in one. What the
+   * selection tools commit when a drag ends; one undo step. `mode` (09)
+   * says how it meets the selection already there, replacing it by default.
+   */
+  | {
+      type: "selectShape"
+      shape: "rect" | "ellipse"
+      x: number
+      y: number
+      width: number
+      height: number
+      mode?: SelectionMode
+    }
+  /**
+   * The closed outline through `points`, in document pixels, as the lasso
+   * tools commit it (09); combined with the selection as `mode` says.
+   */
+  | {
+      type: "selectLasso"
+      points: readonly Point[]
+      mode?: SelectionMode
+    }
+  /**
+   * The magic wand's click (10), in document pixels: the region of similar
+   * colour joined to that point, read as the wand's options say, combined
+   * with the selection as `mode` says. Asynchronous — the pixels are read
+   * back off the GPU once, for this click (D30).
+   */
+  | { type: "selectWand"; x: number; y: number; mode?: SelectionMode }
+  | { type: "setWandOptions"; tolerance?: number; sample?: WandSample }
+  | { type: "selectAll" }
+  | { type: "deselect" }
+  /**
+   * Drops a selection outline still being drawn — above all a polygon
+   * between clicks — leaving the selection as it was. Nothing to drop, it
+   * does nothing.
+   */
+  | { type: "abandonSelectionGesture" }
+  /** Selects what was not selected; with nothing selected, everything. */
+  | { type: "invertSelection" }
+  /**
+   * Softens the selection's edges over `radius` document pixels (11), so
+   * painting fades out across the boundary rather than stopping at it.
+   */
+  | { type: "featherSelection"; radius: number }
+  /** Moves the selection outline by whole pixels, the pixels left alone (11). */
+  | { type: "moveSelection"; dx: number; dy: number }
+  /**
+   * Copies what the selection covers of the active layer into a new layer
+   * above it, in place (11); soft coverage copies partly.
+   */
+  | { type: "copySelectionToLayer" }
   | { type: "undo" }
   | { type: "redo" }
+  /** Settles everything wet into its layer at once (D42). */
+  | { type: "dryNow" }
+  /**
+   * Pauses drying, or lets it go on (fluid brushes 18). Paused, nothing
+   * evaporates, and a body whose time has come holds, wet and still, until a
+   * dab lands in it; let go, every body dries from where it is.
+   */
+  | { type: "setDryingPaused"; paused: boolean }
+  /**
+   * Runs the fluid simulation on by a whole number of steps (D42), whatever
+   * the clock: paint moves, and a body whose time has come settles, or with
+   * drying paused holds.
+   */
+  | { type: "advanceFluid"; steps: number }
 
 export type EngineSnapshot = Readonly<{
   status:
@@ -479,13 +1218,62 @@ export type EngineSnapshot = Readonly<{
   pressureCurve: Curve
   /** Whether pen tilt reaches the dynamics graph. */
   tiltEnabled: boolean
-  /** The persistent mark-making tool; Alt/Option sampling never changes it. */
-  tool: PaintTool
+  /** Whether transform drags snap (15); a host may suspend it per drag. */
+  snapping: boolean
+  /** The document's guides (16); part of the document, so undo restores them. */
+  guides: readonly Guide[]
+  /** Session view state (16): whether guides are drawn and snapped to. */
+  guidesVisible: boolean
+  /** The document's paper (fluid brushes 15); undo restores it too. */
+  paper: Paper
+  /** The board the paper lies on (fluid brushes 38); undo restores it too. */
+  board: Board
+  rulersVisible: boolean
+  rasterMagnification: RasterMagnification
+  /** The straight-edge strokes are held to (17), if one is placed. */
+  straightEdge: StraightEdge | null
+  /** The persistent tool in the hand; Alt/Option sampling never changes it. */
+  tool: Tool
+  /** What the shape tools give a new shape (19). */
+  shapeStyle: ShapeStyle
+  /** The vector brush currently in the hand. */
+  vectorBrush: VectorBrush
+  /** Whether the vector brush's width follows pressure; off, it is solid. */
+  vectorBrushPressure: boolean
+  /** The solid vector brush's tapers, as shares of a stroke's length. */
+  vectorBrushTaper: Taper
+  /**
+   * What the eraser takes on a vector layer: the pixels under its tip, as a
+   * mark kept in the scene, or every object it touches, whole.
+   */
+  vectorEraser: VectorEraserMode
+  /**
+   * The selected objects' own style, which the shape options show and edit
+   * in place of `shapeStyle` while there is one; null with none selected.
+   */
+  selectionStyle: ShapeStyle | null
+  vectorSelection: readonly string[]
+  vectorPaths: readonly VectorObject[]
+  penNodes: readonly PathNode[]
+  /** The nodes selected with the node tool, on the paths being edited. */
+  vectorNodes: readonly VectorNode[]
+  /** A node handle is held by the node tool, for the hint's modifiers. */
+  vectorHandleHeld: boolean
+  vectorSelectionBounds: Extent | null
+  vectorTransform: {
+    placement: ImagePlacement
+    snapTargets: SnapTargets
+  } | null
   /** Current display-encoded ink, updated by the eyedropper. */
   color: EngineColor
   /** The brush in the hand: serialisable data, never code (D23). */
   brush: Brush
+  sampleAllLayers: boolean
+  cleanBrushAfterStroke: boolean
+  brushDirty: boolean
   eraser: Brush
+  /** The smudge tool's own size and strength; its tip's shape is the brush's. */
+  smudge: Smudge
   /**
    * Every texture id a brush may name (D24): the built-ins, plus whatever has
    * been imported. The editor offers these, so a brush cannot be pointed at a
@@ -508,9 +1296,29 @@ export type EngineSnapshot = Readonly<{
    * picture never held, which the box says out loud rather than pretending.
    */
   imageTransform: ImageTransformState | null
+  /**
+   * The painted layer being transformed, if one is (13): its content box as
+   * a placement, and the size of the snapshot it is drawn from.
+   */
+  layerTransform: LayerTransformState | null
+  /** The filter open on a layer, at the settings last previewed (18). */
+  filter: { layerId: string; filter: Filter } | null
+  /**
+   * The document's selection (07), or null when nothing is selected. It
+   * belongs to the document, not a layer, so it stays as layers are switched.
+   */
+  selection: SelectionSummary | null
+  wand: WandOptions
   /** Whether there is a step to take back, and one to put back (D21). */
   canUndo: boolean
   canRedo: boolean
+  /** Whether any paint is wet (D42). */
+  wet: boolean
+  /**
+   * Whether drying is paused (fluid brushes 18): session state, off whenever
+   * a document opens, and never stored.
+   */
+  dryingPaused: boolean
   error: string | null
   /** A non-fatal durability/sync problem with an explicit next action. */
   problem: ExplainedFailure | null
@@ -529,6 +1337,11 @@ export type EngineSnapshot = Readonly<{
   loading: boolean
 }>
 
+export type SelectionSummary = Readonly<{
+  /** The smallest rectangle holding every selected pixel. */
+  bounds: PixelRect
+}>
+
 export type ImageTransformState = Readonly<{
   layerId: string
   placement: ImagePlacement
@@ -536,11 +1349,31 @@ export type ImageTransformState = Readonly<{
   source: Readonly<{ width: number; height: number }>
   /** Drawn pixels per source pixel; 1 is the size the picture was recorded at. */
   resolution: number
+  /** What a drag of it may snap to, found as it was picked up (15). */
+  snapTargets: SnapTargets
+}>
+
+export type LayerTransformState = Readonly<{
+  layerId: string
+  /**
+   * Only the selected pixels were picked up (14): the handles are on the
+   * selection, and the outline goes with the pixels when put down.
+   */
+  lifted: boolean
+  placement: ImagePlacement
+  /** The snapshot's size: the layer's content box as it was picked up. */
+  source: Readonly<{ width: number; height: number }>
+  /** What a drag of it may snap to, found as it was picked up (15). */
+  snapTargets: SnapTargets
 }>
 
 export type MaskSummary = Readonly<Omit<LayerMask, "surface">>
 export type RasterLayerSummary = Readonly<
   Omit<Layer, "surface" | "mask"> & { mask?: MaskSummary }
+>
+/** A vector layer without its objects, but with how many it holds. */
+export type VectorLayerSummary = Readonly<
+  Omit<VectorLayer, "scene" | "mask"> & { mask?: MaskSummary; objects: number }
 >
 export type GroupSummary = Readonly<
   Omit<LayerGroup, "children" | "mask"> & {
@@ -549,7 +1382,10 @@ export type GroupSummary = Readonly<
   }
 >
 /** The recursive tree as the UI sees it: settings, never pixels. */
-export type LayerSummary = RasterLayerSummary | GroupSummary
+export type LayerSummary =
+  | RasterLayerSummary
+  | VectorLayerSummary
+  | GroupSummary
 
 /**
  * What a host shows before an engine exists. Exported so the React host and
@@ -563,7 +1399,28 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   stabilization: DEFAULT_STABILIZATION,
   pressureCurve: DEFAULT_PRESSURE_CURVE,
   tiltEnabled: true,
+  snapping: true,
+  guides: Object.freeze([]),
+  guidesVisible: true,
+  paper: DEFAULT_PAPER,
+  board: FLAT_BOARD,
+  rulersVisible: false,
+  rasterMagnification: DEFAULT_RASTER_MAGNIFICATION,
+  straightEdge: null,
   tool: "brush",
+  shapeStyle: DEFAULT_SHAPE_STYLE,
+  vectorBrush: BUILTIN_VECTOR_BRUSHES[1],
+  vectorBrushPressure: true,
+  vectorBrushTaper: { start: 0, end: 0 },
+  vectorEraser: "pixel",
+  selectionStyle: null,
+  vectorSelection: [],
+  vectorPaths: [],
+  penNodes: [],
+  vectorNodes: [],
+  vectorHandleHeld: false,
+  vectorSelectionBounds: null,
+  vectorTransform: null,
   color: Object.freeze({
     red: 36 / 255,
     green: 37 / 255,
@@ -573,7 +1430,11 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
     hex: "#242526",
   }),
   brush: Object.freeze(cloneBrush(DEFAULT_BRUSH)),
+  sampleAllLayers: false,
+  cleanBrushAfterStroke: true,
+  brushDirty: false,
   eraser: Object.freeze(eraserBrush()),
+  smudge: DEFAULT_SMUDGE,
   textures: BUILTIN_TEXTURE_IDS,
   // A host that has not started an engine has no document to describe.
   layers: Object.freeze([]),
@@ -581,8 +1442,14 @@ export const INITIAL_SNAPSHOT: EngineSnapshot = Object.freeze({
   paintingMask: false,
   view: DEFAULT_VIEW,
   imageTransform: null,
+  layerTransform: null,
+  filter: null,
+  selection: null,
+  wand: DEFAULT_WAND,
   canUndo: false,
   canRedo: false,
+  wet: false,
+  dryingPaused: false,
   error: null,
   problem: null,
   syncStatus: null,
@@ -619,16 +1486,55 @@ export type FrameTiming = {
   latencyMs: number | null
 }
 
+/** One frame of the fluid simulation's clock (D42), as it decided it. */
+export type FluidTick = {
+  /** The frame callback's timestamp, on the page's clock. */
+  start: number
+  /** Steps the frame ran. */
+  steps: number
+  /** Steps the frame was owed and its budget could not pay for. */
+  skipped: number
+  /** Wet tiles the steps ran over. */
+  tiles: number
+  /** What the clock reckoned one step over those tiles would cost, in ms. */
+  stepMs: number
+}
+
 export interface Engine {
   dispatch(command: EngineCommand): Promise<void>
   getSnapshot(): EngineSnapshot
   subscribe(listener: () => void): () => void
   /** Explicit asynchronous readback for tests and future export; never per frame. */
   readPixels(): Promise<RenderedPixels>
+  /** Authored vectors and named layers, with optional raster PNGs and fidelity warnings. */
+  exportSvg(options: SvgExportOptions): Promise<SvgExportResult>
+  /**
+   * A pattern brush made of the selected vector objects, not yet saved;
+   * `source` picks out its caps and spine axis.
+   */
+  patternBrushFromSelection(source?: PatternSource): ArtBrush<"pattern">
+  /** A scatter brush made of the selected vector objects, not yet saved. */
+  scatterBrushFromSelection(): ArtBrush<"scatter">
   /** A real ZIP backup containing the complete layer tree and every exact tile. */
   exportDocument(): Promise<Uint8Array>
   /** Validates a backup in full before replacing the open document. */
   importDocument(bytes: Uint8Array): Promise<void>
+  /**
+   * The selection (07) as coverage, one byte per document pixel, read back
+   * from the GPU; null while nothing is selected. Explicit and asynchronous,
+   * like `readPixels`.
+   */
+  readSelection(): Promise<{
+    width: number
+    height: number
+    data: Uint8Array
+  } | null>
+  /**
+   * All the water standing in the wet paint, read back from the GPU: for
+   * tests that the simulation makes and loses none (fluid brushes 38).
+   * Explicit and asynchronous, like `readPixels`.
+   */
+  readWetWater(): Promise<number>
   /** Samples one composited canvas pixel and makes it the current ink. */
   sampleColor(x: number, y: number): Promise<EngineColor>
   /**
@@ -636,7 +1542,26 @@ export interface Engine {
    * detaches. Attaching one adds a promise per frame, so it is off by default
    * and never on in the product.
    */
+  /** Live path controls bypass React snapshots during gestures. */
+  observeVectorControls(
+    observer: (
+      objects: readonly VectorObject[],
+      penNodes: readonly PathNode[]
+    ) => void
+  ): () => void
   observeFrames(observer: ((frame: FrameTiming) => void) | null): void
+  /**
+   * Called with each frame of the fluid simulation's clock, or null to stop:
+   * how many steps it ran and skipped (fluid brushes 13). For the benchmark
+   * and tests.
+   */
+  observeFluid(observer: ((tick: FluidTick) => void) | null): void
+  /**
+   * Whether paint is wet under a point of the canvas, in its backing pixels
+   * as the pen reports them, on what a stroke there would paint: what a blot
+   * brush could take from (fluid brushes 17). Read a tile at a time.
+   */
+  wetUnder(x: number, y: number): boolean
   /**
    * What the session's history is holding: how many steps it can take back, the
    * logical bytes of the tiles behind them, and how much of that is in memory
@@ -644,6 +1569,10 @@ export interface Engine {
    */
   historyUsage(): {
     steps: number
+    /** How many of those steps are fluid strokes whose paint is still wet. */
+    wetSteps: number
+    /** GPU memory the wet strokes' copies of the wet fields take (D42). */
+    wetBytes: number
     heldBytes: number
     residentBytes: number
     spilledBytes: number
@@ -652,7 +1581,10 @@ export interface Engine {
    * Writes the document to local storage now, and — where `cloud` is
    * configured — flushes it to R2 too, and waits for both. Strokes already
    * save themselves; this is for a host that wants the tab-hide or explicit
-   * save to be a promise it can await. A no-op with no persistence configured.
+   * save to be a promise it can await. A no-op with no persistence configured,
+   * and with a version preview on trial (see `keepRestore`). While tiles are
+   * still loading it saves locally only and owes the flush, sent once they
+   * are all in: a flush then would send a document missing them.
    */
   save(): Promise<void>
   /**
@@ -674,6 +1606,13 @@ export interface Engine {
    * state is part of their work, unpicked with undo like anything else.
    */
   canRevertRestore(): boolean
+  /**
+   * Keeps the restore in hand: until this is called it is only on trial,
+   * saved neither to this device nor to the cloud, so a tab that closes
+   * mid-preview reopens on the document as it was. Saves at once, and says
+   * whether that save reached the cloud as well as this device.
+   */
+  keepRestore(): Promise<{ synced: boolean }>
   /**
    * Takes back the last restore, where it is still the top step. This is what
    * makes looking at an old state safe: the caller does not have to know how
@@ -720,6 +1659,8 @@ function validateGrain(grain: BrushGrain): void {
  */
 export type HistoryBudget = {
   budgetBytes?: number
+  /** GPU memory for the copies fluid strokes take of wet paint (D42). */
+  wetBudgetBytes?: number
   hotBytes?: number
   warmBytes?: number
 }
@@ -748,6 +1689,13 @@ export type CloudOptions = {
   /** Idle time after a commit before an unforced flush fires. Default 30s. */
   idleMs?: number
   onError?: (error: unknown) => void
+  /** Each change of sync status, including those after the engine is disposed. */
+  onSyncStatus?: (status: SyncStatus) => void
+  /** Each library preview as soon as it is encoded (see `createCloudSync`). */
+  onPreview?: (preview: {
+    bytes: Uint8Array
+    committed: Promise<number | undefined>
+  }) => void
 }
 
 /** Canvas attachment is a lifecycle operation; commands contain only values. */
@@ -771,9 +1719,33 @@ export function createEngine(
      * engine's half can be exercised without a decoder.
      */
     imageCodec?: ImageSourceCodec
+    /**
+     * Pixels for a texture id this engine has never been given — a shipped
+     * texture fetched the first time a brush names it, rather than every one
+     * of them at startup (brush library 01). Undefined for an id the host
+     * does not know either, which a brush naming it is then refused for.
+     */
+    resolveTexture?: (id: string) => Promise<GrayscaleTexture | undefined>
+    /**
+     * Leaves the fluid simulation (D42) to be stepped by `advanceFluid` alone
+     * and never by the frame, so a test's wash has run an exact number of
+     * steps whatever the machine.
+     */
+    manualFluidClock?: boolean
+    /**
+     * Reckons a step of the simulation over one wet tile at this many
+     * milliseconds of GPU time and never measures it, so a test's clock
+     * skips the same steps whatever the machine (fluid brushes 13).
+     */
+    fluidTileStepMs?: number
+    /** Story 21 experiment only; off until visual/performance approval. */
+    experimentalFluidReach?: boolean
   } = {}
 ): Engine {
   let snapshot: EngineSnapshot = INITIAL_SNAPSHOT
+  const vectorControlObservers = new Set<
+    (objects: readonly VectorObject[], penNodes: readonly PathNode[]) => void
+  >()
   const listeners = new Set<() => void>()
   let device: GPUDevice | undefined
   let context: GPUCanvasContext | null = null
@@ -796,12 +1768,77 @@ export function createEngine(
   let documents: DocumentStore | undefined
   let cloudSync: CloudSync | undefined
   /**
-   * How deep history stood right after the last restore. Compared with the
-   * depth now, it answers whether that restore is still the step undo would
-   * reach — which is the whole of what "this preview is still reversible"
-   * means, and belongs here rather than in a panel counting steps.
+   * The history step the last restore made, by identity. Whether it is still
+   * the step undo would reach is the whole of what "this preview is still
+   * reversible" means — and asked by identity rather than by depth, because
+   * a depth is fooled by old steps trimmed from the bottom of the stack.
    */
-  let restoreDepth: number | undefined
+  let restoreStep: object | undefined
+  /** Set while `revertRestore` takes the trial back through undo. */
+  let revertingRestore = false
+  /** True from the moment a restore starts writing until it is on trial. */
+  let applyingRestore = false
+  /**
+   * A restore applied but not kept, and still the step one undo takes back.
+   * Nothing saves while one is — not the commit hook, not an idle flush, not
+   * a tab going hidden, not leaving the canvas — because what is on screen is
+   * a look at the past, not the document. Painting over it ends the trial for
+   * good (see the commit hook): from then on it is the artist's work and
+   * saves like any other, however far undo later walks back.
+   */
+  /**
+   * Undo and redo are closed while a preview is on trial: "Back to now" is
+   * the way out of one, and an undo that slipped past it would leave the
+   * next stroke landing where the preview stood, mistaken for it.
+   */
+  function publishHistory() {
+    const trial = restoreRevertible()
+    publish({
+      canUndo: !trial && (history?.canUndo() ?? false),
+      canRedo: !trial && (history?.canRedo() ?? false),
+    })
+  }
+  function restoreOnTrial(): boolean {
+    return applyingRestore || restoreRevertible()
+  }
+  function restoreRevertible(): boolean {
+    return restoreStep !== undefined && history?.topStep() === restoreStep
+  }
+  /**
+   * Stored tiles still arriving in the background, by surface and slot.
+   * History's tile index only names the tiles loaded so far, so a local save
+   * names these too (they are already on disk) rather than writing the
+   * document without them. A cloud sync cannot — it would send a document
+   * missing them — so it waits, and `unsyncedWhileLoading` says one is owed.
+   */
+  const pendingTiles = new Map<string, Map<string, TileRef>>()
+  let unsyncedWhileLoading = false
+  function withPendingTiles(
+    surfaces: readonly SurfaceTileIndex[],
+    structure: DocumentStructure
+  ): SurfaceTileIndex[] {
+    if (pendingTiles.size === 0) return [...surfaces]
+    // A layer deleted before its tiles arrived is gone, not stranded.
+    const present = structureSurfaceIds(structure)
+    const merged = new Map(
+      surfaces.map((surface) => [
+        surface.surfaceId,
+        new Map(surface.tiles.map((tile) => [tileKey(tile.x, tile.y), tile])),
+      ])
+    )
+    for (const [surfaceId, pending] of pendingTiles) {
+      if (!present.has(surfaceId)) continue
+      const surface = merged.get(surfaceId) ?? new Map<string, TileRef>()
+      // What history holds for a slot is newer than what disk held for it.
+      for (const [slot, tile] of pending)
+        if (!surface.has(slot)) surface.set(slot, tile)
+      merged.set(surfaceId, surface)
+    }
+    return [...merged].map(([surfaceId, tiles]) => ({
+      surfaceId,
+      tiles: [...tiles.values()],
+    }))
+  }
   /**
    * The originals placed images were made from, by content hash (06). One
    * copy per distinct file however many layers show it, held here so a
@@ -817,16 +1854,29 @@ export function createEngine(
         start: ImagePlacement
         placement: ImagePlacement
         asset: ImageAsset
+        snapTargets: SnapTargets
         /** The original, decoded once for the whole drag (06). */
         open: OpenImage
-        /** The tree before the transform, which is the step's "before". */
-        structure: DocumentStructure
         /**
-         * Everything the picture has covered since it was picked up, which is
-         * the region the commit reads back: where it now is, and everywhere
-         * it has been and left.
+         * The shared transform session (12): previews from the original,
+         * one resample and one step on commit, nothing kept on cancel. The
+         * placement is the artist's description; this is its matrix.
          */
-        touched: PixelRect
+        transform: TransformSession
+      }
+    | undefined
+  /** The painted layer being moved, if one is; see `beginLayerTransform`. */
+  let layerTransform:
+    | {
+        layerId: string
+        /** The content box as picked up, which is the snapshot's region. */
+        start: ImagePlacement
+        placement: ImagePlacement
+        source: PixelRect
+        /** Only the selection's pixels were picked up (14). */
+        lifted: boolean
+        snapTargets: SnapTargets
+        transform: TransformSession
       }
     | undefined
   let flushScheduler: FlushScheduler | undefined
@@ -837,38 +1887,120 @@ export function createEngine(
    * that document came back but could not be taken on whole.
    */
   let restored = !options.persistence
+  /** Whether the reopened document found the cloud missing work or a preview. */
+  let cloudBehind = false
+  /** Whether this session has changed the document at all. */
+  let committedSinceOpen = false
+  /** Settles once every stored tile is back on the GPU, background ones too. */
+  let fullyLoaded: Promise<void> = Promise.resolve()
+  let loadBackgroundTiles: (() => Promise<void>) | undefined
   let disposed = false
+  /** The thread history hashes and compresses on; it goes with the history. */
+  let tileWork: TileWork | undefined
 
   // The stroke path. Every buffer here is allocated once, at construction:
   // a frame of drawing performs no allocation at all (D30).
   const samples = createSampleBuffer(SAMPLE_CAPACITY)
   const stabilizer = createStabilizer()
+  const assist = createStrokeAssist()
+  let straightEdge: StraightEdge | null = null
+  /**
+   * Where the last stroke lifted, in document pixels: what Shift at pen-down
+   * draws a straight line from (17). Session state, like the pen itself.
+   */
+  let lastStrokeEnd: { x: number; y: number } | null = null
+  /** Whether the stroke in flight was asked to start from `lastStrokeEnd`. */
+  let fromLastPoint = false
   // The pen response curve is engine state rather than a sampler argument: it
   // outlives any one attachment, and the sampler reads it back per sample.
   let pressureCurve: Curve = DEFAULT_PRESSURE_CURVE
   // On unless the artist says otherwise: a pen that reports tilt should use
   // it, and a pen that does not already reads as upright.
   let tiltEnabled = true
+  let snapping = true
+  let guidesVisible = true
   // Rebuilt only when the brush changes its spacing, which never happens
   // inside a stroke: a frame of drawing still allocates nothing (D30).
   let resampler = createStrokeResampler(brushSpacing(DEFAULT_BRUSH))
   const dynamics = createStampContextTracker()
+  // Seeded alongside the tracker, so a stroke's scatter is as repeatable as
+  // its `random` mappings; its offsets land in one array, reused per dab.
+  const scatterPlacer = createScatterPlacer()
+  const scatterOffsets = new Float32Array(MAX_SCATTER_COUNT * 2)
   // Ids in a brush are resolved here, so the brush stays data and the pixels
   // stay an asset (D24). Imported textures register into this same library.
   const textures = createTextureLibrary()
   // Published rather than assumed: the snapshot's default is the built-in set,
   // and this is what keeps it true of the library this engine actually holds.
   snapshot = { ...snapshot, textures: Object.freeze(textures.ids()) }
+  /**
+   * The brush change still waiting on a texture to arrive, if any. Brush
+   * changes queue behind it, so a brush picked while another's paper is
+   * loading is not overwritten by that one landing late. With nothing
+   * waiting, a brush applies in the same turn it is dispatched, as it always
+   * has. Other commands do not queue: a stroke begun while a texture is still
+   * on its way paints with the brush already in the hand, which is the brush
+   * the artist can see they are holding.
+   */
+  let brushTurn: Promise<void> | undefined
+  /** A later sampling toggle supersedes one still waiting for GPU preparation. */
+  let samplingTurn = 0
+
+  async function resolveBrushTextures(ids: (string | null | undefined)[]) {
+    const missing = ids.filter((id): id is string => !!id && !textures.get(id))
+    if (!missing.length || !options.resolveTexture) return
+    const found = await Promise.all(missing.map(options.resolveTexture))
+    if (disposed) return
+    found.forEach((texture, i) => {
+      if (texture && !textures.get(missing[i]))
+        textures.register(missing[i], texture)
+    })
+    publish({ textures: Object.freeze(textures.ids()) })
+  }
   const params: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   // Evaluated once per stroke rather than per dab, so it is kept apart from
   // `params` instead of borrowing it and being overwritten by the first dab.
   const strokeParams: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   const stamps = new Float32Array(MAX_STAMPS_PER_DRAW * STAMP_STRIDE)
+  let tipDab = 0
   let stampCount = 0
+  // What a direct stroke in flight is drawn into: a smudge's (smudge 01) or
+  // a wet brush's (D41) layer, or the mask either is painting.
+  // Its dabs go straight into that surface rather than the stroke buffer, in
+  // an array of their own.
+  let directTargetId: string | undefined
+  /**
+   * What a wet brush's stroke picks up, as the brush said at pen-down; a
+   * smudge has none, and lays nothing.
+   */
+  let directWet: BrushWet | undefined
+  /** The surface a fluid stroke in flight is painting into (D42). */
+  let fluidTargetId: string | undefined
+  /** Whether that stroke is a blot's, which takes paint up and lays none. */
+  let fluidBlot = false
+  /** The surface holding wet paint, from its first dab until it has dried. */
+  let wetTargetId: string | undefined
+  // The simulation's clock (D42): its own frame, asked for only while paint
+  // is wet, the time of the last one, and what it owes and can afford.
+  let fluidFrame: number | undefined
+  let fluidTime: number | undefined
+  const fluidClock = createFluidClock({ tileStepMs: options.fluidTileStepMs })
+  /** Whether the GPU time of a frame's steps is being waited on. */
+  let fluidTiming = false
+  /** The steps a frame owed, to run once it is presented, and over how many tiles. */
+  let fluidDueSteps = 0
+  let fluidDueTiles = 0
+  let fluidChannel: MessageChannel | undefined
+  let fluidObserver: ((tick: FluidTick) => void) | null = null
+  const directDabs = new Float32Array(MAX_SMUDGE_DABS_PER_DRAW * SMUDGE_STRIDE)
+  let directCount = 0
   let stroking = false
   // The pen-down sample opens the path, and it arrives through the buffer like
   // every other sample: nothing is drawn from inside an event handler.
   let opening = false
+  // The pen has lifted and the stroke's tail waits on the next frame to land.
+  // A command that arrives first lands it, so it never overtakes the stroke.
+  let landing = false
   // Where the pen actually was, before stabilization pulled the path behind it,
   // and what it reported there: the tail flushed on pen-up reuses all of it.
   let rawX = 0
@@ -883,8 +2015,14 @@ export function createEngine(
   // rather than a frozen snapshot that is replaced on every publish.
   let brush = cloneBrush(DEFAULT_BRUSH)
   let eraser = eraserBrush()
+  let smudge: Smudge = DEFAULT_SMUDGE
   const activeBrush = () => (tool === "eraser" ? eraser : brush)
-  let tool: PaintTool = "brush"
+  let tool: Tool = "brush"
+  /** The distance between dabs for whatever is in the hand, at rest. */
+  const toolSpacing = () =>
+    tool === "smudge"
+      ? smudgeSpacing(smudge.radius)
+      : brushSpacing(activeBrush())
   let ink = [...BRUSH_COLOR] as [number, number, number, number]
   // Jitter is seeded per stroke, so a `random` mapping differs between marks
   // while any one mark stays reproducible — which is what lets a stroke be
@@ -895,7 +2033,9 @@ export function createEngine(
   let appliedTextures: string | undefined
   let frame: number | undefined
   let detachSampler: (() => void) | undefined
+  let detachWarmth: (() => void) | undefined
   let detachGestures: (() => void) | undefined
+  let detachVisibility: (() => void) | undefined
   // Frame instrumentation. All of it is inert until an observer is attached.
   let frameObserver: ((frame: FrameTiming) => void) | null = null
   /** The page clock reading that this stroke's sample times are relative to. */
@@ -946,11 +2086,12 @@ export function createEngine(
     for (const id of thumbnailViews.keys()) {
       const node = findNodeIn(doc.layers, id)
       if (!node) continue
-      const layers =
-        node.kind === "group" ? rasterLayers(node.children) : [node]
+      const layers = (
+        node.kind === "group" ? leafLayers(node.children) : [node]
+      ).filter((layer) => layer.kind === "raster")
       const held = layers
         .flatMap((layer) =>
-          past.occupiedTiles(layer.id).map((tile) => `${tile.x},${tile.y}`)
+          past.occupiedTiles(layer.id).map((tile) => tileKey(tile.x, tile.y))
         )
         .sort()
         .join(";")
@@ -974,20 +2115,29 @@ export function createEngine(
     const framed = (box: PixelRect | undefined) =>
       box ? frameContent(box, extent()) : undefined
     /**
-     * What a set of raster layers holds, from history's index of their tiles:
-     * nothing at all, or the region their marks cover, trimmed to the tiles
-     * still holding something so that erasing shrinks it again.
+     * What a set of layers holds. Raster layers' from history's index of
+     * their tiles: nothing at all, or the region their marks cover, trimmed
+     * to the tiles still holding something so that erasing shrinks it again.
+     * Vector layers' from their objects, which their pixels are drawn from.
      */
-    const holding = (ids: readonly string[]) => {
+    const holding = (layers: readonly LeafLayer[]) => {
+      const ids = layers.map((layer) => layer.id)
       const past = history
       if (!past) return { crop: framed(contentBounds.union(ids)) }
-      const tiles = ids.flatMap((layerId) => past.occupiedTiles(layerId))
-      if (tiles.length === 0) return { empty: true }
-      const held = tileBox(tiles)
-      const marked = contentBounds.union(ids)
-      return {
-        crop: framed((marked && intersectRect(marked, held)) ?? held),
-      }
+      const raster = layers.filter((layer) => layer.kind === "raster")
+      const shapes = layers.filter(
+        (layer) => layer.kind === "vector" && layer.scene.objects.length > 0
+      )
+      const tiles = raster.flatMap((layer) => past.occupiedTiles(layer.id))
+      if (tiles.length === 0 && shapes.length === 0) return { empty: true }
+      const marked = contentBounds.union(raster.map((layer) => layer.id))
+      const painted =
+        tiles.length > 0
+          ? ((marked && intersectRect(marked, tileBox(tiles))) ??
+            tileBox(tiles))
+          : null
+      const drawn = contentBounds.union(shapes.map((layer) => layer.id)) ?? null
+      return { crop: framed(unionOf([painted, drawn]) ?? undefined) }
     }
     const find = (
       nodes: readonly LayerNode[]
@@ -998,11 +2148,9 @@ export function createEngine(
           return node.kind === "group"
             ? {
                 subject: { kind: "group", item: groupContents(node) },
-                ...holding(
-                  rasterLayers(node.children).map((layer) => layer.id)
-                ),
+                ...holding(leafLayers(node.children)),
               }
-            : { subject: { kind: "layer", id }, ...holding([id]) }
+            : { subject: { kind: "layer", id }, ...holding([node]) }
         if (node.kind === "group") {
           const found = find(node.children)
           if (found) return found
@@ -1044,6 +2192,57 @@ export function createEngine(
   function publish(update: Partial<EngineSnapshot>) {
     const next = { ...snapshot, ...update }
     if (
+      doc &&
+      (update.vectorSelection ||
+        update.layers ||
+        update.tool ||
+        update.vectorPaths)
+    ) {
+      const layer = activeLayer(doc)
+      next.vectorPaths =
+        update.vectorPaths ??
+        (layer.kind === "vector"
+          ? layer.scene.objects.filter(
+              (o) =>
+                next.vectorSelection.includes(o.id) &&
+                o.geometry.kind === "path"
+            )
+          : [])
+      // Nodes handed in with the update are the caller's word on which are
+      // selected after an edit; any others are pruned against it.
+      next.vectorNodes = pruneNodes(
+        next.vectorPaths,
+        next.vectorNodes,
+        update.vectorNodes ? next.vectorPaths : snapshot.vectorPaths
+      )
+      next.vectorSelectionBounds =
+        layer.kind === "vector"
+          ? objectsBounds(layer.scene, next.vectorSelection)
+          : null
+    }
+    if (
+      doc &&
+      (update.vectorSelection ||
+        update.layers ||
+        update.tool ||
+        update.vectorPaths ||
+        update.shapeStyle)
+    ) {
+      const layer = activeLayer(doc)
+      const style =
+        layer.kind === "vector"
+          ? selectionStyle(layer.scene, next.vectorSelection, next.shapeStyle)
+          : null
+      // Kept by identity while it says the same, so a frame that changed
+      // nothing about it does not re-render the options.
+      next.selectionStyle =
+        style &&
+        snapshot.selectionStyle &&
+        sameShapeStyle(style, snapshot.selectionStyle)
+          ? snapshot.selectionStyle
+          : style && Object.freeze(style)
+    }
+    if (
       Object.keys(next).every(
         (key) =>
           next[key as keyof EngineSnapshot] ===
@@ -1058,6 +2257,7 @@ export function createEngine(
     if ((update.layers || update.status === "ready") && thumbnailViews.size)
       thumbnails.invalidate(thumbnailViews.keys())
     listeners.forEach((listener) => listener())
+    notifyVectorControls()
   }
 
   /** Re-reads `cloudSync`'s genuine status into the snapshot (18). */
@@ -1068,14 +2268,30 @@ export function createEngine(
   function release() {
     if (frame !== undefined) cancelAnimationFrame(frame)
     frame = undefined
+    // The selection goes with the document it was drawn on; a new one is
+    // started or restored after this, without one.
+    stopSelection()
     stroking = false
     opening = false
+    landing = false
     stampCount = 0
+    directTargetId = undefined
+    fluidTargetId = undefined
+    fluidBlot = false
+    stopFluidClock()
+    wetTargetId = undefined
+    if (snapshot.wet) publish({ wet: false })
+    if (snapshot.dryingPaused) publish({ dryingPaused: false })
+    directCount = 0
     samples.clear()
     renderer?.destroy()
     renderer = undefined
+    drawnScenes.clear()
+    shapeDrag = undefined
     history?.clear()
     history = undefined
+    tileWork?.dispose()
+    tileWork = undefined
     persistence = undefined
     flushScheduler?.dispose()
     flushScheduler = undefined
@@ -1155,9 +2371,19 @@ export function createEngine(
     doc = createDocument(size)
     contentBounds.clear()
     renderer?.resize(size.width, size.height)
+    // Nothing wet outlives the surfaces it was on.
+    syncWet()
+    drawnScenes.clear()
+    resetSelection()
     uploadLayers()
     syncComposition()
-    publish({ width: size.width, height: size.height, ...describeLayers(doc) })
+    if (snapshot.sampleAllLayers) renderer?.prepareSampling()
+    publish({
+      width: size.width,
+      height: size.height,
+      brushDirty: false,
+      ...describeLayers(doc),
+    })
   }
 
   function resize() {
@@ -1198,7 +2424,8 @@ export function createEngine(
     const viewportSize = viewportExtent()
     const matrix = docToScreen(view, size, viewportSize)
     toDoc = screenToDoc(view, size, viewportSize)
-    renderer?.setView(matrix)
+    renderer?.setView(matrix, viewportSize)
+    refreshVectorDetail()
   }
 
   /**
@@ -1220,6 +2447,31 @@ export function createEngine(
     if (!Number.isFinite(occludedRight) || occludedRight < 0)
       throw new Error("Occlusion must be a non-negative, finite width.")
     return toBackingX(occludedRight)
+  }
+
+  /**
+   * How far, in document pixels, a freehand fit may stray from the hand: a
+   * fixed distance on screen, as Inkscape's pencil sizes it, so jitter is
+   * smoothed the same at every zoom.
+   */
+  function fitTolerance(): number {
+    return (
+      FIT_SCREEN_TOLERANCE *
+      viewport.devicePixelRatio *
+      Math.hypot(toDoc[0], toDoc[1])
+    )
+  }
+
+  /**
+   * How near a guide, in document pixels, a stroke has to open to be caught
+   * by it: a fixed reach on screen, whatever the zoom.
+   */
+  function guideReach(): number {
+    return (
+      GUIDE_STROKE_REACH *
+      viewport.devicePixelRatio *
+      Math.hypot(toDoc[0], toDoc[1])
+    )
   }
 
   /**
@@ -1278,19 +2530,13 @@ export function createEngine(
     const open = await imageCodec().open(asset)
     try {
       renderer?.openPlacedImage(layerId, open.source)
-      showTransform(layerId, placement)
+      showTransform(layerId, placementQuad(placement))
     } finally {
       open.close()
       renderer?.closePlacedImage(layerId)
     }
   }
 
-  /**
-   * Shows a transform in progress without recording it. Mid-drag there is no
-   * step to take back yet — the step is the whole drag — so these pixels go
-   * to the GPU and history's index is left describing the picture as it was,
-   * which is exactly the "before" the commit then records against.
-   */
   /**
    * Shows a transform in progress without recording it.
    *
@@ -1300,16 +2546,19 @@ export function createEngine(
    * picture as it was, which is exactly the "before" the commit records
    * against.
    */
-  function showTransform(layerId: string, placement: ImagePlacement) {
+  function showTransform(
+    layerId: string,
+    corners: readonly [Point, Point, Point, Point]
+  ) {
     if (!renderer) return
     renderer.drawPlacedImage({
       surfaceId: layerId,
       imageId: layerId,
       // The quad, not the box: which way round the picture is drawn inside
       // its corners is what a flip changes.
-      corners: placementQuad(placement),
+      corners,
     })
-    contentBounds.grow(layerId, placementBounds(placement))
+    contentBounds.grow(layerId, quadBounds(corners))
     invalidateThumbnailsOf(layerId)
     if (snapshot.status === "ready") render()
   }
@@ -1317,10 +2566,11 @@ export function createEngine(
   /** What the host needs to draw the box and to say how much detail is left. */
   function describeTransform(): ImageTransformState | null {
     if (!imageTransform) return null
-    const { layerId, placement, asset } = imageTransform
+    const { layerId, placement, asset, snapTargets } = imageTransform
     return Object.freeze({
       layerId,
       placement,
+      snapTargets,
       source: Object.freeze({ width: asset.width, height: asset.height }),
       resolution: resolution(placement, asset),
     })
@@ -1340,7 +2590,10 @@ export function createEngine(
   function structureForSave(): DocumentStructure {
     const document = requireDocument()
     const surfaces = history?.tileIndex() ?? []
-    const structure = savedStructure(captureStructure(document), surfaces)
+    const structure = savedStructure(
+      captureStructure(document, { scenes: true }),
+      surfaces
+    )
     const session = imageTransform
     if (!session) return structure
     const settle = (nodes: readonly NodeStructure[]): NodeStructure[] =>
@@ -1458,30 +2711,13 @@ export function createEngine(
     const session = imageTransform
     if (!session) return
     imageTransform = undefined
-    const document = requireDocument()
-    const canvas = { width: document.width, height: document.height }
-    if (samePlacement(session.placement, session.start)) {
+    const changed = !samePlacement(session.placement, session.start)
+    if (!session.transform.commit({ changed })) {
       // Picked up and put down: not a step, and nothing to re-render.
       closeTransform(session)
       publish({ imageTransform: null })
       return
     }
-    // The drag drew the picture with the renderer, so the pixels this step
-    // has to remember are the ones on the GPU. The region is everywhere the
-    // picture has been since it was picked up, so the tiles it left behind
-    // are recorded as the empty ones they now are.
-    recordOperation("transform image", session.structure, {
-      readback: [
-        {
-          surfaceId: session.layerId,
-          region: unionRect(
-            session.touched,
-            placementBounds(session.placement)
-          ),
-        },
-      ],
-      canvas,
-    })
     closeTransform(session)
     publish({ imageTransform: null })
     applyLayerChange()
@@ -1497,10 +2733,7 @@ export function createEngine(
     const session = imageTransform
     if (!session) return
     imageTransform = undefined
-    const document = requireDocument()
-    setPlacement(document, session.layerId, session.start)
-    if (!samePlacement(session.placement, session.start))
-      showTransform(session.layerId, session.start)
+    session.transform.cancel()
     closeTransform(session)
     publish({ imageTransform: null })
     applyLayerChange()
@@ -1518,6 +2751,1657 @@ export function createEngine(
     return imageTransform
   }
 
+  function adjustImageTransformTo(placement: ImagePlacement) {
+    const document = requireDocument()
+    const session = requireTransform()
+    const canvas = { width: document.width, height: document.height }
+    if (!validPlacement(placement, canvas))
+      throw new Error("That is not a placement an image can be put at.")
+    if (samePlacement(placement, session.placement)) return
+    const matrix = affineFromPlacement(placement, session.asset)
+    session.placement = placement
+    setPlacement(document, session.layerId, placement)
+    session.transform.update(matrix)
+    publish({
+      imageTransform: describeTransform(),
+      ...describeLayers(document),
+    })
+  }
+
+  /** Picks a placed image up; see `beginImageTransform`. */
+  async function beginImageTransformOf(id: string): Promise<void> {
+    commitVectorTransform()
+    const document = requireDocument()
+    const layer = findLayer(document, id)
+    if (layer.kind !== "raster" || !layer.image || !layer.placed)
+      throw new Error("Only a placed image can be moved, scaled or turned.")
+    // A transform in flight on another layer is finished rather than
+    // abandoned: the artist moved on, they did not undo.
+    if (imageTransform && imageTransform.layerId !== id) await commitTransform()
+    await commitLayerTransform()
+    const asset = assetFor(layer.placed.asset.id)
+    // Decoded and uploaded here, once. Every adjustment after this is a
+    // textured quad: no decode, no canvas-sized conversion in
+    // JavaScript, no tile upload — which is the difference between
+    // dragging a six-megapixel photograph at three frames a second and
+    // dragging it at the frame rate (06).
+    const open = await imageCodec().open(asset)
+    try {
+      renderer?.openPlacedImage(id, open.source)
+    } catch (error) {
+      open.close()
+      throw error
+    }
+    const layerId = id
+    const start = layer.placed.placement
+    const before = captureStructure(document)
+    imageTransform = {
+      layerId,
+      start,
+      placement: start,
+      asset,
+      snapTargets: snapTargetsBesides(layerId),
+      open,
+      transform: beginTransform(
+        {
+          source: asset,
+          preview: (matrix) =>
+            showTransform(layerId, affineQuad(matrix, asset)),
+          commit: (_matrix, region) =>
+            // The drag drew the picture with the renderer, so the
+            // pixels this step has to remember are the ones on the
+            // GPU. The region is everywhere the picture has been since
+            // it was picked up, so the tiles it left behind are
+            // recorded as the empty ones they now are.
+            recordOperation("transform image", before, {
+              readback: [{ surfaceId: layerId, region }],
+              canvas: { width: document.width, height: document.height },
+            }),
+          cancel: (startMatrix, moved) => {
+            // Rendered once more from the original rather than the
+            // preview being "undone": there is no step to undo.
+            setPlacement(requireDocument(), layerId, start)
+            if (moved) showTransform(layerId, affineQuad(startMatrix, asset))
+          },
+        },
+        affineFromPlacement(start, asset)
+      ),
+    }
+    publish({ imageTransform: describeTransform() })
+  }
+
+  /**
+   * The lines a drag may snap to (15): the canvas's, and every other visible
+   * layer's content box — a placed image's by its placement, a painted
+   * layer's by where it has been marked, within the canvas.
+   */
+  function snapTargetsBesides(id: string): SnapTargets {
+    const document = requireDocument()
+    const canvas = {
+      x: 0,
+      y: 0,
+      width: document.width,
+      height: document.height,
+    }
+    const others: Extent[] = []
+    for (const layer of leafLayers(document.layers)) {
+      if (layer.id === id || !layer.visible) continue
+      const box =
+        layer.kind === "raster" && layer.placed
+          ? placementExtent(layer.placed.placement)
+          : contentBounds.get(layer.id)
+      const within = box && intersectRect(box, canvas)
+      if (within) others.push(within)
+    }
+    const targets = snapTargets(document, others)
+    return Object.freeze(
+      guidesVisible ? guideSnapTargets(targets, document.guides) : targets
+    )
+  }
+
+  /** Lines a layer up with the canvas or the selection; see `alignLayer`. */
+  async function alignLayer(
+    id: string,
+    anchor: AlignAnchor,
+    to: "canvas" | "selection"
+  ): Promise<void> {
+    const document = requireDocument()
+    const within =
+      to === "canvas"
+        ? { x: 0, y: 0, width: document.width, height: document.height }
+        : selection?.bounds
+    if (!within) throw new Error("There is no selection to align to.")
+    if (imageTransform?.layerId === id) {
+      adjustImageTransformTo(
+        alignedPlacement(imageTransform.placement, anchor, within)
+      )
+      return
+    }
+    if (layerTransform?.layerId === id) {
+      adjustLayerTransformTo(
+        alignedPlacement(layerTransform.placement, anchor, within)
+      )
+      return
+    }
+    const layer = findLayer(document, id)
+    if (layer.kind === "raster" && layer.image && layer.placed) {
+      await beginImageTransformOf(id)
+      const session = requireTransform()
+      adjustImageTransformTo(
+        alignedPlacement(session.placement, anchor, within)
+      )
+      await commitTransform()
+      return
+    }
+    // Aligned to the selection, the layer moves to it rather than the
+    // selection's own pixels being lifted onto where they already are.
+    await beginLayerTransformOf(id, { lift: to === "canvas" })
+    const session = layerTransform as typeof layerTransform
+    if (!session) return
+    adjustLayerTransformTo(alignedPlacement(session.placement, anchor, within))
+    await commitLayerTransform()
+  }
+
+  /** Layer transforms hold their snapshot under an id no asset can have. */
+  const layerImageId = (layerId: string) => `layer-transform:${layerId}`
+
+  /** A surface's tiles read back, each with its coordinate. */
+  async function readTileTexels(
+    id: string,
+    coords: readonly TileCoord[]
+  ): Promise<TileTexels[]> {
+    if (!renderer) throw new Error("The canvas is not ready.")
+    const texels = await renderer.readTiles(id, coords)
+    return coords.map(({ x, y }, index) => ({ x, y, texels: texels[index]! }))
+  }
+
+  function describeLayerTransform(): LayerTransformState | null {
+    if (!layerTransform) return null
+    const { layerId, placement, source, lifted, snapTargets } = layerTransform
+    return Object.freeze({
+      layerId,
+      placement,
+      snapTargets,
+      lifted,
+      source: Object.freeze({ width: source.width, height: source.height }),
+    })
+  }
+
+  /**
+   * Picks a painted layer up (13): its pixels snapshotted on the GPU, the
+   * tight box round them found from one readback, and a shared session (12)
+   * that previews from the snapshot and resamples once on commit.
+   */
+  async function beginLayerTransformOf(
+    id: string,
+    options: { lift?: boolean } = {}
+  ): Promise<void> {
+    commitVectorTransform()
+    const document = requireDocument()
+    const layer = findLayer(document, id)
+    if (layer.kind !== "raster")
+      throw new Error("Only a layer with pixels of its own can be transformed.")
+    if (layer.image)
+      throw new Error("A placed image is moved with its own transform.")
+    if (imageTransform) await commitTransform()
+    if (layerTransform) {
+      if (layerTransform.layerId === id) return
+      await commitLayerTransform()
+    }
+    if (!renderer) throw new Error("The canvas is not ready.")
+    const canvasRect = {
+      x: 0,
+      y: 0,
+      width: document.width,
+      height: document.height,
+    }
+    // With a selection, only what it covers is lifted (14), and the handles
+    // sit on the selection rather than on the layer's content.
+    const lifted =
+      selection && options.lift !== false
+        ? { mask: selection, key: selectionKey }
+        : undefined
+    let region: PixelRect | null
+    if (lifted) {
+      // Nothing painted under the selection is nothing to lift. Asked of the
+      // pixels under the mask rather than of the content box, which only
+      // grows and so says yes wherever a cancelled preview once reached.
+      const tiles = await readTileTexels(id, lifted.mask.tiles())
+      region = liftsAnything(tiles, lifted.mask) ? lifted.mask.bounds : null
+    } else {
+      const held = contentBounds.get(id)
+      const area = held && intersectRect(held, canvasRect)
+      const coords = area ? tilesCoveringRect(area) : []
+      // Whole tiles overhang the canvas's edge; the surface does not.
+      const covered = coveredBounds(await readTileTexels(id, coords))
+      region = covered && intersectRect(covered, canvasRect)
+    }
+    if (!region) throw new Error("There is nothing on this layer to transform.")
+    const imageId = layerImageId(id)
+    if (lifted) {
+      renderer.openSelectionImage(imageId, id, region)
+      // The outline is put down with the pixels, so it is not shown behind.
+      holdSelection(null)
+    } else renderer.openLayerImage(imageId, id, region)
+    const start = layerStartPlacement(region)
+    const before = captureStructure(document)
+    const source = region
+    const show = (matrix: Affine) =>
+      showLayerImage(id, imageId, affineQuad(matrix, region))
+    layerTransform = {
+      layerId: id,
+      lifted: !!lifted,
+      snapTargets: snapTargetsBesides(id),
+      start,
+      placement: start,
+      source: region,
+      transform: beginTransform(
+        {
+          source: region,
+          preview: show,
+          // The pixels the step remembers are the ones the last preview
+          // drew, over everywhere the content has been since it was lifted.
+          commit: (matrix, touched) => {
+            const pixels = {
+              readback: [
+                {
+                  surfaceId: id,
+                  region: intersectRect(touched, canvasRect) ?? touched,
+                },
+              ],
+              canvas: { width: document.width, height: document.height },
+            }
+            if (!lifted) {
+              recordOperation("transform layer", before, pixels)
+              return
+            }
+            // The outline goes where the pixels went, in the same step.
+            const mask = transformSelection(
+              document,
+              lifted.mask,
+              source,
+              matrix
+            )
+            const key = mask ? `selection-${++nextSelectionKey}` : null
+            if (mask) selections.set(key!, mask)
+            history?.recordOperation(
+              "transform selection",
+              {
+                before: { ...before, selection: lifted.key },
+                after: { ...captureStructure(document), selection: key },
+              },
+              pixels
+            )
+            selectionKey = key
+            showSelection(mask, false)
+          },
+          cancel: (_start, moved) => {
+            if (lifted) holdSelection(lifted.mask)
+            if (!moved) return
+            renderer?.restoreLayerImage(imageId, id)
+            invalidateThumbnailsOf(id)
+            if (snapshot.status === "ready") render()
+          },
+        },
+        affineFromPlacement(start, region)
+      ),
+    }
+    publish({ layerTransform: describeLayerTransform() })
+  }
+
+  function showLayerImage(
+    layerId: string,
+    imageId: string,
+    corners: readonly [Point, Point, Point, Point]
+  ) {
+    if (!renderer) return
+    renderer.drawPlacedImage({ surfaceId: layerId, imageId, corners })
+    contentBounds.grow(layerId, quadBounds(corners))
+    invalidateThumbnailsOf(layerId)
+    if (snapshot.status === "ready") render()
+  }
+
+  function adjustLayerTransformTo(placement: ImagePlacement) {
+    const session = layerTransform
+    if (!session) throw new Error("No layer is being transformed.")
+    const document = requireDocument()
+    if (
+      !validPlacement(placement, {
+        width: document.width,
+        height: document.height,
+      })
+    )
+      throw new Error("That is not a placement a layer can be put at.")
+    if (samePlacement(placement, session.placement)) return
+    session.placement = placement
+    session.transform.update(affineFromPlacement(placement, session.source))
+    publish({ layerTransform: describeLayerTransform() })
+  }
+
+  async function commitLayerTransform(): Promise<void> {
+    const session = layerTransform
+    if (!session) return
+    layerTransform = undefined
+    const changed = !samePlacement(session.placement, session.start)
+    const recorded = session.transform.commit({ changed })
+    if (!recorded && session.lifted) {
+      // Put down where it was picked up: a soft edge drawn back over its own
+      // hole is not quite the layer it came from, so the layer is put back.
+      renderer?.restoreLayerImage(
+        layerImageId(session.layerId),
+        session.layerId
+      )
+      holdSelection(selection)
+    }
+    renderer?.closePlacedImage(layerImageId(session.layerId))
+    publish({ layerTransform: null })
+    if (recorded) applyLayerChange()
+  }
+
+  async function cancelLayerTransform(): Promise<void> {
+    const session = layerTransform
+    if (!session) return
+    layerTransform = undefined
+    session.transform.cancel()
+    renderer?.closePlacedImage(layerImageId(session.layerId))
+    publish({ layerTransform: null })
+    applyLayerChange()
+  }
+
+  /** The filter open on a layer (18), if one is. */
+  let filterSession: { layerId: string; filter: Filter } | undefined
+
+  /** Closes the open filter, putting back every pixel it previewed. */
+  function cancelFilter() {
+    if (!filterSession) return
+    filterSession = undefined
+    renderer?.endFilter(false)
+    publish({ filter: null })
+    if (snapshot.status === "ready") render()
+  }
+
+  /** Drops a layer transform whose layer is going away, recording nothing. */
+  function abandonLayerTransform() {
+    if (!layerTransform) return
+    renderer?.closePlacedImage(layerImageId(layerTransform.layerId))
+    if (layerTransform.lifted) holdSelection(selection)
+    layerTransform = undefined
+    publish({ layerTransform: null })
+  }
+
+  // Vector layers (19). What each layer's pixels were last drawn from, by
+  // identity: a scene is an immutable value, so "has this layer changed since
+  // it was drawn" is one comparison, and what changed is a diff of two lists
+  // of objects that share everything an edit did not touch.
+  const drawnScenes = new Map<string, VectorScene>()
+  /**
+   * Triangles per object and level of detail, each made once for as long as
+   * the object exists.
+   */
+  const meshes = new WeakMap<
+    VectorObject,
+    Map<number, { fill: Mesh | null; stroke: Mesh | null }>
+  >()
+  /** The detail the screen's vector scenes were last cut at. */
+  let screenDetail = 1
+  /** A shape being dragged out (19), shown in its layer but not yet in it. */
+  let shapeDrag:
+    | {
+        layerId: string
+        tool: VectorTool
+        points?: Point[]
+        nodes?: PathNode[]
+        placing?: boolean
+        /** Where the pen pressed, before snapping, for Alt to put it back. */
+        pressedAt?: Point
+        closed?: boolean
+        /** When the polygon's last corner was clicked, to tell a double-click. */
+        clickedAt?: number
+        vectorBrush?: VectorBrush
+        brushSeed?: number
+        /** Thins the pressure of a fast hand, as the brush asks. */
+        thin?: ReturnType<typeof createVelocityThinning>
+        /** Where the pen leaned, for a nib that follows tilt. */
+        tilt?: ReturnType<typeof createTiltDirection>
+        pressurePoints?: PressurePoint[]
+        pressureTail?: {
+          x: number
+          y: number
+          pressure: number
+          tiltX: number
+          tiltY: number
+          time: number
+        }
+        pressureResampler?: ReturnType<typeof createStrokeResampler>
+        /** The stroke fitted and meshed as it is drawn, and how many samples it has had. */
+        pressureFit?: {
+          fit: ReturnType<typeof createPressureFit>
+          fed: number
+          mesh: ReturnType<typeof createLiveStrokeMesh>
+        }
+        node?: NodeGrab
+        /** Where the grabbed part sat as the press began, for the axis lock. */
+        nodeAt?: Point
+        /** Ctrl was down at the press. A click then turns an anchor to the
+         * next type, or retracts a handle. */
+        ctrlClick?: boolean
+        /** The grabbed part has left its place: the pointer went past the
+         * drag threshold, so a click alone never moves it. */
+        nodeMoved?: boolean
+        /** The node tool is drawing a rubber band, not moving a node. */
+        nodeBox?: boolean
+        anchor: Point
+        point: Point
+        ended: boolean
+        /** The layer's scene with the shape in it, as last drawn. */
+        preview?: VectorScene
+        /** The point and Shift `preview` was made at; a still pen redraws nothing. */
+        previewAt?: { x: number; y: number; square: boolean }
+      }
+    | undefined
+
+  function notifyVectorControls() {
+    if (!vectorControlObservers.size) return
+    const objects =
+      shapeDrag?.node && shapeDrag.preview
+        ? shapeDrag.preview.objects.filter((o) =>
+            snapshot.vectorSelection.includes(o.id)
+          )
+        : snapshot.vectorPaths
+    const nodes =
+      shapeDrag?.tool === "pen" ? shapeDrag.nodes! : snapshot.penNodes
+    vectorControlObservers.forEach((observer) => observer(objects, nodes))
+  }
+
+  /** Frees a surface's texture, and forgets what was drawn into it. */
+  function releaseSurface(id: string) {
+    renderer?.releaseLayer(id)
+    syncWet()
+    drawnScenes.delete(id)
+  }
+
+  function meshesOf(object: VectorObject, detail = 1) {
+    let levels = meshes.get(object)
+    if (!levels) meshes.set(object, (levels = new Map()))
+    let found = levels.get(detail)
+    if (!found) {
+      found = tessellateObject(object, detail)
+      levels.set(detail, found)
+    }
+    return found
+  }
+
+  /**
+   * How many times finer than a document pixel the view needs its curves:
+   * screen pixels per document pixel, rounded up to a power of two so a
+   * zoom re-cuts them only when it crosses one, as a map's tiles do.
+   */
+  function viewDetail(): number {
+    const magnified = 1 / Math.max(1e-9, Math.hypot(toDoc[0], toDoc[1]))
+    if (!(magnified > 1)) return 1
+    return Math.min(
+      MAX_VECTOR_DETAIL,
+      2 ** Math.ceil(Math.log2(magnified - 1e-6))
+    )
+  }
+
+  /** Re-cuts the screen's vector scenes when the zoom has crossed a level. */
+  function refreshVectorDetail() {
+    const detail = viewDetail()
+    if (detail === screenDetail) return
+    screenDetail = detail
+    for (const [layerId, scene] of drawnScenes)
+      renderer?.setVectorScene(layerId, vectorDraws(scene, undefined, detail))
+  }
+
+  /** Whole pixels round an object, a pixel out for its antialiased edge. */
+  function objectBounds(object: VectorObject): PixelRect | null {
+    const { fill, stroke } = meshesOf(object)
+    const boxes = [fill?.bounds, stroke?.bounds].filter((box) => !!box)
+    if (boxes.length === 0) return null
+    const minX = Math.floor(Math.min(...boxes.map((box) => box.minX))) - 1
+    const minY = Math.floor(Math.min(...boxes.map((box) => box.minY))) - 1
+    const maxX = Math.ceil(Math.max(...boxes.map((box) => box.maxX))) + 1
+    const maxY = Math.ceil(Math.max(...boxes.map((box) => box.maxY))) + 1
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+  }
+
+  function unionOf(boxes: readonly (PixelRect | null)[]): PixelRect | null {
+    return boxes.reduce<PixelRect | null>(
+      (sum, box) => (!box ? sum : sum ? unionRect(sum, box) : box),
+      null
+    )
+  }
+
+  /**
+   * Where two scenes can differ in pixels: every object added, removed,
+   * changed or moved in the stack, where it was and where it is.
+   */
+  function changedRegion(
+    before: VectorScene | undefined,
+    after: VectorScene
+  ): PixelRect | null {
+    if (!before) return unionOf(after.objects.map(objectBounds))
+    const was = new Map(before.objects.map((object) => [object.id, object]))
+    const now = new Map(after.objects.map((object) => [object.id, object]))
+    const touched: VectorObject[] = []
+    for (const object of after.objects) {
+      const previous = was.get(object.id)
+      if (previous === object) continue
+      touched.push(object)
+      if (previous) touched.push(previous)
+    }
+    for (const object of before.objects)
+      if (!now.has(object.id)) touched.push(object)
+    // An object moved up or down the stack changes what it overlaps.
+    const kept = (scene: VectorScene) =>
+      scene.objects
+        .filter((object) => was.has(object.id) && now.has(object.id))
+        .map((object) => object.id)
+    const order = kept(after)
+    kept(before).forEach((id, index) => {
+      if (order[index] !== id) touched.push(was.get(id)!)
+    })
+    return unionOf(touched.map(objectBounds))
+  }
+
+  /** Paint as hex and opacity, premultiplied in the working space. */
+  function workingPaint(paint: { color: string; opacity: number }) {
+    const [red, green, blue] = hexToWorking(paint.color)
+    const alpha = paint.opacity
+    return [red * alpha, green * alpha, blue * alpha, alpha] as const
+  }
+
+  /**
+   * A stroke's paper grain and tone as the renderer takes them: one depth,
+   * or a depth and tone a vertex where pressure varies them.
+   */
+  function pencilOf(
+    mesh: Mesh,
+    brush: VectorObject["brush"]
+  ): Pick<VectorDraw, "grain" | "shades"> {
+    const params = brush?.definition.params
+    if (!params) return {}
+    const { weights } = mesh
+    if (!weights || (!params.grainPressure && !params.pressureTone))
+      return params.grain ? { grain: params.grain } : {}
+    const calligraphy = brush.definition.kind === "calligraphy"
+    const shades = new Float32Array(weights.length * 2)
+    weights.forEach((weight, i) => {
+      const { depth, tone } = pencilShade(params, weight, calligraphy)
+      shades[i * 2] = depth
+      shades[i * 2 + 1] = tone
+    })
+    return { shades }
+  }
+
+  /**
+   * What the renderer draws of a scene within a region, bottom first: all of
+   * it without one.
+   */
+  function vectorDraws(
+    scene: VectorScene,
+    region?: PixelRect,
+    detail = 1
+  ): VectorDraw[] {
+    const draws: VectorDraw[] = []
+    const add = (
+      mesh: Mesh | null,
+      paint: { color: string; opacity: number },
+      erase = false,
+      brush?: VectorObject["brush"]
+    ) => {
+      if (!mesh?.bounds) return
+      const { minX, minY, maxX, maxY } = mesh.bounds
+      if (
+        region &&
+        (maxX < region.x ||
+          maxY < region.y ||
+          minX > region.x + region.width ||
+          minY > region.y + region.height)
+      )
+        return
+      draws.push({
+        vertices: mesh.vertices,
+        rule: mesh.rule,
+        color: workingPaint(paint),
+        bounds: mesh.bounds,
+        erase,
+        ...pencilOf(mesh, brush),
+      })
+    }
+    for (const object of scene.objects) {
+      const { fill, stroke } = meshesOf(object, detail)
+      const erase = object.erase === true
+      if (object.style.fill) add(fill, object.style.fill, erase)
+      // Grain is the brush's, so it reaches the stroke a brush draws.
+      if (object.style.stroke)
+        add(
+          stroke,
+          object.style.stroke,
+          erase,
+          erase ? undefined : object.brush
+        )
+    }
+    return draws
+  }
+
+  /**
+   * Brings a vector layer's pixels up to `scene`, redrawing only where it
+   * differs from what they were last drawn from.
+   */
+  function drawScene(layerId: string, scene: VectorScene) {
+    if (!renderer) return
+    const before = drawnScenes.get(layerId)
+    if (before === scene) return
+    const region = changedRegion(before, scene)
+    drawnScenes.set(layerId, scene)
+    if (region)
+      renderer.rasterizeVector(layerId, vectorDraws(scene, region), region)
+    // The screen draws the layer from its geometry, sharp at any zoom
+    // (sharp-zoom 02); the pixels above stay what everything else reads.
+    renderer.setVectorScene(
+      layerId,
+      vectorDraws(scene, undefined, screenDetail)
+    )
+    // A scene's content box is its objects', and shrinks when they go.
+    contentBounds.forget(layerId)
+    const box = unionOf(scene.objects.filter((o) => !o.erase).map(objectBounds))
+    if (box) contentBounds.grow(layerId, box)
+    invalidateThumbnailsOf(layerId)
+  }
+
+  /**
+   * Edits a vector layer's objects as one undo step: the scene changes now,
+   * and the step keeps the commands both ways rather than the scene.
+   */
+  function editScene(
+    layerId: string,
+    commands: readonly SceneCommand[],
+    label: string,
+    coalesceAs?: string
+  ) {
+    const document = requireDocument()
+    const layer = findLayer(document, layerId)
+    if (layer.kind !== "vector")
+      throw new Error(`${layer.name} holds paint, not shapes.`)
+    if (layer.locked) throw new Error(`${layer.name} is locked.`)
+    if (commands.length === 0) return
+    if (shapeDrag?.layerId === layerId) dropShapeDrag()
+    if (vectorTransform?.layerId === layerId) cancelVectorTransform()
+    const { scene, inverse } = applySceneEdit(layer.scene, commands)
+    layer.scene = scene
+    recordOperation(label, captureStructure(document), {
+      scenes: [{ layerId, forward: [...commands], inverse }],
+      coalesceAs,
+    })
+    applyLayerChange()
+  }
+
+  let vectorTransform:
+    | {
+        layerId: string
+        scene: VectorScene
+        ids: readonly string[]
+        box: Extent
+        session: TransformSession
+      }
+    | undefined
+
+  function selectedVectorLayer() {
+    const layer = activeLayer(requireDocument())
+    if (layer.kind !== "vector") throw new Error("Select a vector layer first.")
+    return layer
+  }
+
+  /**
+   * What a band dragged from `anchor` to `point` selects: a click's point,
+   * or the rectangle as it is on screen, which on a turned or flipped view
+   * is a turned shape in the document, its corners in order round it.
+   */
+  function boxSelection(anchor: Point, point: Point): Point | Point[] {
+    if (
+      Math.hypot(point.x - anchor.x, point.y - anchor.y) <
+      3 / snapshot.view.zoom
+    )
+      return point
+    const toScreen = invertViewMatrix(toDoc)
+    const a = applyViewMatrix(toScreen, anchor.x, anchor.y),
+      b = applyViewMatrix(toScreen, point.x, point.y)
+    return [
+      { x: a.x, y: a.y },
+      { x: b.x, y: a.y },
+      { x: b.x, y: b.y },
+      { x: a.x, y: b.y },
+    ].map((corner) => applyViewMatrix(toDoc, corner.x, corner.y))
+  }
+
+  /** The tool's default stays as it was; the selection's own style is
+   * derived from the scene as it is published. */
+  function setVectorSelection(ids: readonly string[]) {
+    publish({ vectorSelection: ids })
+  }
+
+  /**
+   * Selects the vector layer's objects among `ids`, or all of them; the
+   * eraser's cut-outs are not objects an artist picks.
+   */
+  function selectVectorObjects(ids?: readonly string[]) {
+    cancelVectorTransform()
+    setVectorSelection(
+      selectedVectorLayer()
+        .scene.objects.filter((o) => !o.erase && (!ids || ids.includes(o.id)))
+        .map((o) => o.id)
+    )
+  }
+
+  /** The node tool lets go of its nodes before the paths; true if it did. */
+  function releaseNodes(): boolean {
+    if (tool !== "node" || !snapshot.vectorNodes.length) return false
+    dropShapeDrag()
+    publish({ vectorNodes: [] })
+    return true
+  }
+
+  /** Lets go of the selected objects; true if any were held. */
+  function releaseObjects(): boolean {
+    if (!snapshot.vectorSelection.length) return false
+    cancelVectorTransform()
+    publish({ vectorSelection: [] })
+    return true
+  }
+
+  function selectVectorRegion(
+    region: Point | Extent | readonly Point[],
+    additive = false
+  ) {
+    cancelVectorTransform()
+    const ids = selectObjects(selectedVectorLayer().scene, region)
+    setVectorSelection(
+      additive ? [...new Set([...snapshot.vectorSelection, ...ids])] : ids
+    )
+  }
+
+  /**
+   * A pressure stroke's width lives on its nodes, so a new outline width
+   * scales them, keeping the shape of its swell.
+   */
+  function widthScaled(
+    o: VectorObject,
+    width: number | undefined
+  ): { geometry?: VectorObject["geometry"] } {
+    const was = o.style.stroke?.width
+    if (
+      width === undefined ||
+      !was ||
+      width === was ||
+      o.geometry.kind !== "path" ||
+      !o.geometry.nodes.some((n) => n.width !== undefined)
+    )
+      return {}
+    const scale = width / was
+    return {
+      geometry: {
+        ...o.geometry,
+        nodes: o.geometry.nodes.map((n) =>
+          n.width === undefined ? n : { ...n, width: n.width * scale }
+        ),
+      },
+    }
+  }
+
+  function applySelectedStyle(
+    color?: string,
+    change?: Extract<EngineCommand, { type: "setShapeStyle" }>
+  ) {
+    if (!snapshot.vectorSelection.length || !doc) return
+    const layer = activeLayer(doc)
+    if (layer.kind !== "vector" || layer.locked) return
+    cancelVectorTransform()
+    const style = snapshot.shapeStyle
+    const paint = { color: color ?? snapshot.color.hex, opacity: style.opacity }
+    // One opacity for both paints when it is asked for; otherwise each keeps
+    // its own, and a paint just turned on takes the one already there.
+    const opacityOf = (o: VectorObject, part: "fill" | "stroke") =>
+      change?.opacity ??
+      o.style[part]?.opacity ??
+      o.style[part === "fill" ? "stroke" : "fill"]?.opacity ??
+      paint.opacity
+    const commands: SceneCommand[] = layer.scene.objects
+      .filter((o) => snapshot.vectorSelection.includes(o.id))
+      .map((o) => ({
+        type: "update",
+        id: o.id,
+        patch: {
+          ...widthScaled(o, change?.strokeWidth),
+          style: color
+            ? {
+                fill: o.style.fill ? { ...o.style.fill, color } : null,
+                stroke: o.style.stroke ? { ...o.style.stroke, color } : null,
+              }
+            : {
+                fill:
+                  change?.fill === false
+                    ? null
+                    : o.style.fill || change?.fill === true
+                      ? {
+                          ...(o.style.fill ?? {
+                            ...paint,
+                            rule: "nonzero" as const,
+                          }),
+                          color:
+                            change?.fillColor ??
+                            o.style.fill?.color ??
+                            paint.color,
+                          opacity: opacityOf(o, "fill"),
+                        }
+                      : null,
+                stroke:
+                  change?.stroke === false
+                    ? null
+                    : o.style.stroke || change?.stroke === true
+                      ? {
+                          ...(o.style.stroke ?? paint),
+                          color:
+                            change?.strokeColor ??
+                            o.style.stroke?.color ??
+                            paint.color,
+                          opacity: opacityOf(o, "stroke"),
+                          width:
+                            change?.strokeWidth ??
+                            o.style.stroke?.width ??
+                            style.strokeWidth,
+                          cap:
+                            change?.strokeCap ??
+                            o.style.stroke?.cap ??
+                            style.strokeCap,
+                          join:
+                            change?.strokeJoin ??
+                            o.style.stroke?.join ??
+                            style.strokeJoin,
+                        }
+                      : null,
+              },
+        },
+      }))
+    // What a new shape is given is left as it was: the selection's own
+    // style is read back from the scene as it is published.
+    // A colour dragged across the picker is one act, however many commands
+    // it sends, so a run of changes to the same fields of the same objects is
+    // one step, as a layer's sliders are.
+    const fields = change
+      ? Object.keys(change)
+          .filter((key) => key !== "type")
+          .sort()
+          .join(",")
+      : "color"
+    editScene(
+      layer.id,
+      commands,
+      "style objects",
+      `style:${layer.id}:${[...snapshot.vectorSelection].sort().join(",")}:${fields}`
+    )
+  }
+
+  async function beginVectorTransform() {
+    await commitTransform()
+    await commitLayerTransform()
+    cancelVectorTransform()
+    const layer = selectedVectorLayer()
+    if (layer.locked) throw new Error(`${layer.name} is locked.`)
+    const ids = [...snapshot.vectorSelection]
+    const box = objectsBounds(layer.scene, ids)
+    if (!box) return
+    const scene = layer.scene
+    const session = beginTransform(
+      {
+        source: {
+          width: Math.max(1, box.width),
+          height: Math.max(1, box.height),
+        },
+        preview(matrix) {
+          drawScene(
+            layer.id,
+            applySceneEdit(scene, transformObjects(scene, ids, matrix)).scene
+          )
+          render()
+        },
+        commit(matrix) {
+          editScene(
+            layer.id,
+            transformObjects(scene, ids, matrix),
+            "transform objects"
+          )
+        },
+        cancel() {
+          drawScene(layer.id, scene)
+          render()
+        },
+      },
+      [1, 0, 0, 1, 0, 0]
+    )
+    vectorTransform = { layerId: layer.id, scene, ids, box, session }
+    const base = snapTargetsBesides(layer.id)
+    const local = snapTargets(
+      requireDocument(),
+      scene.objects
+        .filter((o) => !o.erase && !ids.includes(o.id))
+        .map(vectorObjectBounds)
+        .filter((b) => b != null)
+    )
+    publish({
+      vectorTransform: {
+        placement: {
+          x: box.x + box.width / 2,
+          y: box.y + box.height / 2,
+          width: Math.max(1, box.width),
+          height: Math.max(1, box.height),
+          rotation: 0,
+          flipX: false,
+          flipY: false,
+        },
+        snapTargets: { x: [...base.x, ...local.x], y: [...base.y, ...local.y] },
+      },
+    })
+  }
+
+  function adjustVectorTransform(matrix: Affine, snap: boolean) {
+    const transform = vectorTransform
+    if (!transform) throw new Error("No objects are being transformed.")
+    let next = matrix
+    if (snap) {
+      const scene = applySceneEdit(
+        transform.scene,
+        transformObjects(transform.scene, transform.ids, matrix)
+      ).scene
+      const box = objectsBounds(scene, transform.ids)
+      if (box) {
+        const others = transform.scene.objects
+          .filter((o) => !o.erase && !transform.ids.includes(o.id))
+          .map((o) => vectorObjectBounds(o))
+          .filter((b) => b != null)
+        const base = snapTargetsBesides(transform.layerId)
+        const local = snapTargets(requireDocument(), others)
+        const resolved = resolveSnap(
+          box,
+          { x: [...base.x, ...local.x], y: [...base.y, ...local.y] },
+          6 / snapshot.view.zoom
+        )
+        next = [
+          matrix[0],
+          matrix[1],
+          matrix[2],
+          matrix[3],
+          matrix[4] + resolved.dx,
+          matrix[5] + resolved.dy,
+        ]
+      }
+    }
+    transform.session.update(next)
+  }
+
+  function commitVectorTransform() {
+    const transform = vectorTransform
+    vectorTransform = undefined
+    transform?.session.commit()
+    if (transform) publish({ vectorTransform: null })
+  }
+
+  function cancelVectorTransform() {
+    const transform = vectorTransform
+    vectorTransform = undefined
+    transform?.session.cancel()
+    if (transform) publish({ vectorTransform: null })
+  }
+
+  /** Puts an undo or redo step's scene edits into the layers they name. */
+  function applySceneChanges(
+    document: PaintDocument,
+    changes: readonly SceneChange[],
+    direction: "undo" | "redo"
+  ) {
+    const ordered = direction === "undo" ? [...changes].reverse() : changes
+    for (const change of ordered) {
+      const node = findNodeIn(document.layers, change.layerId)
+      if (node?.kind !== "vector") continue
+      node.scene = applySceneEdit(
+        node.scene,
+        direction === "undo" ? change.inverse : change.forward
+      ).scene
+    }
+  }
+
+  /**
+   * What taking a node out of the tree does to its vector layers' scenes:
+   * nothing going forward — the layers are gone — and every object put back
+   * going back, since the layers return empty with the tree.
+   */
+  function sceneRemovals(node: LayerNode): SceneChange[] {
+    return leafLayers([node]).flatMap((layer) =>
+      layer.kind === "vector" && layer.scene.objects.length > 0
+        ? [
+            {
+              layerId: layer.id,
+              forward: [],
+              inverse: layer.scene.objects.map((object) => ({
+                type: "add" as const,
+                object,
+              })),
+            },
+          ]
+        : []
+    )
+  }
+
+  /** The problem shown, unless it was a node edit's that has since applied. */
+  function nodeProblemGone(): ExplainedFailure | null {
+    const message = snapshot.problem?.message
+    return message === CANNOT_INSERT || message === CANNOT_BREAK
+      ? null
+      : snapshot.problem
+  }
+
+  /** Ids for new objects, counting on from the highest `scene` has. */
+  function objectIds(scene: VectorScene): () => string {
+    let next = Number(nextObjectId(scene).slice("shape-".length))
+    return () => `shape-${next++}`
+  }
+
+  /** An id no object in `scene` has. */
+  function nextObjectId(scene: VectorScene): string {
+    let highest = 0
+    for (const object of scene.objects) {
+      const sequence = /^shape-(\d+)$/.exec(object.id)
+      if (sequence) highest = Math.max(highest, Number(sequence[1]))
+    }
+    return `shape-${highest + 1}`
+  }
+
+  /**
+   * The pen's mean lean over a stroke, turned from the screen into the
+   * document, so a rotated or flipped view keeps the nib where the hand held
+   * it. A mouse stroke has none, and its nib keeps the brush's fixed angle.
+   */
+  function strokeTilt(drag: NonNullable<typeof shapeDrag>): {
+    tilt?: number
+  } {
+    const angle = drag.tilt?.angle()
+    if (angle === undefined) return {}
+    const x = Math.cos(angle),
+      y = Math.sin(angle)
+    return {
+      tilt: Math.atan2(
+        toDoc[1] * x + toDoc[3] * y,
+        toDoc[0] * x + toDoc[2] * y
+      ),
+    }
+  }
+
+  /**
+   * The vector brush's stroke as fitted so far, fed the samples it has not
+   * seen. Its width and taper are the ones it began with.
+   */
+  function pressureStroke(drag: NonNullable<typeof shapeDrag>): BezierPath {
+    drag.pressureFit ??= {
+      // A smoother brush fits its spine more loosely to the hand.
+      fit: createPressureFit(
+        snapshot.shapeStyle.strokeWidth,
+        undefined,
+        fitTolerance() *
+          (1 + 3 * (drag.vectorBrush ?? snapshot.vectorBrush).params.smoothing)
+      ),
+      fed: 0,
+      mesh: createLiveStrokeMesh(),
+    }
+    const live = drag.pressureFit
+    live.fit.add(drag.pressurePoints!.slice(live.fed))
+    live.fed = drag.pressurePoints!.length
+    return live.fit.path(drag.ended)
+  }
+
+  /** Whether the drag is a vector brush stroke still being drawn. */
+  function sketching(drag: NonNullable<typeof shapeDrag>): boolean {
+    return drag.tool === "pressure" && !drag.ended
+  }
+
+  /**
+   * The rectangle a drag outlines, in the shape style and the current
+   * colour; nothing for a click, or with neither fill nor outline asked for.
+   */
+  function draggedShape(
+    drag: NonNullable<typeof shapeDrag>,
+    scene: VectorScene
+  ): VectorObject | null {
+    const style = snapshot.shapeStyle
+    if (drag.tool === "node") return null
+    if (
+      !style.fill &&
+      !style.stroke &&
+      drag.tool !== "line" &&
+      drag.tool !== "pressure"
+    )
+      return null
+    const box = dragRect(drag.anchor, drag.point, constrained())
+    if (drag.tool === "pen" && (drag.nodes?.length ?? 0) < 2) return null
+    if (
+      !["polygon", "pen", "pressure"].includes(drag.tool) &&
+      box.width < 1 &&
+      box.height < 1
+    )
+      return null
+    if (drag.tool === "polygon" && (drag.points?.length ?? 0) < 2) return null
+    const paint = {
+      color: snapshot.color.hex,
+      opacity: ink[3] * style.opacity,
+    }
+    return {
+      id: nextObjectId(scene),
+      geometry:
+        drag.tool === "pen"
+          ? {
+              kind: "path",
+              nodes: [...drag.nodes!],
+              closed: drag.closed ?? false,
+            }
+          : drag.tool === "pressure"
+            ? pressureStroke(drag)
+            : drag.tool === "ellipse"
+              ? {
+                  kind: "ellipse",
+                  cx: box.x + box.width / 2,
+                  cy: box.y + box.height / 2,
+                  rx: box.width / 2,
+                  ry: box.height / 2,
+                }
+              : drag.tool === "line"
+                ? {
+                    kind: "polygon",
+                    points: [drag.anchor, drag.point],
+                    closed: false,
+                  }
+                : drag.tool === "polygon"
+                  ? {
+                      kind: "polygon",
+                      points: [...(drag.points ?? [drag.anchor]), drag.point],
+                      closed: true,
+                    }
+                  : { kind: "rect", ...box },
+      ...(drag.tool === "pressure"
+        ? {
+            brush: {
+              definition: drag.vectorBrush ?? snapshot.vectorBrush,
+              seed: drag.brushSeed ?? 0,
+              ...strokeTilt(drag),
+            },
+          }
+        : {}),
+      transform: [1, 0, 0, 1, 0, 0],
+      style: sketching(drag)
+        ? {
+            fill: null,
+            stroke: {
+              color: SKETCH_COLOR,
+              opacity: 1,
+              width:
+                SKETCH_WIDTH *
+                viewport.devicePixelRatio *
+                Math.hypot(toDoc[0], toDoc[1]),
+              cap: "round",
+              join: "round",
+            },
+          }
+        : {
+            fill:
+              style.fill && !drawsOutlineOnly(drag.tool)
+                ? {
+                    ...paint,
+                    color: style.fillColor ?? paint.color,
+                    rule: "nonzero",
+                  }
+                : null,
+            stroke:
+              style.stroke ||
+              drawsOutlineOnly(drag.tool) ||
+              (drag.tool === "pen" && !drag.closed)
+                ? {
+                    ...paint,
+                    color: style.strokeColor ?? paint.color,
+                    width: style.strokeWidth,
+                    cap: style.strokeCap,
+                    join: style.strokeJoin,
+                  }
+                : null,
+          },
+    }
+  }
+
+  /** One frame of a shape drag: drawn into its layer, added as the pen lifts. */
+  /**
+   * The eraser on a vector layer (19). Taking objects, those its tip touches
+   * drop out of the layer as it moves, and lifting it removes them as one
+   * step. Taking pixels, its path is fitted as the vector brush's is and
+   * kept in the scene as an eraser's mark, above what it erased.
+   */
+  let vectorErase:
+    | {
+        mode: "object"
+        layerId: string
+        scene: VectorScene
+        eraser: ReturnType<typeof objectEraser>
+        ended: boolean
+      }
+    | {
+        mode: "pixel"
+        layerId: string
+        scene: VectorScene
+        id: string
+        points: PressurePoint[]
+        fit: ReturnType<typeof createPressureFit>
+        fed: number
+        style: VectorStyle
+        ended: boolean
+      }
+    | undefined
+
+  /** The eraser's mark as drawn so far, or null before it has a point. */
+  function eraseMark(
+    erase: Extract<NonNullable<typeof vectorErase>, { mode: "pixel" }>
+  ): VectorObject | null {
+    if (!erase.points.length) return null
+    erase.fit.add(erase.points.slice(erase.fed))
+    erase.fed = erase.points.length
+    let geometry = erase.fit.path(erase.ended)
+    // A dab, not a drag: a path needs two nodes, so it gets a hair's length.
+    if (geometry.nodes.length < 2) {
+      const [node] = geometry.nodes
+      geometry = {
+        ...geometry,
+        nodes: [node, { ...node, x: node.x + 0.01 }],
+      }
+    }
+    return {
+      id: erase.id,
+      geometry,
+      transform: [1, 0, 0, 1, 0, 0],
+      style: erase.style,
+      erase: true,
+    }
+  }
+
+  function drawVectorErase() {
+    const erase = vectorErase!
+    let took = false
+    samples.drain((x, y, pressure) => {
+      const at = { x: toDocX(x, y), y: toDocY(x, y) }
+      if (erase.mode === "object") {
+        if (erase.eraser.moveTo(at)) took = true
+        return
+      }
+      // Half a pixel apart is as fine as a mark needs to follow the hand.
+      const last = erase.points.at(-1)
+      if (last && Math.hypot(at.x - last.x, at.y - last.y) < 0.5) return
+      if (erase.points.length >= MAX_POLYGON_POINTS) return
+      erase.points.push({
+        ...at,
+        // The pressure eraser's tip, as on paint: a tenth of it at a touch.
+        pressure:
+          eraser.id === "eraser:pressure"
+            ? 0.1 + 0.9 * Math.max(0, Math.min(1, pressure))
+            : 1,
+      })
+      took = true
+    })
+    if (erase.mode === "pixel") {
+      const mark = eraseMark(erase)
+      if (erase.ended) {
+        vectorErase = undefined
+        forgetGestureInput()
+        if (mark)
+          editScene(
+            erase.layerId,
+            [{ type: "add", object: mark }],
+            "erase pixels"
+          )
+        if (snapshot.status === "ready") render()
+        return
+      }
+      if (took && mark) {
+        drawScene(erase.layerId, {
+          objects: [...erase.scene.objects, mark],
+        })
+        if (snapshot.status === "ready") render()
+      }
+      frame = requestAnimationFrame(drawFrame)
+      return
+    }
+    const { hit } = erase.eraser
+    if (erase.ended) {
+      vectorErase = undefined
+      forgetGestureInput()
+      if (hit.size) {
+        editScene(
+          erase.layerId,
+          [...hit].map((id) => ({ type: "remove" as const, id })),
+          "erase objects"
+        )
+        publish({
+          vectorSelection: snapshot.vectorSelection.filter(
+            (id) => !hit.has(id)
+          ),
+        })
+      }
+      if (snapshot.status === "ready") render()
+      return
+    }
+    if (took) {
+      drawScene(erase.layerId, {
+        objects: erase.scene.objects.filter((o) => !hit.has(o.id)),
+      })
+      if (snapshot.status === "ready") render()
+    }
+    frame = requestAnimationFrame(drawFrame)
+  }
+
+  /** Puts back what an abandoned vector erase took out of view. */
+  function dropVectorErase() {
+    const erase = vectorErase
+    if (!erase) return
+    vectorErase = undefined
+    forgetGestureInput()
+    drawScene(erase.layerId, erase.scene)
+    if (snapshot.status === "ready") render()
+  }
+
+  function drawShapeDrag() {
+    const drag = shapeDrag!
+    const pressureSink = (
+      x: number,
+      y: number,
+      pressure: number,
+      tiltX: number,
+      tiltY: number,
+      time: number
+    ) => {
+      drag.tilt?.add(tiltX, tiltY)
+      if (drag.pressurePoints!.length < 100_000)
+        drag.pressurePoints!.push({
+          x,
+          y,
+          pressure: drag.thin ? drag.thin(x, y, pressure, time) : pressure,
+        })
+    }
+    samples.drain((x, y, pressure, tiltX, tiltY, time) => {
+      let point = { x: toDocX(x, y), y: toDocY(x, y) }
+      if (drag.node && drag.nodeAt) {
+        // A press near a part, not on it, grabs it where it sits: the part
+        // follows the pointer's travel, and only once it is a drag.
+        const dx = point.x - drag.anchor.x,
+          dy = point.y - drag.anchor.y
+        if (
+          !drag.nodeMoved &&
+          Math.hypot(dx, dy) * snapshot.view.zoom < NODE_DRAG_THRESHOLD
+        )
+          return
+        drag.nodeMoved = true
+        point = { x: drag.nodeAt.x + dx, y: drag.nodeAt.y + dy }
+      }
+      // The grabbed node snaps; the rest follow its snapped offset. A
+      // snap moves it along the locked axis only, never off it.
+      // On a handle, Ctrl snaps the angle instead, in `dragNodes`.
+      const lock =
+        ctrlHeld && drag.node && !isHandle(drag.node.part)
+          ? drag.nodeAt
+          : undefined
+      const locked = lock ? lockAxis(lock, point) : point
+      // A band follows the hand: snapping its corner would pull it off
+      // the cursor onto whatever it passes.
+      drag.point =
+        drag.tool === "pressure" || isBand(drag)
+          ? point
+          : snapVectorPoint(locked, drag.layerId)
+      if (lock)
+        drag.point =
+          locked.y === lock.y
+            ? { x: drag.point.x, y: lock.y }
+            : { x: lock.x, y: drag.point.y }
+      if (drag.tool === "pen" && drag.placing && !drag.ended) {
+        const at = drag.nodes!.length - 1,
+          node = drag.nodes![at]
+        // Alt at the press samples, so Alt joining a press that has not yet
+        // moved is how an anchor goes down unsnapped.
+        const pressed = drag.pressedAt!
+        if (
+          altHeld &&
+          Math.hypot(point.x - pressed.x, point.y - pressed.y) *
+            snapshot.view.zoom <
+            NODE_DRAG_THRESHOLD
+        ) {
+          drag.nodes![at] = { ...pressed, in: null, out: null, type: "cusp" }
+          drag.point = pressed
+          if (at === 0) drag.anchor = pressed
+          return
+        }
+        const dx = drag.point.x - node.x,
+          dy = drag.point.y - node.y
+        drag.nodes![at] = {
+          ...node,
+          in: { x: node.x - dx, y: node.y - dy },
+          out: drag.point,
+          type: Math.hypot(dx, dy) > 0 ? "smooth" : "cusp",
+        }
+      }
+      if (drag.tool === "pressure") {
+        drag.pressureTail = { ...point, pressure, tiltX, tiltY, time }
+        const filtered = stabilizer.filter(point.x, point.y)
+        drag.pressureResampler!.extend(
+          filtered.x,
+          filtered.y,
+          pressure,
+          tiltX,
+          tiltY,
+          time,
+          pressureSink
+        )
+      }
+    })
+    if (drag.ended && drag.tool === "pressure") {
+      const tail = drag.pressureTail!
+      drag.pressureResampler!.extend(
+        tail.x,
+        tail.y,
+        tail.pressure,
+        tail.tiltX,
+        tail.tiltY,
+        tail.time,
+        pressureSink
+      )
+      drag.pressureResampler!.end(pressureSink)
+      // Arc-length stamps can stop short by one spacing; editable paths
+      // retain the exact lift position and its pressure.
+      const last = drag.pressurePoints!.at(-1)
+      if (
+        !last ||
+        last.x !== tail.x ||
+        last.y !== tail.y ||
+        last.pressure !== tail.pressure
+      )
+        drag.pressurePoints!.push({
+          x: tail.x,
+          y: tail.y,
+          pressure: drag.thin
+            ? drag.thin(tail.x, tail.y, tail.pressure, tail.time)
+            : tail.pressure,
+        })
+    }
+    const document = requireDocument()
+    const layer = findNodeIn(document.layers, drag.layerId)
+    if (
+      layer?.kind !== "vector" ||
+      layer.locked ||
+      document.activeLayerId !== drag.layerId ||
+      document.paintingMask
+    ) {
+      dropShapeDrag()
+      return
+    }
+    const at = drag.previewAt
+    const moved =
+      !at ||
+      at.x !== drag.point.x ||
+      at.y !== drag.point.y ||
+      at.square !== constrained()
+    if (!drag.ended && !moved && !["pen", "pressure"].includes(drag.tool)) {
+      frame = requestAnimationFrame(drawFrame)
+      return
+    }
+    const shape = draggedShape(drag, layer.scene)
+    // A stroke being drawn is meshed piece by piece, its finished curves
+    // kept from frame to frame, rather than whole as any other object is.
+    const live = drag.pressureFit
+    if (live && shape?.style.stroke && !drag.ended) {
+      const pieces = live.fit.pieces()
+      if (pieces.length) {
+        const stroke = shape.style.stroke
+        const levels = new Map<
+          number,
+          { fill: Mesh | null; stroke: Mesh | null }
+        >()
+        for (const detail of new Set([1, screenDetail]))
+          levels.set(detail, {
+            fill: null,
+            stroke: live.mesh.mesh(pieces, stroke, detail, sketching(drag)),
+          })
+        meshes.set(shape, levels)
+      }
+    }
+    if (drag.ended) {
+      shapeDrag = undefined
+      forgetGestureInput()
+      publish({ penNodes: [] })
+      if (isBand(drag)) {
+        if (drag.nodeBox) endNodeBox(drag)
+        else
+          selectVectorRegion(boxSelection(drag.anchor, drag.point), shiftHeld)
+        drawScene(layer.id, layer.scene)
+        showSelection(selection)
+        render()
+        return
+      }
+      const moved = drag.node && nodeDragEdits(drag, layer.scene)
+      if (drag.node) publish({ vectorHandleHeld: false })
+      if (drag.ctrlClick && drag.node && !moved?.length) {
+        const retracted = retractHandle(drag.node)
+        if (retracted.length) editScene(layer.id, retracted, "retract handle")
+      }
+      // A click, not a drag, on one of several selected nodes selects it
+      // alone; the press kept them all in case it became a drag. With Ctrl
+      // it also turns the node to the next type (Inkscape); Ctrl dragged
+      // is the axis lock instead.
+      if (drag.node?.part === "anchor" && !moved?.length) {
+        const clicked = {
+          objectId: drag.node.object.id,
+          index: drag.node.index,
+        }
+        const geometry = drag.node.object.geometry
+        const cycled =
+          drag.ctrlClick &&
+          geometry.kind === "path" &&
+          nodeCommand(
+            layer.scene,
+            [clicked],
+            nextNodeType(geometry.nodes[clicked.index].type)
+          )
+        if (cycled) editScene(layer.id, cycled.edits, "edit node")
+        publish({ vectorNodes: [clicked] })
+      }
+      if (moved?.length) {
+        editScene(
+          layer.id,
+          moved,
+          drag.node?.part === "segment" ? "bend segment" : "move nodes"
+        )
+      } else if (shape && !drag.node) {
+        editScene(
+          layer.id,
+          [{ type: "add", object: shape }],
+          `draw ${drag.tool}`
+        )
+        // A brush stroke is left unselected, as paint is: the width and
+        // colour then set up the next stroke rather than edit this one.
+        publish({ vectorSelection: drag.tool === "pen" ? [shape.id] : [] })
+      } else {
+        drawScene(layer.id, layer.scene)
+        if (snapshot.status === "ready") render()
+      }
+      return
+    }
+    drag.previewAt = { ...drag.point, square: constrained() }
+    drag.preview = isBand(drag)
+      ? layer.scene
+      : drag.node
+        ? applySceneEdit(layer.scene, nodeDragEdits(drag, layer.scene)).scene
+        : shape
+          ? applySceneEdit(layer.scene, [{ type: "add", object: shape }]).scene
+          : layer.scene
+    drawScene(layer.id, drag.preview)
+    notifyVectorControls()
+    if (isBand(drag)) {
+      const band = boxSelection(drag.anchor, drag.point)
+      holdSelection(Array.isArray(band) ? lassoSelection(document, band) : null)
+    }
+    try {
+      if (snapshot.status === "ready") render()
+    } catch (error) {
+      fail(error)
+      return
+    }
+    if (drag.tool !== "pen" || drag.placing)
+      frame = requestAnimationFrame(drawFrame)
+  }
+
+  /**
+   * Closes a polygon still being clicked out and keeps it, if it has the three
+   * corners a shape needs; with fewer it is left for the caller to drop.
+   */
+  function closePolygon() {
+    const drag = shapeDrag
+    if (
+      drag?.tool !== "polygon" ||
+      drag.ended ||
+      (drag.points?.length ?? 0) < 3
+    )
+      return
+    endPolygon(drag)
+    drawShapeDrag()
+  }
+
+  /** Ends a polygon at its first corner, to be kept as the next frame draws. */
+  function endPolygon(drag: NonNullable<typeof shapeDrag>) {
+    drag.point = drag.anchor
+    drag.ended = true
+  }
+
+  /** A drag that draws a selection band rather than a shape. */
+  const isBand = (drag: NonNullable<typeof shapeDrag>) =>
+    drag.tool === "objectSelect" || !!drag.nodeBox
+
+  /** Drops a shape drag, its layer drawn as it was. */
+  function dropShapeDrag() {
+    const drag = shapeDrag
+    if (!drag) return
+    shapeDrag = undefined
+    forgetGestureInput()
+    publish({
+      penNodes: [],
+      vectorSelection: snapshot.vectorSelection,
+      vectorHandleHeld: false,
+    })
+    if (isBand(drag)) showSelection(selection)
+    const layer = doc && findNodeIn(doc.layers, drag.layerId)
+    if (layer?.kind === "vector") drawScene(layer.id, layer.scene)
+    if (snapshot.status === "ready") render()
+  }
+
   /** Hands the renderer whatever pixels each layer's surface has gained. */
   function uploadLayers() {
     if (!renderer || !doc) return
@@ -1529,7 +4413,19 @@ export function createEngine(
         node.children.forEach(upload)
         return
       }
+      if (node.kind === "vector") {
+        // A shape being dragged out is shown in its layer as it goes.
+        drawScene(
+          node.id,
+          shapeDrag?.layerId === node.id && shapeDrag.preview
+            ? shapeDrag.preview
+            : node.scene
+        )
+        return
+      }
       const layer = node
+      // A layer rasterised, by command or by redo, is drawn from its pixels.
+      target.setVectorScene(layer.id, null)
       // Hashed before the upload clears the mark: these texels are exactly
       // what the GPU is about to hold, so the first stroke over them knows
       // what it covered without reading anything back.
@@ -1554,6 +4450,9 @@ export function createEngine(
   function syncComposition() {
     if (!renderer || !doc) return
     renderer.setComposition(planComposite(doc, { highlight }))
+    // However the document came to its paper: chosen, undone, opened.
+    renderer.setPaper(doc.paper)
+    renderer.setBoard(doc.board)
   }
 
   /** The stack as the snapshot carries it: settings, never pixels. */
@@ -1568,6 +4467,14 @@ export function createEngine(
           ...settings,
           ...(mask ? { mask } : {}),
           children: Object.freeze(children.map(describe)),
+        })
+      }
+      if (node.kind === "vector") {
+        const { scene, mask: _mask, ...settings } = node
+        return Object.freeze({
+          ...settings,
+          objects: scene.objects.length,
+          ...(mask ? { mask } : {}),
         })
       }
       const { surface: _surface, mask: _mask, ...settings } = node
@@ -1589,6 +4496,9 @@ export function createEngine(
       layers: Object.freeze(document.layers.map(describe)),
       activeLayerId: document.activeLayerId,
       paintingMask: document.paintingMask,
+      guides: Object.freeze([...document.guides]),
+      paper: document.paper,
+      board: document.board,
     }
   }
 
@@ -1639,11 +4549,301 @@ export function createEngine(
    * the frame that shows it is drawn.
    */
   function applyLayerChange() {
+    if (doc && snapshot.paintingMask !== doc.paintingMask) {
+      cancelStroke()
+      cleanBrush()
+    }
     const document = requireDocument()
+    if (shapeDrag) {
+      const target = findNodeIn(document.layers, shapeDrag.layerId)
+      if (
+        target?.kind !== "vector" ||
+        target.locked ||
+        document.activeLayerId !== shapeDrag.layerId ||
+        document.paintingMask
+      )
+        dropShapeDrag()
+    }
     uploadLayers()
     syncComposition()
-    publish(describeLayers(document))
+    const layer = activeLayer(document)
+    const ids =
+      layer.kind === "vector"
+        ? snapshot.vectorSelection.filter((id) =>
+            layer.scene.objects.some((o) => o.id === id)
+          )
+        : []
+    publish({ ...describeLayers(document), vectorSelection: ids })
     if (snapshot.status === "ready") render()
+  }
+
+  // The selection (07). History names each one it made by key, so undoing a
+  // selection step is the tree plus the key to go back to; the masks are
+  // immutable and share their tiles, which keeps every one of them cheap.
+  let selection: SelectionMask | null = null
+  let selectionKey: string | null = null
+  const selections = new Map<string, SelectionMask>()
+  let nextSelectionKey = 0
+  /**
+   * A selection tool's gesture in progress, in document pixels: a drag for
+   * the marquees and the freehand lasso, a run of clicks for the polygonal
+   * one (09), which outlives each pen-up until the outline is closed.
+   */
+  let marquee:
+    | {
+        shape: "rect" | "ellipse"
+        anchor: Point
+        point: Point
+        mode: SelectionMode
+        ended: boolean
+      }
+    | { shape: "lasso"; points: Point[]; mode: SelectionMode; ended: boolean }
+    /** The move-outline tool (11): the selection dragged, pixels left put. */
+    | { shape: "move"; anchor: Point; point: Point; ended: boolean }
+    | {
+        shape: "polygon"
+        points: Point[]
+        mode: SelectionMode
+        /** The pen is down, placing the last vertex. */
+        placing: boolean
+        /** When the last vertex went down, for telling a double-click. */
+        clickedAt: number
+        /**
+         * The click that closes the outline, which takes effect as the pen
+         * lifts so the rest of its gesture is not read as a stroke.
+         */
+        closing?: "commit" | "drop"
+      }
+    | undefined
+  /** Shift and Alt/Option, as the pen last reported them. */
+  let shiftHeld = false
+  let wand: WandOptions = DEFAULT_WAND
+  let altHeld = false
+  /** Ctrl, which locks a node drag to one axis. */
+  let ctrlHeld = false
+  /**
+   * Shift chose the combine mode as the pen went down, so it is not also a
+   * constraint until it has been let go and pressed again — the way a
+   * marquee is both added and squared in every editor the hand learned on.
+   */
+  let shiftLatched = false
+  const constrained = () => shiftHeld && !shiftLatched
+  /** How near the first vertex, in backing pixels, a click closes a polygon. */
+  const CLOSE_RADIUS = 8
+  // How far the ants have marched. They move on a timer of their own, which
+  // runs only while there is a selection to outline.
+  let antsPhase = 0
+  let antsTimer: ReturnType<typeof setInterval> | undefined
+  const ANTS_INTERVAL_MS = 120
+
+  /** The selection as the renderer was last given it. */
+  let heldSelection: SelectionMask | null = null
+
+  /**
+   * Gives the renderer the selection to clip to, which a gesture's preview
+   * does as well as a selection made. Wet paint is held in by the selection
+   * it was laid under (fluid brushes 09), so it dries, as that selection
+   * left it, before the renderer is given any other.
+   */
+  function holdSelection(mask: SelectionMask | null) {
+    if (mask !== heldSelection && wetTargetId) dryFluid()
+    heldSelection = mask
+    renderer?.setSelection(mask)
+  }
+
+  /**
+   * What the screen and the snapshot show; history is not touched. `draw`
+   * is off where the caller is mid-way through replacing the document and
+   * draws once it is whole.
+   */
+  function showSelection(mask: SelectionMask | null, draw = true) {
+    selection = mask
+    holdSelection(mask)
+    publish({
+      selection: mask ? Object.freeze({ bounds: mask.bounds }) : null,
+    })
+    if (mask && !antsTimer && !disposed)
+      antsTimer = setInterval(() => {
+        antsPhase = (antsPhase + 1) % 8
+        // A frame of drawing already presents the ants where they are now.
+        if (frame !== undefined || snapshot.status !== "ready") return
+        try {
+          render()
+        } catch (error) {
+          fail(error)
+        }
+      }, ANTS_INTERVAL_MS)
+    if (!mask && antsTimer) {
+      clearInterval(antsTimer)
+      antsTimer = undefined
+    }
+    if (draw && snapshot.status === "ready") render()
+  }
+
+  /** Makes `mask` the selection as one undo step. */
+  function commitSelection(label: string, mask: SelectionMask | null) {
+    if (sameSelection(mask, selection)) {
+      // Nothing changed, so not a step; a drag's preview is put back.
+      showSelection(selection)
+      return
+    }
+    const document = requireDocument()
+    // Before the step is recorded, so the paint's settle is the step under
+    // it: a gesture that previewed nothing comes here with paint still wet.
+    if (wetTargetId) dryFluid()
+    const key = mask ? `selection-${++nextSelectionKey}` : null
+    if (mask) selections.set(key!, mask)
+    history?.recordOperation(
+      label,
+      {
+        before: { ...captureStructure(document), selection: selectionKey },
+        after: { ...captureStructure(document), selection: key },
+      },
+      undefined
+    )
+    selectionKey = key
+    showSelection(mask)
+  }
+
+  /**
+   * Forgets every selection: the document it was drawn on is gone. Draws
+   * nothing, since the caller is still putting the new document in place.
+   */
+  function resetSelection() {
+    stopSelection()
+    showSelection(null, false)
+  }
+
+  /** The same, with nothing drawn: for a teardown that has no frame to draw. */
+  function stopSelection() {
+    marquee = undefined
+    selection = null
+    selectionKey = null
+    // The renderer it was given to is gone, or is about to be told.
+    heldSelection = null
+    selections.clear()
+    if (antsTimer) clearInterval(antsTimer)
+    antsTimer = undefined
+  }
+
+  /** The shape a selection gesture outlines right now. */
+  function marqueeShape(): SelectionMask | null {
+    if (!marquee || !doc) return null
+    if (marquee.shape === "move")
+      return selection
+        ? translateSelection(
+            doc,
+            selection,
+            marquee.point.x - marquee.anchor.x,
+            marquee.point.y - marquee.anchor.y
+          )
+        : null
+    if (marquee.shape === "lasso" || marquee.shape === "polygon")
+      return lassoSelection(doc, marquee.points)
+    const box = dragRect(marquee.anchor, marquee.point, constrained())
+    return marquee.shape === "rect"
+      ? rectSelection(doc, box)
+      : ellipseSelection(doc, box)
+  }
+
+  /** What the selection would become were the gesture to end now. */
+  function marqueeMask(): SelectionMask | null {
+    if (!marquee || !doc) return null
+    if (marquee.shape === "move") return marqueeShape()
+    return combineSelections(doc, selection, marqueeShape(), marquee.mode)
+  }
+
+  /** Shift adds, Alt/Option subtracts, both intersect (09). */
+  function modeFromModifiers(): SelectionMode {
+    if (shiftHeld && altHeld) return "intersect"
+    if (shiftHeld) return "add"
+    if (altHeld) return "subtract"
+    return "replace"
+  }
+
+  /**
+   * Straight-alpha RGBA8 of what the wand reads. The active layer's tiles are
+   * premultiplied linear half floats; they are brought to the same footing as
+   * the composite — display-encoded bytes — so a tolerance means the same
+   * number of levels whichever is sampled.
+   */
+  async function wandPixels(): Promise<RenderedPixels | WandPixels> {
+    const document = requireDocument()
+    if (wand.sample === "composite") return await capturePixels()
+    if (!renderer) throw new Error("The graphics device is not ready.")
+    const { width, height } = document
+    const coords = tilesCoveringRect({ x: 0, y: 0, width, height })
+    const tiles = await renderer.readTiles(paintTargetId(document), coords)
+    const data = new Uint8Array(width * height * 4)
+    coords.forEach((coord, index) => {
+      const texels = tiles[index]
+      const span = intersectRect(tileBounds(coord), {
+        x: 0,
+        y: 0,
+        width,
+        height,
+      })
+      if (!span) return
+      for (let y = span.y; y < span.y + span.height; y++)
+        for (let x = span.x; x < span.x + span.width; x++) {
+          const from =
+            ((y - coord.y * TILE_SIZE) * TILE_SIZE + x - coord.x * TILE_SIZE) *
+            4
+          const to = (y * width + x) * 4
+          const alpha = Math.min(
+            1,
+            Math.max(0, decodeFloat16(texels[from + 3]))
+          )
+          data[to + 3] = Math.round(alpha * 255)
+          if (alpha === 0) continue
+          for (let channel = 0; channel < 3; channel++)
+            data[to + channel] = Math.round(
+              encodeTransfer(decodeFloat16(texels[from + channel]) / alpha) *
+                255
+            )
+        }
+    })
+    return { width, height, data }
+  }
+
+  /**
+   * One click of the magic wand (10). Clicks are taken in turn, so a quick
+   * shift-click combines with the selection the click before it made rather
+   * than racing it; a document swapped out during the read is not selected in.
+   */
+  let wandQueue: Promise<void> = Promise.resolve()
+  function selectWand(point: Point, mode: SelectionMode): Promise<void> {
+    const run = wandQueue.then(async () => {
+      const document = doc
+      // The wand reads the layer's pixels, so they are final first (D42).
+      dryFluid()
+      const pixels = await wandPixels()
+      if (disposed || !doc || doc !== document) return
+      const shape = wandSelection(pixels, point, wand.tolerance)
+      // A click off the canvas picks nothing: a replacing wand lets go of the
+      // selection there, as a replacing marquee's click does.
+      const mask = combineSelections(doc, selection, shape, mode)
+      commitSelection(mask ? "select" : "deselect", mask)
+    })
+    wandQueue = run.catch(() => {})
+    return run
+  }
+
+  /** Ends a selection gesture, its outline becoming the selection. */
+  function commitMarquee() {
+    const moving = marquee?.shape === "move"
+    const mask = marqueeMask()
+    marquee = undefined
+    forgetGestureInput()
+    // A click without a drag is how a replacing marquee lets go of the
+    // selection; adding or subtracting nothing leaves it as it was, and
+    // intersecting with nothing empties it.
+    if (moving) {
+      // An outline dragged wholly off the canvas is let go of.
+      commitSelection(mask ? "move selection" : "deselect", mask)
+      return
+    }
+    commitSelection(mask ? "select" : "deselect", mask)
   }
 
   /**
@@ -1652,8 +4852,10 @@ export function createEngine(
    * This is where the dynamics graph (D23) meets the renderer: the pen state
    * interpolated to this dab becomes a stamp context, the graph turns that
    * into a modulation, and the modulation scales the brush's own radius and
-   * flow. Targets the stamp cannot yet express — tip angle, grain, scatter —
-   * are evaluated all the same and land when their renderers do (D24).
+   * flow, tip shape, grain and colour. Scatter turns the one position the
+   * resampler chose into as many dabs as the brush asks for, thrown off the
+   * path by its amount; they all go into the same stroke buffer, so coverage
+   * and buildup treat them as they treat any dabs that overlap (D27).
    */
   function emitStamp(
     x: number,
@@ -1663,6 +4865,10 @@ export function createEngine(
     tiltY: number,
     time: number
   ) {
+    if (directTargetId) {
+      emitDirect(x, y, pressure, tiltX, tiltY, time)
+      return
+    }
     // The tracker was opened by the pen going down, so every dab advances it:
     // the first one has not moved from that point and so has no speed yet.
     const brush = activeBrush()
@@ -1672,30 +4878,164 @@ export function createEngine(
       context,
       params
     )
-    if (stampCount === MAX_STAMPS_PER_DRAW) flushStamps()
-    const offset = stampCount * STAMP_STRIDE
-    stamps[offset + STAMP.CENTER_X] = x
-    stamps[offset + STAMP.CENTER_Y] = y
     const radius = brush.shape.radius * params.size
-    stamps[offset + STAMP.RADIUS] = radius
     // Flow: the dab's own opacity, not the stroke's, which is applied once
-    // when the buffer is composited (D27).
-    stamps[offset + STAMP.OPACITY] = brush.rendering.flow * params.flow
+    // when the buffer is composited (D27). A fluid stroke has no buffer to
+    // composite (D42), so the opacity the graph gives this dab is in the
+    // pigment it carries, with its flow.
+    const flow =
+      brush.rendering.flow * params.flow * (fluidTargetId ? params.opacity : 1)
     // Angle offsets the brush's own rotation and roundness scales its own
     // squash, which is what lets one dynamics list read the same on any tip.
-    stamps[offset + STAMP.ANGLE] = brush.shape.angle + params.angle
-    stamps[offset + STAMP.ROUNDNESS] = brush.shape.roundness * params.roundness
-    // The brush's own grain depth is in the uniform; this is what the graph
-    // does to it per dab, so a light touch can skim the paper (D24).
-    stamps[offset + STAMP.GRAIN_DEPTH] = params.grainDepth
-    stampCount++
-    frameStamps++
+    const angle = brush.shape.angle + params.angle
+    const roundness = brush.shape.roundness * params.roundness
+    const hue = params.hue * (brush.color?.hue ?? 1)
+    const saturation = params.saturation * (brush.color?.saturation ?? 1)
+    const lightness = params.lightness * (brush.color?.lightness ?? 1)
+    const count = scatterPlacer.place(
+      brush.scatter,
+      params.scatter,
+      radius,
+      context.direction,
+      scatterOffsets
+    )
+    for (let i = 0; i < count; i++) {
+      if (stampCount === MAX_STAMPS_PER_DRAW) flushStamps()
+      const offset = stampCount * STAMP_STRIDE
+      stamps[offset + STAMP.CENTER_X] = x + scatterOffsets[i * 2]
+      stamps[offset + STAMP.CENTER_Y] = y + scatterOffsets[i * 2 + 1]
+      stamps[offset + STAMP.RADIUS] = radius
+      stamps[offset + STAMP.OPACITY] = flow
+      stamps[offset + STAMP.ANGLE] = angle
+      stamps[offset + STAMP.ROUNDNESS] = roundness
+      // The brush's own grain depth is in the uniform; this is what the graph
+      // does to it per dab, so a light touch can skim the paper (D24).
+      stamps[offset + STAMP.GRAIN_DEPTH] = params.grainDepth
+      stamps[offset + STAMP.HUE] = hue
+      stamps[offset + STAMP.SATURATION] = saturation
+      stamps[offset + STAMP.LIGHTNESS] = lightness
+      stamps[offset + STAMP.TIP_FRAME] = nextTipFrame(brush, context)
+      stamps[offset + STAMP.WATER] = params.water
+      stampCount++
+      frameStamps++
+    }
     // What follows this dab, measured against the dab actually drawn rather
     // than against the brush at rest. A brush whose size is modulated would
     // otherwise keep laying dabs at its resting pitch: laid over, the pencil
     // put down more than twice as many overlapping dabs per pixel, and under
     // buildup that reads as tilt darkening the line rather than widening it.
     resampler.setSpacing(dabSpacing(brush, radius))
+  }
+
+  /** The frame of the brush's tip the next dab of this stroke is drawn with. */
+  function nextTipFrame(brush: Brush, context: StampContext): number {
+    return selectTipFrame(
+      brush.shape.tipSelection ?? "random",
+      (brush.shape.tipTextureId
+        ? textures.get(brush.shape.tipTextureId)?.frameCount
+        : undefined) ?? 1,
+      context,
+      tipDab++
+    )
+  }
+
+  /**
+   * Collects one dab of a direct stroke. A smudge's (smudge 01) takes only
+   * its shape from the brush — the tip's turn and squash here, its texture
+   * and rim through the renderer — while its size and strength are the
+   * smudge's own (smudge 02), and a pen's pressure drives the strength alone.
+   * None of the brush's dynamics reach it. A wet brush's (D41) is the brush's
+   * own dab, laying by its flow and dragging by its pickup: the dynamics
+   * graph scales its radius, flow, pickup and grain depth and turns and
+   * squashes its tip as it does a dry dab's. Colour tints the clean reservoir
+   * load at the first dab only. Scatter throws it off the path as it does a
+   * dry dab (live brushes 12), one dab at a time along the spacing step and
+   * not the step's count where it begins (live brushes 29); they go to the
+   * renderer in the order placed and trade paint with the one reservoir in
+   * that order. A blender has no reservoir and drags from the dab behind it,
+   * which a thrown dab does not have, so it keeps to the path. A tip of
+   * several frames gives either dab the one the brush would have drawn.
+   */
+  function emitDirect(
+    x: number,
+    y: number,
+    pressure: number,
+    tiltX: number,
+    tiltY: number,
+    time: number
+  ) {
+    const brush = activeBrush()
+    const context = dynamics.next(x, y, pressure, tiltX, tiltY, time)
+    const wet = directWet
+    if (!wet) {
+      if (directCount === MAX_SMUDGE_DABS_PER_DRAW) flushStamps()
+      const offset = directCount * SMUDGE_STRIDE
+      directDabs[offset + SMUDGE.CENTER_X] = x
+      directDabs[offset + SMUDGE.CENTER_Y] = y
+      directDabs[offset + SMUDGE.TIP_FRAME] = nextTipFrame(brush, context)
+      directDabs[offset + SMUDGE.RADIUS] = smudge.radius
+      directDabs[offset + SMUDGE.STRENGTH] = smudgeDabStrength(
+        smudge.strength,
+        pressure,
+        strokeSensesPressure
+      )
+      directDabs[offset + SMUDGE.FLOW] = 0
+      directDabs[offset + SMUDGE.HUE] = 0
+      directDabs[offset + SMUDGE.SATURATION] = 0
+      directDabs[offset + SMUDGE.LIGHTNESS] = 0
+      directDabs[offset + SMUDGE.GRAIN_DEPTH] = 0
+      directDabs[offset + SMUDGE.ANGLE] = brush.shape.angle
+      directDabs[offset + SMUDGE.ROUNDNESS] = brush.shape.roundness
+      directCount++
+      frameStamps++
+      return
+    }
+    evaluateDynamics(
+      dynamicsForDevice(brush.dynamics, strokeSensesPressure),
+      context,
+      params
+    )
+    const radius = brush.shape.radius * params.size
+    const strength = wet.pickup * params.pickup
+    const flow = brush.rendering.flow * params.flow
+    const angle = brush.shape.angle + params.angle
+    const roundness = brush.shape.roundness * params.roundness
+    const hue = params.hue * (brush.color?.hue ?? 1)
+    const saturation = params.saturation * (brush.color?.saturation ?? 1)
+    const lightness = params.lightness * (brush.color?.lightness ?? 1)
+    // One dab of the step, the rest following it along the path.
+    const count = scatterPlacer.place(
+      thrownScatter(brush),
+      params.scatter,
+      radius,
+      context.direction,
+      scatterOffsets,
+      1
+    )
+    for (let i = 0; i < count; i++) {
+      if (directCount === MAX_SMUDGE_DABS_PER_DRAW) flushStamps()
+      const offset = directCount * SMUDGE_STRIDE
+      directDabs[offset + SMUDGE.CENTER_X] = x + scatterOffsets[i * 2]
+      directDabs[offset + SMUDGE.CENTER_Y] = y + scatterOffsets[i * 2 + 1]
+      directDabs[offset + SMUDGE.TIP_FRAME] = nextTipFrame(brush, context)
+      directDabs[offset + SMUDGE.RADIUS] = radius
+      directDabs[offset + SMUDGE.STRENGTH] = strength
+      directDabs[offset + SMUDGE.FLOW] = flow
+      directDabs[offset + SMUDGE.HUE] = hue
+      directDabs[offset + SMUDGE.SATURATION] = saturation
+      directDabs[offset + SMUDGE.LIGHTNESS] = lightness
+      // As a dry dab's: the brush's own depth is the renderer's, and this is
+      // what the graph does to it. It bites what the dab lays, not what it
+      // drags.
+      directDabs[offset + SMUDGE.GRAIN_DEPTH] = params.grainDepth
+      directDabs[offset + SMUDGE.ANGLE] = angle
+      directDabs[offset + SMUDGE.ROUNDNESS] = roundness
+      directCount++
+      frameStamps++
+    }
+    // What follows this dab, measured against the dab actually drawn, as a
+    // dry stroke's is; a dry stroke leaves the resampler at its last pitch.
+    resampler.setSpacing(wetDabSpacing(brush, radius))
   }
 
   /**
@@ -1732,9 +5072,183 @@ export function createEngine(
   }
 
   function flushStamps() {
+    if (directCount > 0) {
+      renderer?.drawDirect(directDabs, directCount)
+      directCount = 0
+    }
     if (stampCount === 0) return
-    renderer?.stamp(stamps, stampCount)
+    if (fluidTargetId) {
+      const settled = renderer?.drawFluid(stamps, stampCount) ?? []
+      // Wet from the stroke's dabs, and again if it was dried under the pen.
+      // A blot wets nothing.
+      if (!fluidBlot) wetTargetId = fluidTargetId
+      // A wash past the wet tile limit settled a body to make room.
+      recordSettled(settled)
+    } else renderer?.stamp(stamps, stampCount)
     stampCount = 0
+  }
+
+  /**
+   * Squares what the engine holds with whether paint is wet: the clock runs
+   * while any of it moves, and stops when none is wet or all of it is held
+   * with drying paused (fluid brushes 18).
+   */
+  function syncWet() {
+    const wet = renderer?.fluidWet() ?? false
+    // Paint all held while drying is paused has nothing for the clock to do.
+    if (wet && (renderer?.fluidTileCount() ?? 0) > 0) runFluidClock()
+    else stopFluidClock()
+    if (!wet) wetTargetId = undefined
+    // React learns nothing with the pen down (§10.2): a stroke's end says.
+    if (snapshot.wet !== wet && !stroking) publish({ wet })
+  }
+
+  /**
+   * Wet paint settled into its layer: each settle is one step, and the wet
+   * strokes before it are steps no longer (D42).
+   */
+  function recordSettled(marks: readonly StrokeMark[]) {
+    const target = wetTargetId
+    if (target)
+      for (const mark of marks) {
+        history?.recordSettle(target, mark.region, mark.tiles)
+        contentBounds.grow(target, mark.region)
+        invalidateThumbnailsOf(target)
+      }
+    syncWet()
+  }
+
+  /**
+   * Runs `steps` steps of the simulation and has the clock learn what they
+   * cost on the GPU: from the work before them being done to theirs being
+   * done, two fences and no readback (D30). One measurement at a time, and
+   * none of steps that settled a body, whose cost is the settle's.
+   */
+  async function runTimedFluid(
+    steps: number,
+    tiles: number
+  ): Promise<StrokeMark[]> {
+    if (fluidTiming || options.fluidTileStepMs !== undefined || !device)
+      return runFluid(steps)
+    const queue = device.queue
+    fluidTiming = true
+    // Where the queue is idle the first fence resolves only once the steps
+    // are under way, and the steps read cheap; that is a fence's latency
+    // varying, which the clock reads across many measurements.
+    let before = performance.now()
+    void queue.onSubmittedWorkDone().then(() => {
+      before = Math.max(before, performance.now())
+    }, ignoreLostDevice)
+    const marks = await runFluid(steps)
+    void queue.onSubmittedWorkDone().then(() => {
+      fluidTiming = false
+      if (!disposed && marks.length === 0)
+        fluidClock.measured(steps, tiles, performance.now() - before)
+    }, forgetTiming)
+    return marks
+  }
+
+  /** A fence that failed because the device went: there is nothing to time. */
+  function ignoreLostDevice() {}
+
+  function forgetTiming() {
+    fluidTiming = false
+  }
+
+  function runFluid(steps: number): StrokeMark[] | Promise<StrokeMark[]> {
+    return renderer?.advanceFluid(steps, recordFluidSettle) ?? []
+  }
+
+  /** A tilted batch can yield between steps: enqueue each settle before
+   * yielding again, so undo cannot restore wet paint over a settled layer.
+   */
+  function recordFluidSettle(mark: StrokeMark) {
+    recordSettled([mark])
+  }
+
+  /** Runs the simulation on, settling whatever dries along the way. */
+  async function advanceFluid(steps: number) {
+    await runFluid(steps)
+    syncWet()
+  }
+
+  /** Settles everything wet at once. Nothing on screen changes. */
+  function dryFluid() {
+    const wet = renderer?.fluidWet()
+    const mark = renderer?.dryFluid()
+    // Paint that dried onto nothing still took its strokes' fields with it.
+    if (wet && !mark) history?.forgetWetStrokes()
+    recordSettled(mark ? [mark] : [])
+  }
+
+  function runFluidClock() {
+    if (options.manualFluidClock || fluidFrame !== undefined || disposed) return
+    fluidFrame = requestAnimationFrame(tickFluid)
+  }
+
+  function stopFluidClock() {
+    if (fluidFrame !== undefined) cancelAnimationFrame(fluidFrame)
+    fluidFrame = undefined
+    fluidTime = undefined
+    fluidDueSteps = 0
+    fluidClock.stop()
+  }
+
+  /**
+   * One frame of the simulation's clock (D42). The step is fixed; the clock
+   * says how many a frame runs, one at 120 Hz and two at 60, and skips those
+   * the frame's budget cannot pay for, so on a slow machine paint moves and
+   * dries more slowly and ends in the same place. The simulation gives way,
+   * the pen does not (D30).
+   */
+  function tickFluid(timestamp: number) {
+    fluidFrame = undefined
+    const elapsed = fluidTime === undefined ? undefined : timestamp - fluidTime
+    fluidTime = timestamp
+    const tiles = renderer?.fluidTileCount() ?? 0
+    const steps = fluidClock.frame(elapsed, tiles)
+    fluidObserver?.({
+      start: timestamp,
+      steps,
+      skipped: fluidClock.skipped(),
+      tiles,
+      stepMs: tiles * fluidClock.tileStepMs(),
+    })
+    if (steps > 0) {
+      // Run once this frame is presented, not before: submitted now, the
+      // steps would sit on the GPU's queue ahead of the stroke's own frame,
+      // and the pen's pixel would wait for them (D30).
+      fluidDueSteps = steps
+      fluidDueTiles = tiles
+      fluidChannel ??= openFluidChannel()
+      fluidChannel.port2.postMessage(null)
+    } else
+      try {
+        syncWet()
+      } catch (error) {
+        fail(error)
+      }
+  }
+
+  function openFluidChannel() {
+    const channel = new MessageChannel()
+    channel.port1.onmessage = stepFluid
+    return channel
+  }
+
+  /** The steps a frame of the clock owed, run after that frame. */
+  async function stepFluid() {
+    const steps = fluidDueSteps
+    fluidDueSteps = 0
+    if (steps === 0 || disposed) return
+    try {
+      await runTimedFluid(steps, fluidDueTiles)
+      syncWet()
+      // A stroke's own frame shows the paint; without one this does.
+      if (frame === undefined && snapshot.status === "ready") render()
+    } catch (error) {
+      fail(error)
+    }
   }
 
   /**
@@ -1754,8 +5268,32 @@ export function createEngine(
     // stabilizer, the resampler, the dabs — works in document pixels, so the
     // view is inverted here and nowhere else. This is what puts the mark
     // under the pen at any zoom, rotation and flip.
-    const x = toDocX(screenX, screenY)
-    const y = toDocY(screenX, screenY)
+    let x = toDocX(screenX, screenY)
+    let y = toDocY(screenX, screenY)
+    if (opening) {
+      // The line is chosen once, where the pen lands, and holds for the
+      // whole stroke however far the hand wanders from it.
+      const chosen = assistLine({
+        x,
+        y,
+        guides: guidesVisible && snapping ? requireDocument().guides : [],
+        guideReach: guideReach(),
+        edge: straightEdge,
+        fromLast: fromLastPoint ? lastStrokeEnd : null,
+      })
+      assist.begin(chosen?.line ?? null)
+      if (chosen) {
+        x = chosen.start.x
+        y = chosen.start.y
+      }
+    } else {
+      // Before the stabilizer, so the string is pulled along the line and
+      // not across it. Only position moves: pressure and tilt stay the
+      // pen's own (17).
+      const onLine = assist.filter(x, y)
+      x = onLine.x
+      y = onLine.y
+    }
     rawX = x
     rawY = y
     rawPressure = pressure
@@ -1792,6 +5330,13 @@ export function createEngine(
     let document = doc
     const store = documents
     if (!target || !past || !document || !store) return true
+    cloudBehind = false
+    fullyLoaded = Promise.resolve()
+    loadBackgroundTiles = undefined
+    // A line from the last point means one in this document.
+    lastStrokeEnd = null
+    pendingTiles.clear()
+    unsyncedWhileLoading = false
     // Bound once, here, so the batch loader below reads a hash and writes a
     // tile without repeating a non-null assertion at every call: TypeScript's
     // narrowing above does not reach into a closure defined further down.
@@ -1811,17 +5356,23 @@ export function createEngine(
       // still shown and still safe to paint on and save (§9.2/18 — an outage
       // must not stop work, only the replication of it).
       const onCloudError = options.cloud.onError ?? (() => {})
-      const newerElsewhere = await remote
-        .documentMeta()
-        .then(
-          (meta) =>
-            meta.structure !== null &&
-            meta.updatedAt > (stored?.updatedAt ?? -Infinity)
-        )
-        .catch((error) => {
-          onCloudError(error)
-          return false
-        })
+      const meta = await remote.documentMeta().catch((error) => {
+        onCloudError(error)
+        return null
+      })
+      const newerElsewhere =
+        meta !== null &&
+        meta.structure !== null &&
+        meta.updatedAt > (stored?.updatedAt ?? -Infinity)
+      // The other way round: this device holds strokes a flush never
+      // delivered, or the cloud has the strokes but never got their preview —
+      // both what a session torn down mid-sync leaves behind. Nothing else
+      // would send them until the next stroke, so this session does, once
+      // the document is fully back.
+      cloudBehind =
+        meta !== null &&
+        ((!!stored && meta.updatedAt < stored.updatedAt) ||
+          (meta.structure !== null && meta.previewVersion === undefined))
       if (disposed) return true
       if (!stored || newerElsewhere)
         await hydrateFromRemote({
@@ -1833,10 +5384,18 @@ export function createEngine(
       stored = await persistence?.load()
     }
     if (!stored || disposed) return true
+    // Only tiles successfully read from this device are ours to name as
+    // removed later. A manifest can outlive one of its blobs; treating that
+    // missing blob as an erase would delete its still-valid cloud row.
+    const loadedOnOpen = new Map<string, TileRef[]>()
+    const seedLoadedTiles = () =>
+      cloudSync?.seedKnown(
+        [...loadedOnOpen].map(([surfaceId, tiles]) => ({ surfaceId, tiles }))
+      )
     if (stored.width !== document.width || stored.height !== document.height) {
       validateDocumentSize(stored)
       for (const id of structureSurfaceIds(captureStructure(document)))
-        target.releaseLayer(id)
+        releaseSurface(id)
       setDocumentSize({ width: stored.width, height: stored.height })
       document = requireDocument()
       applyView()
@@ -1845,10 +5404,12 @@ export function createEngine(
     // that was stored, and neither is the upload that recorded it.
     past.clear()
     for (const id of structureSurfaceIds(captureStructure(document)))
-      target.releaseLayer(id)
+      releaseSurface(id)
     // A document saved with pixels its tree does not name opens with a layer
     // for them, rather than leaving them on disk behind a blank canvas.
-    const structure = adoptStrandedSurfaces(stored.structure, stored.surfaces)
+    const structure = parseSavedScenes(
+      adoptStrandedSurfaces(stored.structure, stored.surfaces)
+    )
     reserveIds(structureSurfaceIds(structure))
     restoreStructure(document, structure)
     // The originals before the pixels: they are small beside a document's
@@ -1878,6 +5439,12 @@ export function createEngine(
       if (disposed) return
       // A tile the manifest names but the device has lost is a hole in the
       // document rather than the end of the restore.
+      const loaded = refs.filter((_, position) => texels[position] !== null)
+      if (loaded.length > 0)
+        loadedOnOpen.set(surface.surfaceId, [
+          ...(loadedOnOpen.get(surface.surfaceId) ?? []),
+          ...loaded,
+        ])
       const tiles = refs.flatMap((tile, position) =>
         texels[position]
           ? [{ x: tile.x, y: tile.y, texels: texels[position]! }]
@@ -1918,43 +5485,62 @@ export function createEngine(
       await loadTiles(surface, ordered.slice(0, IMMEDIATE_TILES))
       if (disposed) return true
       const rest = ordered.slice(IMMEDIATE_TILES)
-      if (rest.length > 0) background.push({ surface, tiles: rest })
+      if (rest.length > 0) {
+        background.push({ surface, tiles: rest })
+        pendingTiles.set(
+          surface.surfaceId,
+          new Map(rest.map((tile) => [tileKey(tile.x, tile.y), tile]))
+        )
+      }
     }
     await past.settle()
+    // Vector layers have no tiles to load: they are drawn from their scenes.
+    for (const layer of leafLayers(document.layers))
+      if (layer.kind === "vector") drawScene(layer.id, layer.scene)
     syncComposition()
     publish(describeLayers(document))
     if (background.length > 0) {
       publish({ loading: true })
-      void (async () => {
+      loadBackgroundTiles = async () => {
         for (const { surface, tiles } of background) {
           for (let index = 0; index < tiles.length; index += BACKGROUND_BATCH) {
             if (disposed) return
-            await loadTiles(
-              surface,
-              tiles.slice(index, index + BACKGROUND_BATCH)
-            )
+            const batch = tiles.slice(index, index + BACKGROUND_BATCH)
+            await loadTiles(surface, batch)
             if (disposed) return
+            const pending = pendingTiles.get(surface.surfaceId)
+            for (const tile of batch) pending?.delete(tileKey(tile.x, tile.y))
+            if (pending?.size === 0) pendingTiles.delete(surface.surfaceId)
             await past.settle()
             syncComposition()
             publish(describeLayers(document))
             if (snapshot.status === "ready") render()
           }
         }
-        if (!disposed) publish({ loading: false })
-      })()
-    }
+        if (disposed) return
+        seedLoadedTiles()
+        publish({ loading: false })
+        if (unsyncedWhileLoading) {
+          unsyncedWhileLoading = false
+          flushScheduler?.touch()
+          publishSyncStatus()
+        }
+      }
+    } else seedLoadedTiles()
 
     return true
   }
 
-  function drawFrame(timestamp: number) {
-    frame = undefined
-    const cpuStart = frameObserver ? performance.now() : 0
-    frameStamps = 0
-    frameOldestSample = null
+  /**
+   * Draws what the pen has sent into the stroke buffer, and once the pen has
+   * lifted, the tail and the whole mark into its layer. Presenting is left
+   * to the frame.
+   */
+  function landStroke() {
     samples.drain(consumeSample)
     // A stroke that ended before its opening sample was drained drew nothing.
     if (!stroking && !opening) {
+      landing = false
       // The string is released on pen-up, so the mark reaches where the pen
       // lifted instead of stopping a pull radius short of it.
       resampler.extend(
@@ -1968,18 +5554,67 @@ export function createEngine(
       )
       resampler.end(emitStamp)
       flushStamps()
+      lastStrokeEnd = { x: rawX, y: rawY }
       // The whole mark is in the buffer now, so it goes into the layer once,
-      // at the stroke's opacity (D27).
-      const region = renderer?.endStroke()
-      // One stroke, one step. The region the mark landed in is read back off
-      // the GPU after the frame, never during one.
-      if (region && doc) {
-        history?.recordStroke(paintTargetId(doc), region)
-        contentBounds.grow(paintTargetId(doc), region)
-        invalidateThumbnailsOf(paintTargetId(doc))
+      // at the stroke's opacity (D27). A direct stroke is in its surface
+      // already, and a fluid stroke's wet paint settles into its own (D42).
+      const direct = directTargetId
+      directTargetId = undefined
+      const fluid = fluidTargetId
+      fluidTargetId = undefined
+      const blotted = fluidBlot
+      fluidBlot = false
+      // A fluid stroke leaves no mark yet: its paint is still wet, and no
+      // pixel of the layer changes until it settles. Its step is the wet
+      // fields as they were at pen-down, which stay on the GPU.
+      let mark: StrokeMark | null | undefined
+      if (direct) mark = renderer?.endDirect(true)
+      else if (fluid) {
+        const before = renderer?.endFluid(true)
+        if (before) {
+          if (history)
+            history.recordWetStroke(fluid, before, blotted ? "blot" : undefined)
+          else renderer?.releaseFluid(before)
+        }
+        syncWet()
+      } else mark = renderer?.endStroke()
+      if (direct) publish({ brushDirty: renderer?.brushDirty() ?? false })
+      // One stroke, one step. The tiles the mark's dabs drew into are read
+      // back off the GPU after the frame, never during one.
+      if (mark && doc) {
+        const target = direct ?? paintTargetId(doc)
+        history?.recordStroke(target, mark.region, mark.tiles)
+        contentBounds.grow(target, mark.region)
+        invalidateThumbnailsOf(target)
       }
     }
     flushStamps()
+  }
+
+  function drawFrame(timestamp: number) {
+    // Before the frame is forgotten: this one draws, and needs no warming.
+    warmth.touch()
+    frame = undefined
+    const cpuStart = frameObserver ? performance.now() : 0
+    frameStamps = 0
+    frameOldestSample = null
+    if (shapeDrag) {
+      drawShapeDrag()
+      return
+    }
+    if (vectorErase) {
+      drawVectorErase()
+      return
+    }
+    if (marquee) {
+      drawMarquee()
+      return
+    }
+    if (isVectorTool(tool)) {
+      samples.clear()
+      return
+    }
+    landStroke()
     try {
       if (snapshot.status === "ready") render()
     } catch (error) {
@@ -1988,6 +5623,122 @@ export function createEngine(
     }
     if (frameObserver) reportFrame(timestamp, cpuStart)
     if (stroking) frame = requestAnimationFrame(drawFrame)
+  }
+
+  /**
+   * One frame of a selection drag: the pen's latest position outlines the
+   * shape, shown by its ants until the pen lifts and it becomes the selection.
+   */
+  function drawMarquee() {
+    const drag = marquee!
+    samples.drain((x, y) => {
+      const point = { x: toDocX(x, y), y: toDocY(x, y) }
+      if (drag.shape === "lasso") {
+        const last = drag.points[drag.points.length - 1]
+        if (last.x !== point.x || last.y !== point.y) drag.points.push(point)
+      } else if (drag.shape === "polygon") {
+        if (drag.placing) drag.points[drag.points.length - 1] = point
+      } else drag.point = point
+    })
+    if (drag.shape !== "polygon" && drag.ended) {
+      commitMarquee()
+      return
+    }
+    // Until the gesture outlines something, what is selected stays shown.
+    // A moved outline has nowhere to be shown once it is off the canvas.
+    holdSelection(
+      marqueeShape() || drag.shape === "move" ? marqueeMask() : selection
+    )
+    try {
+      if (snapshot.status === "ready") render()
+    } catch (error) {
+      fail(error)
+      return
+    }
+    // Between clicks a polygon waits for the next one, not for a frame.
+    if (drag.shape !== "polygon" || drag.placing)
+      frame = requestAnimationFrame(drawFrame)
+  }
+
+  /**
+   * What the pen reported for a gesture that has ended is not a stroke's to
+   * draw, and a frame still waiting for it would take it for one.
+   */
+  function forgetGestureInputFrame() {
+    if (frame !== undefined) cancelAnimationFrame(frame)
+    frame = undefined
+  }
+
+  function forgetGestureInput() {
+    samples.clear()
+    if (frame !== undefined) cancelAnimationFrame(frame)
+    frame = undefined
+  }
+
+  /** Abandons a selection gesture, the selection left as it was. */
+  function dropMarquee() {
+    if (!marquee) return
+    marquee = undefined
+    forgetGestureInput()
+    showSelection(selection)
+  }
+
+  /**
+   * One click of the polygonal lasso: a new vertex, or — on the first vertex
+   * or a double-click — the outline closed and made the selection.
+   */
+  /**
+   * Where a click lands on a polygon being clicked out: back on its first
+   * corner once it has three, or on its last corner again within a
+   * double-click. Both polygon tools close by the same rule, each at its reach.
+   */
+  function polygonClick(
+    points: readonly Point[],
+    point: Point,
+    clickedAt: number,
+    time: number,
+    reach: number
+  ) {
+    const near = (other: Point) =>
+      Math.hypot(point.x - other.x, point.y - other.y) <= reach
+    return {
+      onFirst: points.length >= 3 && near(points[0]),
+      doubled:
+        time - clickedAt <= DOUBLE_CLICK_MS && near(points[points.length - 1]),
+    }
+  }
+
+  function clickPolygon(point: Point, time: number) {
+    if (!marquee || marquee.shape !== "polygon") {
+      marquee = {
+        shape: "polygon",
+        points: [point],
+        mode: modeFromModifiers(),
+        placing: true,
+        clickedAt: time,
+      }
+      shiftLatched = shiftHeld
+      scheduleFrame()
+      return
+    }
+    const polygon = marquee
+    const { onFirst, doubled } = polygonClick(
+      polygon.points,
+      point,
+      polygon.clickedAt,
+      time,
+      CLOSE_RADIUS * Math.hypot(toDoc[0], toDoc[1])
+    )
+    if (onFirst || doubled) {
+      // Too few corners to hold any area: the outline is dropped rather than
+      // made the selection, so a stray double-click never deselects.
+      polygon.closing = polygon.points.length < 3 ? "drop" : "commit"
+      return
+    }
+    polygon.points.push(point)
+    polygon.placing = true
+    polygon.clickedAt = time
+    scheduleFrame()
   }
 
   /**
@@ -2014,8 +5765,140 @@ export function createEngine(
     })
   }
 
+  /**
+   * Keeps what a stroke's first frame draws into warm while the artist is at
+   * the canvas (live brushes 24). A frame in flight is drawing into it, and a
+   * hidden canvas has nobody at it.
+   */
+  const warmth = createWarmKeeper({
+    warm() {
+      if (frame !== undefined || stroking || snapshot.status !== "ready") return
+      if (globalThis.document?.visibilityState === "hidden") return
+      // Only a direct stroke samples, so only its brushes pay for what it
+      // reads being kept (live brushes 31).
+      const opensDirect =
+        tool === "smudge" || (tool === "brush" && !!activeBrush().rendering.wet)
+      renderer?.keepWarm(
+        opensDirect && snapshot.sampleAllLayers && !snapshot.paintingMask
+      )
+    },
+    intervalMs: WARM_INTERVAL_MS,
+    lifetimeMs: WARM_LIFETIME_MS,
+  })
+
   function scheduleFrame() {
-    if (frame === undefined) frame = requestAnimationFrame(drawFrame)
+    if (frame === undefined && !disposed)
+      frame = requestAnimationFrame(drawFrame)
+  }
+
+  let lastNodeClick: NodeClick | undefined
+  /** Counts arrow presses, so a held key's nudges are one step, two presses two. */
+  let nodeKeyRun = 0
+
+  function snapVectorPoint(point: Point, layerId: string): Point {
+    if (!snapping || altHeld) return point
+    const snap = resolveSnap(
+      { ...point, width: 0, height: 0 },
+      snapTargetsBesides(layerId),
+      6 / snapshot.view.zoom
+    )
+    return { x: point.x + snap.dx, y: point.y + snap.dy }
+  }
+
+  /** What a node drag to where it is now makes of the layer's scene. */
+  function nodeDragEdits(
+    drag: NonNullable<typeof shapeDrag>,
+    scene: VectorScene
+  ): SceneCommand[] {
+    return dragNodes({
+      scene,
+      grab: drag.node!,
+      nodes: snapshot.vectorNodes,
+      point: drag.point,
+      modifiers: { ctrl: ctrlHeld, alt: altHeld, shift: shiftHeld },
+    })
+  }
+
+  /** Screen pixels the pointer travels before a press on a node drags it. */
+  const NODE_DRAG_THRESHOLD = 3
+
+  function beginNodeDrag(layer: VectorLayer, point: Point, time: number) {
+    const press = pressNode({
+      scene: layer.scene,
+      selection: snapshot.vectorSelection,
+      nodes: snapshot.vectorNodes,
+      shift: shiftHeld,
+      point,
+      reach: 6 / snapshot.view.zoom,
+      time,
+      lastClick: lastNodeClick,
+    })
+    if (
+      press.selection.length !== snapshot.vectorSelection.length ||
+      press.selection.some((id) => !snapshot.vectorSelection.includes(id))
+    )
+      setVectorSelection(press.selection)
+    lastNodeClick = press.lastClick
+    if (press.kind === "grab" || press.kind === "box") {
+      publish({
+        vectorNodes: press.nodes,
+        vectorHandleHeld: press.kind === "grab" && isHandle(press.grab.part),
+      })
+      shapeDrag = {
+        layerId: layer.id,
+        tool: "node",
+        anchor: point,
+        point: press.kind === "grab" ? press.at : point,
+        ended: false,
+        ...(press.kind === "grab"
+          ? {
+              node: press.grab,
+              nodeAt: press.at,
+              ctrlClick: ctrlHeld,
+            }
+          : { nodeBox: true as const }),
+      }
+      scheduleFrame()
+      return
+    }
+    if (press.kind === "split") {
+      publish({ vectorNodes: [] })
+      editScene(
+        layer.id,
+        [
+          {
+            type: "update",
+            id: press.objectId,
+            patch: { geometry: press.geometry },
+          },
+        ],
+        "add node"
+      )
+    }
+    publish({ vectorNodes: press.nodes })
+  }
+
+  /**
+   * Where a node-tool rubber band ends: a click on empty canvas lets go of
+   * every path, as it always has; a band selects the nodes inside it.
+   */
+  function endNodeBox(drag: NonNullable<typeof shapeDrag>) {
+    const region = boxSelection(drag.anchor, drag.point)
+    if (!Array.isArray(region)) {
+      if (!shiftHeld) {
+        setVectorSelection([])
+        publish({ vectorNodes: [] })
+      }
+      return
+    }
+    publish({
+      vectorNodes: boxNodes(
+        snapshot.vectorPaths,
+        snapshot.vectorNodes,
+        region,
+        shiftHeld
+      ),
+    })
   }
 
   function beginStroke(
@@ -2029,16 +5912,272 @@ export function createEngine(
     sensesPressure: boolean
   ) {
     if (snapshot.status !== "ready" || !doc) return
+    // The last stroke lands before the pen starts anything else: a marquee
+    // or shape skips the frame that would land it, and a new stroke would
+    // take its tail for its own.
+    landLiftedStroke()
+    if (isSelectionTool(tool)) {
+      // The selection belongs to the document, so a locked or image layer
+      // does not stop one being drawn.
+      const anchor = {
+        x: toDocX(screenX, screenY),
+        y: toDocY(screenX, screenY),
+      }
+      if (tool === "polygonLasso") {
+        clickPolygon(anchor, origin)
+        return
+      }
+      if (tool === "magicWand") {
+        void selectWand(anchor, modeFromModifiers()).catch(() => {
+          publish({
+            problem: {
+              action: "retry",
+              message: "That area could not be selected. Try again.",
+            },
+          })
+        })
+        return
+      }
+      if (tool === "moveSelection") {
+        // Nothing selected, nothing to move.
+        if (!selection) return
+        marquee = { shape: "move", anchor, point: anchor, ended: false }
+        scheduleFrame()
+        return
+      }
+      const mode = modeFromModifiers()
+      shiftLatched = shiftHeld
+      marquee =
+        tool === "lasso"
+          ? { shape: "lasso", points: [anchor], mode, ended: false }
+          : {
+              shape: tool === "rectSelect" ? "rect" : "ellipse",
+              anchor,
+              point: anchor,
+              mode,
+              ended: false,
+            }
+      scheduleFrame()
+      return
+    }
+    if (isVectorTool(tool)) {
+      cancelVectorTransform()
+      // Shapes go onto a vector layer, never into paint or a mask.
+      const layer = activeLayer(doc)
+      if (layer.kind !== "vector" || layer.locked || doc.paintingMask) return
+      const anchor = {
+        x: toDocX(screenX, screenY),
+        y: toDocY(screenX, screenY),
+      }
+      if (tool === "node") {
+        beginNodeDrag(layer, anchor, origin)
+        return
+      }
+      if (tool === "pen") {
+        const point = snapVectorPoint(anchor, layer.id)
+        if (shapeDrag?.tool === "pen") {
+          const first = shapeDrag.nodes![0]
+          if (
+            shapeDrag.nodes!.length >= 2 &&
+            Math.hypot(anchor.x - first.x, anchor.y - first.y) <
+              6 / snapshot.view.zoom
+          ) {
+            shapeDrag.closed = true
+            shapeDrag.ended = true
+            shapeDrag.placing = false
+          } else {
+            shapeDrag.nodes!.push({
+              ...point,
+              in: null,
+              out: null,
+              type: "cusp",
+            })
+            shapeDrag.placing = true
+            shapeDrag.pressedAt = anchor
+            shapeDrag.point = point
+          }
+        } else
+          shapeDrag = {
+            layerId: layer.id,
+            tool,
+            anchor: point,
+            point,
+            nodes: [{ ...point, in: null, out: null, type: "cusp" }],
+            placing: true,
+            pressedAt: anchor,
+            ended: false,
+          }
+        publish({ penNodes: [...shapeDrag.nodes!] })
+        scheduleFrame()
+        return
+      }
+      if (tool === "pressure") {
+        stabilizer.begin(anchor.x, anchor.y)
+        const brush = parseVectorBrush(snapshot.vectorBrush)
+        const points: PressurePoint[] = []
+        const path = createStrokeResampler(2)
+        path.begin(
+          anchor.x,
+          anchor.y,
+          pressure,
+          tiltX,
+          tiltY,
+          time,
+          (x, y, pressure) => points.push({ x, y, pressure })
+        )
+        shapeDrag = {
+          layerId: layer.id,
+          tool,
+          anchor,
+          point: anchor,
+          ended: false,
+          vectorBrush: brush,
+          brushSeed: crypto.getRandomValues(new Uint32Array(1))[0],
+          thin: createVelocityThinning(brush.params.thinning),
+          tilt: createTiltDirection(),
+          pressurePoints: points,
+          pressureResampler: path,
+          pressureTail: { ...anchor, pressure, tiltX, tiltY, time },
+        }
+        scheduleFrame()
+        return
+      }
+      // Shift squares the shape for as long as it is held.
+      shiftLatched = false
+      if (tool === "polygon" && shapeDrag?.tool === "polygon") {
+        const points = shapeDrag.points!
+        // A double-click places its corner with the first click and closes
+        // with the second, as a click back on the first corner does.
+        const { onFirst, doubled } = polygonClick(
+          points,
+          anchor,
+          shapeDrag.clickedAt!,
+          time,
+          6 / snapshot.view.zoom
+        )
+        if (points.length >= 3 && (onFirst || doubled)) endPolygon(shapeDrag)
+        else if (!doubled) {
+          points.push(anchor)
+          shapeDrag.point = anchor
+          shapeDrag.clickedAt = time
+        }
+      } else
+        shapeDrag = {
+          layerId: layer.id,
+          tool,
+          points: tool === "polygon" ? [anchor] : undefined,
+          clickedAt: tool === "polygon" ? time : undefined,
+          anchor,
+          point: anchor,
+          ended: false,
+        }
+      scheduleFrame()
+      return
+    }
     // A locked layer is one the painter has said not to touch, and the pen is
     // the one place that has to be told so.
-    // An image layer refuses it too, unless the stroke is going to its mask.
+    // An image or vector layer refuses it too, unless the stroke is going to
+    // its mask: its pixels are drawn from a picture or from shapes.
     const layer = activeLayer(doc)
-    if (layer.locked || (layer.image && !(doc.paintingMask && layer.mask)))
+    // The eraser on a vector layer erases its shapes, not pixels it has none
+    // of: by a mark kept with them, or whole; on its mask it erases the mask
+    // as anywhere else.
+    if (
+      tool === "eraser" &&
+      layer.kind === "vector" &&
+      !layer.locked &&
+      !(doc.paintingMask && layer.mask)
+    ) {
+      cancelVectorTransform()
+      const radius = eraser.shape.radius
+      vectorErase =
+        snapshot.vectorEraser === "object"
+          ? {
+              mode: "object",
+              layerId: layer.id,
+              scene: layer.scene,
+              eraser: objectEraser(layer.scene, radius),
+              ended: false,
+            }
+          : {
+              mode: "pixel",
+              layerId: layer.id,
+              scene: layer.scene,
+              id: nextObjectId(layer.scene),
+              points: [],
+              fit: createPressureFit(radius * 2, undefined, fitTolerance()),
+              fed: 0,
+              style: {
+                fill: null,
+                stroke: {
+                  // Never seen: the mark's alpha is all it uses.
+                  color: "#000000",
+                  opacity: eraser.rendering.opacity,
+                  width: radius * 2,
+                  cap: "round",
+                  join: "round",
+                },
+              },
+              ended: false,
+            }
+      samples.push(screenX, screenY, pressure, tiltX, tiltY, time)
+      scheduleFrame()
       return
+    }
+    const drawnFrom = layer.kind === "vector" || layer.image
+    if (layer.locked || (drawnFrom && !(doc.paintingMask && layer.mask))) return
     // The artist is painting, so the canvas shows what they are painting on.
     if (highlight) {
       highlight = undefined
       syncComposition()
+    }
+    // A wet brush draws as smudge does, straight into the layer (D41). The
+    // eraser is never wet. A mask carries coverage in alpha, so the same
+    // pass lays the paint value and drags what it hides and shows.
+    const wet = tool === "brush" ? activeBrush().rendering.wet : undefined
+    if (tool === "smudge" || wet) {
+      // The layer, or the mask being smeared over it, is kept as it is before
+      // the first dab touches it: what a cancel puts back. One that holds
+      // nothing has nothing to smear, though a wet brush lays colour on it.
+      const target = paintTargetId(doc)
+      // A blender never lays, so it opens as smudge does and drags from the
+      // pixel behind, with the brush's own size, pickup and dynamics.
+      const lays = wet && !isBlender(activeBrush())
+      // Any stroke but a fluid one lands on paint that has dried (D42).
+      dryFluid()
+      if (
+        !renderer?.beginDirect(
+          target,
+          lays ? ink : null,
+          !snapshot.cleanBrushAfterStroke,
+          snapshot.sampleAllLayers && !doc.paintingMask
+        )
+      )
+        return
+      directTargetId = target
+      directWet = wet
+      strokeSensesPressure = sensesPressure
+      strokeOrigin = origin
+      // Opened as a brush stroke's is, for the one thing a dab takes from the
+      // pen's state: which frame of the tip it is.
+      tipDab = 0
+      dynamics.begin(
+        toDocX(screenX, screenY),
+        toDocY(screenX, screenY),
+        pressure,
+        tiltX,
+        tiltY,
+        time,
+        ++strokeSeed
+      )
+      // A wet brush's scatter is thrown from the stroke's seed, as a dry one's.
+      scatterPlacer.begin(strokeSeed)
+      stroking = true
+      opening = true
+      fromLastPoint = shiftHeld
+      samples.push(screenX, screenY, pressure, tiltX, tiltY, time)
+      scheduleFrame()
+      return
     }
     // The opening pen state is read in document space too, so a mapping onto
     // position means the same thing at any view.
@@ -2047,6 +6186,7 @@ export function createEngine(
     const brush = activeBrush()
     strokeOrigin = origin
     // Per stroke, not per session: the next mark may come from another device.
+    tipDab = 0
     strokeSensesPressure = sensesPressure
     // Stroke opacity is applied once, at composite, so it is decided once,
     // here — from the pen state the stroke opened with. Nothing derived from
@@ -2059,14 +6199,58 @@ export function createEngine(
       dynamics.begin(x, y, pressure, tiltX, tiltY, time, ++strokeSeed),
       strokeParams
     )
-    // Dabs land in the stroke buffer, not the layer, until the pen lifts.
-    renderer?.beginStroke({
-      accumulation: brush.rendering.accumulation,
-      opacity: brush.rendering.opacity * strokeParams.opacity,
-      mode: tool === "eraser" ? "erase" : "paint",
-    })
+    scatterPlacer.begin(strokeSeed)
+    // A fluid brush lays into the layer's wet surface (D42), with its
+    // opacity in the pigment each dab carries: the brush's own here, and
+    // what the graph makes of it dab by dab. On a mask, and as the eraser,
+    // it paints as the brush otherwise is.
+    const fluid =
+      tool === "brush" && !doc.paintingMask ? brush.rendering.fluid : undefined
+    // A blot lays nothing and dries nothing (fluid brushes 17): it takes
+    // from the wet surface of what it is drawn on, which on a mask or on a
+    // layer that is not the wet one is nothing at all.
+    const blot = tool === "brush" ? brush.rendering.blot : undefined
+    if (blot) {
+      renderer?.beginFluid(paintTargetId(doc), {
+        ink,
+        load: brush.rendering.opacity,
+        water: 0,
+        drying: 0,
+        bleed: 0,
+        edge: 0,
+        granulation: 0,
+        blot,
+      })
+      fluidTargetId = paintTargetId(doc)
+      fluidBlot = true
+    } else if (fluid) {
+      const target = paintTargetId(doc)
+      // One layer is wet at a time.
+      if (wetTargetId && wetTargetId !== target) dryFluid()
+      renderer?.beginFluid(target, {
+        ink,
+        load: brush.rendering.opacity,
+        water: fluid.water,
+        drying: fluid.drying,
+        bleed: fluid.bleed,
+        edge: fluid.edge,
+        granulation: fluid.granulation,
+      })
+      fluidTargetId = target
+    } else {
+      // Any stroke but a fluid one lands on paint that has dried.
+      dryFluid()
+      // Dabs land in the stroke buffer, not the layer, until the pen lifts.
+      renderer?.beginStroke({
+        accumulation: brush.rendering.accumulation,
+        opacity: brush.rendering.opacity * strokeParams.opacity,
+        mode: tool === "eraser" ? "erase" : "paint",
+      })
+    }
     stroking = true
     opening = true
+    // Shift at pen-down rules a line on from where the last stroke lifted.
+    fromLastPoint = shiftHeld
     // Pushed as the pen reported it: the buffer carries screen pixels and the
     // frame loop maps every sample the same way.
     samples.push(screenX, screenY, pressure, tiltX, tiltY, time)
@@ -2079,9 +6263,34 @@ export function createEngine(
    * the canvas, not to leave a dot on it.
    */
   function cancelStroke() {
+    if (shapeDrag) {
+      dropShapeDrag()
+      return
+    }
+    if (vectorErase) {
+      dropVectorErase()
+      return
+    }
+    if (marquee) {
+      // A polygon loses only the vertex the gesture was placing.
+      if (marquee.shape === "polygon" && marquee.points.length > 1) {
+        if (marquee.placing) marquee.points.pop()
+        marquee.placing = false
+        marquee.closing = undefined
+      } else marquee = undefined
+      if (frame !== undefined) cancelAnimationFrame(frame)
+      frame = undefined
+      samples.clear()
+      // Back to what was selected before the drag began.
+      if (marquee) holdSelection(marqueeShape() ? marqueeMask() : selection)
+      else showSelection(selection)
+      if (marquee && snapshot.status === "ready") render()
+      return
+    }
     if (!stroking && !opening) return
     stroking = false
     opening = false
+    landing = false
     // The frame already scheduled would see a stroke that has just ended and
     // flush its tail into the layer, which is the very mark being taken back.
     if (frame !== undefined) cancelAnimationFrame(frame)
@@ -2089,25 +6298,107 @@ export function createEngine(
     stampCount = 0
     samples.clear()
     renderer?.cancelStroke()
+    if (fluidTargetId) {
+      // The wet fields go back to what they were at pen-down.
+      fluidTargetId = undefined
+      fluidBlot = false
+      renderer?.endFluid(false)
+      syncWet()
+    }
+    if (directTargetId) {
+      // The dabs went straight into the surface, so the surface is put back.
+      directTargetId = undefined
+      directCount = 0
+      renderer?.endDirect(false)
+      publish({ brushDirty: renderer?.brushDirty() ?? false })
+    }
     if (snapshot.status === "ready") render()
   }
 
   function endStroke() {
+    if (shapeDrag) {
+      if (shapeDrag.tool === "pen" && !shapeDrag.ended) {
+        // Drain the final drag samples before the next click changes its anchor.
+        forgetGestureInputFrame()
+        drawShapeDrag()
+        if (shapeDrag) {
+          shapeDrag.placing = false
+          publish({ penNodes: [...shapeDrag.nodes!] })
+        }
+        forgetGestureInput()
+        return
+      }
+      if (shapeDrag.tool === "polygon" && !shapeDrag.ended) return
+      shapeDrag.ended = true
+      // A node band settles which nodes are selected the moment it is let
+      // go, as a click on empty canvas always has, not a frame later.
+      if (shapeDrag.nodeBox) {
+        if (frame !== undefined) cancelAnimationFrame(frame)
+        frame = undefined
+        drawShapeDrag()
+        return
+      }
+      scheduleFrame()
+      return
+    }
+    if (vectorErase) {
+      vectorErase.ended = true
+      scheduleFrame()
+      return
+    }
+    if (marquee) {
+      if (marquee.shape === "polygon") {
+        if (marquee.closing) {
+          if (marquee.closing === "drop") dropMarquee()
+          else commitMarquee()
+          return
+        }
+        marquee.placing = false
+      } else marquee.ended = true
+      scheduleFrame()
+      return
+    }
     if (!stroking) return
     // The tail is flushed by the next frame, so the stroke reaches the point
     // the pen actually lifted from rather than stopping a sample short.
     stroking = false
+    landing = true
     scheduleFrame()
-    // An eraser removes ink rather than using it, so it never counts.
-    if (snapshot.tool !== "eraser")
+    // An eraser removes ink and a smudge moves it; only the brush uses it.
+    if (snapshot.tool === "brush")
       options.onStrokeCommitted?.(snapshot.color.hex)
+  }
+
+  /**
+   * Lands a lifted stroke now rather than on the frame it waits for, so a
+   * command sent as the pen lifts — dropping the selection, switching layer —
+   * applies after the stroke, as the artist made them. The frame already
+   * scheduled still presents it. The one place the stroke pipeline draws
+   * outside the frame (architecture §6.2).
+   */
+  function landLiftedStroke() {
+    if (!landing) return
+    landing = false
+    landStroke()
+  }
+
+  /**
+   * A released shape or node-tool gesture finishes on the next frame; a
+   * command arriving before then would otherwise be undone by it, as a Tab
+   * straight after a node click once was.
+   */
+  function landEndedShapeDrag() {
+    if (!shapeDrag?.ended) return
+    if (frame !== undefined) cancelAnimationFrame(frame)
+    frame = undefined
+    drawShapeDrag()
   }
 
   function render(): GPUTexture {
     if (!device || !context || !renderer)
       throw new Error("The graphics device is not ready.")
     const texture = context.getCurrentTexture()
-    renderer.render(texture.createView())
+    renderer.render(texture.createView(), { ants: antsPhase })
     return texture
   }
 
@@ -2185,14 +6476,30 @@ export function createEngine(
         workspaceBackground: WORKSPACE_BACKGROUND,
         ink: BRUSH_COLOR,
         feather: BRUSH_FEATHER,
+        experimentalFluidReach: options.experimentalFluidReach,
       })
       renderer = target
+      // Paused before there was a renderer to tell (fluid brushes 18).
+      if (snapshot.dryingPaused) target.setFluidDryingPaused(true)
+      target.setRasterMagnification(snapshot.rasterMagnification)
       const local = options.persistence
       const store = local
         ? createDocumentStore(local.blobs ?? createLocalBlobStore())
         : undefined
       documents = store
+      const work = createTileWorker()
+      tileWork = work
       history = createDocumentHistory({
+        wet: {
+          capture: () => target.copyFluid(),
+          restore(copy, id) {
+            target.restoreFluid(copy, id)
+            wetTargetId = id
+            syncWet()
+          },
+          release: (copy) => target.releaseFluid(copy),
+        },
+        wetBudgetBytes: options.history?.wetBudgetBytes,
         bridge: {
           readTiles: (id, coords) => target.readTiles(id, coords),
           writeTiles: (id, tiles) => {
@@ -2209,12 +6516,11 @@ export function createEngine(
           hotBytes: options.history?.hotBytes ?? DEFAULT_HOT_BYTES,
           warmBytes: options.history?.warmBytes ?? DEFAULT_WARM_BYTES,
           spill: createOpfsSpill(),
+          // Hashing and compressing a stroke's tiles is seconds of work that
+          // the stroke after it must not wait behind (live brushes 28).
+          work,
         }),
-        onChange: () =>
-          publish({
-            canUndo: history?.canUndo() ?? false,
-            canRedo: history?.canRedo() ?? false,
-          }),
+        onChange: () => publishHistory(),
         onError: fail,
         // Every route a pixel takes into the document — a stroke, a layer
         // operation, an undo — ends here, which is why the write to disk hangs
@@ -2224,9 +6530,27 @@ export function createEngine(
           // a layer is first known to hold something — or, erased, nothing.
           invalidateChangedHoldings()
           if (!restored) return
+          // A step landing on top of a restore on trial is the artist painting
+          // over it: the trial is over, and undoing that step later lands on
+          // a restore they have made theirs, not on a preview.
+          if (
+            restoreStep !== undefined &&
+            !applyingRestore &&
+            !revertingRestore &&
+            history?.topStep() !== restoreStep
+          ) {
+            restoreStep = undefined
+            publishHistory()
+          }
+          if (restoreOnTrial()) {
+            publishSyncStatus()
+            return
+          }
+          if (snapshot.loading) unsyncedWhileLoading = true
           void persistence?.save()
           // Scheduling is a timer reset, not a network call, so this never
           // costs a stroke a frame (§9.2's "off the interactive path").
+          committedSinceOpen = true
           flushScheduler?.touch()
           // A fresh commit changes what a flush would upload, so whatever
           // "fully-synced" meant a moment ago no longer applies.
@@ -2250,7 +6574,9 @@ export function createEngine(
               width: snapshot.width,
               height: snapshot.height,
               structure,
-              surfaces: past.tileIndex(),
+              // Tiles still loading are on disk already and belong to the
+              // document; history just has not been handed them yet.
+              surfaces: withPendingTiles(past.tileIndex(), structure),
               assets: writableAssets(structure),
             }
           },
@@ -2269,6 +6595,9 @@ export function createEngine(
             tiles: (hash) => past.store.get(hash),
             assets: async (id) => assetFor(id).bytes,
             snapshot: () => {
+              // Scenes travel inside the tree; the backend files them as
+              // records of their own (20). Their pixels — a cache of the
+              // scenes — are never in the tile index, so never go up.
               const structure = structureForSave()
               return {
                 structure,
@@ -2276,10 +6605,11 @@ export function createEngine(
                 assets: writableAssets(structure),
               }
             },
-            // readPixels presents through the renderer's one display-transform
+            // capturePixels presents through the renderer's one display-transform
             // pass. PNG encoding and scaling happen after the GPU readback,
             // off the stroke frame and only when the flush scheduler fires.
-            preview: async () => encodePreview(await engine.readPixels()),
+            preview: async () => encodePreview(await capturePixels()),
+            onPreview: cloud.onPreview,
             // A flush that fails — an outage, a dropped response — is not the
             // document failing: the stroke is already safe on disk, and
             // `status()` staying "saved-locally" already says truthfully that
@@ -2289,10 +6619,29 @@ export function createEngine(
               cloud.onError?.(error)
               publish({ problem: explainFailure(error, "upload") })
             },
-            onStatusChange: () => publishSyncStatus(),
+            onStatusChange: () => {
+              publishSyncStatus()
+              // Also told after dispose, while a last flush finishes, which
+              // is when a host no longer subscribed to the snapshot needs it.
+              if (cloudSync) cloud.onSyncStatus?.(cloudSync.status())
+            },
           })
           flushScheduler = createFlushScheduler({
-            flush: () => void cloudSync?.flush(),
+            // An idle timer set by earlier strokes can come due mid-preview.
+            // What is sent is what the artist sees, so wet paint dries
+            // first (D42), and the flush waits for that step to be recorded.
+            // Paint held while drying is paused stays wet through an idle
+            // flush, which sends what has settled (fluid brushes 18).
+            flush: (reason) => {
+              const send = () => {
+                if (!restoreOnTrial() && !snapshot.loading)
+                  void cloudSync?.flush()
+              }
+              if (!wetTargetId || (reason === "idle" && snapshot.dryingPaused))
+                return send()
+              dryFluid()
+              void history?.settle().then(send)
+            },
             idleMs: cloud.idleMs ?? DEFAULT_CLOUD_IDLE_MS,
           })
         }
@@ -2326,7 +6675,21 @@ export function createEngine(
       if (error) throw new Error(error.message)
       // The host may have resized the canvas while validation was pending.
       render()
+      if (snapshot.sampleAllLayers) {
+        renderer.prepareSampling()
+        await acquired.queue.onSubmittedWorkDone()
+        if (disposed || device !== acquired) return
+      }
       publish({ status: "ready" })
+      // Validation may outlast the entire background tail. Start that tail
+      // only after the canvas is usable, so loading never delays readiness.
+      const loadRemaining = loadBackgroundTiles
+      loadBackgroundTiles = undefined
+      fullyLoaded = loadRemaining?.() ?? Promise.resolve()
+      if (cloudBehind && restored)
+        void fullyLoaded.then(() => {
+          if (!disposed && device === acquired) flushScheduler?.flushNow()
+        })
       // Input is attached only once there is something to draw into.
       if (!detachSampler && canvas instanceof HTMLCanvasElement) {
         detachSampler = attachPointerSampler(
@@ -2335,6 +6698,17 @@ export function createEngine(
           {
             begin: beginStroke,
             end: endStroke,
+            // Read by the dabs still to be drawn; the stroke's own opacity
+            // was settled as the pen went down.
+            pressureSensed: () => {
+              strokeSensesPressure = true
+            },
+            modifiers: (shift, alt, ctrl) => {
+              shiftHeld = shift
+              altHeld = alt
+              ctrlHeld = ctrl
+              if (!shift) shiftLatched = false
+            },
             // A colour that could not be read is a colour the artist did not
             // get. It says so and leaves the session standing: the eyedropper
             // touches no pixel of the artwork, so nothing it fails at is work.
@@ -2352,8 +6726,40 @@ export function createEngine(
           {
             pressureCurve: () => pressureCurve,
             tiltEnabled: () => tiltEnabled,
+            // With a selection tool, Alt/Option subtracts (09) rather than
+            // sampling, and the node and object tools give it to a held
+            // handle. Every tool that draws samples, as the colour panel
+            // promises; Alt still frees a drawn shape from snapping once
+            // the press has begun.
+            altSamples: () =>
+              !isSelectionTool(tool) &&
+              tool !== "node" &&
+              tool !== "objectSelect",
           }
         )
+        // A pen over the canvas is about to draw on it: what it will draw
+        // into is warmed ahead of the pen (live brushes 24).
+        const target = canvas
+        target.addEventListener("pointerenter", warmth.touch)
+        target.addEventListener("pointermove", warmth.touch)
+        detachWarmth = () => {
+          target.removeEventListener("pointerenter", warmth.touch)
+          target.removeEventListener("pointermove", warmth.touch)
+        }
+        // A hidden tab is given no frames, so its paint would stay wet for
+        // as long as it was away: it dries as the tab goes (D42).
+        const host = canvas.ownerDocument
+        const dryWhenHidden = () => {
+          if (host.visibilityState !== "hidden") return
+          try {
+            dryFluid()
+          } catch (error) {
+            fail(error)
+          }
+        }
+        host.addEventListener("visibilitychange", dryWhenHidden)
+        detachVisibility = () =>
+          host.removeEventListener("visibilitychange", dryWhenHidden)
         // Navigation is input too, and it belongs to the same canvas. Holding
         // it here rather than in the host is what keeps the pen, the present
         // pass and the snapshot agreeing about where the canvas is (D28).
@@ -2378,6 +6784,12 @@ export function createEngine(
     }
   }
 
+  /** Discards the session's picked-up paint without changing document pixels. */
+  function cleanBrush() {
+    renderer?.cleanBrush()
+    publish({ brushDirty: false })
+  }
+
   /**
    * The one place the ink changes, whether it came from the picker or from the
    * eyedropper. Painting is premultiplied linear light; the snapshot carries
@@ -2395,6 +6807,12 @@ export function createEngine(
      */
     encoded?: readonly [number, number, number]
   ) {
+    // Cleaning the load under a wet stroke in flight would change the paint
+    // it is laying, so that stroke is taken back. Any other stroke keeps
+    // going: an eyedropper's read can land after the next stroke has begun,
+    // and a dry stroke has nothing on its bristles to lose.
+    if (directTargetId && directWet) cancelStroke()
+    cleanBrush()
     // Every colour arriving here is display-referred and therefore in gamut,
     // but the primaries matrices are published rounded to seven decimals, so
     // their rows do not sum to exactly one: white comes back as 1.0000001 in
@@ -2420,6 +6838,7 @@ export function createEngine(
         hex: workingToHex(bounded),
       }),
     })
+    applySelectedStyle(snapshot.color.hex)
   }
 
   /**
@@ -2480,6 +6899,69 @@ export function createEngine(
     }
   }
 
+  /**
+   * The artwork as pixels, rendered into a target of its own. Not gated on
+   * the engine being ready, because a disposed engine still captures the
+   * preview of its last flush before its device goes (see `dispose`).
+   */
+  async function capturePixels(): Promise<RenderedPixels> {
+    if (!device) throw new Error("The graphics device is not ready.")
+    const { width, height } = snapshot
+    const acquired = device
+    const bytesPerRow = Math.ceil((width * 4) / 256) * 256
+    const buffer = acquired.createBuffer({
+      size: bytesPerRow * height,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    })
+    const output = acquired.createTexture({
+      size: { width, height },
+      format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    })
+    try {
+      // The artwork is what was painted, not how it is being looked at, so
+      // it is drawn at its own size rather than through the view (D28), into
+      // a target of its own: the visible swap-chain frame is never replaced
+      // while its asynchronous readback completes. A layer picked out in the
+      // list is how it is being looked at too, so it is drawn without that.
+      renderer?.renderArtwork(
+        output.createView(),
+        highlight && doc ? planComposite(doc) : undefined
+      )
+      const encoder = acquired.createCommandEncoder()
+      encoder.copyTextureToBuffer(
+        { texture: output },
+        { buffer, bytesPerRow },
+        { width, height }
+      )
+      acquired.queue.submit([encoder.finish()])
+      await buffer.mapAsync(GPUMapMode.READ)
+      const mapped = new Uint8Array(buffer.getMappedRange())
+      const data = new Uint8Array(width * height * 4)
+      for (let y = 0; y < height; y++) {
+        data.set(
+          mapped.subarray(y * bytesPerRow, y * bytesPerRow + width * 4),
+          y * width * 4
+        )
+        if (y % 32 === 31)
+          await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      }
+      if (format === "bgra8unorm") {
+        for (let y = 0; y < height; y++) {
+          const end = (y + 1) * width * 4
+          for (let i = y * width * 4; i < end; i += 4)
+            [data[i], data[i + 2]] = [data[i + 2], data[i]]
+          if (y % 32 === 31)
+            await new Promise<void>((resolve) => setTimeout(resolve, 0))
+        }
+      }
+      return { width, height, data, colorSpace: snapshot.outputColorSpace }
+    } finally {
+      buffer.destroy()
+      output.destroy()
+    }
+  }
+
   const engine: Engine = {
     getSnapshot: () => snapshot,
     subscribe(listener) {
@@ -2490,6 +6972,15 @@ export function createEngine(
     },
     async dispatch(command) {
       if (disposed) return
+      landLiftedStroke()
+      landEndedShapeDrag()
+      if (filterSession && !FILTER_PASSTHROUGH.has(command.type)) cancelFilter()
+      // Whatever needs the layer's pixels to be final finds them so (D42),
+      // and in history, as it would a stroke's.
+      if (wetTargetId && !WET_PASSTHROUGH.has(command.type)) {
+        dryFluid()
+        await history?.settle()
+      }
       switch (command.type) {
         case "initialize":
           if (snapshot.status === "ready") return
@@ -2517,6 +7008,24 @@ export function createEngine(
           }
           break
         case "setBrush": {
+          const wanted = [command.tipTextureId, command.grain?.textureId]
+          if (
+            brushTurn ||
+            (options.resolveTexture &&
+              wanted.some((id) => id && !textures.get(id)))
+          ) {
+            const turn = (brushTurn ?? Promise.resolve()).then(() =>
+              resolveBrushTextures(wanted)
+            )
+            const settled = turn.catch(() => {})
+            brushTurn = settled
+            try {
+              await turn
+            } finally {
+              if (brushTurn === settled) brushTurn = undefined
+            }
+            if (disposed) return
+          }
           for (const value of [command.opacity, command.flow])
             if (
               value !== undefined &&
@@ -2544,7 +7053,17 @@ export function createEngine(
             throw new Error("Brush roundness must be in (0, 1].")
           if (command.angle !== undefined && !Number.isFinite(command.angle))
             throw new Error("Brush angle must be finite.")
+          if (command.color) validateBrushColor(command.color)
+          if (
+            command.tipSelection !== undefined &&
+            command.tipSelection !== null
+          )
+            validateTipSelection(command.tipSelection)
           if (command.dynamics) validateDynamics(command.dynamics)
+          if (command.scatter) validateScatter(command.scatter)
+          if (command.wet) validateBrushWet(command.wet)
+          if (command.fluid) validateBrushFluid(command.fluid)
+          if (command.blot) validateBrushBlot(command.blot)
           // Textures are named, not carried, so a name that resolves to
           // nothing is caught here rather than silently drawing untextured.
           if (command.tipTextureId && !textures.get(command.tipTextureId))
@@ -2553,6 +7072,8 @@ export function createEngine(
             )
           if (command.grain) {
             validateGrain(command.grain)
+            if ((textures.get(command.grain.textureId)?.frameCount ?? 1) !== 1)
+              throw new Error("Grain must be a single-frame texture.")
             if (!textures.get(command.grain.textureId))
               throw new Error(
                 `No texture is registered as ${command.grain.textureId}.`
@@ -2588,6 +7109,10 @@ export function createEngine(
               ? structuredClone(command.dynamics)
               : brush.dynamics,
           }
+          if (command.color !== undefined) {
+            if (command.color) next.color = { ...command.color }
+            else delete next.color
+          }
           // Absent rather than present-and-null — and absent rather than
           // present-and-undefined, which is a key that survives a
           // `structuredClone` into every copy of the brush the snapshot
@@ -2597,15 +7122,46 @@ export function createEngine(
             command.tipTextureId === undefined
               ? brush.shape.tipTextureId
               : (command.tipTextureId ?? undefined)
+          if (command.tipSelection !== undefined) {
+            if (command.tipSelection === null) delete next.shape.tipSelection
+            else next.shape.tipSelection = command.tipSelection
+          }
           if (tip) next.shape.tipTextureId = tip
           else delete next.shape.tipTextureId
           if (grain) next.grain = { ...grain }
           else delete next.grain
+          const scatter =
+            command.scatter === undefined
+              ? brush.scatter
+              : (command.scatter ?? undefined)
+          if (scatter) next.scatter = { ...scatter }
+          else delete next.scatter
+          const wet =
+            command.wet === undefined
+              ? brush.rendering.wet
+              : (command.wet ?? undefined)
+          if (wet) next.rendering.wet = { pickup: wet.pickup }
+          const fluid =
+            command.fluid === undefined
+              ? brush.rendering.fluid
+              : (command.fluid ?? undefined)
+          if (fluid) next.rendering.fluid = copyBrushFluid(fluid)
+          const blot =
+            command.blot === undefined
+              ? brush.rendering.blot
+              : (command.blot ?? undefined)
+          if (blot) next.rendering.blot = copyBrushBlot(blot)
+          validateBrushMedium(next.rendering)
           // Spacing is fixed for the life of a resampler, so a brush that
           // changes it needs a new one. Never mid-stroke: the pen is up.
           if (tool === "brush" && brushSpacing(next) !== brushSpacing(brush))
             resampler = createStrokeResampler(brushSpacing(next))
+          cancelStroke()
+          cleanBrush()
           brush = next
+          // Ahead of the pen: the wet fields are not allocated by a stroke.
+          if (next.rendering.fluid || next.rendering.blot)
+            renderer?.prepareFluid()
           applyBrushTextures()
           if (snapshot.status === "ready") render()
           publish({ brush: Object.freeze(cloneBrush(next)) })
@@ -2631,6 +7187,444 @@ export function createEngine(
           applyLayerChange()
           break
         }
+        case "addVectorLayer": {
+          const before = captureStructure(requireDocument())
+          addVectorLayer(requireDocument())
+          recordOperation("add vector layer", before)
+          applyLayerChange()
+          break
+        }
+        case "closePolygon":
+          closePolygon()
+          break
+        case "finishPenPath":
+          if (shapeDrag?.tool === "pen") {
+            shapeDrag.ended = true
+            shapeDrag.placing = false
+            scheduleFrame()
+          }
+          break
+        case "editVectorNode": {
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const { geometry, node } = editNode(
+            layer.scene,
+            command.objectId,
+            command.edit
+          )
+          editScene(
+            layer.id,
+            [{ type: "update", id: command.objectId, patch: { geometry } }],
+            "edit node"
+          )
+          publish({ vectorNodes: [node] })
+          break
+        }
+        case "deleteVectorNode": {
+          if (!snapshot.vectorNodes.length) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const edit = deleteNodes(layer.scene, snapshot.vectorNodes, {
+            refit: command.refit ?? true,
+          })
+          if (!edit) break
+          editScene(layer.id, edit.edits, "delete nodes")
+          const removed = new Set(
+            edit.edits.flatMap((e) => (e.type === "remove" ? [e.id] : []))
+          )
+          publish({
+            vectorNodes: edit.nodes,
+            vectorSelection: snapshot.vectorSelection.filter(
+              (id) => !removed.has(id)
+            ),
+          })
+          break
+        }
+        case "insertVectorNodes": {
+          if (!snapshot.vectorNodes.length) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const edit = insertNodes(layer.scene, snapshot.vectorNodes)
+          if (!edit) {
+            publish({
+              problem: { action: "retry", message: CANNOT_INSERT },
+            })
+            break
+          }
+          editScene(layer.id, edit.edits, "insert nodes")
+          publish({ vectorNodes: edit.nodes, problem: nodeProblemGone() })
+          break
+        }
+        case "breakVectorNodes": {
+          if (!snapshot.vectorNodes.length) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const edit = breakNodes(
+            layer.scene,
+            snapshot.vectorNodes,
+            objectIds(layer.scene)
+          )
+          if (!edit) {
+            publish({
+              problem: { action: "retry", message: CANNOT_BREAK },
+            })
+            break
+          }
+          editScene(layer.id, edit.edits, "break nodes")
+          publish({
+            vectorNodes: [],
+            vectorSelection: [...snapshot.vectorSelection, ...edit.added],
+            problem: nodeProblemGone(),
+          })
+          break
+        }
+        case "joinVectorNodes": {
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const mode = command.segment ? "segment" : "merge"
+          // Picked nodes say which ends only while the node tool is held.
+          const ends = joinableEnds(
+            layer.scene.objects,
+            snapshot.tool === "node" ? snapshot.vectorNodes : [],
+            snapshot.vectorSelection,
+            mode
+          )
+          if (!ends) break
+          const edit = joinNodes(layer.scene, ends, mode)
+          if (!edit) break
+          editScene(layer.id, edit.edits, "join nodes")
+          publish({
+            vectorNodes: edit.nodes,
+            vectorSelection: snapshot.vectorSelection.filter(
+              (id) => !edit.removed.includes(id)
+            ),
+          })
+          break
+        }
+        case "deleteVectorSegments": {
+          if (!snapshot.vectorNodes.length) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const edit = deleteSegments(
+            layer.scene,
+            snapshot.vectorNodes,
+            objectIds(layer.scene)
+          )
+          if (!edit) break
+          editScene(layer.id, edit.edits, "delete segments")
+          publish({
+            vectorNodes: [],
+            vectorSelection: [
+              ...snapshot.vectorSelection.filter(
+                (id) => !edit.removed.includes(id)
+              ),
+              ...edit.added,
+            ],
+          })
+          break
+        }
+        case "setVectorNodeType": {
+          if (!snapshot.vectorNodes.length) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const edit = nodeCommand(
+            layer.scene,
+            snapshot.vectorNodes,
+            command.nodeType
+          )
+          if (edit) {
+            editScene(layer.id, edit.edits, "edit node")
+            publish({ vectorNodes: edit.nodes })
+          }
+          break
+        }
+        case "setVectorSegmentShape": {
+          if (!snapshot.vectorNodes.length) break
+          dropShapeDrag()
+          const layer = selectedVectorLayer()
+          const edits = segmentCommand(
+            layer.scene,
+            snapshot.vectorNodes,
+            command.shape
+          )
+          if (edits) editScene(layer.id, edits, `make ${command.shape}`)
+          break
+        }
+        case "nudgeVectorNodes": {
+          if (tool !== "node" || !snapshot.vectorNodes.length) break
+          if (shapeDrag?.node) break
+          const layer = selectedVectorLayer()
+          const edits = moveNodes(layer.scene, snapshot.vectorNodes, {
+            x: command.dx,
+            y: command.dy,
+          })
+          if (!command.repeat) nodeKeyRun++
+          editScene(layer.id, edits, "nudge nodes", `nudge-nodes:${nodeKeyRun}`)
+          break
+        }
+        case "transformVectorNodes": {
+          if (tool !== "node" || !snapshot.vectorNodes.length) break
+          if (shapeDrag?.node) break
+          const layer = selectedVectorLayer()
+          const edits = transformNodes(
+            layer.scene,
+            snapshot.vectorNodes,
+            command.transform
+          )
+          // Its own run, so a held scale never joins a nudge before it.
+          if (!command.repeat) nodeKeyRun++
+          editScene(
+            layer.id,
+            edits,
+            "transform nodes",
+            `transform-nodes:${nodeKeyRun}`
+          )
+          break
+        }
+        case "stepVectorNode":
+          if (tool !== "node") break
+          publish({
+            vectorNodes: stepNode(
+              snapshot.vectorPaths,
+              snapshot.vectorNodes,
+              command.direction
+            ),
+          })
+          break
+        case "editVectorLayer":
+          editScene(command.id, command.commands, "edit shapes")
+          break
+        case "selectVectorObjects":
+          selectVectorObjects(command.ids)
+          break
+        case "selectVectorRegion":
+          selectVectorRegion(command.region, command.additive)
+          break
+        case "deleteVectorObjects":
+          cancelVectorTransform()
+          editScene(
+            selectedVectorLayer().id,
+            snapshot.vectorSelection.map((id) => ({ type: "remove", id })),
+            "delete objects"
+          )
+          publish({ vectorSelection: [] })
+          break
+        case "duplicateVectorObjects": {
+          cancelVectorTransform()
+          const layer = selectedVectorLayer()
+          let scene = layer.scene
+          const commands: SceneCommand[] = []
+          const ids: string[] = []
+          for (const original of layer.scene.objects.filter((o) =>
+            snapshot.vectorSelection.includes(o.id)
+          )) {
+            const id = nextObjectId(scene)
+            const [a, b, c, d, e, f] = original.transform
+            const add: SceneCommand = {
+              type: "add",
+              object: {
+                ...original,
+                id,
+                transform: [a, b, c, d, e + 10, f + 10],
+              },
+            }
+            commands.push(add)
+            ids.push(id)
+            scene = applySceneEdit(scene, [add]).scene
+          }
+          editScene(layer.id, commands, "duplicate objects")
+          publish({ vectorSelection: ids })
+          break
+        }
+        case "reorderVectorObjects": {
+          cancelVectorTransform()
+          const layer = selectedVectorLayer()
+          const chosen = layer.scene.objects.filter((o) =>
+            snapshot.vectorSelection.includes(o.id)
+          )
+          if (command.to === "back") chosen.reverse()
+          editScene(
+            layer.id,
+            chosen.map((o) => ({
+              type: "reorder",
+              id: o.id,
+              index:
+                command.to === "front" ? layer.scene.objects.length - 1 : 0,
+            })),
+            "reorder objects"
+          )
+          break
+        }
+        case "beginVectorTransform":
+          await beginVectorTransform()
+          break
+        case "adjustVectorPlacement": {
+          const transform = vectorTransform
+          if (!transform || !snapshot.vectorTransform)
+            throw new Error("No objects are being transformed.")
+          const box = transform.box
+          const m = affineFromPlacement(command.placement, {
+            width: Math.max(1, box.width),
+            height: Math.max(1, box.height),
+          })
+          adjustVectorTransform(
+            [
+              m[0],
+              m[1],
+              m[2],
+              m[3],
+              m[4] - m[0] * box.x - m[2] * box.y,
+              m[5] - m[1] * box.x - m[3] * box.y,
+            ],
+            false
+          )
+          publish({
+            vectorTransform: {
+              ...snapshot.vectorTransform,
+              placement: command.placement,
+            },
+          })
+          break
+        }
+        case "adjustVectorTransform":
+          adjustVectorTransform(
+            command.matrix,
+            command.snap ?? snapshot.snapping
+          )
+          break
+        case "commitVectorTransform":
+          commitVectorTransform()
+          break
+        case "cancelVectorTransform":
+          cancelVectorTransform()
+          break
+        case "alignVectorObjects": {
+          const document = requireDocument()
+          const layer = selectedVectorLayer()
+          const box = objectsBounds(layer.scene, snapshot.vectorSelection)
+          const within =
+            command.to === "canvas"
+              ? { x: 0, y: 0, width: document.width, height: document.height }
+              : selection?.bounds
+          if (!box || !within) break
+          await beginVectorTransform()
+          const placement = {
+            x: box.x + box.width / 2,
+            y: box.y + box.height / 2,
+            width: box.width,
+            height: box.height,
+            rotation: 0,
+            flipX: false,
+            flipY: false,
+          }
+          const aligned = alignedPlacement(placement, command.anchor, within)
+          adjustVectorTransform(
+            [1, 0, 0, 1, aligned.x - placement.x, aligned.y - placement.y],
+            false
+          )
+          commitVectorTransform()
+          break
+        }
+        case "setShapeStyle": {
+          const width = command.strokeWidth ?? snapshot.shapeStyle.strokeWidth
+          if (!Number.isFinite(width) || width <= 0)
+            throw new Error("A stroke width must be positive and finite.")
+          for (const color of [command.fillColor, command.strokeColor])
+            if (color !== undefined && !parseHex(color))
+              throw new Error("A shape colour must be hex.")
+          if (
+            command.strokeCap &&
+            !["butt", "round", "square"].includes(command.strokeCap)
+          )
+            throw new Error("Invalid stroke cap.")
+          if (
+            command.strokeJoin &&
+            !["miter", "round", "bevel"].includes(command.strokeJoin)
+          )
+            throw new Error("Invalid stroke join.")
+          const opacity = command.opacity ?? snapshot.shapeStyle.opacity
+          if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1)
+            throw new Error("A shape opacity must be in [0, 1].")
+          // With objects selected, the options edit them, and what the tool
+          // gives a new shape is left as it was.
+          if (snapshot.vectorSelection.length) {
+            applySelectedStyle(undefined, command)
+            break
+          }
+          publish({
+            shapeStyle: Object.freeze({
+              fill: command.fill ?? snapshot.shapeStyle.fill,
+              stroke: command.stroke ?? snapshot.shapeStyle.stroke,
+              strokeWidth: width,
+              strokeCap: command.strokeCap ?? snapshot.shapeStyle.strokeCap,
+              strokeJoin: command.strokeJoin ?? snapshot.shapeStyle.strokeJoin,
+              fillColor: command.fillColor ?? snapshot.shapeStyle.fillColor,
+              strokeColor:
+                command.strokeColor ?? snapshot.shapeStyle.strokeColor,
+              opacity,
+            }),
+          })
+          break
+        }
+        case "setVectorBrush": {
+          const brush = parseVectorBrush(command.brush)
+          publish({
+            vectorBrush: brush,
+            vectorBrushPressure: brush.params.pressure,
+            vectorBrushTaper: brush.params.taper,
+          })
+          break
+        }
+        case "applyVectorBrush": {
+          const layer = selectedVectorLayer()
+          editScene(
+            layer.id,
+            applyVectorBrush(
+              layer.scene,
+              snapshot.vectorSelection,
+              command.brush
+            ),
+            "apply brush"
+          )
+          break
+        }
+        case "setVectorBrushTaper": {
+          const share = (t: number | undefined, was: number) => {
+            if (t === undefined) return was
+            if (!Number.isFinite(t) || t < 0 || t > MAX_TAPER)
+              throw new Error("A taper is a share of the stroke, 0 to 0.5.")
+            return t
+          }
+          const was = snapshot.vectorBrushTaper
+          const taper = {
+            start: share(command.start, was.start),
+            end: share(command.end, was.end),
+          }
+          publish({
+            vectorBrush: {
+              ...snapshot.vectorBrush,
+              params: { ...snapshot.vectorBrush.params, taper },
+            },
+            vectorBrushTaper: Object.freeze({
+              start: share(command.start, was.start),
+              end: share(command.end, was.end),
+            }),
+          })
+          break
+        }
+        case "setVectorBrushPressure":
+          publish({
+            vectorBrush: BUILTIN_VECTOR_BRUSHES[command.pressure ? 1 : 0],
+            vectorBrushPressure: command.pressure === true,
+            vectorBrushTaper: { start: 0, end: 0 },
+          })
+          break
+        case "setVectorEraser":
+          if (command.mode !== "pixel" && command.mode !== "object")
+            throw new Error("A vector eraser takes pixels or objects.")
+          cancelStroke()
+          publish({ vectorEraser: command.mode })
+          break
         case "placeImage": {
           const document = requireDocument()
           const canvas = { width: document.width, height: document.height }
@@ -2642,7 +7636,7 @@ export function createEngine(
           const before = captureStructure(document)
           const id = addLayer(document)
           if (command.name) setLayer(document, id, { name: command.name })
-          const layer = findLayer(document, id)
+          const layer = findRasterLayer(document, id)
           layer.image = true
           const placement = placementFor(command, asset, canvas)
           if (!validPlacement(placement, canvas))
@@ -2666,68 +7660,56 @@ export function createEngine(
           applyLayerChange()
           break
         }
-        case "beginImageTransform": {
-          const document = requireDocument()
-          const layer = findLayer(document, command.id)
-          if (layer.kind !== "raster" || !layer.image || !layer.placed)
-            throw new Error(
-              "Only a placed image can be moved, scaled or turned."
-            )
-          // A transform in flight on another layer is finished rather than
-          // abandoned: the artist moved on, they did not undo.
-          if (imageTransform && imageTransform.layerId !== command.id)
-            await commitTransform()
-          const asset = assetFor(layer.placed.asset.id)
-          // Decoded and uploaded here, once. Every adjustment after this is a
-          // textured quad: no decode, no canvas-sized conversion in
-          // JavaScript, no tile upload — which is the difference between
-          // dragging a six-megapixel photograph at three frames a second and
-          // dragging it at the frame rate (06).
-          const open = await imageCodec().open(asset)
-          try {
-            renderer?.openPlacedImage(command.id, open.source)
-          } catch (error) {
-            open.close()
-            throw error
-          }
-          imageTransform = {
-            layerId: command.id,
-            start: layer.placed.placement,
-            placement: layer.placed.placement,
-            asset,
-            open,
-            structure: captureStructure(document),
-            touched: placementBounds(layer.placed.placement),
-          }
-          publish({ imageTransform: describeTransform() })
+        case "beginImageTransform":
+          await beginImageTransformOf(command.id)
           break
-        }
-        case "adjustImageTransform": {
-          const document = requireDocument()
-          const session = requireTransform()
-          const canvas = { width: document.width, height: document.height }
-          if (!validPlacement(command.placement, canvas))
-            throw new Error("That is not a placement an image can be put at.")
-          if (samePlacement(command.placement, session.placement)) break
-          session.placement = command.placement
-          setPlacement(document, session.layerId, command.placement)
-          showTransform(session.layerId, command.placement)
-          session.touched = unionRect(
-            session.touched,
-            placementBounds(command.placement)
-          )
-          publish({
-            imageTransform: describeTransform(),
-            ...describeLayers(document),
-          })
+        case "adjustImageTransform":
+          adjustImageTransformTo(command.placement)
           break
-        }
         case "commitImageTransform":
           await commitTransform()
           break
         case "cancelImageTransform":
           await cancelTransform()
           break
+        case "beginLayerTransform":
+          await beginLayerTransformOf(command.id)
+          break
+        case "adjustLayerTransform":
+          adjustLayerTransformTo(command.placement)
+          break
+        case "commitLayerTransform":
+          await commitLayerTransform()
+          break
+        case "cancelLayerTransform":
+          await cancelLayerTransform()
+          break
+        case "alignLayer":
+          await alignLayer(command.id, command.anchor, command.to)
+          break
+        case "flipLayer": {
+          // Mid-transform, a flip is one more adjustment of it.
+          if (imageTransform?.layerId === command.id) {
+            adjustImageTransformTo(
+              flippedPlacement(imageTransform.placement, command.axis)
+            )
+            break
+          }
+          if (layerTransform?.layerId === command.id) {
+            adjustLayerTransformTo(
+              flippedPlacement(layerTransform.placement, command.axis)
+            )
+            break
+          }
+          await beginLayerTransformOf(command.id)
+          const session = layerTransform as typeof layerTransform
+          if (!session) break
+          adjustLayerTransformTo(
+            flippedPlacement(session.placement, command.axis)
+          )
+          await commitLayerTransform()
+          break
+        }
         case "addGroup": {
           const before = captureStructure(requireDocument())
           addGroup(requireDocument(), command.ids)
@@ -2744,6 +7726,16 @@ export function createEngine(
             const copy = findLayer(document, copyId)
             renderer?.duplicateLayer(command.id, copyId)
             contentBounds.copy(command.id, copyId)
+            // The copy's pixels were copied with it, so they are already a
+            // drawing of the scene it shares with its source.
+            const drawn = drawnScenes.get(command.id)
+            if (drawn) {
+              drawnScenes.set(copyId, drawn)
+              renderer?.setVectorScene(
+                copyId,
+                vectorDraws(drawn, undefined, screenDetail)
+              )
+            }
             if (source.mask && copy.mask)
               renderer?.duplicateLayer(source.mask.id, copy.mask.id)
             // The copy's pixels are the source's, so history holds one copy of
@@ -2755,11 +7747,28 @@ export function createEngine(
                   ? [{ from: source.mask.id, to: copy.mask.id }]
                   : []),
               ],
+              // A copy brought back by redo comes back empty, and is given
+              // its objects again.
+              ...(copy.kind === "vector" && copy.scene.objects.length
+                ? {
+                    scenes: [
+                      {
+                        layerId: copyId,
+                        forward: copy.scene.objects.map((object) => ({
+                          type: "add" as const,
+                          object,
+                        })),
+                        inverse: [],
+                      },
+                    ],
+                  }
+                : {}),
             })
           }
           applyLayerChange()
           break
         case "removeLayer":
+          cancelVectorTransform()
           {
             // A picture being moved that is then thrown away: the transform
             // has nowhere to land, and a commit would put the pixels back.
@@ -2768,38 +7777,50 @@ export function createEngine(
               imageTransform = undefined
               publish({ imageTransform: null })
             }
+            if (layerTransform?.layerId === command.id) abandonLayerTransform()
             const document = requireDocument()
             const before = captureStructure(document)
             const removed = removeLayer(document, command.id)
             const ids = nodeIdsOf(removed)
             // Recorded before the textures go: the pixels themselves are in
             // the tile store, which is what putting the layer back reads from.
-            recordOperation("remove layer", before, { removed: ids })
-            for (const id of ids) renderer?.releaseLayer(id)
+            recordOperation("remove layer", before, {
+              removed: ids,
+              scenes: sceneRemovals(removed),
+            })
+            for (const id of ids) releaseSurface(id)
           }
           applyLayerChange()
           break
         case "clearDocument": {
+          cancelVectorTransform()
+          dropShapeDrag()
+
           if (imageTransform) closeTransform(imageTransform)
           imageTransform = undefined
           publish({ imageTransform: null })
+          abandonLayerTransform()
           const previous = requireDocument()
           for (const id of structureSurfaceIds(captureStructure(previous)))
-            renderer?.releaseLayer(id)
+            releaseSurface(id)
           history?.clear()
           doc = createBlankDocument({
             width: previous.width,
             height: previous.height,
           })
+          resetSelection()
           // The view is how the artist is looking, not what is on the
           // canvas: clearing the pixels leaves the zoom and pan alone.
           applyLayerChange()
           restored = true
           void persistence?.save()
+          committedSinceOpen = true
           flushScheduler?.touch()
           break
         }
         case "selectLayer":
+          cancelVectorTransform()
+          publish({ vectorSelection: [] })
           selectLayer(requireDocument(), command.id)
           applyLayerChange()
           break
@@ -2838,7 +7859,151 @@ export function createEngine(
           const before = captureStructure(document)
           const mask = removeMask(document, command.id)
           recordOperation("remove mask", before, { removed: [mask.id] })
-          renderer?.releaseLayer(mask.id)
+          releaseSurface(mask.id)
+          applyLayerChange()
+          break
+        }
+        case "beginFilter": {
+          const document = requireDocument()
+          const layer = findLayer(document, command.id)
+          if (layer.kind !== "raster" || layer.locked || layer.image) break
+          if (!history?.occupiedTiles(layer.id).length) break
+          // The layer's own pixels are what is filtered, so it is made the
+          // pen's target: the compositor then reads its surface live, and
+          // every preview shows without rebuilding a cache.
+          selectLayer(document, layer.id)
+          applyLayerChange()
+          if (!renderer?.beginFilter(layer.id)) break
+          filterSession = {
+            layerId: layer.id,
+            filter: defaultFilter(command.kind),
+          }
+          publish({ filter: { ...filterSession } })
+          break
+        }
+        case "previewFilter": {
+          if (!filterSession) break
+          filterSession.filter = normalizeFilter(command.filter)
+          renderer?.previewFilter(filterSession.filter)
+          publish({ filter: { ...filterSession } })
+          if (snapshot.status === "ready") render()
+          break
+        }
+        case "applyFilter": {
+          const session = filterSession
+          if (!session) break
+          if (isIdentityFilter(session.filter)) {
+            cancelFilter()
+            break
+          }
+          filterSession = undefined
+          // The preview already is the result: drawn once more so what is
+          // kept is these settings even if the last preview was skipped.
+          const region = renderer?.previewFilter(session.filter)
+          renderer?.endFilter(true)
+          publish({ filter: null })
+          if (!region) break
+          const document = requireDocument()
+          recordOperation(
+            FILTER_LABELS[session.filter.kind].toLowerCase(),
+            captureStructure(document),
+            {
+              readback: [{ surfaceId: session.layerId, region }],
+            }
+          )
+          await history?.settle()
+          invalidateThumbnailsOf(session.layerId)
+          applyLayerChange()
+          break
+        }
+        case "cancelFilter":
+          cancelFilter()
+          break
+        case "clearLayer": {
+          const document = requireDocument()
+          const layer = findLayer(document, command.id)
+          if (layer.kind === "vector" && !layer.locked) {
+            cancelVectorTransform()
+            const ids =
+              layer.id === snapshot.activeLayerId
+                ? snapshot.vectorSelection
+                : []
+            editScene(
+              layer.id,
+              layer.scene.objects
+                .filter((o) => !ids.length || ids.includes(o.id))
+                .map((o) => ({ type: "remove", id: o.id })),
+              "clear objects"
+            )
+            publish({ vectorSelection: [] })
+            break
+          }
+          // A locked layer is not to be touched, and a placed image's pixels
+          // are rendered from its file, so neither is cleared. A vector
+          // layer's are drawn from its shapes, which clearing does not (yet)
+          // take away.
+          if (layer.kind !== "raster" || layer.locked || layer.image) break
+          // Clearing nothing is not a step worth undoing.
+          if (!history?.occupiedTiles(layer.id).length) break
+          if (selection) {
+            // With a selection, only what is selected goes (08). The pixels
+            // change on the GPU first; the step reads them back against what
+            // history still holds, like a stroke.
+            const region = renderer?.clearSelected(layer.id)
+            if (!region) break
+            recordOperation("clear selection", captureStructure(document), {
+              readback: [{ surfaceId: layer.id, region }],
+            })
+            await history.settle()
+            invalidateThumbnailsOf(layer.id)
+            applyLayerChange()
+            break
+          }
+          // Replacing with no tiles at all is what empty means; the step keeps
+          // what was there, so undo puts it back.
+          recordOperation("clear layer", captureStructure(document), {
+            replaced: [{ surfaceId: layer.id, tiles: [] }],
+            canvas: { width: document.width, height: document.height },
+          })
+          // History empties the GPU tiles from its queue, so the frame that
+          // shows the clear has to wait for it or it draws the marks again.
+          await history.settle()
+          applyLayerChange()
+          break
+        }
+        case "rasteriseLayer": {
+          cancelVectorTransform()
+
+          if (shapeDrag?.layerId === command.id) dropShapeDrag()
+          const document = requireDocument()
+          const layer = findLayer(document, command.id)
+          if (layer.kind !== "vector")
+            throw new Error(`${layer.name} is not a vector layer.`)
+          const before = captureStructure(document)
+          // The GPU already holds the scene drawn; that drawing is what the
+          // paint layer starts as, read back into history as the step's
+          // pixels so it is saved and synced like any paint.
+          drawScene(layer.id, layer.scene)
+          const drawn = unionOf(layer.scene.objects.map(objectBounds))
+          const region =
+            drawn &&
+            intersectRect(drawn, {
+              x: 0,
+              y: 0,
+              width: document.width,
+              height: document.height,
+            })
+          // Undo brings the vector layer back empty with the tree, then puts
+          // its objects back; redo has nothing to do to a scene that is gone.
+          const scenes = sceneRemovals(layer)
+          rasteriseLayer(document, layer.id)
+          drawnScenes.delete(layer.id)
+          recordOperation("rasterise layer", before, {
+            scenes,
+            ...(region ? { readback: [{ surfaceId: layer.id, region }] } : {}),
+          })
+          await history?.settle()
+          invalidateThumbnailsOf(layer.id)
           applyLayerChange()
           break
         }
@@ -2856,6 +8021,8 @@ export function createEngine(
           break
         }
         case "setLayer": {
+          if (command.locked && vectorTransform?.layerId === command.id)
+            cancelVectorTransform()
           const { type: _type, id, ...patch } = command
           const before = captureStructure(requireDocument())
           setLayer(requireDocument(), id, patch)
@@ -2876,9 +8043,213 @@ export function createEngine(
           if (snapshot.status === "ready") render()
           break
         }
+        case "selectShape": {
+          const box = {
+            x: command.x,
+            y: command.y,
+            width: command.width,
+            height: command.height,
+          }
+          if (!Object.values(box).every(Number.isFinite))
+            throw new Error("A selection must be finite.")
+          const document = requireDocument()
+          const shape =
+            command.shape === "rect"
+              ? rectSelection(document, box)
+              : ellipseSelection(document, box)
+          const mask = combineSelections(
+            document,
+            selection,
+            shape,
+            command.mode ?? "replace"
+          )
+          commitSelection(mask ? "select" : "deselect", mask)
+          break
+        }
+        case "selectLasso": {
+          if (
+            !command.points.every(
+              (point) => Number.isFinite(point.x) && Number.isFinite(point.y)
+            )
+          )
+            throw new Error("A selection must be finite.")
+          const document = requireDocument()
+          const mask = combineSelections(
+            document,
+            selection,
+            lassoSelection(document, command.points),
+            command.mode ?? "replace"
+          )
+          commitSelection(mask ? "select" : "deselect", mask)
+          break
+        }
+        case "selectWand": {
+          if (!Number.isFinite(command.x) || !Number.isFinite(command.y))
+            throw new Error("A selection must be finite.")
+          if (snapshot.status !== "ready")
+            throw new Error("The graphics device is not ready.")
+          await selectWand(
+            { x: command.x, y: command.y },
+            command.mode ?? "replace"
+          )
+          break
+        }
+        case "setWandOptions": {
+          const tolerance = command.tolerance ?? wand.tolerance
+          if (!Number.isFinite(tolerance))
+            throw new Error("A tolerance must be finite.")
+          const sample = command.sample ?? wand.sample
+          if (sample !== "layer" && sample !== "composite")
+            throw new Error(`Not a wand sample: ${sample}`)
+          wand = Object.freeze({
+            tolerance: Math.round(Math.min(255, Math.max(0, tolerance))),
+            sample,
+          })
+          publish({ wand })
+          break
+        }
+        case "selectAll":
+          // With the node tool, every node of the paths being edited.
+          if (tool === "node" && snapshot.vectorPaths.length) {
+            publish({ vectorNodes: allNodes(snapshot.vectorPaths) })
+            break
+          }
+          // With the object tool, every object on the vector layer.
+          if (
+            tool === "objectSelect" &&
+            activeLayer(requireDocument()).kind === "vector"
+          ) {
+            selectVectorObjects()
+            break
+          }
+          commitSelection("select all", selectAll(requireDocument()))
+          break
+        case "abandonSelectionGesture":
+          if (releaseNodes()) break
+          dropShapeDrag()
+          releaseObjects()
+          dropMarquee()
+          break
+        case "deselect":
+          // The vector tools let go of what they hold, as Escape does; the
+          // pixel selection is left alone.
+          if (
+            releaseNodes() ||
+            ((tool === "objectSelect" || tool === "node") && releaseObjects())
+          )
+            break
+          requireDocument()
+          commitSelection("deselect", null)
+          break
+        case "invertSelection":
+          commitSelection(
+            "invert selection",
+            invertSelection(requireDocument(), selection)
+          )
+          break
+        case "featherSelection": {
+          if (!Number.isFinite(command.radius) || command.radius < 0)
+            throw new Error("A feather radius must be finite and not negative.")
+          const document = requireDocument()
+          if (!selection) break
+          // A feather that would leave nothing selected is not taken: the
+          // artist asked for softer edges, not for the selection to go.
+          const mask = featherSelection(document, selection, command.radius)
+          if (mask) commitSelection("feather selection", mask)
+          break
+        }
+        case "moveSelection": {
+          if (!Number.isFinite(command.dx) || !Number.isFinite(command.dy))
+            throw new Error("A selection can only be moved by a finite offset.")
+          const document = requireDocument()
+          if (!selection) break
+          const mask = translateSelection(
+            document,
+            selection,
+            command.dx,
+            command.dy
+          )
+          commitSelection(mask ? "move selection" : "deselect", mask)
+          break
+        }
+        case "copySelectionToLayer": {
+          const document = requireDocument()
+          // A group has no pixels of its own to copy, and a mask being
+          // painted is not a layer's picture.
+          if (
+            !selection ||
+            document.paintingMask ||
+            findNodeIn(document.layers, document.activeLayerId)?.kind !==
+              "raster"
+          )
+            break
+          const source = activeLayer(document)
+          const sourceId = source.id
+          const before = captureStructure(document)
+          const copyId = addLayer(document)
+          setLayer(document, copyId, { name: `${source.name} copy` })
+          // The layer reaches the GPU before its pixels are drawn into it.
+          uploadLayers()
+          const region = renderer?.copySelected(sourceId, copyId) ?? null
+          recordOperation(
+            "copy to layer",
+            before,
+            region ? { readback: [{ surfaceId: copyId, region }] } : undefined
+          )
+          if (region) {
+            contentBounds.grow(copyId, region)
+            await history?.settle()
+            invalidateThumbnailsOf(copyId)
+          }
+          applyLayerChange()
+          break
+        }
+        case "dryNow": {
+          dryFluid()
+          if (snapshot.status === "ready") render()
+          break
+        }
+        case "setDryingPaused": {
+          if (command.paused === snapshot.dryingPaused) break
+          renderer?.setFluidDryingPaused(command.paused)
+          publish({ dryingPaused: command.paused })
+          // Held paint moves again when drying goes on.
+          syncWet()
+          break
+        }
+        case "advanceFluid": {
+          if (!Number.isInteger(command.steps) || command.steps < 0)
+            throw new Error("Steps must be a whole number, zero or more.")
+          await advanceFluid(command.steps)
+          if (snapshot.status === "ready") render()
+          break
+        }
         case "undo":
         case "redo": {
+          if (vectorTransform) {
+            cancelVectorTransform()
+            break
+          }
           if (!history) break
+          // See `publishHistory`: only the revert itself may undo a trial.
+          if (restoreRevertible() && !revertingRestore) break
+          // Undo with an outline half drawn takes back the outline, not the
+          // selection step beneath it.
+          if (marquee) {
+            if (command.type === "undo") dropMarquee()
+            break
+          }
+          if (shapeDrag) {
+            if (command.type === "undo") dropShapeDrag()
+            break
+          }
+          // A direct stroke in flight is already in its surface, so undo takes
+          // back the stroke rather than writing an older step underneath it.
+          // A fluid one is in the wet fields the same way.
+          if (directTargetId || fluidTargetId) {
+            if (command.type === "undo") cancelStroke()
+            break
+          }
           // Undo during a drag means the adjustment being made, not the step
           // underneath it: the picture goes back to where it was picked up
           // and the stack is left alone.
@@ -2886,19 +8257,52 @@ export function createEngine(
             await cancelTransform()
             break
           }
+          if (layerTransform) {
+            await cancelLayerTransform()
+            break
+          }
+          // Whether the next step is a wet stroke is known once every settle
+          // has been recorded.
+          await history.recorded()
+          // While a wet stroke is still a step, undo goes step by step and
+          // the paint stays wet. Wet paint with no such step left dries
+          // first, and undo takes back that passage, whole (D42). Redo never
+          // has to: nothing it could put back was recorded over wet paint.
+          if (
+            command.type === "undo" &&
+            wetTargetId &&
+            history.wetSteps() === 0
+          )
+            dryFluid()
           const document = requireDocument()
           const previous = structureSurfaceIds(captureStructure(document))
-          const applied = await history[command.type]((structure) => {
-            restoreStructure(document, structure)
-            // Uploaded before the entry's tiles are written, so a layer that
-            // came back cannot have its restored pixels overwritten by the
-            // sparse surface it was originally seeded from.
-            uploadLayers()
-          })
+          let restoredSelection: string | null | undefined
+          const applied = await history[command.type](
+            (structure) => {
+              restoredSelection = structure.selection
+              restoreStructure(document, structure)
+              // Uploaded before the entry's tiles are written, so a layer that
+              // came back cannot have its restored pixels overwritten by the
+              // sparse surface it was originally seeded from.
+              uploadLayers()
+            },
+            (changes, direction) =>
+              applySceneChanges(document, changes, direction)
+          )
           if (!applied) break
+          // A wet stroke put back on a layer the artist has since left: wet
+          // paint is only ever on the layer being painted, so it dries there.
+          if (wetTargetId && wetTargetId !== paintTargetId(document)) dryFluid()
           const remaining = structureSurfaceIds(captureStructure(document))
-          for (const id of previous)
-            if (!remaining.has(id)) renderer?.releaseLayer(id)
+          for (const id of previous) if (!remaining.has(id)) releaseSurface(id)
+          if (restoredSelection !== undefined) {
+            selectionKey = restoredSelection
+            showSelection(
+              restoredSelection === null
+                ? null
+                : (selections.get(restoredSelection) ?? null)
+            )
+          }
           applyLayerChange()
           break
         }
@@ -2964,6 +8368,122 @@ export function createEngine(
           publish({ pressureCurve: Object.freeze(next.map((p) => ({ ...p }))) })
           break
         }
+        case "addGuide": {
+          const document = requireDocument()
+          const before = captureStructure(document)
+          document.guides = addGuide(
+            document.guides,
+            command.axis,
+            command.position
+          ).guides
+          recordOperation("add guide", before)
+          publish(describeLayers(document))
+          break
+        }
+        case "moveGuide": {
+          const document = requireDocument()
+          const guide = document.guides.find((g) => g.id === command.id)
+          if (!guide)
+            throw new Error(`No guide ${command.id} is in this document.`)
+          // Put down where it was picked up is not a step.
+          if (guide.position === command.position) break
+          const before = captureStructure(document)
+          document.guides = moveGuide(
+            document.guides,
+            command.id,
+            command.position
+          )
+          recordOperation("move guide", before)
+          publish(describeLayers(document))
+          break
+        }
+        case "removeGuide": {
+          const document = requireDocument()
+          const next = removeGuide(document.guides, command.id)
+          // Nothing to take away is not a step.
+          if (next.length === document.guides.length) break
+          const before = captureStructure(document)
+          document.guides = next
+          recordOperation("remove guide", before)
+          publish(describeLayers(document))
+          break
+        }
+        case "clearGuides": {
+          const document = requireDocument()
+          if (document.guides.length === 0) break
+          const before = captureStructure(document)
+          document.guides = []
+          recordOperation("clear guides", before)
+          publish(describeLayers(document))
+          break
+        }
+        case "setPaper": {
+          const document = requireDocument()
+          if (!PAPERS.includes(command.paper))
+            throw new Error(`No paper is called ${command.paper}.`)
+          // Wet paint has dried by now: this is not a wet passthrough.
+          if (command.paper === document.paper) break
+          const before = captureStructure(document)
+          document.paper = command.paper
+          recordOperation("change paper", before)
+          applyLayerChange()
+          break
+        }
+        case "setBoard": {
+          const document = requireDocument()
+          if (
+            ![command.steepness, command.direction].every(Number.isFinite) ||
+            command.steepness < 0 ||
+            command.steepness > 1
+          )
+            throw new Error(
+              "A board's steepness must be in [0, 1] and its direction finite."
+            )
+          const board = normaliseBoard(command)
+          if (sameBoard(board, document.board)) break
+          // Wet paint stays wet: this is a wet passthrough, and the paint
+          // runs the new way from the next step.
+          const before = captureStructure(document)
+          document.board = board
+          recordOperation("tilt board", before)
+          renderer?.setBoard(board)
+          publish(describeLayers(document))
+          break
+        }
+        case "setGuidesVisible":
+          guidesVisible = command.visible !== false
+          publish({ guidesVisible })
+          break
+        case "setRulersVisible":
+          publish({ rulersVisible: command.visible !== false })
+          break
+        case "setRasterMagnification": {
+          if (!RASTER_MAGNIFICATIONS.includes(command.mode))
+            throw new Error(`Unknown raster magnification: ${command.mode}`)
+          renderer?.setRasterMagnification(command.mode)
+          publish({ rasterMagnification: command.mode })
+          if (snapshot.status === "ready") render()
+          break
+        }
+        case "setStraightEdge": {
+          const edge = command.edge
+          if (
+            edge &&
+            ![edge.x, edge.y, edge.angle].every((value) =>
+              Number.isFinite(value)
+            )
+          )
+            throw new Error("A straight-edge must sit at a finite place.")
+          straightEdge = edge
+            ? Object.freeze({ x: edge.x, y: edge.y, angle: edge.angle })
+            : null
+          publish({ straightEdge })
+          break
+        }
+        case "setSnapping":
+          snapping = command.enabled !== false
+          publish({ snapping })
+          break
         case "setTiltEnabled": {
           tiltEnabled = command.enabled !== false
           publish({ tiltEnabled })
@@ -2993,13 +8513,64 @@ export function createEngine(
           publish({ eraser: Object.freeze(cloneBrush(eraser)) })
           break
         }
-        case "setTool":
+        case "setSmudge": {
+          const next = {
+            radius: command.radius ?? smudge.radius,
+            strength: command.strength ?? smudge.strength,
+          }
+          if (!isSmudge(next))
+            throw new Error(
+              "Smudge size must be positive and its strength in [0, 1]."
+            )
           cancelStroke()
+          smudge = Object.freeze(next)
+          if (tool === "smudge")
+            resampler = createStrokeResampler(toolSpacing())
+          publish({ smudge })
+          break
+        }
+        case "setTool":
+          // A polygon clicked out far enough to be a shape is kept, not lost
+          // with the tool; anything less is dropped with it.
+          closePolygon()
+          cancelStroke()
+          // A lasso polygon half clicked out is dropped with the tool.
+          dropMarquee()
+          cancelVectorTransform()
           tool = command.tool
-          resampler = createStrokeResampler(brushSpacing(activeBrush()))
+          resampler = createStrokeResampler(toolSpacing())
           applyBrushTextures()
           if (snapshot.status === "ready") render()
-          publish({ tool })
+          // A stroke left selected as it was drawn is let go with the tool
+          // that drew it, so the next tool's options are its own; only the
+          // tools that work on selected objects keep hold of them.
+          publish(
+            tool === "objectSelect" || tool === "node"
+              ? { tool }
+              : { tool, vectorSelection: [] }
+          )
+          break
+        case "cleanBrush":
+          cancelStroke()
+          cleanBrush()
+          break
+        case "setSampleAllLayers": {
+          const turn = ++samplingTurn
+          cancelStroke()
+          if (command.enabled && renderer && device) {
+            renderer.prepareSampling()
+            await device.queue.onSubmittedWorkDone()
+          }
+          if (disposed || turn !== samplingTurn) break
+          // A pointer may have started another stroke while preparation waited.
+          cancelStroke()
+          publish({ sampleAllLayers: command.enabled })
+          break
+        }
+        case "setCleanBrushAfterStroke":
+          cancelStroke()
+          if (command.enabled) cleanBrush()
+          publish({ cleanBrushAfterStroke: command.enabled })
           break
         case "setColor": {
           if (!parseHex(command.hex))
@@ -3009,15 +8580,37 @@ export function createEngine(
         }
       }
     },
+    observeVectorControls(observer) {
+      vectorControlObservers.add(observer)
+      notifyVectorControls()
+      return () => {
+        vectorControlObservers.delete(observer)
+      }
+    },
+    observeFluid(observer) {
+      fluidObserver = observer
+    },
     observeFrames(observer) {
       frameObserver = observer
     },
     async save() {
+      // A save is of the picture on screen, so wet paint dries into it first
+      // (D42): whatever else this session may not write, it holds no wet
+      // paint once it has been asked to.
+      dryFluid()
       // The same gate the commit hook uses: a session that could not read the
       // stored document does not get to write over it, however it is asked.
-      if (!restored) return
+      // Nor does a preview that has not been kept.
+      if (!restored || restoreOnTrial()) return
+
       await history?.settle()
       await persistence?.save()
+      // A document still loading would sync without its unloaded tiles; the
+      // sync is owed instead, and sent once they are all in.
+      if (snapshot.loading) {
+        unsyncedWhileLoading = true
+        return
+      }
       if (cloudSync) {
         flushScheduler?.flushNow()
         await cloudSync.settle()
@@ -3043,6 +8636,8 @@ export function createEngine(
         hashes: version.tiles.map((tile) => tile.hash),
       })
       if (disposed) return false
+      // The restore replaces the layers, so nothing is left wet on one (D42).
+      dryFluid()
 
       const bySurface = new Map<
         string,
@@ -3076,113 +8671,172 @@ export function createEngine(
       // overwritten by the sparse surface it was seeded from.
       uploadLayers()
 
+      applyingRestore = true
       past.recordReplacement(
         "restore",
         { before, after: structure },
         replacement,
         { width: snapshot.width, height: snapshot.height }
       )
-      await past.settle()
+      try {
+        await past.settle()
+      } finally {
+        applyingRestore = false
+      }
       if (disposed) return false
 
       const remaining = structureSurfaceIds(captureStructure(document))
-      for (const id of previous)
-        if (!remaining.has(id)) renderer?.releaseLayer(id)
+      for (const id of previous) if (!remaining.has(id)) releaseSurface(id)
       applyLayerChange()
-      restoreDepth = past.stepsBack()
+      restoreStep = past.topStep()
+      publishHistory()
       return true
     },
-    canRevertRestore: () =>
-      restoreDepth !== undefined && history?.stepsBack() === restoreDepth,
+    canRevertRestore: restoreRevertible,
+    async keepRestore() {
+      // Ended first, because a save refuses while one is on trial; put back
+      // if the save throws, so the preview is still one to keep or take back.
+      const step = restoreStep
+      restoreStep = undefined
+      publishHistory()
+      try {
+        await this.save()
+      } catch (error) {
+        restoreStep = step
+        publishHistory()
+        throw error
+      }
+      // A failed upload does not throw — it is reported, and retried by the
+      // next flush — so whether this reached the cloud is read back instead.
+      return { synced: !cloudSync || cloudSync.status() === "fully-synced" }
+    },
     async revertRestore() {
       if (!this.canRevertRestore()) return false
-      await this.dispatch({ type: "undo" })
-      restoreDepth = undefined
+      revertingRestore = true
+      try {
+        await this.dispatch({ type: "undo" })
+      } finally {
+        revertingRestore = false
+      }
+      restoreStep = undefined
+      publishHistory()
       return true
     },
     cloudMetrics: () => cloudSync?.metrics() ?? null,
+    wetUnder(x, y) {
+      if (!doc || !wetTargetId) return false
+      return (
+        renderer?.fluidWetAt(paintTargetId(doc), toDocX(x, y), toDocY(x, y)) ??
+        false
+      )
+    },
     historyUsage: () => ({
       steps: history?.stepsBack() ?? 0,
+      wetSteps: history?.wetSteps() ?? 0,
+      wetBytes: history?.wetBytes() ?? 0,
       heldBytes: history?.bytes() ?? 0,
       residentBytes: history?.residentBytes() ?? 0,
       spilledBytes: history?.spilledBytes() ?? 0,
     }),
     async readPixels() {
-      if (snapshot.status !== "ready" || !device)
+      if (snapshot.status !== "ready")
         throw new Error("The graphics device is not ready.")
-      const { width, height } = snapshot
-      const acquired = device
-      const bytesPerRow = Math.ceil((width * 4) / 256) * 256
-      const buffer = acquired.createBuffer({
-        size: bytesPerRow * height,
-        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-      })
-      const output = acquired.createTexture({
-        size: { width, height },
-        format,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-      })
-      try {
-        // The artwork is what was painted, not how it is being looked at, so
-        // the export presents through the identity rather than the view (D28).
-        renderer?.setView(IDENTITY_MATRIX)
-        // A layer picked out in the list is how it is being looked at too.
-        if (highlight && doc) renderer?.setComposition(planComposite(doc))
-        // Preview/export rendering has its own target. It never replaces the
-        // visible swap-chain frame while its asynchronous readback completes.
-        renderer?.render(output.createView())
-        const encoder = acquired.createCommandEncoder()
-        encoder.copyTextureToBuffer(
-          { texture: output },
-          { buffer, bytesPerRow },
-          { width, height }
+      return await capturePixels()
+    },
+    async readWetWater() {
+      if (snapshot.status !== "ready" || !renderer)
+        throw new Error("The graphics device is not ready.")
+      return renderer.readFluidWater()
+    },
+    async readSelection() {
+      if (snapshot.status !== "ready" || !renderer)
+        throw new Error("The graphics device is not ready.")
+      const data = await renderer.readSelection()
+      return data
+        ? { width: snapshot.width, height: snapshot.height, data }
+        : null
+    },
+    patternBrushFromSelection(source) {
+      const layer = selectedVectorLayer()
+      return makePatternBrush(
+        layer.scene.objects.filter((o) =>
+          snapshot.vectorSelection.includes(o.id)
+        ),
+        source
+      )
+    },
+    scatterBrushFromSelection() {
+      const layer = selectedVectorLayer()
+      return makeScatterBrush(
+        layer.scene.objects.filter((o) =>
+          snapshot.vectorSelection.includes(o.id)
         )
-        acquired.queue.submit([encoder.finish()])
-        // Restore the interactive uniform before yielding to the browser. The
-        // submitted export work is ordered before this queue write.
-        applyView()
-        await buffer.mapAsync(GPUMapMode.READ)
-        const mapped = new Uint8Array(buffer.getMappedRange())
-        const data = new Uint8Array(width * height * 4)
-        for (let y = 0; y < height; y++) {
-          data.set(
-            mapped.subarray(y * bytesPerRow, y * bytesPerRow + width * 4),
-            y * width * 4
-          )
-          if (y % 32 === 31)
-            await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      )
+    },
+    async exportSvg(options) {
+      if (snapshot.status !== "ready" || !history)
+        throw new Error("The graphics device is not ready.")
+      const past = history
+      // An export is of the dried picture (D42).
+      dryFluid()
+      await past.settle()
+      const document = requireDocument()
+      // Freeze settings before PNG encoding yields to further edits.
+      const copyNodes = (nodes: readonly LayerNode[]): LayerNode[] =>
+        nodes.map((node) => {
+          const mask = node.mask ? { ...node.mask } : undefined
+          return node.kind === "group"
+            ? { ...node, mask, children: copyNodes(node.children) }
+            : { ...node, mask }
+        })
+      const captured = { ...document, layers: copyNodes(document.layers) }
+      const surfaces = new Map(
+        past.tileIndex().map((surface) => [surface.surfaceId, surface])
+      )
+      const images = new Map<string, string>()
+      const prepare = async (nodes: readonly LayerNode[]): Promise<void> => {
+        for (const node of nodes) {
+          if (node.kind === "group") await prepare(node.children)
+          if (node.kind === "raster" && options.raster === "embed")
+            images.set(
+              node.id,
+              await svgPngImage(
+                captured,
+                surfaces.get(node.id),
+                (hash) => past.store.get(hash),
+                false
+              )
+            )
+          if (node.mask?.enabled)
+            images.set(
+              node.mask.id,
+              await svgPngImage(
+                captured,
+                surfaces.get(node.mask.id),
+                (hash) => past.store.get(hash),
+                true
+              )
+            )
         }
-        if (format === "bgra8unorm") {
-          for (let y = 0; y < height; y++) {
-            const end = (y + 1) * width * 4
-            for (let i = y * width * 4; i < end; i += 4)
-              [data[i], data[i + 2]] = [data[i + 2], data[i]]
-            if (y % 32 === 31)
-              await new Promise<void>((resolve) => setTimeout(resolve, 0))
-          }
-        }
-        return { width, height, data, colorSpace: snapshot.outputColorSpace }
-      } finally {
-        buffer.destroy()
-        output.destroy()
-        // Also restore after an early failure before the normal restoration.
-        applyView()
-        syncComposition()
       }
+      await prepare(captured.layers)
+      return serializeSvg(captured, options, images)
     },
     async exportDocument() {
       if (snapshot.status !== "ready" || !history)
         throw new Error("The graphics device is not ready.")
+      // An export is of the dried picture (D42).
+      dryFluid()
       await history.settle()
       const surfaces = history.tileIndex()
       const exported = savedStructure(
-        captureStructure(requireDocument()),
+        captureStructure(requireDocument(), { scenes: true }),
         surfaces
       )
       const manifest = {
         version: 1 as const,
         id: options.persistence?.documentId ?? "exported-document",
-        name: "Untitled artwork",
+        name: "Untitled",
         width: snapshot.width,
         height: snapshot.height,
         structure: exported,
@@ -3205,14 +8859,14 @@ export function createEngine(
       const previous = doc
       if (!previous) throw new Error("The graphics device is not ready.")
       for (const id of structureSurfaceIds(captureStructure(previous)))
-        renderer.releaseLayer(id)
+        releaseSurface(id)
       history.clear()
       doc = createDocument({
         width: imported.manifest.width,
         height: imported.manifest.height,
       })
       for (const id of structureSurfaceIds(captureStructure(doc)))
-        renderer.releaseLayer(id)
+        releaseSurface(id)
       const structure = adoptStrandedSurfaces(
         imported.manifest.structure,
         imported.manifest.surfaces
@@ -3226,6 +8880,14 @@ export function createEngine(
         if (bytes) assets.set(ref.id, Object.freeze({ ...ref, bytes }))
       }
       renderer.resize(imported.manifest.width, imported.manifest.height)
+      // Another document: drying is not paused in it (fluid brushes 18).
+      if (snapshot.dryingPaused) {
+        renderer.setFluidDryingPaused(false)
+        publish({ dryingPaused: false })
+      }
+      syncWet()
+      if (snapshot.sampleAllLayers) renderer.prepareSampling()
+      drawnScenes.clear()
       const size = {
         width: imported.manifest.width,
         height: imported.manifest.height,
@@ -3243,9 +8905,11 @@ export function createEngine(
       uploadLayers()
       syncComposition()
       view = DEFAULT_VIEW
+      resetSelection()
       publish({
         width: imported.manifest.width,
         height: imported.manifest.height,
+        brushDirty: false,
         view,
         ...describeLayers(doc),
       })
@@ -3276,21 +8940,70 @@ export function createEngine(
     },
     dispose() {
       if (disposed) return
+      cancelVectorTransform()
+      // Wet paint does not outlive the canvas (D42): it dries into its layer
+      // while there is still a device to dry it on.
+      const dried = !!wetTargetId
+      if (dried) dryFluid()
       disposed = true
+      stopSelection()
+      stopFluidClock()
       thumbnails.dispose()
       thumbnailViews.clear()
       // A picture still held open by a transform that was never finished.
       if (imageTransform) closeTransform(imageTransform)
       imageTransform = undefined
+      if (layerTransform)
+        renderer?.closePlacedImage(layerImageId(layerTransform.layerId))
+      layerTransform = undefined
       detachSampler?.()
       detachSampler = undefined
+      detachWarmth?.()
+      detachWarmth = undefined
+      warmth.dispose()
       detachGestures?.()
       detachGestures = undefined
+      detachVisibility?.()
+      detachVisibility = undefined
       // A disposed engine has no frames to report, and holding the observer
       // would keep whatever it closes over alive with it.
       frameObserver = null
-      release()
+      fluidObserver = null
+      fluidChannel?.port1.close()
+      fluidChannel?.port2.close()
+      // Leaving the canvas through the app is an unmount, not a pagehide: it
+      // would otherwise cancel the idle flush that had not fired yet, or tear
+      // the device out from under one mid-preview, leaving the cloud without
+      // the latest strokes and the library without a picture of them. The
+      // runtime is kept just long enough to finish that flush; nothing is
+      // shown from it meanwhile, and the canvas is free for another engine.
+      // Paint dried just now is a step still being read back. The runtime is
+      // kept for that too, until the save its commit queues has finished.
+      const sync = cloudSync
+      const unsent =
+        sync &&
+        (sync.status() === "syncing" ||
+          dried ||
+          (committedSinceOpen && sync.status() !== "fully-synced"))
+      const saving = dried && restored && !restoreOnTrial()
+      const flushing =
+        restored && unsent && !restoreOnTrial() && !snapshot.loading
+      if (saving || flushing) {
+        if (frame !== undefined) cancelAnimationFrame(frame)
+        frame = undefined
+        context?.unconfigure()
+        context = null
+        void (async () => {
+          await history?.settle()
+          if (saving) await persistence?.settle()
+          if (flushing) {
+            flushScheduler?.flushNow()
+            await sync?.settle()
+          }
+        })().finally(release)
+      } else release()
       publish({ status: "disposed" })
+      vectorControlObservers.clear()
       listeners.clear()
     },
   }

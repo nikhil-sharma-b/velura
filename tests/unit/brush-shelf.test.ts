@@ -10,6 +10,7 @@ import {
   copyName,
   duplicateOf,
   resolveLibraryBrush,
+  searchShelf,
 } from "@/features/studio/lib/brush-shelf"
 import type { StoredBrush } from "@/features/studio/lib/brush-store"
 
@@ -42,11 +43,11 @@ describe("the shelf", () => {
     ])
     const inks = shelf.find((set) => set.name === "Inks")!
     expect(inks.brushes.map((entry) => entry.name)).toEqual(["First", "Second"])
-    expect(shelf.map((set) => set.name)).toEqual([
-      BUILTIN_SET,
+    expect(shelf.filter((set) => !set.builtin).map((set) => set.name)).toEqual([
       "Inks",
       "Washes",
     ])
+    expect(shelf[0].name).toBe(BUILTIN_SET)
     expect(inks.brushes.every((entry) => entry.builtin)).toBe(false)
   })
 })
@@ -55,7 +56,8 @@ describe("a built-in", () => {
   test("cannot be destroyed", () => {
     const shelf = brushShelf([])
     expect(shelf[0].brushes.every((entry) => entry.deletable)).toBe(false)
-    expect(brushShelf([stored()])[1].brushes[0].deletable).toBe(true)
+    const own = brushShelf([stored()]).find((set) => !set.builtin)!
+    expect(own.brushes[0].deletable).toBe(true)
   })
 
   test("duplicates into a set of the artist's own", () => {
@@ -93,7 +95,7 @@ describe("resolving a brush by id", () => {
   test("finds built-ins and saved brushes, and nothing else", () => {
     const saved = stored()
     expect(resolveLibraryBrush(DEFAULT_LIBRARY_BRUSH_ID, [saved])?.name).toBe(
-      "Round brush"
+      "Pencil"
     )
     expect(resolveLibraryBrush("s1", [saved])?.name).toBe("Mine")
     expect(resolveLibraryBrush("gone", [saved])).toBeUndefined()
@@ -107,5 +109,28 @@ describe("resolving a brush by id", () => {
       id: "s1",
       name: "Renamed",
     })
+  })
+})
+
+describe("searching the shelf", () => {
+  test("an empty query leaves the shelf as it is", () => {
+    const shelf = brushShelf([stored()])
+    expect(searchShelf(shelf, "  ")).toEqual(shelf)
+  })
+
+  test("finds built-ins, ported brushes and the artist's own by name, ignoring case", () => {
+    const shelf = brushShelf([stored({ name: "My Chalk" })])
+    const found = searchShelf(shelf, "CHALK")
+    const names = found.flatMap((set) => set.brushes.map((entry) => entry.name))
+    expect(names).toContain("Chalk Grainy")
+    expect(names).toContain("My Chalk")
+    expect(names.every((name) => name.toLowerCase().includes("chalk"))).toBe(
+      true
+    )
+  })
+
+  test("drops sets with nothing matching", () => {
+    const found = searchShelf(brushShelf([stored()]), "Mine")
+    expect(found.map((set) => set.name)).toEqual(["Inks"])
   })
 })

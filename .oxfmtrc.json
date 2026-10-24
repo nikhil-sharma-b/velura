@@ -18,6 +18,7 @@
     ".turbo/",
     "coverage/",
     "pnpm-lock.yaml",
-    ".pnpm-store/"
+    ".pnpm-store/",
+    "convex/_generated/"
   ]
 }

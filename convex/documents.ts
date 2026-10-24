@@ -1,6 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server"
 import { ConvexError, v } from "convex/values"
 
+import { internal } from "./_generated/api"
 import type { Doc, Id } from "./_generated/dataModel"
 import {
   type MutationCtx,
@@ -15,6 +16,8 @@ import {
   normaliseDocumentName,
 } from "./lib/documents"
 import { isAnonymousDocumentId } from "../lib/anonymous-document-id"
+import { sceneChunkHashes } from "./lib/scenes"
+import { readScenes, sceneRowsOf } from "./sceneRows"
 
 async function requireUserId(
   ctx: QueryCtx | MutationCtx
@@ -59,8 +62,16 @@ export const list = query({
 
 export const get = query({
   args: { documentId: v.id("documents") },
-  handler: async (ctx, { documentId }) =>
-    await requireOwnDocument(ctx, documentId),
+  handler: async (ctx, { documentId }) => {
+    const document = await requireOwnDocument(ctx, documentId)
+    // The tree as a session reads it: scenes back inside their layers (20).
+    return document.structure === undefined
+      ? document
+      : {
+          ...document,
+          structure: await readScenes(ctx, documentId, document.structure),
+        }
+  },
 })
 
 export const create = mutation({
@@ -135,9 +146,20 @@ export const rename = mutation({
     const next = normaliseDocumentName(name)
     // A rename that changes nothing must not reorder the library.
     if (next === document.name) return
+    const newest = await ctx.db
+      .query("documents")
+      .withIndex("by_owner_updated", (q) => q.eq("ownerId", document.ownerId))
+      .order("desc")
+      .first()
+    const updatedAt = nextUpdatedAt(
+      Math.max(document.updatedAt, newest?.updatedAt ?? 0)
+    )
     await ctx.db.patch(documentId, {
       name: next,
-      updatedAt: nextUpdatedAt(document.updatedAt),
+      updatedAt,
+      ...(document.previewForUpdatedAt === document.updatedAt
+        ? { previewForUpdatedAt: updatedAt }
+        : {}),
     })
   },
 })
@@ -154,8 +176,6 @@ export const duplicate = mutation({
       .collect()
 
     const now = Date.now()
-    // Pixels are not copied because there are none yet (ticket 16 owns tiles);
-    // what is copied is the document's identity: owner, size and name lineage.
     const copyId = await ctx.db.insert("documents", {
       ownerId: source.ownerId,
       name: duplicateName(
@@ -166,7 +186,56 @@ export const duplicate = mutation({
       height: source.height,
       createdAt: now,
       updatedAt: now,
+      ...(source.structure !== undefined
+        ? { structure: source.structure }
+        : {}),
+      // New previews are immutable objects, so the copy can name the exact
+      // image that accompanied this structure and tile snapshot. A later
+      // source flush cannot change what the duplicate shows.
+      ...(source.previewObjectKey &&
+      source.previewVersion !== undefined &&
+      source.previewForUpdatedAt === source.updatedAt
+        ? {
+            previewObjectKey: source.previewObjectKey,
+            previewVersion: source.previewVersion,
+            previewForUpdatedAt: now,
+          }
+        : {}),
     })
+    // Tiles are content-addressed and shared between documents, so the copy
+    // names the same R2 objects rather than duplicating any pixels — and,
+    // naming them, keeps them alive through orphan collection just as its
+    // source does. Its history starts empty: the copy is a new document.
+    const tiles = await ctx.db
+      .query("tiles")
+      .withIndex("by_document", (q) => q.eq("documentId", documentId))
+      .collect()
+    for (const { surfaceId, x, y, hash } of tiles)
+      await ctx.db.insert("tiles", {
+        documentId: copyId,
+        surfaceId,
+        x,
+        y,
+        hash,
+        updatedAt: now,
+      })
+    // Scene rows belong to one document, so the copy gets its own — only
+    // those its tree names, since its history starts empty and nothing would
+    // ever let go of the rest.
+    const named = sceneChunkHashes(source.structure)
+    for (const { hash, data } of await sceneRowsOf(ctx, documentId))
+      if (named.has(hash))
+        await ctx.db.insert("sceneChunks", { documentId: copyId, hash, data })
+    // Older previews still use the source's mutable document key. Copy that
+    // legacy object to a new immutable key in an action; until it lands the
+    // copy shows as blank, and the first open repairs it if it never does.
+    if (source.previewVersion !== undefined && !source.previewObjectKey)
+      await ctx.scheduler.runAfter(0, internal.tilesActions.copyPreview, {
+        from: documentId,
+        to: copyId,
+        sourceVersion: source.previewVersion,
+        sourceUpdatedAt: source.updatedAt,
+      })
     return copyId
   },
 })
@@ -175,17 +244,20 @@ export const remove = mutation({
   args: { documentId: v.id("documents") },
   handler: async (ctx, { documentId }) => {
     await requireOwnDocument(ctx, documentId)
+    for (const row of await sceneRowsOf(ctx, documentId))
+      await ctx.db.delete(row._id)
     await ctx.db.delete(documentId)
   },
 })
 
 /**
  * `updatedAt` orders the library. A rename inside the same millisecond as the
- * row's last write would tie, and the tie falls back on creation time — exactly
- * the order the rename was meant to change. Advancing by a millisecond keeps
- * "most recently touched first" true however fast the writes land. Inserts need
- * no such nudge: for two rows created in the same millisecond, creation order
- * and the intended order already agree.
+ * newest write in the library would tie with it, and the tie falls back on
+ * creation time — exactly the order the rename was meant to change. Advancing
+ * a millisecond past the newest row, not only past this row's own last write,
+ * keeps "most recently touched first" true however fast the writes land.
+ * Inserts need no such nudge: for two rows created in the same millisecond,
+ * creation order and the intended order already agree.
  */
 function nextUpdatedAt(previous: number): number {
   return Math.max(Date.now(), previous + 1)

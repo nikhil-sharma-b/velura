@@ -1,4 +1,9 @@
-import { type Brush, brushSpacing } from "@/engine/brush/brush"
+import {
+  type Brush,
+  brushSpacing,
+  isBlender,
+  thrownScatter,
+} from "@/engine/brush/brush"
 import {
   evaluateDynamics,
   NEUTRAL_STAMP_CONTEXT,
@@ -7,6 +12,7 @@ import {
   type StampParams,
 } from "@/engine/brush/dynamics"
 import type { Accumulation } from "@/engine/brush/round-brush"
+import { createScatterPlacer, MAX_SCATTER_COUNT } from "@/engine/brush/scatter"
 
 /**
  * The preview stroke of the brush editor (D32), as data.
@@ -23,11 +29,10 @@ import type { Accumulation } from "@/engine/brush/round-brush"
  * and the editor's job is to make the shape of a brush legible enough that it
  * is dialled in by eye rather than by trial and error on the work.
  *
- * It shows only what the stamp path can actually draw, which today is size,
- * flow, opacity, angle, roundness and the paper's bite. `scatter` and `hue`
- * are evaluated by the graph and carried, but no renderer consumes them yet
- * (see `DynamicsTarget`), and a preview that displaced its dabs for a scatter
- * the canvas ignores would be a picture of a stroke the artist cannot draw.
+ * It shows size, flow, opacity, angle, roundness, scatter, per-dab colour and
+ * the paper's bite. A wet brush is shown laying its colour; what it drags
+ * needs paint under it, which this box does not have. One that lays nothing
+ * is drawn by its pickup, so a blender is still a stroke on the shelf.
  */
 
 export type PreviewDab = {
@@ -41,6 +46,10 @@ export type PreviewDab = {
   angle: number
   /** Width against length, in (0, 1]. */
   roundness: number
+  /** Colour offsets, already scaled by the brush's colour section. */
+  hue: number
+  saturation: number
+  lightness: number
 }
 
 export type BrushPreview = {
@@ -50,6 +59,8 @@ export type BrushPreview = {
   accumulation: Accumulation
   /** How hard the paper bites, or zero for a brush drawing on a smooth one. */
   grainDepth: number
+  /** Whether any dab's colour moves, so the preview has a colour to show it on. */
+  tinted: boolean
 }
 
 export type PreviewBox = { width: number; height: number }
@@ -60,6 +71,11 @@ const BOW = 0.3
 const MARGIN = 0.08
 /** Steps the path is walked in to measure it. Well under a pixel of error. */
 const WALK_STEPS = 512
+/**
+ * Scatter is seeded like a canvas stroke, but always with this, for the same
+ * reason `randomAt` is fixed: a redraw must not reshuffle the dabs.
+ */
+const SCATTER_SEED = 1
 
 /**
  * A pressure profile with a press, a body and a release: what a mark actually
@@ -155,9 +171,31 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
   // The last dab lands at the end of the path, so the stroke fills the box
   // whatever the spacing divides into.
   const step = arc / (count - 1)
+  // A wet stroke goes straight onto the layer (D41), each dab mixed over the
+  // last by its flow: there is no stroke opacity to apply and no coverage to
+  // take, whatever the brush still holds for when it is dry again. Nor is a
+  // wet dab's colour moved, so the preview leaves that out; it is thrown as
+  // a dry one is, one dab at a time along the step (live brushes 29), unless
+  // the brush is a blender, which keeps to the path.
+  const wet = !!brush.rendering.wet
+  // A blender lays nothing, and a stroke of nothing says nothing about it. It
+  // is shown by what it would drag instead: its pickup, as the graph moves it.
+  const blender = isBlender(brush) ? brush.rendering.wet : undefined
+  // A fluid brush with no flow lays water and no pigment (D42), and is shown
+  // by that water for the same reason.
+  // A blot lays nothing either (fluid brushes 17), and is shown by how much
+  // of the water it takes.
+  const water =
+    brush.rendering.fluid && brush.rendering.flow === 0
+      ? brush.rendering.fluid.water
+      : undefined
+  const blot = brush.rendering.blot
   const params: StampParams = { ...NEUTRAL_STAMP_PARAMS }
   const context: StampContext = { ...NEUTRAL_STAMP_CONTEXT }
   const dabs: PreviewDab[] = []
+  const scatter = createScatterPlacer()
+  scatter.begin(SCATTER_SEED)
+  const offsets = new Float32Array(MAX_SCATTER_COUNT * 2)
   for (let index = 0; index < count; index++) {
     const progress = index / (count - 1)
     const point = pathAt(atDistance(lengths, index * step), box)
@@ -168,19 +206,91 @@ export function previewStroke(brush: Brush, box: PreviewBox): BrushPreview {
     context.random = randomAt(index)
     context.strokeProgress = progress
     evaluateDynamics(brush.dynamics, context, params)
-    dabs.push({
-      x: point.x,
-      y: point.y,
+    const dab = {
       radius: Math.min(radius * params.size, cap),
-      opacity: brush.rendering.flow * params.flow,
+      opacity: blender
+        ? blender.pickup * params.pickup
+        : water !== undefined
+          ? water * params.water
+          : (blot?.water ?? 1) * brush.rendering.flow * params.flow,
       angle: brush.shape.angle + params.angle,
       roundness: brush.shape.roundness * params.roundness,
-    })
+      hue: wet ? 0 : params.hue * (brush.color?.hue ?? 1),
+      saturation: wet ? 0 : params.saturation * (brush.color?.saturation ?? 1),
+      lightness: wet ? 0 : params.lightness * (brush.color?.lightness ?? 1),
+    }
+    const thrown = scatter.place(
+      thrownScatter(brush),
+      params.scatter,
+      dab.radius,
+      context.direction,
+      offsets,
+      wet ? 1 : undefined
+    )
+    for (let i = 0; i < thrown; i++)
+      dabs.push({
+        ...dab,
+        x: point.x + offsets[i * 2],
+        y: point.y + offsets[i * 2 + 1],
+      })
   }
   return {
     dabs,
-    opacity: brush.rendering.opacity,
-    accumulation: brush.rendering.accumulation,
+    opacity: wet ? 1 : brush.rendering.opacity,
+    accumulation: wet ? "buildup" : brush.rendering.accumulation,
     grainDepth: brush.grain?.depth ?? 0,
+    tinted: dabs.some(
+      (dab) => dab.hue !== 0 || dab.saturation !== 0 || dab.lightness !== 0
+    ),
   }
+}
+
+function hueToRgb(p: number, q: number, t0: number): number {
+  const t = t0 - Math.floor(t0)
+  if (t < 1 / 6) return p + (q - p) * 6 * t
+  if (t < 0.5) return q
+  if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+  return p
+}
+
+/**
+ * A colour moved by a dab's offsets, as `engine/shaders/hsl.ts` moves it:
+ * hue in turns, saturation scaled, lightness leaning to white or black. The
+ * shader works in linear light and this in the preview's own, which is close
+ * enough to judge jitter by.
+ */
+export function adjustHsl(
+  [r, g, b]: readonly [number, number, number],
+  hue: number,
+  saturation: number,
+  lightness: number
+): [number, number, number] {
+  const high = Math.max(r, g, b)
+  const low = Math.min(r, g, b)
+  const l = (high + low) / 2
+  let h = 0
+  let s = 0
+  const d = high - low
+  if (d > 1e-6) {
+    s = l <= 0.5 ? d / (high + low) : d / (2 - high - low)
+    if (high === r) h = (g - b) / d + (g < b ? 6 : 0)
+    else if (high === g) h = (b - r) / d + 2
+    else h = (r - g) / d + 4
+    h /= 6
+  }
+  h += hue
+  s = Math.min(1, Math.max(0, s * (1 + saturation)))
+  let out: [number, number, number] = [l, l, l]
+  if (s > 0) {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s
+    const p = 2 * l - q
+    out = [
+      hueToRgb(p, q, h + 1 / 3),
+      hueToRgb(p, q, h),
+      hueToRgb(p, q, h - 1 / 3),
+    ]
+  }
+  if (lightness > 0) out = out.map((v) => v + (1 - v) * lightness) as typeof out
+  if (lightness < 0) out = out.map((v) => v * (1 + lightness)) as typeof out
+  return out
 }

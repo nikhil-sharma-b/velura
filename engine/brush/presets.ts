@@ -1,9 +1,10 @@
-import type { Brush } from "./brush"
+import { type Brush, type BrushFluid, copyBrushFluid } from "./brush"
 import type { Modulator } from "./dynamics"
+import { type BuiltinBrushSet, KRITA_BRUSHES } from "./krita-presets"
 import { CHARCOAL_TIP, GRAPHITE_TIP, PAPER_GRAIN } from "./texture"
 
 /**
- * The brushes every install opens with (25): enough media to start painting
+ * The dry brushes every install opens with (25): enough media to start painting
  * without configuring anything.
  *
  * Each one is a `Brush` and nothing else — the same data an artist's own
@@ -154,13 +155,314 @@ export const BUILTIN_BRUSHES: readonly Brush[] = Object.freeze([
   },
 ])
 
+/** A bristle tip from the bundled Krita resources: a loaded head of hairs. */
+const OIL_BRISTLE_TIP = "krita:oil-bristle"
+/** Hairs that have parted into clumps, as a brush short of paint does. */
+const DRY_BRISTLE_TIP = "krita:bristles-grouped"
+/** Woven canvas, from the same bundle. */
+const CANVAS_GRAIN = "krita:01-canvas"
+
 /**
- * What a session with no remembered brush opens in the hand: a mid-sized round
- * brush that responds to pressure, which is the least surprising thing to find
- * on the end of the pen (`features/studio/components/canvas-host.tsx`).
+ * The wet brushes every install opens with (live brushes 08): enough to paint
+ * wet without building a brush first.
+ *
+ * Each is the same `Brush` data as the dry ones, with `rendering.wet` set, so
+ * it lays its colour by `flow` and drags what is under it by `pickup` (D41).
+ * The stroke opacity and accumulation they carry are what the brush goes back
+ * to if wet is turned off in the editor. None scatters, and none jitters its
+ * colour, which does not reach a wet dab yet.
+ *
+ * Pickup is small where the brush is meant to cover. The bristles are loaded
+ * once, at pen-down, and every dab trades some of that load for what is under
+ * it, so a brush that picked up a tenth per dab would be painting with the
+ * canvas's colour within a few diameters.
  */
-export const DEFAULT_LIBRARY_BRUSH_ID = `${BUILTIN_BRUSH_PREFIX}round`
+export const WET_BRUSHES: readonly Brush[] = Object.freeze([
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}oil-round`,
+    name: "Oil round",
+    shape: { radius: 14, feather: 4, roundness: 1, angle: 0, spacing: 0.08 },
+    // A loaded brush: it covers, and softens what it crosses on the way.
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0.8,
+      wet: { pickup: 0.05 },
+    },
+    dynamics: [
+      // A light touch blends and a hard press covers.
+      scaledBy("pressure", "flow", 0.25, 1),
+      scaledBy("pressure", "size", 0.6, 1),
+    ],
+  },
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}oil-flat`,
+    name: "Oil flat",
+    shape: {
+      radius: 18,
+      feather: 0,
+      roundness: 1,
+      angle: 0,
+      spacing: 0.06,
+      tipTextureId: OIL_BRISTLE_TIP,
+    },
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0.7,
+      wet: { pickup: 0.04 },
+    },
+    dynamics: [
+      // Turned with the stroke, the hairs always trail the way it is pulled,
+      // and their streaks run along it.
+      offsetBy("direction", "angle", 0, 1),
+      scaledBy("pressure", "flow", 0.35, 1),
+    ],
+  },
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}blender`,
+    name: "Blender",
+    shape: { radius: 16, feather: 6, roundness: 1, angle: 0, spacing: 0.08 },
+    // Flow zero: it lays nothing, and only moves what is already there.
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0,
+      wet: { pickup: 0.8 },
+    },
+    dynamics: [
+      // Force is how far the paint is dragged, never how much is added.
+      scaledBy("pressure", "pickup", 0.3, 1),
+      scaledBy("pressure", "size", 0.7, 1),
+    ],
+  },
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}dry-bristle`,
+    name: "Dry bristle",
+    shape: {
+      radius: 16,
+      feather: 0,
+      roundness: 1,
+      angle: 0,
+      spacing: 0.06,
+      tipTextureId: DRY_BRISTLE_TIP,
+    },
+    grain: { textureId: CANVAS_GRAIN, scale: 0.6, depth: 0.4, movement: 0 },
+    // Nearly out of paint: it gives up its load early, and what it leaves
+    // after that is mostly what it found.
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0.35,
+      wet: { pickup: 0.2 },
+    },
+    dynamics: [
+      // The hairs trail behind the hand, so their streaks run with the stroke.
+      offsetBy("direction", "angle", 0, 1),
+      scaledBy("pressure", "flow", 0.3, 1),
+      // Pressed, the bristles reach into the weave.
+      scaledBy("pressure", "grainDepth", 1, 0.5),
+    ],
+  },
+])
+
+/** The wet brushes as the library shelves them, after the dry built-ins. */
+export const WET_BRUSH_SET: BuiltinBrushSet = Object.freeze({
+  name: "Wet",
+  brushes: WET_BRUSHES,
+})
+
+/**
+ * The fluid brushes every install opens with (fluid brushes 12): watercolour
+ * and ink wash without building a brush first.
+ *
+ * Each is the same `Brush` data again, with `rendering.fluid` set (D42): its
+ * dabs lay water and pigment into the layer's wet surface, where the paint
+ * goes on moving until it dries. Opacity and flow are the pigment a dab
+ * carries; the accumulation each holds is what it goes back to if fluid is
+ * turned off in the editor.
+ *
+ * Water is what separates them. The paper holds three fifths of the most a
+ * brush carries, and only water past that moves a wash's edge (a bloom), so
+ * the three that lay paint carry that much or less and their marks stay
+ * where they were put. The water brush alone floods.
+ */
+/** Shared by the built-in wash and explicit Krita watercolour adaptation. */
+export const WATERCOLOUR_WASH_FLUID: Readonly<BrushFluid> = Object.freeze({
+  water: 0.6,
+  drying: 0.3,
+  bleed: 0.7,
+  edge: 0.4,
+  granulation: 0.35,
+})
+
+export const FLUID_BRUSHES: readonly Brush[] = Object.freeze([
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}watercolour-wash`,
+    name: "Watercolour wash",
+    shape: { radius: 36, feather: 8, roundness: 1, angle: 0, spacing: 0.08 },
+    // Thin paint and all the water the paper holds: slow to dry, so a second
+    // colour touched into it has time to feather.
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0.25,
+      fluid: copyBrushFluid(WATERCOLOUR_WASH_FLUID),
+    },
+    dynamics: [
+      // A light touch lays a paler, drier wash; it is never wetter than set.
+      scaledBy("pressure", "flow", 0.35, 1),
+      scaledBy("pressure", "water", 0.6, 1),
+      scaledBy("pressure", "size", 0.7, 1),
+    ],
+  },
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}watercolour-detail`,
+    name: "Watercolour detail",
+    shape: { radius: 6, feather: 1.5, roundness: 1, angle: 0, spacing: 0.08 },
+    // Little water, quick to dry: a line that stays a line, with a rim.
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0.4,
+      fluid: {
+        water: 0.35,
+        drying: 0.65,
+        bleed: 0.3,
+        edge: 0.5,
+        granulation: 0.3,
+      },
+    },
+    dynamics: [
+      // A pointed round: force owns the width of the line.
+      scaledBy("pressure", "size", 0.25, 1),
+      scaledBy("pressure", "flow", 0.5, 1),
+    ],
+  },
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}ink-wash`,
+    name: "Ink wash",
+    shape: { radius: 18, feather: 4, roundness: 1, angle: 0, spacing: 0.08 },
+    // Ink is fine and dark: it runs far in wet paper and does not sit in the
+    // paper's valleys as a ground pigment does.
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0.6,
+      fluid: {
+        water: 0.5,
+        drying: 0.4,
+        bleed: 0.85,
+        edge: 0.25,
+        granulation: 0.05,
+      },
+    },
+    dynamics: [
+      // Pressed, the brush gives up more ink; lifted, it trails off to grey.
+      scaledBy("pressure", "flow", 0.2, 1),
+      scaledBy("pressure", "size", 0.4, 1),
+    ],
+  },
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}water`,
+    name: "Water brush",
+    shape: { radius: 20, feather: 6, roundness: 1, angle: 0, spacing: 0.08 },
+    // Flow zero: clean water and no pigment. It carries more than the paper
+    // holds, so let into a wet wash it pushes the paint out before it (a
+    // bloom), and laid over a wet edge it gives the paint damp paper to run
+    // into.
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0,
+      fluid: {
+        water: 1,
+        drying: 0.3,
+        bleed: 0.6,
+        edge: 0.4,
+        granulation: 0.35,
+      },
+    },
+    dynamics: [
+      // Force is how large the drop is, never how much paint is added.
+      scaledBy("pressure", "size", 0.5, 1),
+    ],
+  },
+])
+
+/**
+ * The blot brushes every install opens with (fluid brushes 17): what lifts
+ * paint out of a wash while it is wet. Each lays nothing; `rendering.blot`
+ * says how much of the water and the pigment suspended in it a dab takes
+ * where it lands at full strength, and opacity and flow how strong that is.
+ * Neither reaches paint that has dried. Starting values, tuned with a pen.
+ */
+export const BLOT_BRUSHES: readonly Brush[] = Object.freeze([
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}tissue`,
+    name: "Tissue",
+    // Crumpled paper pressed into the wash: a firm mark, mottled by the
+    // folds, that takes the water up and most of the paint with it.
+    shape: {
+      radius: 28,
+      feather: 2,
+      roundness: 1,
+      angle: 0,
+      spacing: 0.15,
+      tipTextureId: CHARCOAL_TIP,
+    },
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 1,
+      blot: { water: 1, pigment: 0.8 },
+    },
+    dynamics: [
+      // The tissue lands at any angle.
+      { source: "random", target: "angle", range: [0, 1], mix: "add" },
+    ],
+  },
+  {
+    id: `${BUILTIN_BRUSH_PREFIX}thirsty-brush`,
+    name: "Thirsty brush",
+    // A damp brush squeezed out: it drinks the water and leaves most of the
+    // paint, softening an area and stopping it running.
+    shape: { radius: 16, feather: 6, roundness: 1, angle: 0, spacing: 0.08 },
+    rendering: {
+      accumulation: "buildup",
+      opacity: 1,
+      flow: 0.6,
+      blot: { water: 0.7, pigment: 0.25 },
+    },
+    dynamics: [
+      // Pressed harder, the bristles take more.
+      scaledBy("pressure", "flow", 0.2, 1),
+      scaledBy("pressure", "size", 0.6, 1),
+    ],
+  },
+])
+
+/** The fluid brushes as the library shelves them, after the wet ones. */
+export const FLUID_BRUSH_SET: BuiltinBrushSet = Object.freeze({
+  name: "Fluid",
+  brushes: Object.freeze([...FLUID_BRUSHES, ...BLOT_BRUSHES]),
+})
+
+/**
+ * What a session with no remembered brush opens in the hand: a fine pencil
+ * that responds to pressure and tilt, which is the least surprising thing to
+ * find on the end of the pen (`features/studio/components/canvas-host.tsx`).
+ */
+export const DEFAULT_LIBRARY_BRUSH_ID = `${BUILTIN_BRUSH_PREFIX}pencil`
+
+const ALL_BUILTIN_BRUSHES = [
+  ...BUILTIN_BRUSHES,
+  ...WET_BRUSHES,
+  ...FLUID_BRUSHES,
+  ...BLOT_BRUSHES,
+  ...KRITA_BRUSHES,
+]
 
 export function builtinBrush(id: string): Brush | undefined {
-  return BUILTIN_BRUSHES.find((brush) => brush.id === id)
+  return ALL_BUILTIN_BRUSHES.find((brush) => brush.id === id)
 }

@@ -4,6 +4,9 @@ import {
   brushSpacing,
   cloneBrush,
   DEFAULT_BRUSH,
+  WET_SPACING_FLOOR,
+  wetDabSpacing,
+  wetSpacingFloor,
 } from "../../engine/brush/brush"
 import { validateDynamics } from "../../engine/brush/dynamics"
 
@@ -68,6 +71,86 @@ describe("brush definition", () => {
     // A spacing of zero would place infinitely many dabs on one segment.
     const hair = { ...PENCIL, shape: { ...PENCIL.shape, spacing: 0 } }
     expect(brushSpacing(hair)).toBeGreaterThan(0)
+  })
+
+  test("a wet brush's dabs are never closer than its floor", () => {
+    const wet = {
+      ...PENCIL,
+      rendering: { ...PENCIL.rendering, wet: { pickup: 0.5 } },
+    }
+    // The pencil's own 0.8 px would be more dabs in a frame than D30 allows.
+    expect(brushSpacing(wet)).toBe(WET_SPACING_FLOOR)
+    const broad = { ...wet, shape: { ...wet.shape, radius: 40 } }
+    expect(brushSpacing(broad)).toBeCloseTo(8, 6)
+  })
+
+  test("a wet brush's spacing follows the dab as dynamics size it", () => {
+    const wet = {
+      ...PENCIL,
+      shape: { ...PENCIL.shape, radius: 40 },
+      rendering: { ...PENCIL.rendering, wet: { pickup: 0.5 } },
+    }
+    expect(wetDabSpacing(wet, 30)).toBeCloseTo(6, 6)
+    // And is held at the floor once the dab is too small for its own.
+    expect(wetDabSpacing(wet, 2)).toBe(WET_SPACING_FLOOR)
+  })
+
+  test("a large wet brush's floor grows with it", () => {
+    const fine = {
+      ...PENCIL,
+      shape: { ...PENCIL.shape, radius: 256, spacing: 0.01 },
+      rendering: { ...PENCIL.rendering, wet: { pickup: 0.5 } },
+    }
+    // Its own 5.12 px would be too many 512 px dabs in a frame.
+    expect(brushSpacing(fine)).toBe(16)
+    // The pixel floor is the one that holds up to a 128 px brush.
+    expect(wetSpacingFloor(64)).toBe(WET_SPACING_FLOOR)
+    expect(wetSpacingFloor(8)).toBe(WET_SPACING_FLOOR)
+  })
+
+  test("a small blender follows smudge spacing", () => {
+    const blender = {
+      ...PENCIL,
+      rendering: { ...PENCIL.rendering, flow: 0, wet: { pickup: 0.5 } },
+    }
+    expect(brushSpacing(blender)).toBe(1)
+  })
+
+  test("a wet brush that scatters lays its step's dabs one at a time along it", () => {
+    const wet = {
+      ...PENCIL,
+      rendering: { ...PENCIL.rendering, wet: { pickup: 0.5 } },
+    }
+    const thrown: Brush = {
+      ...wet,
+      scatter: { amount: 2, count: 4, axes: "both" },
+    }
+    // Four dabs a step, each a copy and a draw: a dab is never closer to the
+    // last than the floor, so a frame holds the dabs it did.
+    expect(brushSpacing(thrown)).toBe(WET_SPACING_FLOOR)
+    // A brush whose own spacing is wider lays its four along the step, a
+    // quarter of it apart, and not all four where the step begins.
+    const open = {
+      ...thrown,
+      shape: { ...thrown.shape, radius: 40, spacing: 0.5 },
+    }
+    expect(brushSpacing(open)).toBeCloseTo(10, 6)
+    // The count is the dabs laid, whatever the amount comes to.
+    const stacked: Brush = {
+      ...wet,
+      shape: { ...wet.shape, spacing: 3 },
+      scatter: { amount: 0, count: 3, axes: "across" },
+    }
+    expect(wetDabSpacing(stacked, 4)).toBeCloseTo(8, 6)
+  })
+
+  test("a blender does not scatter, so its count does not narrow its spacing", () => {
+    const blender: Brush = {
+      ...PENCIL,
+      rendering: { ...PENCIL.rendering, flow: 0, wet: { pickup: 0.5 } },
+      scatter: { amount: 2, count: 4, axes: "both" },
+    }
+    expect(brushSpacing(blender)).toBe(1)
   })
 
   test("a clone shares nothing with the brush it came from", () => {

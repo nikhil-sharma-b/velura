@@ -103,8 +103,11 @@ test("the layer panel manages the stack and explains locked painting", async ({
 
   await layers.getByText("Layer properties", { exact: true }).click()
   const opacity = layers.getByRole("slider", { name: "Layer opacity" })
+  // Each step recomposites the canvas, which CI's software WebGPU does
+  // slowly enough to starve the page of frames; page steps are 10% apiece.
   await opacity.press("End")
-  for (let step = 0; step < 45; step++) await opacity.press("ArrowLeft")
+  for (let step = 0; step < 4; step++) await opacity.press("PageDown")
+  for (let step = 0; step < 5; step++) await opacity.press("ArrowLeft")
   await expect(layers.getByText("55%")).toBeVisible()
   await layers.getByRole("combobox", { name: "Blend mode" }).click()
   await page.getByRole("option", { name: "Multiply" }).click()
@@ -117,7 +120,16 @@ test("the layer panel manages the stack and explains locked painting", async ({
     "layer-row-Highlights"
   )
 
-  await layers.getByRole("button", { name: "Delete Highlights copy" }).click()
+  // Deleting asks first; keeping it leaves the layer where it was.
+  const remove = layers.getByRole("button", { name: "Delete Highlights copy" })
+  await remove.click()
+  await page.getByRole("button", { name: "Keep it" }).click()
+  await expect(layers.getByText("Highlights copy")).toHaveCount(1)
+  await remove.click()
+  await expect(
+    page.getByRole("alertdialog", { name: "Delete Highlights copy?" })
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Delete layer" }).click()
   await expect(layers.getByText("Highlights copy")).toHaveCount(0)
 
   // The collapse control lives in the panel's header, and focus follows the
@@ -139,7 +151,7 @@ test("the tool rail switches between brush and eraser", async ({ page }) => {
     "data-engine-status",
     "ready"
   )
-  const brush = page.getByRole("button", { name: "Brush tool" })
+  const brush = page.getByRole("button", { name: "Brush tool", exact: true })
   const eraser = page.getByRole("button", { name: "Eraser tool" })
   await expect(brush).toHaveAttribute("aria-pressed", "true")
   await eraser.click()
@@ -470,7 +482,7 @@ test("painting on a placed image says why nothing lands", async ({ page }) => {
   await page.getByRole("img", { name: "Drawing canvas" }).click({
     position: { x: 400, y: 300 },
   })
-  await expect(page.getByText(/is an image layer/)).toBeVisible()
+  await expect(page.getByText(/is a placed photo/)).toBeVisible()
   await expect(page.getByText(/is locked/)).toHaveCount(0)
 })
 
@@ -500,5 +512,5 @@ test("a right-click on an image layer is not a refused stroke", async ({
     button: "right",
     position: { x: 400, y: 300 },
   })
-  await expect(page.getByText(/is an image layer/)).toHaveCount(0)
+  await expect(page.getByText(/is a placed photo/)).toHaveCount(0)
 })

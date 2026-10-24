@@ -30,8 +30,12 @@ describe("dynamics graph evaluation", () => {
       angle: 0,
       roundness: 1,
       grainDepth: 1,
-      scatter: 0,
+      scatter: 1,
+      pickup: 1,
+      water: 1,
       hue: 0,
+      saturation: 0,
+      lightness: 0,
     })
   })
 
@@ -164,6 +168,28 @@ describe("dynamics graph evaluation", () => {
       expect(evaluateDynamics([add, add], context()).opacity).toBe(1)
     })
 
+    test("pickup stays in [0, 1], whatever is stacked onto it", () => {
+      const add = (amount: number): Modulator => ({
+        source: "pressure",
+        target: "pickup",
+        range: [amount, amount],
+        mix: "add",
+      })
+      expect(evaluateDynamics([add(1), add(1)], context()).pickup).toBe(1)
+      expect(evaluateDynamics([add(-4)], context()).pickup).toBe(0)
+    })
+
+    test("water stays in [0, 1]: a dab carries no more than its brush", () => {
+      const add = (amount: number): Modulator => ({
+        source: "pressure",
+        target: "water",
+        range: [amount, amount],
+        mix: "add",
+      })
+      expect(evaluateDynamics([add(1), add(1)], context()).water).toBe(1)
+      expect(evaluateDynamics([add(-4)], context()).water).toBe(0)
+    })
+
     test("a negative range cannot produce a negative radius", () => {
       const modulator: Modulator = {
         source: "pressure",
@@ -244,14 +270,18 @@ describe("dynamics graph evaluation", () => {
     })
 
     test("rejects a multiply onto a target that is an offset", () => {
-      // Angle, scatter and hue start at zero, so a multiply onto them is zero
-      // whatever the pen does: an authoring mistake, not a subtle brush.
-      for (const target of ["angle", "scatter", "hue"] as const)
+      // Angle and hue start at zero, so a multiply onto them is zero whatever
+      // the pen does: an authoring mistake, not a subtle brush.
+      for (const target of ["angle", "hue"] as const)
         expect(() =>
           validateDynamics([{ ...valid, target, mix: "multiply" }])
         ).toThrow(/offset/)
       expect(() =>
         validateDynamics([{ ...valid, target: "angle", mix: "add" }])
+      ).not.toThrow()
+      // Scatter scales the brush's own amount, as size scales its radius.
+      expect(() =>
+        validateDynamics([{ ...valid, target: "scatter", mix: "multiply" }])
       ).not.toThrow()
     })
 
@@ -310,6 +340,37 @@ describe("dynamics for a device without a pressure sensor", () => {
     expect(params.flow).toBeCloseTo(1)
   })
 
+  test("a device with no sensor picks up at the brush's own setting", () => {
+    const graph: Modulator[] = [
+      { source: "pressure", target: "pickup", range: [0, 1], mix: "multiply" },
+    ]
+    expect(
+      evaluateDynamics(dynamicsForDevice(graph, false), context()).pickup
+    ).toBe(1)
+    expect(
+      evaluateDynamics(
+        dynamicsForDevice(graph, true),
+        context({ pressure: 0.25 })
+      ).pickup
+    ).toBeCloseTo(0.25)
+  })
+
+  test("pressure on water scales the water a dab lays, and no sensor leaves the brush's own", () => {
+    const graph: Modulator[] = [
+      { source: "pressure", target: "water", range: [0, 1], mix: "multiply" },
+    ]
+    expect(() => validateDynamics(graph)).not.toThrow()
+    expect(
+      evaluateDynamics(
+        dynamicsForDevice(graph, true),
+        context({ pressure: 0.25 })
+      ).water
+    ).toBeCloseTo(0.25)
+    expect(
+      evaluateDynamics(dynamicsForDevice(graph, false), context()).water
+    ).toBe(1)
+  })
+
   test("tilt, velocity and randomness still reach the dab", () => {
     const params = evaluateDynamics(
       dynamicsForDevice(brush, false),
@@ -334,4 +395,47 @@ describe("dynamics for a device without a pressure sensor", () => {
       dynamicsForDevice(brush, false)
     )
   })
+})
+
+test("colour offsets clamp saturation and lightness and reject multiplication", () => {
+  const graph: Modulator[] = [
+    { source: "random", target: "saturation", range: [-2, 2], mix: "replace" },
+    { source: "pressure", target: "lightness", range: [-2, 2], mix: "add" },
+  ]
+  expect(() => validateDynamics(graph)).not.toThrow()
+  const params = evaluateDynamics(graph, context({ random: 0, pressure: 1 }))
+  expect(params.saturation).toBe(-1)
+  expect(params.lightness).toBe(1)
+  expect(() => validateDynamics([{ ...graph[0], mix: "multiply" }])).toThrow()
+})
+
+test("a fixed seed reproduces all colour jitter offsets", async () => {
+  const { createStampContextTracker } =
+    await import("../../engine/brush/stamp-context")
+  const graph: Modulator[] = [
+    { source: "random", target: "hue", range: [-0.2, 0.2], mix: "add" },
+    { source: "random", target: "saturation", range: [-0.4, 0.4], mix: "add" },
+    { source: "random", target: "lightness", range: [-0.1, 0.1], mix: "add" },
+  ]
+  const sample = (seed: number) => {
+    const tracker = createStampContextTracker()
+    tracker.begin(0, 0, 1, 0, 0, 0, seed)
+    return Array.from({ length: 12 }, (_, i) => {
+      const { hue, saturation, lightness } = evaluateDynamics(
+        graph,
+        tracker.next(i, 0, 1, 0, 0, i)
+      )
+      return [hue, saturation, lightness]
+    })
+  }
+  expect(sample(42)).toEqual(sample(42))
+  expect(sample(43)).not.toEqual(sample(42))
+  expect(new Set(sample(42).map((dab) => dab[0])).size).toBe(12)
+})
+
+test("hue offsets keep their signed magnitude until the brush base scales them", () => {
+  const graph: Modulator[] = [
+    { source: "random", target: "hue", range: [-0.25, -0.25], mix: "replace" },
+  ]
+  expect(evaluateDynamics(graph, context()).hue).toBe(-0.25)
 })

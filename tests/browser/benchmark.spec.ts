@@ -11,10 +11,10 @@ import { summarize } from "../../bench/report"
 const WORKLOAD = {
   width: 512,
   height: 512,
-  // Three short strokes rather than two: the frame counts below are what say
-  // the loop ran at all, and two strokes on a loaded machine land close enough
-  // to the floor to fail for scheduling reasons rather than for engine ones.
-  strokes: 3,
+  // Eight short strokes: the report needs ten frames to summarize, and CI's
+  // software GPU draws only two or so per stroke. Fewer land close enough to
+  // that floor to fail for scheduling reasons rather than for engine ones.
+  strokes: 8,
   sampleRateHz: 240,
   penSpeed: 900,
   seed: 3,
@@ -35,14 +35,16 @@ test("the benchmark drives the engine and observes every frame", async ({
   expect(result.dispatched).toBe(result.requested)
   expect(result.canvas).toEqual({ width: 512, height: 512 })
   // Frames were observed, and they drew: a run reporting no dabs is measuring
-  // an engine that never got the pen.
-  expect(result.frames.length).toBeGreaterThan(10)
+  // an engine that never got the pen. How many frames fit in the workload is
+  // a speed, and CI's software GPU draws few, so this asks only for one per
+  // stroke; the dab count below is what says the work was done.
+  expect(result.frames.length).toBeGreaterThanOrEqual(WORKLOAD.strokes)
   expect(
     result.frames.reduce((total, frame) => total + frame.stamps, 0)
   ).toBeGreaterThan(50)
   // Pen-to-pixel was measured on the frames that consumed a sample.
   const timed = result.frames.filter((frame) => frame.latencyMs !== null)
-  expect(timed.length).toBeGreaterThan(5)
+  expect(timed.length).toBeGreaterThanOrEqual(WORKLOAD.strokes)
   for (const frame of timed) expect(frame.latencyMs).toBeGreaterThan(0)
 
   // D30's hard rule, checked while painting rather than by reading the source.
@@ -107,4 +109,195 @@ test("observing frames is opt-in and detaches cleanly", async ({ page }) => {
   })
   expect(seen.observed).toBeGreaterThan(3)
   expect(seen.afterDetach).toBe(0)
+})
+
+test("the smudge benchmark smears the workload without reading pixels back", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.runBenchmark)
+  const result = await page.evaluate(
+    (workload) => window.runBenchmark({ ...workload, smudge: true }),
+    WORKLOAD
+  )
+
+  expect(result.dispatched).toBe(result.requested)
+  // One mark per stroke, and each began on a frame that was observed.
+  expect(result.strokeStarts).toHaveLength(WORKLOAD.strokes)
+  // Smudge dabs were drawn: the tool had paint to smear and smeared it.
+  expect(
+    result.frames.reduce((total, frame) => total + frame.stamps, 0)
+  ).toBeGreaterThan(50)
+  // What a cancel puts back is copied on the GPU, never read back.
+  expect(result.readbacks).toBe(0)
+})
+
+test("the wet benchmark paints over the workload without reading back or allocating per dab", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.runBenchmark)
+  const result = await page.evaluate(
+    (workload) =>
+      window.runBenchmark({ ...workload, wet: { diameter: 64, pickup: 0.8 } }),
+    WORKLOAD
+  )
+
+  expect(result.dispatched).toBe(result.requested)
+  expect(result.strokeStarts).toHaveLength(WORKLOAD.strokes)
+  // Wet dabs were drawn, each a copy and a pass of its own.
+  const dabs = result.frames.reduce((total, frame) => total + frame.stamps, 0)
+  expect(dabs).toBeGreaterThan(50)
+  expect(result.readbacks).toBe(0)
+  // What a wet stroke may allocate with the pen down is the page its cancel
+  // tiles are kept in, and a 512-square canvas is four tiles: one page, once,
+  // however many dabs and strokes follow.
+  expect(result.allocations).toBe(1)
+})
+
+test("disabling sampling supersedes an enable whose GPU preparation is pending", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.engine)
+  const enabled = await page.evaluate(async () => {
+    await window.engine.dispatch({
+      type: "resize",
+      width: 64,
+      height: 64,
+      devicePixelRatio: 1,
+    })
+    await window.engine.dispatch({ type: "initialize" })
+    const preparing = window.engine.dispatch({
+      type: "setSampleAllLayers",
+      enabled: true,
+    })
+    await window.engine.dispatch({ type: "setSampleAllLayers", enabled: false })
+    await preparing
+    return window.engine.getSnapshot().sampleAllLayers
+  })
+  expect(enabled).toBe(false)
+})
+
+test("enabling sampled artwork prepares its pages before the first wet stroke", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.runBenchmark)
+  const result = await page.evaluate(
+    (workload) =>
+      window.runBenchmark({
+        ...workload,
+        wet: { diameter: 64, pickup: 0.8, sampleAllLayers: true },
+      }),
+    WORKLOAD
+  )
+  expect(result.dispatched).toBe(result.requested)
+  expect(result.strokeStarts).toHaveLength(WORKLOAD.strokes)
+  expect(
+    result.frames.reduce((sum, frame) => sum + frame.stamps, 0)
+  ).toBeGreaterThan(50)
+  expect(result.readbacks).toBe(0)
+  // A 512-square document fits one frozen chunk. Only its cancel page may
+  // be made with the pen down: the sampled page and compositor are ready.
+  expect(result.allocations).toBe(1)
+})
+
+test("a wet stroke thrown wide keeps its cancel pages for the stroke after it", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.runBenchmark)
+  const result = await page.evaluate(
+    (workload) =>
+      window.runBenchmark({
+        ...workload,
+        // Eighty-one tiles, which is two pages of cancel tiles and no more.
+        width: 2304,
+        height: 2304,
+        strokes: 3,
+        // A seed whose second and third strokes both reach past one page:
+        // one stroke alone doing so cannot tell a page kept from a page made
+        // again.
+        seed: 10,
+        wet: {
+          diameter: 512,
+          pickup: 0.8,
+          // Thrown across the canvas, so a long stroke reaches past one page.
+          scatter: { amount: 8, count: 4, axes: "both" },
+        },
+      }),
+    WORKLOAD
+  )
+
+  expect(result.dispatched).toBe(result.requested)
+  expect(result.strokeStarts).toHaveLength(3)
+  expect(
+    result.frames.reduce((total, frame) => total + frame.stamps, 0)
+  ).toBeGreaterThan(50)
+  expect(result.readbacks).toBe(0)
+  // The second page is made once, by the first stroke to outgrow the first,
+  // and is there for the stroke after (live brushes 20): two pages, where
+  // each stroke making its own again would be three. Counted to the frame
+  // each stroke's tail lands in: a slow software GPU draws the frame that
+  // needs a page after the pen has lifted, and with the pen down the count
+  // has been one and none (fluid brushes 28).
+  expect(result.strokeAllocations).toBe(2)
+})
+
+test("the fluid step benchmark floods every tile and times its steps", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.runFluidStepBenchmark)
+  // Two tiles a side, four wet, and a few steps a round: the software GPU
+  // takes most of a second a step.
+  const result = await page.evaluate(() =>
+    window.runFluidStepBenchmark(
+      { width: 512, height: 512 },
+      { steps: 2, count: 3 }
+    )
+  )
+  expect(result.canvas).toEqual({ width: 512, height: 512 })
+  // The flood was wet and stayed so (the run throws otherwise), and every
+  // round of steps took time on the GPU.
+  expect(result.stepMs).toHaveLength(3)
+  for (const ms of result.stepMs) expect(ms).toBeGreaterThan(0)
+})
+
+test("a flooded fluid workload records the simulation's clock with the pen down", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.runBenchmark)
+  const result = await page.evaluate(
+    (workload) =>
+      window.runBenchmark({
+        ...workload,
+        unwaited: true,
+        fluid: { diameter: 32, flooded: true },
+      }),
+    WORKLOAD
+  )
+  expect(result.dispatched).toBe(result.requested)
+  // The clock ran through the strokes, over every tile of the document, and
+  // was owed steps. Whether a frame of it fell with the pen down, and how
+  // many steps it could afford, are the GPU's: a software one draws a frame
+  // in a second or two, and none may fall inside a stroke.
+  expect(await page.evaluate(() => window.engine.getSnapshot().wet)).toBe(true)
+  expect(result.fluidTicks.length).toBeGreaterThan(0)
+  expect(
+    result.fluidTicks.reduce(
+      (total, tick) => total + tick.steps + tick.skipped,
+      0
+    )
+  ).toBeGreaterThan(0)
+  for (const tick of result.fluidTicks) expect(tick.tiles).toBe(4)
+  expect(result.readbacks).toBe(0)
 })

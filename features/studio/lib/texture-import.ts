@@ -1,7 +1,19 @@
 "use client"
 
-import type { GrayscaleTexture } from "@/engine/brush/texture"
+import type { SourceImage } from "@/engine/brush/source-image"
+import type { BrushStore } from "./brush-store"
+import {
+  type ImportDeps,
+  type ImportOptions,
+  type ImportOutcome,
+  importBrushFiles,
+} from "./brush-import"
+import type { ShippedTextures } from "./shipped-textures"
+import { type GrayscaleTexture, toGrayscale } from "@/engine/brush/texture"
 import { MAX_TEXTURE_DIMENSION } from "@/convex/lib/brush"
+
+// Kept importable from here: this is where a file becomes a texture.
+export { toGrayscale }
 
 /**
  * Bringing a texture in from a file (24/25): a scanned paper, a photographed
@@ -14,35 +26,6 @@ import { MAX_TEXTURE_DIMENSION } from "@/convex/lib/brush"
  * shape as a built-in one, so nothing downstream has to know where it came
  * from.
  */
-
-/**
- * Ink, as the engine means it: a texel is how much the brush marks there, so
- * 255 is full coverage and 0 is nothing — the convention `createTip` builds
- * the shipped tips to, where the texture falls to zero at the rim.
- *
- * An image says the opposite in the medium artists actually have one in: a
- * stamp is a dark mark on white paper, or a dark mark on nothing at all. So
- * the darkness is the ink, and transparency is where there is none — take
- * luminance directly and a scanned tip would import as a covering square with
- * a hole where the mark is. Luminance is weighted perceptually rather than
- * averaged flat, so a blue mark and a yellow one of the same lightness import
- * as the same strength of ink.
- */
-export function toGrayscale(
-  rgba: Uint8ClampedArray | Uint8Array,
-  width: number,
-  height: number
-): GrayscaleTexture {
-  const data = new Uint8Array(width * height)
-  for (let index = 0; index < data.length; index++) {
-    const at = index * 4
-    const luminance =
-      0.2126 * rgba[at] + 0.7152 * rgba[at + 1] + 0.0722 * rgba[at + 2]
-    const alpha = rgba[at + 3] / 255
-    data[index] = Math.round((255 - luminance) * alpha)
-  }
-  return { width, height, data }
-}
 
 /** The size an image is drawn at: its own, until it is larger than we store. */
 export function importedSize(
@@ -77,4 +60,85 @@ export async function readTextureFile(file: Blob): Promise<GrayscaleTexture> {
   } finally {
     bitmap.close()
   }
+}
+
+/** Past this an image is a photograph, not a tip, and is drawn smaller. */
+const MAX_DECODED_SIDE = 4096
+
+/**
+ * Any image the browser can read, as RGBA pixels at (nearly) its own size:
+ * the import (brush library 07) needs the source's size to size the brush,
+ * and shrinks the texture itself.
+ */
+export async function decodeImage(bytes: Uint8Array): Promise<SourceImage> {
+  const bitmap = await createImageBitmap(new Blob([bytes as BlobPart]))
+  try {
+    const size = importedSize(bitmap.width, bitmap.height, MAX_DECODED_SIDE)
+    const canvas = document.createElement("canvas")
+    canvas.width = size.width
+    canvas.height = size.height
+    const ink = canvas.getContext("2d", { willReadFrequently: true })
+    if (!ink) throw new Error("This browser could not read that image.")
+    ink.drawImage(bitmap, 0, 0, size.width, size.height)
+    const pixels = ink.getImageData(0, 0, size.width, size.height)
+    return {
+      width: size.width,
+      height: size.height,
+      channels: 4,
+      pixels: new Uint8Array(pixels.data.buffer),
+    }
+  } finally {
+    bitmap.close()
+  }
+}
+
+/** Files as the import reads them: a name and its bytes. */
+export function readFiles(
+  files: readonly File[]
+): Promise<{ name: string; bytes: Uint8Array }[]> {
+  return Promise.all(
+    files.map(async (file) => ({
+      name: file.name,
+      bytes: new Uint8Array(await file.arrayBuffer()),
+    }))
+  )
+}
+
+/**
+ * The library's "Import brush…" as the studio runs it: into the artist's
+ * store, with each texture also registered on the engine before the brush
+ * naming it can be put in the hand.
+ */
+export async function studioImport(
+  files: readonly File[],
+  options: ImportOptions & {
+    store: BrushStore
+    shipped: ShippedTextures
+    register(id: string, texture: GrayscaleTexture): Promise<unknown>
+  }
+): Promise<ImportOutcome> {
+  const { store, shipped, register } = options
+  const isShipped = (id: string, kind: "tip" | "grain") =>
+    shipped.ofKind(kind).find((texture) => texture.id === id)
+  const deps: ImportDeps = {
+    decodeImage,
+    async saveTexture(name, texture) {
+      const id = await store.saveTexture(name, texture)
+      await register(id, texture)
+      return id
+    },
+    save: (name, set, brush) => store.save(name, set, brush),
+    async shippedTip(id) {
+      const entry = isShipped(id, "tip")
+      const texture = entry && (await shipped.load(id))
+      if (!entry || !texture) return undefined
+      return {
+        width: texture.width,
+        height: texture.height,
+        selection: entry.selection,
+      }
+    },
+    shippedGrain: (id) => isShipped(id, "grain") !== undefined,
+  }
+  return importBrushFiles(await readFiles(files), deps, options)
 }

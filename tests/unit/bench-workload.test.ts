@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test"
+import { createVectorWorkload } from "../../bench/vector-workload"
 import {
   BENCHMARK_WORKLOAD,
   createWorkload,
   workloadStats,
 } from "../../bench/workload"
+import { parseScene } from "../../engine/doc/vector-scene"
 
 const options = {
   width: 8192,
@@ -73,6 +75,73 @@ describe("createWorkload", () => {
     expect(() => createWorkload({ ...options, sampleRateHz: 0 })).toThrow()
     expect(() => createWorkload({ ...options, width: 0 })).toThrow()
     expect(() => createWorkload({ ...options, penSpeed: -1 })).toThrow()
+    expect(() => createWorkload({ ...options, feather: -1 })).toThrow()
+    expect(() => createWorkload({ ...options, feather: NaN })).toThrow()
+    expect(() =>
+      createWorkload({
+        ...options,
+        scatter: { amount: 2, count: 0, axes: "both" },
+      })
+    ).toThrow()
+    const wet = { diameter: 64, pickup: 0.8 }
+    expect(() =>
+      createWorkload({ ...options, wet: { ...wet, diameter: 0 } })
+    ).toThrow()
+    expect(() =>
+      createWorkload({ ...options, wet: { ...wet, pickup: 1.5 } })
+    ).toThrow()
+    expect(() =>
+      createWorkload({ ...options, wet: { ...wet, spacing: 0 } })
+    ).toThrow()
+    expect(() =>
+      createWorkload({
+        ...options,
+        wet: { ...wet, scatter: { amount: 2, count: 17, axes: "both" } },
+      })
+    ).toThrow()
+    expect(() => createWorkload({ ...options, wet, smudge: true })).toThrow()
+    expect(() =>
+      createWorkload({ ...options, smudge: true, smudgeRadius: 0 })
+    ).toThrow()
+    expect(() => createWorkload({ ...options, smudgeRadius: 4 })).toThrow()
+  })
+
+  test("painting the workload wet changes the brush and not the strokes", () => {
+    const wet = { diameter: 512, pickup: 0.8, spacing: 0.01 }
+    const workload = createWorkload({ ...options, wet })
+    expect(workload.strokes).toEqual(createWorkload(options).strokes)
+    expect(workload.options.wet).toEqual(wet)
+  })
+
+  test("painting the workload fluid changes the brush and not the strokes", () => {
+    const fluid = { diameter: 512, spacing: 0.01, tip: true }
+    const workload = createWorkload({ ...options, fluid })
+    expect(workload.strokes).toEqual(createWorkload(options).strokes)
+    expect(workload.options.fluid).toEqual(fluid)
+  })
+
+  test("a fluid workload needs a brush it can paint with, and no other medium", () => {
+    const fluid = { diameter: 64 }
+    expect(() =>
+      createWorkload({ ...options, fluid: { diameter: 0 } })
+    ).toThrow()
+    expect(() =>
+      createWorkload({ ...options, fluid: { ...fluid, spacing: 0 } })
+    ).toThrow()
+    expect(() =>
+      createWorkload({
+        ...options,
+        fluid: { ...fluid, scatter: { amount: 2, count: 17, axes: "both" } },
+      })
+    ).toThrow()
+    expect(() => createWorkload({ ...options, fluid, smudge: true })).toThrow()
+    expect(() =>
+      createWorkload({
+        ...options,
+        fluid,
+        wet: { diameter: 64, pickup: 0.8 },
+      })
+    ).toThrow()
   })
 })
 
@@ -92,5 +161,42 @@ describe("BENCHMARK_WORKLOAD", () => {
   test("is the full-size canvas the target is stated against", () => {
     expect(BENCHMARK_WORKLOAD.width).toBe(8192)
     expect(BENCHMARK_WORKLOAD.height).toBe(8192)
+  })
+
+  test("is painted through a screen-sized window, not a document-sized one", () => {
+    expect(BENCHMARK_WORKLOAD.viewport).toEqual({ width: 2560, height: 1440 })
+  })
+})
+
+describe("createVectorWorkload", () => {
+  const vector = { width: 4096, height: 4096, paths: 300, seed: 3 }
+
+  test("is deterministic for a seed and differs between seeds", () => {
+    expect(createVectorWorkload(vector)).toEqual(createVectorWorkload(vector))
+    expect(createVectorWorkload({ ...vector, seed: 4 })).not.toEqual(
+      createVectorWorkload(vector)
+    )
+  })
+
+  test("is the paths asked for over a canvas-wide backdrop, every one drawable", () => {
+    const { objects } = createVectorWorkload(vector)
+    expect(objects).toHaveLength(301)
+    expect(objects[0].geometry).toEqual({
+      kind: "rect",
+      x: 0,
+      y: 0,
+      width: 4096,
+      height: 4096,
+    })
+    // A scene the engine would refuse is not a workload.
+    expect(parseScene({ objects }).objects).toHaveLength(301)
+  })
+
+  test("mixes fills, strokes, and both", () => {
+    const { objects } = createVectorWorkload(vector)
+    const kinds = new Set(
+      objects.map((object) => `${!!object.style.fill}:${!!object.style.stroke}`)
+    )
+    expect(kinds).toEqual(new Set(["true:false", "false:true", "true:true"]))
   })
 })

@@ -1,0 +1,675 @@
+import { describe, expect, test } from "bun:test"
+import {
+  BUILTIN_VECTOR_BRUSHES,
+  parseVectorBrush,
+  type PatternParams,
+  type VectorBrush,
+} from "../../engine/brush/vector-brush"
+import {
+  addVectorLayer,
+  createBlankDocument,
+  findNode,
+} from "../../engine/doc/document"
+import {
+  makePatternBrush,
+  patternOutlines,
+  remakePatternBrush,
+} from "../../engine/doc/vector-brush"
+import type { PathNode } from "../../engine/doc/vector-path"
+import type { VectorObject } from "../../engine/doc/vector-scene"
+import { tessellateObject, windingAt } from "../../engine/geom/tessellate"
+import { serializeSvg } from "../../engine/store/export-svg"
+
+const preset = (name: string): VectorBrush =>
+  BUILTIN_VECTOR_BRUSHES.find((b) => b.name === name)!
+
+const square = (x0: number, x1: number, y0 = -0.5, y1 = 0.5) => ({
+  kind: "path" as const,
+  closed: true,
+  nodes: [
+    [x0, y0],
+    [x1, y0],
+    [x1, y1],
+    [x0, y1],
+  ].map(([x, y]) => ({ x, y, in: null, out: null, type: "cusp" as const })),
+})
+
+function brush(pattern: Partial<PatternParams>): VectorBrush {
+  return parseVectorBrush({
+    id: "art",
+    name: "Art",
+    kind: "pattern",
+    params: { ...preset("Solid").params },
+    pattern: {
+      mode: "repeat",
+      corners: "bend",
+      tile: { length: 1, paths: [square(0.1, 0.9)] },
+      start: null,
+      end: null,
+      ...pattern,
+    },
+  })
+}
+
+const node = (x: number, y: number, width = 10): PathNode => ({
+  x,
+  y,
+  in: null,
+  out: null,
+  type: "cusp",
+  width,
+})
+
+function stroke(
+  definition: VectorBrush,
+  nodes: PathNode[] = [node(0, 0), node(100, 0)]
+): VectorObject {
+  return {
+    id: "s",
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { kind: "path", closed: false, nodes },
+    style: {
+      fill: null,
+      stroke: {
+        color: "#000000",
+        opacity: 1,
+        width: 10,
+        cap: "round",
+        join: "round",
+      },
+    },
+    brush: { definition, seed: 1 },
+  }
+}
+
+const bounds = (outlines: { x: number; y: number }[][]) => {
+  const all = outlines.flat()
+  return {
+    minX: Math.min(...all.map((p) => p.x)),
+    maxX: Math.max(...all.map((p) => p.x)),
+    minY: Math.min(...all.map((p) => p.y)),
+    maxY: Math.max(...all.map((p) => p.y)),
+  }
+}
+
+describe("pattern deformation", () => {
+  test("stretch lays one tile end to end, a stroke width across", () => {
+    const outlines = patternOutlines(
+      stroke(
+        brush({ mode: "stretch", tile: { length: 1, paths: [square(0, 1)] } })
+      )
+    )
+    expect(outlines).toHaveLength(1)
+    const b = bounds(outlines)
+    expect(b.minX).toBeCloseTo(0, 5)
+    expect(b.maxX).toBeCloseTo(100, 5)
+    expect(b.minY).toBeCloseTo(-5, 5)
+    expect(b.maxY).toBeCloseTo(5, 5)
+  })
+
+  test("repeat fits a whole number of tiles, each the nearest to its length", () => {
+    // Tiles are a stroke width long: 100 / 10 = 10 of them.
+    expect(patternOutlines(stroke(brush({})))).toHaveLength(10)
+    // 104 rounds to 10 tiles, stretched a little; 116 to 12, squeezed.
+    expect(
+      patternOutlines(stroke(brush({}), [node(0, 0), node(104, 0)]))
+    ).toHaveLength(10)
+    expect(
+      patternOutlines(stroke(brush({}), [node(0, 0), node(116, 0)]))
+    ).toHaveLength(12)
+    // A stroke shorter than a tile still has one.
+    expect(
+      patternOutlines(stroke(brush({}), [node(0, 0), node(3, 0)]))
+    ).toHaveLength(1)
+  })
+
+  test("caps sit at the ends, and the tile fills between them", () => {
+    const cap = (paths = [square(0, 1, -0.5, 0.5)]) => ({ length: 1, paths })
+    const outlines = patternOutlines(
+      stroke(
+        brush({
+          mode: "stretch",
+          tile: { length: 1, paths: [square(0, 1, -0.1, 0.1)] },
+          start: cap(),
+          end: cap(),
+        })
+      )
+    )
+    expect(outlines).toHaveLength(3)
+    const [start, body, end] = outlines.map((o) => bounds([o]))
+    expect(start.minX).toBeCloseTo(0, 5)
+    expect(start.maxX).toBeCloseTo(10, 5)
+    expect(end.minX).toBeCloseTo(90, 5)
+    expect(end.maxX).toBeCloseTo(100, 5)
+    expect(body.minX).toBeCloseTo(10, 5)
+    expect(body.maxX).toBeCloseTo(90, 5)
+    expect(body.maxY).toBeCloseTo(1, 5)
+  })
+
+  test("caps shrink to share a stroke too short for both", () => {
+    const cap = { length: 1, paths: [square(0, 1)] }
+    const outlines = patternOutlines(
+      stroke(brush({ mode: "stretch", start: cap, end: cap }), [
+        node(0, 0),
+        node(10, 0),
+      ])
+    )
+    const all = bounds(outlines)
+    expect(all.minX).toBeCloseTo(0, 5)
+    expect(all.maxX).toBeCloseTo(10, 5)
+  })
+
+  test("the art bends round the spine, keeping its width off it", () => {
+    // A quarter turn: the art follows it rather than running straight on.
+    const outlines = patternOutlines(
+      stroke(
+        brush({ mode: "stretch", tile: { length: 1, paths: [square(0, 1)] } }),
+        [node(0, 0), { ...node(100, 100), in: { x: 100, y: 0 } }]
+      )
+    )
+    const b = bounds(outlines)
+    expect(b.maxY).toBeGreaterThan(95)
+    expect(b.maxX).toBeLessThan(110)
+  })
+
+  test("split corners begin the tiles afresh on each side", () => {
+    const corner = [node(0, 0), node(92, 0), node(92, 108)]
+    // A tile turns the corner when it is neither all on the first leg nor
+    // all on the second.
+    const straddles = (outlines: { x: number; y: number }[][]) =>
+      outlines.some(
+        (o) =>
+          !o.every((p) => p.x <= 92 + 1e-6) && !o.every((p) => p.y >= -1e-6)
+      )
+    // Bent, 200 long is 20 tiles, and one turns the corner.
+    const bent = patternOutlines(stroke(brush({ corners: "bend" }), corner))
+    expect(bent).toHaveLength(20)
+    expect(straddles(bent)).toBe(true)
+    // Split, each leg is tiled alone: 9.2 and 10.8 round to 9 and 11.
+    const split = patternOutlines(stroke(brush({ corners: "split" }), corner))
+    expect(split).toHaveLength(20)
+    expect(straddles(split)).toBe(false)
+  })
+
+  test("pressure scales the art's thickness when the brush asks", () => {
+    const thin = [node(0, 0, 4), node(100, 0, 4)]
+    const pressed = brush({ mode: "stretch" })
+    expect(bounds(patternOutlines(stroke(pressed, thin))).maxY).toBeCloseTo(5)
+    const withPressure = {
+      ...pressed,
+      params: { ...pressed.params, pressure: true },
+    }
+    expect(
+      bounds(patternOutlines(stroke(withPressure, thin))).maxY
+    ).toBeCloseTo(2)
+  })
+
+  test("a node edit re-flows the pattern along the new spine", () => {
+    const before = patternOutlines(stroke(brush({})))
+    const after = patternOutlines(stroke(brush({}), [node(0, 0), node(200, 0)]))
+    expect(after).toHaveLength(2 * before.length)
+  })
+
+  test("art reaching past a bent stroke's ends extends straight off them", () => {
+    const art = brush({
+      mode: "stretch",
+      tile: { length: 1, paths: [square(-0.2, 1.2)] },
+    })
+    const outlines = patternOutlines(
+      stroke(art, [node(0, 0), node(50, 0), node(50, 50)])
+    )
+    const points = outlines.flat()
+    expect(points.length).toBeGreaterThan(0)
+    expect(
+      points.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
+    ).toBe(true)
+    expect(Math.min(...points.map((p) => p.x))).toBeLessThan(0)
+    expect(Math.max(...points.map((p) => p.y))).toBeGreaterThan(50)
+  })
+
+  test("a long stroke deforms well within a frame", () => {
+    const nodes = Array.from({ length: 200 }, (_, i) =>
+      node(i * 20, Math.sin(i / 5) * 40)
+    )
+    for (const name of ["Ribbon", "Rope", "Vine", "Tapered stroke", "Arrow"]) {
+      const object = stroke(preset(name), nodes)
+      patternOutlines(object)
+      // The best of a few runs, so a busy machine's hiccup does not count.
+      const times = Array.from({ length: 5 }, () => {
+        const t = performance.now()
+        tessellateObject(object)
+        return performance.now() - t
+      })
+      // The absolute D30 latency target is tracked in 14-d30-performance.md.
+      expect(Math.min(...times)).toBeLessThan(8)
+    }
+  })
+})
+
+describe("pattern brushes", () => {
+  test("presets round-trip through parsing", () => {
+    for (const name of ["Ribbon", "Rope", "Vine", "Tapered stroke", "Arrow"]) {
+      expect(preset(name).kind).toBe("pattern")
+      expect(parseVectorBrush(preset(name))).toEqual(preset(name))
+    }
+  })
+
+  test("a pattern brush needs its art", () => {
+    expect(() =>
+      parseVectorBrush({ ...preset("Rope"), pattern: undefined })
+    ).toThrow()
+    expect(() =>
+      parseVectorBrush({
+        ...preset("Rope"),
+        pattern: { ...preset("Rope").pattern!, mode: "scatter" },
+      })
+    ).toThrow()
+  })
+
+  test("the selection becomes art on a horizontal axis a stroke wide", () => {
+    const art = makePatternBrush([
+      {
+        id: "a",
+        transform: [1, 0, 0, 1, 50, 20],
+        geometry: { kind: "rect", x: 0, y: 0, width: 40, height: 10 },
+        style: { fill: null, stroke: null },
+      },
+      {
+        id: "b",
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: { kind: "ellipse", cx: 100, cy: 25, rx: 10, ry: 5 },
+        style: { fill: null, stroke: null },
+      },
+    ])
+    expect(art.kind).toBe("pattern")
+    expect(parseVectorBrush(art)).toEqual(art)
+    const { tile } = art.pattern!
+    // 60 wide by 10 tall: six stroke widths long.
+    expect(tile.length).toBeCloseTo(6)
+    expect(tile.paths).toHaveLength(2)
+    const xs = tile.paths.flatMap((p) => p.nodes.map((n) => n.x))
+    const ys = tile.paths.flatMap((p) => p.nodes.map((n) => n.y))
+    expect(Math.min(...xs)).toBeCloseTo(0)
+    expect(Math.min(...ys)).toBeCloseTo(-0.5)
+    expect(Math.max(...ys)).toBeCloseTo(0.5)
+  })
+
+  test("SVG export expands the art in a group carrying the spine and brush", () => {
+    const doc = createBlankDocument({ width: 200, height: 100 })
+    const node = findNode(doc, addVectorLayer(doc))
+    if (node.kind !== "vector") throw new Error("Expected a vector layer")
+    node.scene = { objects: [stroke(preset("Rope"))] }
+    const { svg } = serializeSvg(doc, { raster: "omit", brushData: true })
+    const group = svg.match(
+      /<g data-vector-brush="([^"]+)" data-spine="([^"]+)">(.*?)<\/g>/
+    )
+    expect(group).not.toBeNull()
+    const brushData = JSON.parse(group![1].replaceAll("&quot;", '"'))
+    expect(brushData.definition.pattern.mode).toBe("repeat")
+    expect(group![2]).toBe("M0 0 L100 0")
+    expect(group![3].match(/<path /g)).toHaveLength(10)
+  })
+})
+
+const rect = (
+  id: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): VectorObject => ({
+  id,
+  transform: [1, 0, 0, 1, 0, 0],
+  geometry: { kind: "rect", x, y, width, height },
+  style: { fill: null, stroke: null },
+})
+
+const line = (
+  id: string,
+  points: [number, number][],
+  closed = false,
+  width = 10
+): VectorObject => ({
+  id,
+  transform: [1, 0, 0, 1, 0, 0],
+  geometry: {
+    kind: "path",
+    closed,
+    nodes: points.map(([x, y]) => ({
+      x,
+      y,
+      in: null,
+      out: null,
+      type: "cusp" as const,
+    })),
+  },
+  style: {
+    fill: null,
+    stroke: {
+      color: "#000000",
+      opacity: 1,
+      width,
+      cap: "butt",
+      join: "miter",
+    },
+  },
+})
+
+const pieceBounds = (paths: readonly { nodes: readonly PathNode[] }[]) => {
+  const xs = paths.flatMap((p) => p.nodes.map((n) => n.x))
+  const ys = paths.flatMap((p) => p.nodes.map((n) => n.y))
+  return {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys),
+  }
+}
+
+describe("pattern brush authoring", () => {
+  test("selected objects become start and end caps a shared stroke wide", () => {
+    const art = makePatternBrush(
+      [
+        rect("s", 0, 0, 10, 20),
+        rect("t", 10, 5, 40, 10),
+        rect("e", 50, 0, 20, 20),
+      ],
+      { start: ["s"], end: ["e"] }
+    )
+    expect(parseVectorBrush(art)).toEqual(art)
+    const { tile, start, end } = art.pattern!
+    // All three share the selection's 20 px height as one stroke width.
+    expect(start!.length).toBeCloseTo(0.5)
+    expect(tile.length).toBeCloseTo(2)
+    expect(end!.length).toBeCloseTo(1)
+    expect(pieceBounds(tile.paths).minX).toBeCloseTo(0)
+    expect(pieceBounds(tile.paths).minY).toBeCloseTo(-0.25)
+    expect(pieceBounds(end!.paths).minX).toBeCloseTo(0)
+    expect(pieceBounds(end!.paths).minY).toBeCloseTo(-0.5)
+  })
+
+  test("a selection that is all caps has no tile to make", () => {
+    expect(() =>
+      makePatternBrush([rect("s", 0, 0, 10, 10)], { start: ["s"] })
+    ).toThrow()
+  })
+
+  test("a vertical axis runs the art top to bottom", () => {
+    const art = makePatternBrush([rect("a", 0, 0, 10, 60)], {
+      axis: "vertical",
+    })
+    expect(art.pattern!.tile.length).toBeCloseTo(6)
+    const b = pieceBounds(art.pattern!.tile.paths)
+    expect(b.minX).toBeCloseTo(0)
+    expect(b.maxX).toBeCloseTo(6)
+    expect(b.minY).toBeCloseTo(-0.5)
+    expect(b.maxY).toBeCloseTo(0.5)
+  })
+
+  test("a drawn axis line sets the spine and is left out of the art", () => {
+    // A 60 by 10 bar turned 90°, with an axis drawn down its middle.
+    const art = makePatternBrush(
+      [
+        rect("a", 0, 0, 10, 60),
+        line(
+          "axis",
+          [
+            [5, 0],
+            [5, 60],
+          ],
+          false,
+          1
+        ),
+      ],
+      { axis: { drawn: "axis" } }
+    )
+    const { tile } = art.pattern!
+    expect(tile.paths).toHaveLength(1)
+    expect(tile.length).toBeCloseTo(6)
+    const b = pieceBounds(tile.paths)
+    expect(b.minY).toBeCloseTo(-0.5)
+    expect(b.maxY).toBeCloseTo(0.5)
+  })
+
+  test("a drawn axis must be one of the selected open paths", () => {
+    expect(() =>
+      makePatternBrush([rect("a", 0, 0, 10, 60)], { axis: { drawn: "a" } })
+    ).toThrow()
+  })
+
+  test("an open stroked path keeps its line as outlined art", () => {
+    const art = makePatternBrush([
+      line("l", [
+        [0, 0],
+        [100, 0],
+      ]),
+    ])
+    const { tile } = art.pattern!
+    expect(tile.length).toBeCloseTo(10)
+    expect(tile.paths).toHaveLength(1)
+    expect(tile.paths[0].closed).toBe(true)
+    const b = pieceBounds(tile.paths)
+    expect(b.minY).toBeCloseTo(-0.5)
+    expect(b.maxY).toBeCloseTo(0.5)
+  })
+
+  test("a closed stroke-only shape keeps a ring, not a filled disc", () => {
+    const art = makePatternBrush([
+      line(
+        "r",
+        [
+          [0, 0],
+          [100, 0],
+          [100, 100],
+          [0, 100],
+        ],
+        true
+      ),
+    ])
+    const { tile } = art.pattern!
+    expect(tile.paths).toHaveLength(2)
+    const object: VectorObject = {
+      ...stroke(art),
+      geometry: {
+        kind: "path",
+        closed: false,
+        nodes: [node(0, 0, 100), node(110, 0, 100)],
+      },
+      style: {
+        fill: null,
+        stroke: { ...stroke(art).style.stroke!, width: 100 },
+      },
+    }
+    const mesh = tessellateObject(object).stroke!
+    // The ring's middle is empty; its band is solid.
+    expect(windingAt(mesh, 55, 0)).toBe(0)
+    expect(windingAt(mesh, 2, 0)).not.toBe(0)
+  })
+
+  test("a saved brush keeps its source art, so caps and axis can be reassigned", () => {
+    const made = makePatternBrush(
+      [rect("s", 0, 0, 10, 20), rect("t", 10, 5, 40, 10)],
+      { start: ["s"] }
+    )
+    const saved = parseVectorBrush(JSON.parse(JSON.stringify(made)))
+    expect(saved).toEqual(made)
+    const art = { ...saved, pattern: { ...saved.pattern!, mode: "repeat" } }
+    const re = remakePatternBrush(art as typeof made, { end: ["s"] })
+    expect(re.pattern.start).toBeNull()
+    expect(re.pattern.end!.length).toBeCloseTo(0.5)
+    expect(re.pattern.tile.length).toBeCloseTo(2)
+    expect(re.pattern.mode).toBe("repeat")
+    expect(re.pattern.source!.made).toEqual({ end: ["s"] })
+    const upright = remakePatternBrush(art as typeof made, {
+      axis: "vertical",
+    })
+    expect(upright.pattern.tile.length).toBeCloseTo(2 / 5)
+  })
+
+  test("a brush without its source art cannot be remade", () => {
+    expect(() =>
+      remakePatternBrush(preset("Rope") as never, { start: [] })
+    ).toThrow()
+  })
+
+  test("a drawn axis may bend, and the art follows it", () => {
+    const path: [number, number][] = [
+      [0, 0],
+      [100, 0],
+      [100, 100],
+    ]
+    // Round joins, so the band is 10 px across even at the corner.
+    const plain = line("band", path, false, 10)
+    const band = {
+      ...plain,
+      style: {
+        ...plain.style,
+        stroke: { ...plain.style.stroke!, join: "round" as const },
+      },
+    }
+    const art = makePatternBrush([band, line("axis", path, false, 1)], {
+      axis: { drawn: "axis" },
+    })
+    const { tile } = art.pattern!
+    // 200 px along the bent axis, 10 px across it.
+    expect(tile.length).toBeCloseTo(20, 0)
+    const b = pieceBounds(tile.paths)
+    expect(b.minY).toBeCloseTo(-0.5, 1)
+    expect(b.maxY).toBeCloseTo(0.5, 1)
+  })
+})
+
+test("art is measured from the nearest part of a hooked axis, not its end's run-on", () => {
+  // Up a little, then round: the first segment's run-on passes the dot.
+  const axis = line(
+    "axis",
+    [
+      [0, 0],
+      [0, -10],
+      [200, -10],
+      [200, 200],
+      [10, 200],
+    ],
+    false,
+    1
+  )
+  const art = makePatternBrush([rect("dot", 3, 148, 4, 4), axis], {
+    axis: { drawn: "axis" },
+  })
+  // 48 to 52 px off the bottom arm, so 104 px tall: a sliver of a tile.
+  // Measured off the run-on it would be 3 to 7 px off, and 14 px tall.
+  expect(art.pattern.tile.length).toBeCloseTo(4 / 104, 2)
+})
+
+describe("stroked art joins", () => {
+  const corner: [number, number][] = [
+    [0, 0],
+    [100, 0],
+    [100, 100],
+  ]
+  const joined = (
+    join: "miter" | "round" | "bevel",
+    points: [number, number][] = corner
+  ) => {
+    const plain = line("l", points)
+    const object = {
+      ...plain,
+      style: { ...plain.style, stroke: { ...plain.style.stroke!, join } },
+    }
+    return makePatternBrush([object]).pattern.source!.shapes[0].paths.flatMap(
+      (p) => p.nodes
+    )
+  }
+  // How far the outline reaches from a corner, near it.
+  const reach = (nodes: PathNode[], x: number, y: number) =>
+    Math.max(
+      ...nodes.map((n) => Math.hypot(n.x - x, n.y - y)).filter((d) => d < 30)
+    )
+
+  test("a miter join reaches the corner of the offset edges", () => {
+    expect(reach(joined("miter"), 100, 0)).toBeCloseTo(Math.hypot(5, 5))
+  })
+
+  test("bevel and round joins stay a half width from the corner", () => {
+    const bevel = joined("bevel")
+    expect(bevel.some((n) => n.x > 100 && n.y < 0)).toBe(false)
+    const round = joined("round")
+    const outer = round.filter((n) => n.x > 100 + 1e-6 && n.y < -1e-6)
+    expect(outer.length).toBeGreaterThan(0)
+    for (const n of outer) expect(Math.hypot(n.x - 100, n.y)).toBeCloseTo(5)
+  })
+
+  test("a miter sharper than the limit bevels, as SVG does", () => {
+    const spike: [number, number][] = [
+      [0, 0],
+      [100, 0],
+      [0, 10],
+    ]
+    expect(reach(joined("miter", spike), 100, 0)).toBeLessThanOrEqual(5.001)
+  })
+})
+
+/** The longest run of decimals in any number of the exported paths. */
+function decimals(object: VectorObject): { most: number; svg: string } {
+  const doc = createBlankDocument({ width: 400, height: 400 })
+  const layer = findNode(doc, addVectorLayer(doc))
+  if (layer.kind !== "vector") throw new Error("Expected a vector layer")
+  layer.scene = { objects: [object] }
+  const { svg } = serializeSvg(doc, { raster: "omit" })
+  const ds = [...svg.matchAll(/<path d="([^"]+)"/g)].map((m) => m[1])
+  expect(ds.length).toBeGreaterThan(0)
+  const most = Math.max(
+    ...ds
+      .flatMap((d) => d.match(/-?\d+(\.\d+)?/g)!)
+      .map((n) => n.split(".")[1]?.length ?? 0)
+  )
+  return { most, svg }
+}
+
+const wavy = Array.from({ length: 12 }, (_, i) =>
+  node(10 + i * 17.3, 60 + Math.sin(i / 2.7) * 33.1)
+)
+
+describe("pattern art in SVG", () => {
+  test("is written to hundredths of a pixel", () => {
+    expect(decimals(stroke(preset("Rope"), wavy)).most).toBeLessThanOrEqual(2)
+  })
+
+  test("gets more decimals under a transform that scales it up", () => {
+    const scaled = {
+      ...stroke(preset("Rope"), wavy),
+      transform: [10, 0, 0, 10, 0, 0] as const,
+    }
+    const { most } = decimals(scaled as VectorObject)
+    expect(most).toBe(3)
+  })
+
+  test("keeps a spike that doubles back", () => {
+    // A tile with a hairline spike out of its top edge.
+    const spiked = {
+      kind: "path" as const,
+      closed: true,
+      nodes: [
+        [0.1, -0.5],
+        [0.5, -0.5],
+        [0.5, -0.9],
+        [0.5, -0.5],
+        [0.9, -0.5],
+        [0.9, 0.5],
+        [0.1, 0.5],
+      ].map(([x, y]) => ({ x, y, in: null, out: null, type: "cusp" as const })),
+    }
+    const { svg } = decimals(
+      stroke(brush({ tile: { length: 1, paths: [spiked] } }))
+    )
+    for (const [, d] of svg.matchAll(/<path d="([^"]+)"/g))
+      expect(d.split(" L").length).toBeGreaterThanOrEqual(6)
+  })
+
+  test("merges points on a straight run", () => {
+    // A square tile on a straight spine: each copy is a plain rectangle.
+    const { svg } = decimals(stroke(brush({})))
+    for (const [, d] of svg.matchAll(/<path d="([^"]+)"/g))
+      expect(d.split(" L")).toHaveLength(4)
+  })
+})

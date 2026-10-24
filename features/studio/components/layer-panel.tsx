@@ -2,9 +2,11 @@
 
 import {
   ArrowsOutCardinalIcon,
+  BezierCurveIcon,
   CaretUpIcon,
   CopyIcon,
   DotsSixVerticalIcon,
+  EraserIcon,
   EyeIcon,
   EyeSlashIcon,
   FolderPlusIcon,
@@ -47,6 +49,7 @@ import {
 
 import { placeImageFile } from "../lib/image-import"
 import { IconButton } from "./icon-button"
+import { findSummary, leafCount } from "../lib/layer-tree"
 
 type LayerPanelProps = {
   engine: Engine
@@ -58,28 +61,14 @@ type LayerPanelProps = {
    */
   onCollapse?(): void
   collapseRef?: Ref<HTMLButtonElement>
+  runCommand: RunCommand
 }
 
-function findSummary(
-  nodes: readonly LayerSummary[],
-  id: string
-): LayerSummary | undefined {
-  for (const node of nodes) {
-    if (node.id === id) return node
-    if (node.kind === "group") {
-      const found = findSummary(node.children, id)
-      if (found) return found
-    }
-  }
-}
-
-function rasterCount(nodes: readonly LayerSummary[]): number {
-  return nodes.reduce(
-    (count, node) =>
-      count + (node.kind === "raster" ? 1 : rasterCount(node.children)),
-    0
-  )
-}
+/**
+ * Runs a studio command, so the panel's buttons and keys share one path. A
+ * row's buttons name their own layer; without one it is the active layer.
+ */
+type RunCommand = (id: string, layerId?: string) => void
 
 /** How long a finger rests on a row before the canvas picks its layer out. */
 const LONG_PRESS_MS = 400
@@ -143,10 +132,13 @@ function LayerThumbnail({
   hidden,
   className = "",
   children,
+  onEmpty,
 }: {
   engine: Engine
   id: string
   label: string
+  /** Hears whether the layer has anything on it; must be stable. */
+  onEmpty?(empty: boolean): void
   /**
    * Hidden by its own eye, or by a group around it that is. Both keep it off
    * the canvas; only the first is something to switch back on from this row,
@@ -157,6 +149,7 @@ function LayerThumbnail({
   children?: React.ReactNode
 }) {
   const [empty, setEmpty] = useState(false)
+  useEffect(() => onEmpty?.(empty), [empty, onEmpty])
   // Hidden wins the attribute; an empty hidden layer still draws its outline.
   const state = hidden ? "hidden" : empty ? "empty" : "shown"
   return (
@@ -233,8 +226,9 @@ function LayerRow({
   activeLayerId,
   paintingMask,
   groupHidden,
-  totalRasters,
+  totalLeaves,
   onSelect,
+  runCommand,
 }: {
   engine: Engine
   layer: LayerSummary
@@ -247,8 +241,9 @@ function LayerRow({
   selected: boolean
   activeLayerId: string
   paintingMask: boolean
-  totalRasters: number
+  totalLeaves: number
   onSelect(id: string): void
+  runCommand: RunCommand
 }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(layer.name)
@@ -260,8 +255,8 @@ function LayerRow({
     setEditing(false)
   }
   const hiddenBy = !layer.visible ? "self" : groupHidden ? "group" : false
-  const removedRasters =
-    layer.kind === "raster" ? 1 : rasterCount(layer.children)
+  const [empty, setEmpty] = useState(false)
+  const removedLeaves = layer.kind === "group" ? leafCount(layer.children) : 1
   const highlight = (id: string | null) =>
     void engine.dispatch({ type: "highlightLayer", id })
   // A finger has no hover, so a touch picks the layer out by holding still on
@@ -332,7 +327,7 @@ function LayerRow({
             aria-label={`${selected ? "Selected" : "Select"} ${layer.name}`}
             onClick={() => {
               onSelect(layer.id)
-              if (layer.kind === "raster")
+              if (layer.kind !== "group")
                 void engine.dispatch({ type: "selectLayer", id: layer.id })
             }}
             className="flex min-w-0 flex-1 items-center gap-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -348,11 +343,19 @@ function LayerRow({
               id={layer.id}
               label={layer.name}
               hidden={hiddenBy}
+              onEmpty={setEmpty}
             >
               {layer.kind === "group" && (
                 <FolderSimpleIcon
                   aria-hidden
                   weight="fill"
+                  className="absolute -right-1 -bottom-1 size-3 text-muted-foreground"
+                />
+              )}
+              {layer.kind === "vector" && (
+                <BezierCurveIcon
+                  aria-label="Vector layer"
+                  weight="bold"
                   className="absolute -right-1 -bottom-1 size-3 text-muted-foreground"
                 />
               )}
@@ -404,13 +407,7 @@ function LayerRow({
             variant="ghost"
             size="icon-xs"
             label={`${layer.visible ? "Hide" : "Show"} ${layer.name}`}
-            onClick={() =>
-              void engine.dispatch({
-                type: "setLayer",
-                id: layer.id,
-                visible: !layer.visible,
-              })
-            }
+            onClick={() => runCommand("layer.toggleVisible", layer.id)}
           >
             {layer.visible ? <EyeIcon /> : <EyeSlashIcon />}
           </IconButton>
@@ -424,12 +421,7 @@ function LayerRow({
                   variant="ghost"
                   size="icon-xs"
                   label={`Move, scale or rotate ${layer.name}`}
-                  onClick={() =>
-                    void engine.dispatch({
-                      type: "beginImageTransform",
-                      id: layer.id,
-                    })
-                  }
+                  onClick={() => runCommand("layer.transformImage", layer.id)}
                 >
                   <ArrowsOutCardinalIcon />
                 </IconButton>
@@ -442,57 +434,56 @@ function LayerRow({
                   variant="ghost"
                   size="icon-xs"
                   label={`Paint on ${layer.name} (changes the photo)`}
-                  onClick={() =>
-                    void engine.dispatch({
-                      type: "makeLayerPaintable",
-                      id: layer.id,
-                    })
-                  }
+                  onClick={() => runCommand("layer.makePaintable", layer.id)}
                 >
                   <PaintBrushIcon />
                 </IconButton>
               )}
-              <IconButton
-                variant="ghost"
-                size="icon-xs"
-                label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
-                onClick={() =>
-                  void engine.dispatch({
-                    type: "setLayer",
-                    id: layer.id,
-                    locked: !layer.locked,
-                  })
-                }
-              >
-                {layer.locked ? <LockIcon /> : <LockOpenIcon />}
-              </IconButton>
             </>
+          )}
+          {layer.kind !== "group" && (
+            <IconButton
+              variant="ghost"
+              size="icon-xs"
+              label={`${layer.locked ? "Unlock" : "Lock"} ${layer.name}`}
+              onClick={() => runCommand("layer.toggleLock", layer.id)}
+            >
+              {layer.locked ? <LockIcon /> : <LockOpenIcon />}
+            </IconButton>
           )}
           {(selected || layer.id === activeLayerId) && (
             <>
-              {layer.kind === "raster" && (
+              {layer.kind !== "group" && (
                 <IconButton
                   variant="ghost"
                   size="icon-xs"
                   label={`Duplicate ${layer.name}`}
-                  onClick={() =>
-                    void engine.dispatch({
-                      type: "duplicateLayer",
-                      id: layer.id,
-                    })
-                  }
+                  onClick={() => runCommand("layer.duplicate", layer.id)}
                 >
                   <CopyIcon />
+                </IconButton>
+              )}
+              {/* A placed image's pixels come from its file, so it has none
+                  of its own to clear; a vector layer clears its shapes. */}
+              {(layer.kind === "vector" ||
+                (layer.kind === "raster" && !layer.image)) && (
+                <IconButton
+                  variant="ghost"
+                  size="icon-xs"
+                  label={`Clear ${layer.name}`}
+                  // Nothing to clear is nothing to ask about.
+                  disabled={layer.locked || empty}
+                  onClick={() => runCommand("layer.clear", layer.id)}
+                >
+                  <EraserIcon />
                 </IconButton>
               )}
               <IconButton
                 variant="ghost"
                 size="icon-xs"
                 label={`Delete ${layer.name}`}
-                disabled={totalRasters === removedRasters}
-                onClick={() =>
-                  void engine.dispatch({ type: "removeLayer", id: layer.id })
-                }
+                disabled={totalLeaves === removedLeaves}
+                onClick={() => runCommand("layer.delete", layer.id)}
               >
                 <TrashIcon />
               </IconButton>
@@ -510,16 +501,18 @@ function Rows({
   selectedId,
   activeLayerId,
   paintingMask,
-  totalRasters,
+  totalLeaves,
   onSelect,
+  runCommand,
 }: {
   engine: Engine
   nodes: readonly LayerSummary[]
   selectedId: string
   activeLayerId: string
   paintingMask: boolean
-  totalRasters: number
+  totalLeaves: number
   onSelect(id: string): void
+  runCommand: RunCommand
 }) {
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [target, setTarget] = useState<{
@@ -557,6 +550,7 @@ function Rows({
         <LayerRow
           key={layer.id}
           engine={engine}
+          runCommand={runCommand}
           layer={layer}
           dragging={draggedId === layer.id}
           dropPosition={
@@ -643,7 +637,7 @@ function Rows({
           activeLayerId={activeLayerId}
           paintingMask={paintingMask}
           groupHidden={groupHidden}
-          totalRasters={totalRasters}
+          totalLeaves={totalLeaves}
           onSelect={onSelect}
         />,
         ...(layer.kind === "group"
@@ -683,6 +677,7 @@ export function LayerPanel({
   snapshot,
   onCollapse,
   collapseRef,
+  runCommand,
 }: LayerPanelProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   /** Why the last image would not come in; cleared by the next attempt. */
@@ -691,7 +686,7 @@ export function LayerPanel({
   const selected =
     findSummary(snapshot.layers, selectedId ?? snapshot.activeLayerId) ??
     findSummary(snapshot.layers, snapshot.activeLayerId)
-  const count = rasterCount(snapshot.layers)
+  const count = leafCount(snapshot.layers)
   // A folded or closed panel cannot leave a layer picked out behind it.
   useEffect(
     () => () => void engine.dispatch({ type: "highlightLayer", id: null }),
@@ -750,15 +745,26 @@ export function LayerPanel({
             variant="ghost"
             size="icon-sm"
             label="Group active layer"
-            onClick={() => void engine.dispatch({ type: "addGroup" })}
+            command="layer.group"
+            onClick={() => runCommand("layer.group")}
           >
             <FolderPlusIcon />
           </IconButton>
           <IconButton
             variant="ghost"
             size="icon-sm"
+            label="Add vector layer"
+            command="layer.addVector"
+            onClick={() => runCommand("layer.addVector")}
+          >
+            <BezierCurveIcon />
+          </IconButton>
+          <IconButton
+            variant="ghost"
+            size="icon-sm"
             label="Add layer"
-            onClick={() => void engine.dispatch({ type: "addLayer" })}
+            command="layer.add"
+            onClick={() => runCommand("layer.add")}
           >
             <PlusIcon />
           </IconButton>
@@ -790,7 +796,7 @@ export function LayerPanel({
         moving from row to row does not flash the whole stack between them.
       */}
       <div
-        className="max-h-48 min-h-12 shrink-0 overflow-y-auto"
+        className="scroll-rounded max-h-48 min-h-12 shrink-0 overflow-y-auto [--scroll-inset:0.25rem]"
         onPointerLeave={(event) => {
           if (event.pointerType !== "touch")
             void engine.dispatch({ type: "highlightLayer", id: null })
@@ -798,11 +804,12 @@ export function LayerPanel({
       >
         <Rows
           engine={engine}
+          runCommand={runCommand}
           nodes={snapshot.layers}
           selectedId={selected?.id ?? snapshot.activeLayerId}
           activeLayerId={snapshot.activeLayerId}
           paintingMask={snapshot.paintingMask}
-          totalRasters={count}
+          totalLeaves={count}
           onSelect={setSelectedId}
         />
       </div>
@@ -818,27 +825,15 @@ export function LayerPanel({
                 variant={selected.clip ? "secondary" : "outline"}
                 size="sm"
                 aria-pressed={selected.clip}
-                onClick={() =>
-                  void engine.dispatch({
-                    type: "setLayer",
-                    id: selected.id,
-                    clip: !selected.clip,
-                  })
-                }
+                onClick={() => runCommand("layer.toggleClip", selected.id)}
               >
                 <IntersectIcon /> Clip
               </Button>
-              {selected.kind === "raster" && (
+              {selected.kind !== "group" && (
                 <Button
                   variant={snapshot.paintingMask ? "secondary" : "outline"}
                   size="sm"
-                  onClick={() =>
-                    void engine.dispatch(
-                      selected.mask
-                        ? { type: "selectMask", id: selected.id }
-                        : { type: "addMask", id: selected.id }
-                    )
-                  }
+                  onClick={() => runCommand("layer.mask", selected.id)}
                 >
                   <MaskHappyIcon /> {selected.mask ? "Paint mask" : "Add mask"}
                 </Button>
@@ -849,25 +844,14 @@ export function LayerPanel({
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() =>
-                    void engine.dispatch({
-                      type: "setMaskEnabled",
-                      id: selected.id,
-                      enabled: !selected.mask!.enabled,
-                    })
-                  }
+                  onClick={() => runCommand("layer.toggleMask", selected.id)}
                 >
                   {selected.mask.enabled ? "Disable mask" : "Enable mask"}
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() =>
-                    void engine.dispatch({
-                      type: "removeMask",
-                      id: selected.id,
-                    })
-                  }
+                  onClick={() => runCommand("layer.removeMask", selected.id)}
                 >
                   Remove mask
                 </Button>

@@ -1,6 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server"
 import { ConvexError, v } from "convex/values"
 
+import { isSmudge } from "../engine/brush/smudge"
 import type { Doc, Id } from "./_generated/dataModel"
 import {
   type MutationCtx,
@@ -180,18 +181,27 @@ export const saveTexture = mutation({
     name: v.string(),
     width: v.number(),
     height: v.number(),
+    frameCount: v.optional(v.number()),
     data: v.bytes(),
   },
-  handler: async (ctx, { name, width, height, data }) => {
+  handler: async (ctx, { name, width, height, frameCount, data }) => {
     const userId = await requireUserId(ctx)
     const texture = storable(() =>
-      normaliseStoredTexture({ width, height, data: new Uint8Array(data) })
+      normaliseStoredTexture({
+        width,
+        height,
+        frameCount,
+        data: new Uint8Array(data),
+      })
     )
     return await ctx.db.insert("brushTextures", {
       ownerId: userId,
       name: normaliseTextureName(name),
       width: texture.width,
       height: texture.height,
+      ...(texture.frameCount === undefined
+        ? {}
+        : { frameCount: texture.frameCount }),
       // Stored as the bytes it will be uploaded as: the row is the asset, and
       // a re-encoding here would be a second definition of what a texel is.
       data: texture.data.buffer.slice(
@@ -214,7 +224,13 @@ export const lastUsed = query({
         q.eq("ownerId", userId).eq("documentId", documentId)
       )
       .unique()
-    return row ? { brushId: row.brushId, radius: row.radius } : null
+    return row
+      ? {
+          brushId: row.brushId,
+          radius: row.radius,
+          ...(row.smudge ? { smudge: row.smudge } : {}),
+        }
+      : null
   },
 })
 
@@ -223,11 +239,16 @@ export const recordLastUsed = mutation({
     documentId: v.id("documents"),
     brushId: v.string(),
     radius: v.number(),
+    smudge: v.optional(v.object({ radius: v.number(), strength: v.number() })),
   },
-  handler: async (ctx, { documentId, brushId, radius }) => {
+  handler: async (ctx, { documentId, brushId, radius, smudge }) => {
     const userId = await requireUserId(ctx)
     if (!Number.isFinite(radius) || radius <= 0)
       throw new ConvexError("A brush radius must be a positive number.")
+    if (smudge && !isSmudge(smudge))
+      throw new ConvexError(
+        "A smudge needs a positive radius and a strength from 0 to 1."
+      )
     if (!brushId) throw new ConvexError("A brush id is needed.")
     const row = await ctx.db
       .query("brushUse")
@@ -236,13 +257,17 @@ export const recordLastUsed = mutation({
       )
       .unique()
     const updatedAt = Date.now()
-    if (row) await ctx.db.patch(row._id, { brushId, radius, updatedAt })
+    // A write that names no smudge leaves the one already remembered.
+    const named = smudge ? { smudge } : {}
+    if (row)
+      await ctx.db.patch(row._id, { brushId, radius, ...named, updatedAt })
     else
       await ctx.db.insert("brushUse", {
         ownerId: userId,
         documentId,
         brushId,
         radius,
+        ...named,
         updatedAt,
       })
   },

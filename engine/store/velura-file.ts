@@ -1,5 +1,9 @@
 import { assetId } from "../doc/image-source"
-import { structureSurfaceIds, type DocumentStructure } from "../doc/structure"
+import {
+  parseSavedScenes,
+  structureSurfaceIds,
+  type DocumentStructure,
+} from "../doc/structure"
 import { TILE_CHANNELS, TILE_TEXELS } from "../doc/tile-grid"
 import { hashTexels } from "../doc/tile-store"
 import { blendModes } from "../shaders/blend-modes"
@@ -157,7 +161,7 @@ function assertStructure(structure: DocumentStructure): Set<string> {
   )
     throw new Error("The .velura manifest has no layer tree.")
   const ids = new Set<string>()
-  let activeIsRaster = false
+  let activeIsLeaf = false
   const walk = (nodes: DocumentStructure["layers"]) => {
     for (const node of nodes) {
       if (!node || typeof node.id !== "string" || !node.id || ids.has(node.id))
@@ -165,7 +169,11 @@ function assertStructure(structure: DocumentStructure): Set<string> {
           "The .velura manifest has invalid or repeated layer ids."
         )
       ids.add(node.id)
-      if (node.kind !== "raster" && node.kind !== "group")
+      if (
+        node.kind !== "raster" &&
+        node.kind !== "vector" &&
+        node.kind !== "group"
+      )
         throw new Error("The .velura manifest has an unknown layer kind.")
       if (
         typeof node.name !== "string" ||
@@ -190,11 +198,11 @@ function assertStructure(structure: DocumentStructure): Set<string> {
         if (!Array.isArray(node.children))
           throw new Error(`Group ${node.id} has no children.`)
         walk(node.children)
-      } else if (node.id === structure.activeLayerId) activeIsRaster = true
+      } else if (node.id === structure.activeLayerId) activeIsLeaf = true
     }
   }
   walk(structure.layers)
-  if (!activeIsRaster)
+  if (!activeIsLeaf)
     throw new Error("The .velura manifest has no valid active layer.")
   return ids
 }
@@ -270,6 +278,9 @@ export async function decodeVeluraFile(
       "The .velura manifest is invalid or from an unsupported version."
     )
   const surfaceIds = assertStructure(manifest.structure)
+  // Checked whole, here, so a bad shape fails the import before the open
+  // document is replaced rather than on the first redraw.
+  manifest = { ...manifest, structure: parseSavedScenes(manifest.structure) }
   const tiles = new Map<string, Uint16Array>()
   const placements = new Set<string>()
   const seenSurfaces = new Set<string>()

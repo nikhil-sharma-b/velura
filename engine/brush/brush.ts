@@ -1,4 +1,7 @@
+import { smudgeSpacing } from "./smudge"
+import type { TipSelectionMode } from "./tip-sets"
 import type { Modulator } from "./dynamics"
+import type { BrushScatter } from "./scatter"
 import {
   BRUSH_ACCUMULATION,
   BRUSH_FEATHER,
@@ -21,12 +24,10 @@ import {
  * Grain and tip textures (D24) are referenced by id, never embedded: the
  * texture is an asset, the brush is the recipe.
  *
- * The sections architecture 7.1 names but that nothing renders yet — scatter,
- * the blend mode, and grain movement, which belongs with the view matrix that
- * navigation brings (D28) — are deliberately absent rather than present and
- * ignored: they arrive with the renderers that read them (D20), and a field
- * no code consumes is a field nothing keeps honest. The dynamics graph
- * already carries their targets, so adding them is additive.
+ * The section architecture 7.1 names but that nothing renders yet — the
+ * blend mode — is deliberately absent rather than present and ignored: it
+ * arrives with the renderer that reads it (D20), and a field no code consumes
+ * is a field nothing keeps honest.
  */
 
 export type BrushShape = {
@@ -42,6 +43,8 @@ export type BrushShape = {
   spacing: number
   /** Grayscale tip texture, sampled in stamp space (D24). None is procedural. */
   tipTextureId?: string
+  /** How a tip set chooses a frame per dab. Defaults to random. */
+  tipSelection?: TipSelectionMode
 }
 
 /**
@@ -77,6 +80,159 @@ export type BrushRendering = {
   opacity: number
   /** Opacity of a single dab. */
   flow: number
+  /**
+   * Absent means a dry brush, drawn through the stroke buffer. Present, the
+   * brush lays its colour by `flow` and drags the paint already on the layer
+   * along with it, straight into the layer (D41): the stroke's opacity and
+   * accumulation stay on the brush, unread, so turning wet off restores them.
+   */
+  wet?: BrushWet
+  /**
+   * Present, the brush lays water and pigment into the layer's wet surface
+   * (D42) and never beside `wet`: a brush is one or the other. Its opacity
+   * and flow are the pigment a dab carries; accumulation stays on the brush,
+   * unread, so turning fluid off restores it.
+   */
+  fluid?: BrushFluid
+  /**
+   * Present, the brush lays nothing: it takes water and suspended pigment
+   * out of the layer's wet surface (fluid brushes 17), never beside `wet` or
+   * `fluid`. Its opacity and flow are how strongly a dab takes; accumulation
+   * stays on the brush, unread.
+   */
+  blot?: BrushBlot
+}
+
+export type BrushWet = {
+  /** How much of the paint one dab behind is carried forward, in [0, 1]. */
+  pickup: number
+}
+
+/** What a brush picks up when it is first made wet. */
+export const DEFAULT_WET_PICKUP = 0.5
+
+export function validateBrushWet(wet: BrushWet): void {
+  const pickup = wet?.pickup
+  if (!Number.isFinite(pickup) || pickup < 0 || pickup > 1)
+    throw new Error("Brush pickup must be in [0, 1].")
+}
+
+/** How a fluid brush's paint behaves while it is wet, each in [0, 1]. */
+export type BrushFluid = {
+  /** How much water a dab carries. */
+  water: number
+  /** How fast its paint dries. */
+  drying: number
+  /** How far pigment spreads into paint that is still wet. */
+  bleed: number
+  /** How strongly the edge of a wash darkens as it dries. */
+  edge: number
+  /** How much pigment settles into the paper's valleys. */
+  granulation: number
+}
+
+/** What a brush is given when it is first made fluid. */
+export const DEFAULT_FLUID: BrushFluid = {
+  water: 0.5,
+  drying: 0.5,
+  bleed: 0.5,
+  edge: 0.5,
+  granulation: 0.5,
+}
+
+const FLUID_FIELDS = [
+  "water",
+  "drying",
+  "bleed",
+  "edge",
+  "granulation",
+] as const
+
+export function validateBrushFluid(fluid: BrushFluid): void {
+  for (const field of FLUID_FIELDS) {
+    const value = fluid?.[field]
+    if (!Number.isFinite(value) || value < 0 || value > 1)
+      throw new Error(`Brush ${field} must be in [0, 1].`)
+  }
+}
+
+/** A fluid setting as it is stored: its five numbers and nothing else. */
+export function copyBrushFluid(fluid: BrushFluid): BrushFluid {
+  return {
+    water: fluid.water,
+    drying: fluid.drying,
+    bleed: fluid.bleed,
+    edge: fluid.edge,
+    granulation: fluid.granulation,
+  }
+}
+
+/**
+ * How much a blot brush takes out of wet paint where a dab lands at full
+ * strength, each in [0, 1]. Pigment the paper has already taken is left: the
+ * step lifts a little of it back while water stands (`LIFT`, §6.2).
+ */
+export type BrushBlot = {
+  /** The share of standing water and the paper's dampness a dab takes. */
+  water: number
+  /** The share of the pigment suspended in the water a dab takes. */
+  pigment: number
+}
+
+/** What a brush is given when it is first made a blot. */
+export const DEFAULT_BLOT: BrushBlot = { water: 0.7, pigment: 0.5 }
+
+export function validateBrushBlot(blot: BrushBlot): void {
+  for (const field of ["water", "pigment"] as const) {
+    const value = blot?.[field]
+    if (!Number.isFinite(value) || value < 0 || value > 1)
+      throw new Error(`Brush blot ${field} must be in [0, 1].`)
+  }
+}
+
+/** A blot setting as it is stored: its two numbers and nothing else. */
+export function copyBrushBlot(blot: BrushBlot): BrushBlot {
+  return { water: blot.water, pigment: blot.pigment }
+}
+
+/**
+ * Wet drags paint, fluid lets it run and blot takes it up: a brush does one
+ * of them.
+ */
+export function validateBrushMedium(rendering: {
+  wet?: unknown
+  fluid?: unknown
+  blot?: unknown
+}): void {
+  const media = [rendering.wet, rendering.fluid, rendering.blot]
+  if (media.filter(Boolean).length > 1)
+    throw new Error("A brush is one of wet, fluid or blot, not more.")
+}
+
+/**
+ * Whether a brush is a blender: wet, with no flow of its own (D41). The
+ * graph scales flow and cannot raise it off zero, so such a brush never lays
+ * and nothing it carried on its bristles could reach the layer. It drags
+ * from the pixel behind, as smudge does, in place of trading with a
+ * reservoir.
+ */
+export function isBlender(brush: Brush): boolean {
+  return !!brush.rendering.wet && brush.rendering.flow === 0
+}
+
+/** Amplitudes scaling the graph's colour offsets. Absent means unit scales.
+ * Hue is in turns; saturation and lightness are fractions of their HSL range.
+ * Random-source mappings provide seeded per-dab jitter for dry brushes. Wet
+ * brushes sample these offsets once, tinting the clean load at the first dab.
+ */
+export type BrushColor = { hue: number; saturation: number; lightness: number }
+
+export function validateBrushColor(color: BrushColor): void {
+  for (const target of ["hue", "saturation", "lightness"] as const) {
+    const value = color?.[target]
+    if (!Number.isFinite(value) || value < 0 || value > 1)
+      throw new Error(`Brush ${target} jitter must be in [0, 1].`)
+  }
 }
 
 export type Brush = {
@@ -86,7 +242,10 @@ export type Brush = {
   shape: BrushShape
   /** Absent means the brush lays ink on a perfectly smooth surface. */
   grain?: BrushGrain
+  /** Absent means one dab per spacing step, on the path (`NO_SCATTER`). */
+  scatter?: BrushScatter
   rendering: BrushRendering
+  color?: BrushColor
   /** Applied in order; see `evaluateDynamics`. */
   dynamics: Modulator[]
 }
@@ -122,9 +281,67 @@ export function dabSpacing(brush: Brush, radius: number): number {
   return Math.max(0.05, radius * 2 * brush.shape.spacing)
 }
 
+/**
+ * The performance floor for a wet brush's dabs, in canvas pixels, whatever
+ * its size (live brushes 10). Every wet dab is a copy and a draw of its own into the
+ * layer, where a dry brush's dabs share one draw; a draw costs a frame much
+ * the same however small the dab, so what D30 can afford is a number of dabs
+ * in a frame. At this floor a fast hand lays about eight in a 120 Hz frame,
+ * which is what fits (`docs/design/benchmark.md`).
+ */
+export const WET_SPACING_FLOOR = 4
+
+/**
+ * The floor for a large dab, whose copy and draws do grow with it, as a
+ * fraction of its radius: the dabs in a frame fall as each one's cost
+ * rises. It passes the pixel floor at a 128 px brush.
+ */
+const WET_SPACING_FLOOR_RATIO = 1 / 16
+
+/**
+ * The closest the dabs of a wet brush may be, in canvas pixels, for a dab of
+ * the given radius. Small blenders need closer overlap to avoid a comb;
+ * `wetDabSpacing` chooses that pitch.
+ */
+export function wetSpacingFloor(radius: number): number {
+  return Math.max(WET_SPACING_FLOOR, radius * WET_SPACING_FLOOR_RATIO)
+}
+
+/**
+ * The scatter a brush's dabs are thrown by, dry or wet (live brushes 12):
+ * its own, unless it is a blender. A blender drags from the dab behind it, and a
+ * thrown dab has none, so a blender keeps to the path.
+ */
+export function thrownScatter(brush: Brush): BrushScatter | undefined {
+  return isBlender(brush) ? undefined : brush.scatter
+}
+
+/**
+ * Distance between a wet brush's dabs in canvas pixels, for a dab of the
+ * given radius: the brush's own spacing, held at the floor D30 sets where
+ * overlap permits it (live brushes 23).
+ * Scatter lays `count` dabs a step, each a copy and a draw of its own, and a
+ * wet brush lays them one at a time along the step rather than all where it
+ * begins (live brushes 29): a dab every `count`th of the step, never closer
+ * than the floor, so no frame is handed a whole step's dabs.
+ */
+export function wetDabSpacing(brush: Brush, radius: number): number {
+  const spacing = Math.max(
+    wetSpacingFloor(radius),
+    dabSpacing(brush, radius) / (thrownScatter(brush)?.count ?? 1)
+  )
+  // A blender hands on the pixel behind: uneven overlap leaves a comb.
+  // Cap its pitch at smudge's, even when a preset requests wider spacing
+  // (live brushes 23). Those dabs share a pass, a run at a time, so the
+  // frame holds them (live brushes 22).
+  return isBlender(brush) ? Math.min(spacing, smudgeSpacing(radius)) : spacing
+}
+
 /** Distance between dabs in canvas pixels, for a brush at rest. */
 export function brushSpacing(brush: Brush): number {
-  return dabSpacing(brush, brush.shape.radius)
+  return brush.rendering.wet
+    ? wetDabSpacing(brush, brush.shape.radius)
+    : dabSpacing(brush, brush.shape.radius)
 }
 
 /** A brush is plain data, so a copy is a deep clone and nothing else. */

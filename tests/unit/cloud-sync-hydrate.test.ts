@@ -128,6 +128,40 @@ describe("hydrate", () => {
     expect(await freshLocal.readTile("hash-b")).toEqual(texelsFor("hash-b"))
   })
 
+  test("a hydrated copy is dated by the server's clock, so it reads as in step with it", async () => {
+    const cloud = createFakeCloud()
+    cloud.remote.documentMeta = async () => ({
+      width: 512,
+      height: 256,
+      structure: STRUCTURE,
+      updatedAt: 1_000,
+    })
+    await createCloudSync({
+      remote: cloud.remote,
+      snapshot: () => ({
+        structure: STRUCTURE,
+        surfaces: surfaces([
+          { surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" },
+        ]),
+      }),
+      tiles: async (hash) => texelsFor(hash),
+      put: cloud.put,
+    }).flush()
+
+    const local = createDocumentStore(createMemoryBlobStore())
+    await hydrateFromRemote({
+      documentId: "doc-1",
+      remote: cloud.remote,
+      local,
+      get: cloud.get,
+    })
+
+    // Neither "newer here" nor "newer elsewhere" on the next open: a device
+    // clock that runs ahead of the server's must not make an untouched copy
+    // look like unsynced work.
+    expect((await local.load("doc-1"))?.updatedAt).toBe(1_000)
+  })
+
   test("a tile the local store already holds is not downloaded again", async () => {
     const cloud = createFakeCloud()
     const doc = surfaces([{ surfaceId: "layer-1", x: 0, y: 0, hash: "hash-a" }])
@@ -179,6 +213,63 @@ describe("hydrate", () => {
     // A tile already on this device costs no presigned URL either — not
     // just no fetch — since minting one it never uses is still a wasted call.
     expect(presignedHashes).toEqual([])
+  })
+
+  test("a document holding only shapes opens with its scene and uploads no tiles", async () => {
+    const cloud = createFakeCloud()
+    const shapes: DocumentStructure = {
+      layers: [
+        {
+          id: "vector-1",
+          kind: "vector",
+          name: "Shapes",
+          opacity: 1,
+          visible: true,
+          blend: "normal",
+          clip: false,
+          locked: false,
+          scene: {
+            objects: [
+              {
+                id: "shape-1",
+                geometry: { kind: "rect", x: 0, y: 0, width: 4, height: 4 },
+                transform: [1, 0, 0, 1, 0, 0],
+                style: {
+                  fill: { color: "#ff0000", opacity: 1, rule: "nonzero" },
+                  stroke: null,
+                },
+              },
+            ],
+          },
+        },
+      ],
+      activeLayerId: "vector-1",
+      paintingMask: false,
+    }
+    const puts: string[] = []
+    const sync = createCloudSync({
+      remote: cloud.remote,
+      // A vector layer's pixels are a local cache of its scene: none of them
+      // are in the tile index a flush is made from.
+      snapshot: () => ({ structure: shapes, surfaces: [] }),
+      tiles: async (hash) => texelsFor(hash),
+      put: async (url, bytes) => {
+        puts.push(url)
+        await cloud.put(url, bytes)
+      },
+    })
+    await sync.flush()
+    expect(puts).toEqual([])
+
+    const local = createDocumentStore(createMemoryBlobStore())
+    const manifest = await hydrateFromRemote({
+      documentId: "doc-1",
+      remote: cloud.remote,
+      local,
+      get: cloud.get,
+    })
+    expect(manifest?.structure).toEqual(shapes)
+    expect((await local.load("doc-1"))?.structure).toEqual(shapes)
   })
 
   test("a document never flushed returns null rather than an empty document", async () => {

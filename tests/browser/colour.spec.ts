@@ -237,4 +237,38 @@ test.describe("the colour picker", () => {
       page.getByRole("button", { name: "Rename Dawn" })
     ).toBeVisible()
   })
+
+  test("the wheel picks hue by angle and saturation by reach, by pointer and by key", async ({
+    page,
+  }) => {
+    await openPicker(page)
+    const wheel = page.getByRole("slider", { name: "Hue" })
+    const disc = page.getByTestId("colour-panel").locator("canvas")
+    const box = (await disc.boundingBox())!
+    const at = (angle: number, reach: number) => ({
+      x: box.x + box.width / 2 + (box.width / 2) * reach * Math.cos(angle),
+      y: box.y + box.height / 2 - (box.height / 2) * reach * Math.sin(angle),
+    })
+
+    // Straight up on the rim: hue 90°, as full as that hue goes.
+    const top = at(Math.PI / 2, 0.98)
+    await page.mouse.click(top.x, top.y)
+    const hue = async () => Number(await wheel.getAttribute("aria-valuenow"))
+    await expect.poll(hue).toBeGreaterThanOrEqual(88)
+    expect(await hue()).toBeLessThanOrEqual(92)
+    await expect(wheel).toHaveAttribute("aria-valuetext", /saturation 9[5-9]%/)
+
+    // The centre is grey whatever the hue.
+    const centre = at(0, 0)
+    await page.mouse.click(centre.x, centre.y)
+    await expect(wheel).toHaveAttribute("aria-valuetext", /saturation 0%/)
+
+    // The keyboard turns the hue and reaches out from the centre.
+    const before = await hue()
+    await wheel.focus()
+    await wheel.press("Shift+ArrowRight")
+    await wheel.press("Shift+ArrowUp")
+    await expect(wheel).toHaveAttribute("aria-valuetext", /saturation 10%/)
+    expect(await hue()).toBe((before + 10) % 360)
+  })
 })

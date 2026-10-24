@@ -135,7 +135,9 @@ test("a restore is one undo step, so previewing an old state is reversible", asy
     steps + 1
   )
 
-  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  // Taken back the way "Back to now" does it: a plain undo is refused while
+  // a preview is on trial (see the undo-waits-out-a-preview test).
+  await page.evaluate(() => window.engine.revertRestore())
 
   // The work the restore covered is back, and so is the restore, by redo.
   expect(await painted(page, 30, 90)).toBe(true)
@@ -303,4 +305,187 @@ test("previewing a second point leaves one step over the artist's work, not two"
   // One revert is enough to get the whole session's work back.
   expect(await revert(page)).toBe(true)
   expect(await painted(page, 30, 90)).toBe(true)
+})
+
+/** Opens the same document again against the same fake cloud, as a reload would. */
+async function reopen(page: Page, documentId: string) {
+  await page.evaluate(
+    async ([width, height, id]) => {
+      window.remountEngine({
+        persistence: { documentId: id as string },
+        cloud: { remote: window.fakeCloud.remote, idleMs: 60_000 },
+      })
+      await window.engine.dispatch({
+        type: "resize",
+        width: width as number,
+        height: height as number,
+        devicePixelRatio: 1,
+      })
+      await window.engine.dispatch({ type: "initialize" })
+    },
+    [WIDTH, HEIGHT, documentId] as const
+  )
+}
+
+test("a preview that is never kept is not saved, so a reload comes back to now", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 30)
+  await page.evaluate(() => window.engine.save())
+  const [earlier] = await restorePoints(page)
+  await paint(page, origin, 90)
+  await page.evaluate(() => window.engine.save())
+  const versionsBefore = (await restorePoints(page)).length
+
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    earlier!.id
+  )
+  expect(await painted(page, 30, 90)).toBe(false)
+  // What a hidden or closing tab asks for — and what an idle flush would do.
+  await page.evaluate(() => window.engine.save())
+
+  // The tab goes without the preview being taken back: nothing reverts it.
+  await reopen(page, documentId)
+
+  expect(await painted(page, 30, 90)).toBe(true)
+  expect((await restorePoints(page)).length).toBe(versionsBefore)
+})
+
+test("keeping a preview saves it, locally and to the cloud", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 30)
+  await page.evaluate(() => window.engine.save())
+  const [earlier] = await restorePoints(page)
+  await paint(page, origin, 90)
+  await page.evaluate(() => window.engine.save())
+
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    earlier!.id
+  )
+  await page.evaluate(() => window.engine.keepRestore())
+  expect(await page.evaluate(() => window.engine.canRevertRestore())).toBe(
+    false
+  )
+
+  await reopen(page, documentId)
+  expect(await painted(page, 30, 90)).toBe(false)
+  expect(await painted(page, 30, 30)).toBe(true)
+})
+
+test("painting over a preview makes it the artist's work, saved like any other", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 30)
+  await page.evaluate(() => window.engine.save())
+  const [earlier] = await restorePoints(page)
+  await paint(page, origin, 90)
+  await page.evaluate(() => window.engine.save())
+
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    earlier!.id
+  )
+  await paint(page, origin, 60)
+  await page.evaluate(() => window.engine.save())
+
+  await reopen(page, documentId)
+  expect(await painted(page, 30, 60)).toBe(true)
+  expect(await painted(page, 30, 90)).toBe(false)
+})
+
+test("once painted over, a preview stays the artist's even after undoing that paint", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 30)
+  await page.evaluate(() => window.engine.save())
+  const [earlier] = await restorePoints(page)
+  await paint(page, origin, 90)
+  await page.evaluate(() => window.engine.save())
+
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    earlier!.id
+  )
+  await paint(page, origin, 60)
+  // The paint ends the trial for good: undoing it lands on a restore the
+  // artist has already made theirs, which nothing may now take back.
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await page.evaluate(() => window.engine.canRevertRestore())).toBe(
+    false
+  )
+  await page.evaluate(() => window.engine.save())
+
+  await reopen(page, documentId)
+  expect(await painted(page, 30, 30)).toBe(true)
+  expect(await painted(page, 30, 60)).toBe(false)
+  expect(await painted(page, 30, 90)).toBe(false)
+})
+
+test("undo waits out a preview on trial, and comes back once it is painted over", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 30)
+  await page.evaluate(() => window.engine.save())
+  const [earlier] = await restorePoints(page)
+  await paint(page, origin, 90)
+  await page.evaluate(() => window.engine.save())
+
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    earlier!.id
+  )
+  expect(await page.evaluate(() => window.engine.getSnapshot().canUndo)).toBe(
+    false
+  )
+  // "Back to now" is the way out; an undo slipping past it is refused.
+  await page.evaluate(() => window.engine.dispatch({ type: "undo" }))
+  expect(await page.evaluate(() => window.engine.canRevertRestore())).toBe(true)
+  expect(await painted(page, 30, 90)).toBe(false)
+
+  await paint(page, origin, 60)
+  expect(await page.evaluate(() => window.engine.getSnapshot().canUndo)).toBe(
+    true
+  )
+  expect(await page.evaluate(() => window.engine.canRevertRestore())).toBe(
+    false
+  )
+})
+
+test("keeping a preview says when it reached this device but not the cloud", async ({
+  page,
+}) => {
+  const documentId = newId()
+  const origin = await openWithCloud(page, documentId)
+  await paint(page, origin, 30)
+  await page.evaluate(() => window.engine.save())
+  const [earlier] = await restorePoints(page)
+  await paint(page, origin, 90)
+  await page.evaluate(() => window.engine.save())
+
+  await page.evaluate(
+    (versionId) => window.engine.restoreVersion(versionId as string),
+    earlier!.id
+  )
+  await page.evaluate(() => window.fakeCloud.setFailing(true))
+  const kept = await page.evaluate(() => window.engine.keepRestore())
+  expect(kept.synced).toBe(false)
+
+  // Kept all the same: it is the document on this device now.
+  await page.evaluate(() => window.fakeCloud.setFailing(false))
+  await reopen(page, documentId)
+  expect(await painted(page, 30, 90)).toBe(false)
+  expect(await painted(page, 30, 30)).toBe(true)
 })

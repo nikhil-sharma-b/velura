@@ -36,11 +36,19 @@ export default defineSchema({
     // The layer tree without pixels — engine/doc/structure.ts's
     // `DocumentStructure`, opaque here. Absent until the first flush; a
     // session reopening on a cleared cache reads this plus the `tiles` rows
-    // to rebuild the document (§9.3).
+    // to rebuild the document (§9.3). Carries the document's guides (16),
+    // which `commitFlush` normalises on the way in (convex/lib/guides.ts).
     structure: v.optional(v.any()),
-    // Incremented after a flush replaces previews/<document>.png.
-    // The value refreshes signed library URLs without storing expiring URLs.
+    // Incremented after a preview upload lands. The value refreshes signed
+    // library URLs without storing expiring URLs.
     previewVersion: v.optional(v.number()),
+    // New previews use immutable object keys. A duplicate can then reference
+    // the exact picture captured with its tiles, even if the source changes.
+    // Older documents without this field still read previews/<id>.png.
+    previewObjectKey: v.optional(v.string()),
+    // The document timestamp from the flush this preview depicts. During a
+    // newer flush, the old preview must not be copied with newer tiles.
+    previewForUpdatedAt: v.optional(v.number()),
   })
     // The library lists one owner's documents newest-first; the index carries
     // `updatedAt` so that ordering is the index order, not a post-sort.
@@ -105,6 +113,20 @@ export default defineSchema({
       })
     ),
   }).index("by_document_created", ["documentId", "createdAt"]),
+
+  // A piece of a vector layer's scene (20), by the hash of its text. The
+  // document's `structure` and each restore point's name a scene as a list of
+  // these hashes instead of holding its objects, so a large scene cannot push
+  // either row past the document limit, and a restore point costs hashes, not
+  // a copy of every shape. Rows are per document rather than shared: a scene
+  // is Convex data, not an R2 object, so there is no upload to save, and a
+  // document owning its rows can drop them without asking any other.
+  // See convex/lib/scenes.ts.
+  sceneChunks: defineTable({
+    documentId: v.id("documents"),
+    hash: v.string(),
+    data: v.string(),
+  }).index("by_document_hash", ["documentId", "hash"]),
 
   // Per-flush R2 operation counts, so the free-tier Class A budget (the
   // binding cost constraint per architecture.md §9.6) has a real number
@@ -186,6 +208,7 @@ export default defineSchema({
     name: v.string(),
     width: v.number(),
     height: v.number(),
+    frameCount: v.optional(v.number()),
     data: v.bytes(),
     createdAt: v.number(),
   }).index("by_owner", ["ownerId"]),
@@ -201,8 +224,29 @@ export default defineSchema({
     documentId: v.id("documents"),
     brushId: v.string(),
     radius: v.number(),
+    // The smudge tool's own size and strength (smudge 02). Absent on rows
+    // written before it had any.
+    smudge: v.optional(v.object({ radius: v.number(), strength: v.number() })),
     updatedAt: v.number(),
   }).index("by_owner_document", ["ownerId", "documentId"]),
+
+  // At most one row per artist: settings that belong to the person rather
+  // than to a document, so they follow them between machines (v2 04). The
+  // keybinds are the sparse overrides of `features/commands/lib/overrides.ts`,
+  // by command id; a command not listed keeps whatever its default is now.
+  vectorBrushes: defineTable({
+    ownerId: v.id("users"),
+    definition: v.any(),
+    updatedAt: v.number(),
+  }).index("by_owner", ["ownerId"]),
+
+  preferences: defineTable({
+    ownerId: v.id("users"),
+    keybinds: v.record(v.string(), v.array(v.string())),
+    // Absent until the artist first shows or hides them (08).
+    rulersVisible: v.optional(v.boolean()),
+    updatedAt: v.number(),
+  }).index("by_owner", ["ownerId"]),
 
   // One row per tab/device with a document open, heartbeat-refreshed while it
   // stays open (18). This is what lets a session opening a document already

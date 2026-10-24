@@ -1,15 +1,29 @@
+import { wetDepositionProbe } from "./wet-deposition-probe"
+import { wetDabProbe } from "./wet-dab-probe"
+import { mixPaintProbe } from "./pigment-probe"
 import { openBlendProbe, type BlendProbe } from "./blend-probe"
+import { smearProbe } from "./smudge-probe"
 import {
   buildLayerStack,
   clientMapper,
   describeEnvironment,
   markActiveLayer,
   runBenchmark,
+  runFluidStepBenchmark,
+  runNavigationBenchmark,
+  runVectorBenchmark,
+  type FluidStepResult,
+  type NavigationRunResult,
   type RunResult,
+  type VectorRunResult,
 } from "../../bench/driver"
+import type { VectorWorkloadOptions } from "../../bench/vector-workload"
 import type { WorkloadOptions } from "../../bench/workload"
 import { BRUSH_COLOR, BRUSH_FEATHER } from "../../engine/brush/round-brush"
-import { createTextureLibrary } from "../../engine/brush/texture"
+import {
+  createTextureLibrary,
+  type GrayscaleTexture,
+} from "../../engine/brush/texture"
 import { BACKGROUND } from "../../engine/doc/scene"
 import { decodeFloat16 } from "../../engine/doc/float16"
 import { createRenderer, type StrokeMode } from "../../engine/gpu/renderer"
@@ -34,7 +48,11 @@ type Dab = {
   opacity: number
   angle?: number
   roundness?: number
+  tipFrame?: number
   grainDepth?: number
+  hue?: number
+  saturation?: number
+  lightness?: number
 }
 
 /**
@@ -49,6 +67,7 @@ type StrokeBufferProbe = {
     mode?: StrokeMode
   ): void
   /** The tip texture, by id, or null for the procedural disc. */
+  registerTip(id: string, texture: GrayscaleTexture): void
   setTip(id: string | null): void
   /**
    * The paper, by id, with the tile scale, how hard it bites, and how much of
@@ -70,8 +89,12 @@ type StrokeBufferProbe = {
 
 declare global {
   interface Window {
+    mixPaintProbe: typeof mixPaintProbe
     openBlendProbe: typeof openBlendProbe
     blendProbe: BlendProbe
+    wetDepositionProbe: typeof wetDepositionProbe
+    wetDabProbe: typeof wetDabProbe
+    smearProbe: typeof smearProbe
     engine: Engine
     /** A fresh engine on the same canvas, optionally with a small history. */
     remountEngine(options?: EngineOptions): void
@@ -81,6 +104,23 @@ declare global {
     probe: StrokeBufferProbe
     /** The performance benchmark (D30), driven by `bench/run.ts`. */
     runBenchmark(options: WorkloadOptions): Promise<RunResult>
+    /** A step of the fluid simulation over a flooded document (fluid brushes 13). */
+    runFluidStepBenchmark(
+      size: { width: number; height: number },
+      rounds?: { steps: number; count: number },
+      /** Every body of the flood held, drying paused (fluid brushes 18). */
+      held?: boolean,
+      steep?: boolean,
+      experiment?: { reach: boolean; diameter: number }
+    ): Promise<FluidStepResult>
+    /** Re-rasterising a vector layer of many paths (19). */
+    runVectorBenchmark(options: VectorWorkloadOptions): Promise<VectorRunResult>
+    /** Panning and zooming a stack, its caches rebuilt each step (sharp-zoom 01). */
+    runNavigationBenchmark(options: {
+      width: number
+      height: number
+      layers: number
+    }): Promise<NavigationRunResult>
     describeEnvironment: typeof describeEnvironment
     /** A document of `count` layers, each holding a mark, for the compositor tests. */
     buildLayerStack(count: number): Promise<void>
@@ -92,6 +132,10 @@ declare global {
     /** How many times a placed image's original has been decoded. */
     imageDecodes: number
     tileCountFor(documentId: string): Promise<number>
+    /** Simulates one locally lost tile while leaving its manifest and cloud row intact. */
+    forgetFirstLocalTile(documentId: string): Promise<void>
+    /** Top-level layers in the document this device has stored. */
+    layerCountFor(documentId: string): Promise<number>
     /** The placement a stored document holds for its first placed image. */
     storedPlacement(documentId: string): Promise<unknown>
     /**
@@ -99,10 +143,15 @@ declare global {
      * its tiles stay listed: pixels on disk that no layer will load into.
      */
     strandLayer(documentId: string, layerId: string): Promise<void>
+    createLocalBlobStore: typeof createLocalBlobStore
     encodePreview: typeof encodePreview
     encodeExportImage: typeof encodeExportImage
   }
 }
+
+window.mixPaintProbe = mixPaintProbe
+
+window.createLocalBlobStore = createLocalBlobStore
 
 window.storedPlacement = async (documentId) => {
   const store = createDocumentStore(createLocalBlobStore())
@@ -120,6 +169,27 @@ window.tileCountFor = async (documentId) => {
       0
     ) ?? 0
   )
+}
+
+window.forgetFirstLocalTile = async (documentId) => {
+  const blobs = createLocalBlobStore()
+  const manifest = await createDocumentStore(blobs).load(documentId)
+  const hash = manifest?.surfaces.flatMap((surface) => surface.tiles)[0]?.hash
+  if (!hash) throw new Error(`No tile in ${documentId}`)
+  await blobs.remove(`tiles/${hash}`)
+  // Stand in for an offline local edit after the last successful cloud flush.
+  await blobs.put(
+    `documents/${documentId}`,
+    new TextEncoder().encode(
+      JSON.stringify({ ...manifest, updatedAt: Date.now() + 10_000 })
+    )
+  )
+}
+
+window.layerCountFor = async (documentId) => {
+  const store = createDocumentStore(createLocalBlobStore())
+  const manifest = await store.load(documentId)
+  return manifest?.structure.layers.length ?? 0
 }
 
 window.strandLayer = async (documentId, layerId) => {
@@ -148,6 +218,8 @@ type FakeCloud = {
   remote: RemoteIndex
   /** A flush after this throws, as a brief network outage would. */
   setFailing(failing: boolean): void
+  /** Holds every flush's index commit this long, as a slow network would. */
+  setCommitDelay(ms: number): void
   /**
    * Lands a tile straight in the cloud, bypassing this engine entirely — the
    * shape of a flush a different device made while this one was closed.
@@ -160,6 +232,8 @@ type FakeCloud = {
   ): Promise<void>
   /** Backdates every restore point, standing in for a passing day or week. */
   ageVersions(byMs: number): void
+  /** How many previews have been committed, as `previewVersion` counts them. */
+  previewVersion(): number | undefined
 }
 
 // Presigned uploads and downloads are real `fetch` PUTs and GETs in
@@ -192,8 +266,10 @@ window.fetch = (async (
 
 window.createFakeCloud = (size) => {
   let failing = false
+  let commitDelayMs = 0
   let structure: DocumentStructure | null = null
   let updatedAt = 0
+  let previewVersion: number | undefined
   const tiles: FakeTileRow[] = []
   const knownHashes = new Set<string>()
   // Restore points, as `convex/versions.ts` keeps them: the flush's own tile
@@ -226,11 +302,18 @@ window.createFakeCloud = (size) => {
       return ids.map((id) => ({ id, url: `${FAKE_SCHEME}${id}` }))
     },
     async commitFlush(payload) {
+      if (commitDelayMs > 0)
+        await new Promise((resolve) => setTimeout(resolve, commitDelayMs))
       if (failing) throw new Error("Simulated network outage.")
       for (const tile of payload.tiles) {
         const existing = findRow(tile.surfaceId, tile.x, tile.y)
         if (existing) existing.hash = tile.hash
         else tiles.push({ ...tile })
+      }
+      // As `convex/tiles.ts` does: only the slots the flush names as removed.
+      for (const slot of payload.removed) {
+        const row = findRow(slot.surfaceId, slot.x, slot.y)
+        if (row) tiles.splice(tiles.indexOf(row), 1)
       }
       for (const blob of payload.uploaded) knownHashes.add(blob.hash)
       structure = payload.structure
@@ -245,8 +328,15 @@ window.createFakeCloud = (size) => {
       for (const stale of prunableVersions(versions, now))
         versions.splice(versions.indexOf(stale), 1)
     },
+    // The library's preview, uploaded after the flush that it pictures.
+    async presignPreviewUpload() {
+      return { url: `${FAKE_SCHEME}preview`, key: "preview" }
+    },
+    async commitPreview() {
+      previewVersion = (previewVersion ?? 0) + 1
+    },
     async documentMeta() {
-      return { ...size, structure, updatedAt }
+      return { ...size, structure, updatedAt, previewVersion }
     },
     async tileIndex() {
       return tiles.map((tile) => ({ ...tile }))
@@ -268,6 +358,10 @@ window.createFakeCloud = (size) => {
     setFailing: (value) => {
       failing = value
     },
+    setCommitDelay: (ms) => {
+      commitDelayMs = ms
+    },
+    previewVersion: () => previewVersion,
     ageVersions(byMs: number) {
       for (const version of versions) version.createdAt -= byMs
     },
@@ -286,6 +380,9 @@ window.createFakeCloud = (size) => {
 }
 
 window.openBlendProbe = openBlendProbe
+window.wetDepositionProbe = wetDepositionProbe
+window.wetDabProbe = wetDabProbe
+window.smearProbe = smearProbe
 window.encodePreview = encodePreview
 
 const canvas = document.querySelector("canvas")!
@@ -309,7 +406,36 @@ window.remountEngine = (options) => {
   })
 }
 
-window.runBenchmark = (options) => runBenchmark(window.engine, canvas, options)
+window.runBenchmark = (options) => {
+  // A window smaller than the document needs the document's size up front:
+  // without it, the first resize makes a document the size of the window.
+  if (options.viewport || options.fluid?.experimentalReach !== undefined)
+    window.remountEngine({
+      documentSize: { width: options.width, height: options.height },
+      experimentalFluidReach: options.fluid?.experimentalReach,
+    })
+  return runBenchmark(window.engine, canvas, options)
+}
+window.runFluidStepBenchmark = (size, rounds, held, steep, experiment) => {
+  window.remountEngine({
+    manualFluidClock: true,
+    documentSize: size,
+    experimentalFluidReach: experiment?.reach,
+  })
+  return runFluidStepBenchmark(
+    window.engine,
+    canvas,
+    size,
+    rounds,
+    held,
+    steep,
+    experiment?.diameter
+  )
+}
+window.runVectorBenchmark = (options) =>
+  runVectorBenchmark(window.engine, canvas, options)
+window.runNavigationBenchmark = (options) =>
+  runNavigationBenchmark(window.engine, canvas, options)
 window.describeEnvironment = describeEnvironment
 // The same pen the benchmark uses, so the compositor's tests and its
 // measurements are driving one routine rather than two that resemble each other.
@@ -359,6 +485,7 @@ window.openStrokeBufferProbe = async (width, height) => {
   window.probe = {
     beginStroke: (accumulation, opacity, mode = "paint") =>
       renderer.beginStroke({ accumulation, opacity, mode }),
+    registerTip: (id, texture) => textures.register(id, texture),
     setTip: (id) => renderer.setTip(id ? texture(id) : null),
     setGrain: (id, scale, depth, movement = 0) =>
       renderer.setGrain(id ? texture(id) : null, { scale, depth, movement }),
@@ -373,6 +500,10 @@ window.openStrokeBufferProbe = async (width, height) => {
             dab.angle ?? 0,
             dab.roundness ?? 1,
             dab.grainDepth ?? 1,
+            dab.hue ?? 0,
+            dab.saturation ?? 0,
+            dab.lightness ?? 0,
+            dab.tipFrame ?? 0,
           ],
           i * STAMP_STRIDE
         )

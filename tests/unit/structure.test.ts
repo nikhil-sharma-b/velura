@@ -4,7 +4,7 @@ import {
   addLayer,
   addMask,
   createDocument,
-  findLayer,
+  findRasterLayer,
   removeLayer,
   setLayer,
 } from "../../engine/doc/document"
@@ -18,6 +18,8 @@ import {
   structureSurfaceIds,
 } from "../../engine/doc/structure"
 import { makeLayerPaintable } from "../../engine/doc/document"
+import type { Paper } from "../../engine/doc/paper"
+import { FLAT_BOARD } from "../../engine/doc/board"
 
 const document = () => createDocument({ width: 512, height: 512 })
 
@@ -49,7 +51,7 @@ describe("pixels no layer refers to", () => {
     // The selection is the artist's, and recovering pixels does not move it.
     expect(adopted.activeLayerId).toBe(structure.activeLayerId)
     restoreStructure(doc, adopted)
-    expect(findLayer(doc, "layer-9000").kind).toBe("raster")
+    expect(findRasterLayer(doc, "layer-9000").kind).toBe("raster")
   })
 
   test("a surface that holds nothing is not a layer worth recovering", () => {
@@ -90,11 +92,11 @@ describe("structure snapshots", () => {
   test("restoring an unchanged snapshot changes nothing", () => {
     const doc = document()
     const before = captureStructure(doc)
-    const surface = findLayer(doc, doc.activeLayerId).surface
+    const surface = findRasterLayer(doc, doc.activeLayerId).surface
     restoreStructure(doc, before)
     expect(sameStructure(captureStructure(doc), before)).toBe(true)
     // The layer was not rebuilt, so its uploaded pixels are still its own.
-    expect(findLayer(doc, doc.activeLayerId).surface).toBe(surface)
+    expect(findRasterLayer(doc, doc.activeLayerId).surface).toBe(surface)
   })
 
   test("restoring puts back a removed layer, its place and the selection", () => {
@@ -112,14 +114,14 @@ describe("structure snapshots", () => {
   test("restoring undoes a grouping without disturbing the layers' pixels", () => {
     const doc = document()
     const first = doc.activeLayerId
-    const surface = findLayer(doc, first).surface
+    const surface = findRasterLayer(doc, first).surface
     const second = addLayer(doc)
     const before = captureStructure(doc)
     addGroup(doc, [first, second])
     expect(doc.layers).toHaveLength(1)
     restoreStructure(doc, before)
     expect(doc.layers.map((node) => node.id)).toEqual([first, second])
-    expect(findLayer(doc, first).surface).toBe(surface)
+    expect(findRasterLayer(doc, first).surface).toBe(surface)
   })
 
   test("restoring puts settings back", () => {
@@ -127,7 +129,7 @@ describe("structure snapshots", () => {
     const before = captureStructure(doc)
     setLayer(doc, doc.activeLayerId, { name: "Sky", opacity: 0.25 })
     restoreStructure(doc, before)
-    const layer = findLayer(doc, doc.activeLayerId)
+    const layer = findRasterLayer(doc, doc.activeLayerId)
     expect(layer.name).toBe("Layer 1")
     expect(layer.opacity).toBe(1)
   })
@@ -137,10 +139,10 @@ describe("structure snapshots", () => {
     const maskId = addMask(doc, doc.activeLayerId)
     doc.paintingMask = true
     const before = captureStructure(doc)
-    delete findLayer(doc, doc.activeLayerId).mask
+    delete findRasterLayer(doc, doc.activeLayerId).mask
     doc.paintingMask = false
     restoreStructure(doc, before)
-    expect(findLayer(doc, doc.activeLayerId).mask?.id).toBe(maskId)
+    expect(findRasterLayer(doc, doc.activeLayerId).mask?.id).toBe(maskId)
     expect(doc.paintingMask).toBe(true)
   })
 
@@ -160,7 +162,7 @@ describe("image layers", () => {
   test("keep their flag through a save and a restore", () => {
     const doc = document()
     const id = addLayer(doc)
-    findLayer(doc, id).image = true
+    findRasterLayer(doc, id).image = true
     const structure = captureStructure(doc)
     expect(structure.layers[1]).toMatchObject({ id, image: true })
     // An ordinary layer writes nothing, so older saves compare unchanged.
@@ -168,8 +170,8 @@ describe("image layers", () => {
 
     const restored = document()
     restoreStructure(restored, structure)
-    expect(findLayer(restored, id).image).toBe(true)
-    expect(findLayer(restored, structure.layers[0].id).image).toBe(false)
+    expect(findRasterLayer(restored, id).image).toBe(true)
+    expect(findRasterLayer(restored, structure.layers[0].id).image).toBe(false)
   })
 })
 
@@ -191,7 +193,7 @@ describe("a placed image in the tree", () => {
   function withImage(assetId = "asset-1", x = 10) {
     const doc = document()
     const id = addLayer(doc)
-    const layer = findLayer(doc, id)
+    const layer = findRasterLayer(doc, id)
     if (layer.kind !== "raster") throw new Error("expected a raster layer")
     layer.image = true
     layer.placed = placed(assetId, x)
@@ -203,12 +205,12 @@ describe("a placed image in the tree", () => {
     // placement rather than the previous pixels (06).
     const { doc, id } = withImage()
     const before = captureStructure(doc)
-    const layer = findLayer(doc, id)
+    const layer = findRasterLayer(doc, id)
     if (layer.kind !== "raster") throw new Error("expected a raster layer")
     layer.placed = placed("asset-1", 300)
 
     restoreStructure(doc, before)
-    const restored = findLayer(doc, id)
+    const restored = findRasterLayer(doc, id)
     if (restored.kind !== "raster") throw new Error("expected a raster layer")
     expect(restored.placed?.placement.x).toBe(10)
     expect(restored.image).toBe(true)
@@ -217,7 +219,7 @@ describe("a placed image in the tree", () => {
   test("names the originals a save has to keep, once each", () => {
     const { doc } = withImage()
     const second = addLayer(doc)
-    const layer = findLayer(doc, second)
+    const layer = findRasterLayer(doc, second)
     if (layer.kind !== "raster") throw new Error("expected a raster layer")
     layer.image = true
     // The same photograph placed twice is one original to keep.
@@ -241,5 +243,141 @@ describe("a placed image in the tree", () => {
     // Structures saved before images kept their originals read back unchanged.
     const doc = document()
     expect(captureStructure(doc).layers[0].placed).toBeUndefined()
+  })
+})
+
+describe("guides in the tree (16)", () => {
+  test("travel through a snapshot and back", () => {
+    const doc = document()
+    doc.guides = [{ id: "guide-1", axis: "x", position: 40 }]
+    const structure = captureStructure(doc)
+    expect(structure.guides).toEqual([
+      { id: "guide-1", axis: "x", position: 40 },
+    ])
+    doc.guides = []
+    restoreStructure(doc, structure)
+    expect(doc.guides).toEqual([{ id: "guide-1", axis: "x", position: 40 }])
+  })
+
+  test("are absent from a tree with none, as it was before guides", () => {
+    expect("guides" in captureStructure(document())).toBe(false)
+  })
+
+  test("a tree saved before guides existed restores with none", () => {
+    const doc = document()
+    const before = captureStructure(doc)
+    doc.guides = [{ id: "guide-1", axis: "y", position: 3 }]
+    restoreStructure(doc, before)
+    expect(doc.guides).toEqual([])
+  })
+
+  test("malformed guides from a save are dropped on restore", () => {
+    const doc = document()
+    restoreStructure(doc, {
+      ...captureStructure(doc),
+      guides: [
+        { id: "guide-1", axis: "x", position: 1 },
+        { id: "guide-2", axis: "q", position: 2 },
+      ] as never,
+    })
+    expect(doc.guides).toEqual([{ id: "guide-1", axis: "x", position: 1 }])
+  })
+})
+
+describe("the paper in the tree (fluid brushes 15)", () => {
+  test("a new document is on cold press", () => {
+    expect(document().paper).toBe("cold-press")
+  })
+
+  test("travels through a snapshot and back", () => {
+    const doc = document()
+    doc.paper = "rough"
+    const structure = captureStructure(doc)
+    expect(structure.paper).toBe("rough")
+    doc.paper = "hot-press"
+    restoreStructure(doc, structure)
+    expect<Paper>(doc.paper).toBe("rough")
+  })
+
+  test("is absent from a tree on cold press, as it was before papers", () => {
+    const doc = document()
+    const before = captureStructure(doc)
+    expect("paper" in before).toBe(false)
+    expect(sameStructure(captureStructure(doc), before)).toBe(true)
+  })
+
+  test("a tree saved before papers existed restores on cold press", () => {
+    const doc = document()
+    const before = captureStructure(doc)
+    doc.paper = "rough"
+    restoreStructure(doc, before)
+    expect<Paper>(doc.paper).toBe("cold-press")
+  })
+
+  test("a paper this client does not know restores on cold press", () => {
+    const doc = document()
+    doc.paper = "rough"
+    restoreStructure(doc, {
+      ...captureStructure(doc),
+      paper: "vellum" as never,
+    })
+    expect<Paper>(doc.paper).toBe("cold-press")
+  })
+
+  test("is written into a save", () => {
+    const doc = document()
+    doc.paper = "hot-press"
+    expect(captureStructure(doc, { scenes: true }).paper).toBe("hot-press")
+  })
+})
+
+describe("the board in the tree (fluid brushes 38)", () => {
+  test("a new document lies flat", () => {
+    expect(document().board).toEqual(FLAT_BOARD)
+  })
+
+  test("travels through a snapshot and back", () => {
+    const doc = document()
+    doc.board = { steepness: 0.6, direction: 90 }
+    const structure = captureStructure(doc)
+    expect(structure.board).toEqual({ steepness: 0.6, direction: 90 })
+    doc.board = FLAT_BOARD
+    restoreStructure(doc, structure)
+    expect(doc.board).toEqual({ steepness: 0.6, direction: 90 })
+  })
+
+  test("is absent from a tree on a flat board, as it was before boards", () => {
+    const doc = document()
+    const before = captureStructure(doc)
+    expect("board" in before).toBe(false)
+    doc.board = { steepness: 0, direction: 90 }
+    expect(sameStructure(captureStructure(doc), before)).toBe(true)
+  })
+
+  test("a tree saved before boards existed restores flat", () => {
+    const doc = document()
+    const before = captureStructure(doc)
+    doc.board = { steepness: 1, direction: 0 }
+    restoreStructure(doc, before)
+    expect(doc.board).toEqual(FLAT_BOARD)
+  })
+
+  test("a board that is not one restores flat", () => {
+    const doc = document()
+    doc.board = { steepness: 1, direction: 0 }
+    restoreStructure(doc, {
+      ...captureStructure(doc),
+      board: { steepness: "steep" } as never,
+    })
+    expect(doc.board).toEqual(FLAT_BOARD)
+  })
+
+  test("is written into a save", () => {
+    const doc = document()
+    doc.board = { steepness: 0.3, direction: 180 }
+    expect(captureStructure(doc, { scenes: true }).board).toEqual({
+      steepness: 0.3,
+      direction: 180,
+    })
   })
 })

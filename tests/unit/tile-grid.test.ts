@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   createDirtyRegion,
+  createTouchedTiles,
   intersectRect,
   TILE_SIZE,
   tileBounds,
@@ -114,5 +115,77 @@ describe("dirty region bounds", () => {
       { x: 0, y: 0 },
       { x: 1, y: 0 },
     ])
+  })
+})
+
+describe("the tiles a stroke's dabs touched", () => {
+  test("holds each dab's own tiles, not those of the box round them all", () => {
+    const touched = createTouchedTiles()
+    // Two dabs thrown to opposite corners of a three by three block.
+    touched.include(10, 10, 20, 20)
+    touched.include(TILE_SIZE * 2 + 10, TILE_SIZE * 2 + 10, 600, 600)
+    expect(
+      touched.within({
+        x: 0,
+        y: 0,
+        width: TILE_SIZE * 3,
+        height: TILE_SIZE * 3,
+      })
+    ).toEqual([
+      { x: 0, y: 0 },
+      { x: 2, y: 2 },
+    ])
+  })
+
+  test("answers along the rows, each tile once", () => {
+    const touched = createTouchedTiles()
+    touched.include(TILE_SIZE - 4, TILE_SIZE + 4, TILE_SIZE + 4, TILE_SIZE + 8)
+    touched.include(4, 4, TILE_SIZE + 4, 8)
+    touched.include(8, 8, 12, 12)
+    expect(
+      touched.within({
+        x: 0,
+        y: 0,
+        width: TILE_SIZE * 2,
+        height: TILE_SIZE * 2,
+      })
+    ).toEqual([
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 0, y: 1 },
+      { x: 1, y: 1 },
+    ])
+  })
+
+  test("a dab ending on a tile's edge stops short of the next", () => {
+    const touched = createTouchedTiles()
+    touched.include(0, 0, TILE_SIZE, TILE_SIZE)
+    expect(
+      touched.within({
+        x: 0,
+        y: 0,
+        width: TILE_SIZE * 2,
+        height: TILE_SIZE * 2,
+      })
+    ).toEqual([{ x: 0, y: 0 }])
+  })
+
+  test("leaves out what the region does not reach, and what is off the canvas", () => {
+    const touched = createTouchedTiles()
+    touched.include(-40, -40, 10, 10)
+    touched.include(TILE_SIZE * 3, 0, TILE_SIZE * 3 + 10, 10)
+    expect(
+      touched.within({ x: 0, y: 0, width: TILE_SIZE * 2, height: TILE_SIZE })
+    ).toEqual([{ x: 0, y: 0 }])
+  })
+
+  test("an empty dab touches nothing, and clearing forgets", () => {
+    const touched = createTouchedTiles()
+    const everywhere = { x: 0, y: 0, width: 4096, height: 4096 }
+    touched.include(10, 10, 10, 30)
+    expect(touched.within(everywhere)).toEqual([])
+    touched.include(10, 10, 30, 30)
+    touched.clear()
+    expect(touched.within(everywhere)).toEqual([])
   })
 })

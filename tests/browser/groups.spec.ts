@@ -49,7 +49,8 @@ async function groupedStrokePasses(page: Page, count: number) {
     encoder.beginRenderPass = function (
       ...args: Parameters<typeof beginRenderPass>
     ) {
-      passes++
+      // Count stroke/compositor work, not the independent idle warming timer.
+      if (this.label !== "idle texture warming") passes++
       return beginRenderPass.apply(this, args)
     }
     try {

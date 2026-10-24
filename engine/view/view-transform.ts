@@ -190,12 +190,16 @@ export function zoomView(
   requirePositive(factor, "Zoom factor must be a positive, finite number.")
   const zoom = clampZoom(view.zoom * factor)
   const zoomed = { ...view, zoom }
-  if (!about) return zoomed
-  const { anchor, viewport } = about
-  // Scaling happens about the viewport's centre, so an anchor elsewhere moves
-  // by the same ratio the zoom actually changed by — clamping included, or a
-  // wheel at the zoom limit would still slide the canvas.
+  // Scaling happens about the document's centre, which sits `pan` from the
+  // viewport's, so an anchor anywhere moves by the same ratio the zoom
+  // actually changed by — clamping included, or a wheel at the zoom limit
+  // would still slide the canvas.
   const ratio = zoom / view.zoom
+  // The viewport's own centre is an anchor at no offset from it: the pan
+  // scales with the zoom, or what was in view drifts towards the document's.
+  if (!about)
+    return { ...zoomed, panX: view.panX * ratio, panY: view.panY * ratio }
+  const { anchor, viewport } = about
   const originX = viewport.width / 2 + view.panX
   const originY = viewport.height / 2 + view.panY
   return {

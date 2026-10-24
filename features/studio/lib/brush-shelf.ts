@@ -1,5 +1,10 @@
 import type { Brush } from "@/engine/brush/brush"
-import { BUILTIN_BRUSHES } from "@/engine/brush/presets"
+import { KRITA_BRUSH_SETS } from "@/engine/brush/krita-presets"
+import {
+  BUILTIN_BRUSHES,
+  FLUID_BRUSH_SET,
+  WET_BRUSH_SET,
+} from "@/engine/brush/presets"
 
 import { DEFAULT_BRUSH_SET } from "@/convex/lib/brush"
 import type { StoredBrush } from "./brush-store"
@@ -18,6 +23,22 @@ import type { StoredBrush } from "./brush-store"
 /** The set the shipped brushes appear in. Not a stored set: there are no rows. */
 export const BUILTIN_SET = "Built-in"
 
+/**
+ * The sets shipped as sets, in shelf order: the wet brushes, the fluid ones,
+ * then Krita's.
+ */
+const SHIPPED_SETS = [WET_BRUSH_SET, FLUID_BRUSH_SET, ...KRITA_BRUSH_SETS]
+
+/**
+ * Every shipped set's name. None may be taken by a stored set: two shelves
+ * with one heading would be indistinguishable, and a brush dropped on one
+ * would land in whichever the store took it to mean.
+ */
+export const BUILTIN_SET_NAMES: readonly string[] = [
+  BUILTIN_SET,
+  ...SHIPPED_SETS.map((set) => set.name),
+]
+
 export type LibraryBrush = Readonly<{
   id: string
   name: string
@@ -30,13 +51,15 @@ export type LibraryBrush = Readonly<{
 export type BrushSet = Readonly<{
   name: string
   brushes: readonly LibraryBrush[]
+  /** Shipped: nothing may be dropped into it. */
+  builtin: boolean
 }>
 
-function builtinEntry(brush: Brush): LibraryBrush {
+function builtinEntry(brush: Brush, set = BUILTIN_SET): LibraryBrush {
   return {
     id: brush.id,
     name: brush.name,
-    set: BUILTIN_SET,
+    set,
     brush,
     builtin: true,
     deletable: false,
@@ -62,7 +85,11 @@ function savedEntry(stored: StoredBrush): LibraryBrush {
   }
 }
 
-/** The whole library, built-ins first and then each set in the order it was made. */
+/**
+ * The whole library: the six built-ins, then the wet brushes, then the fluid
+ * ones, then the sets ported from Krita, then each of the artist's sets in
+ * the order it was made.
+ */
 export function brushShelf(stored: readonly StoredBrush[]): BrushSet[] {
   const sets = new Map<string, LibraryBrush[]>()
   for (const brush of [...stored].sort((a, b) => a.order - b.order)) {
@@ -71,9 +98,39 @@ export function brushShelf(stored: readonly StoredBrush[]): BrushSet[] {
     sets.set(brush.set, set)
   }
   return [
-    { name: BUILTIN_SET, brushes: BUILTIN_BRUSHES.map(builtinEntry) },
-    ...[...sets].map(([name, brushes]) => ({ name, brushes })),
+    {
+      name: BUILTIN_SET,
+      brushes: BUILTIN_BRUSHES.map((brush) => builtinEntry(brush)),
+      builtin: true,
+    },
+    ...SHIPPED_SETS.map((set) => ({
+      name: set.name,
+      brushes: set.brushes.map((brush) => builtinEntry(brush, set.name)),
+      builtin: true,
+    })),
+    ...[...sets].map(([name, brushes]) => ({ name, brushes, builtin: false })),
   ]
+}
+
+/**
+ * The shelf narrowed to brushes whose name holds the query, ignoring case.
+ * Built-ins, ported brushes and the artist's own are searched alike, and a set
+ * with nothing left in it is dropped rather than shown as an empty heading.
+ */
+export function searchShelf(
+  shelf: readonly BrushSet[],
+  query: string
+): BrushSet[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return [...shelf]
+  return shelf
+    .map((set) => ({
+      ...set,
+      brushes: set.brushes.filter((entry) =>
+        entry.name.toLowerCase().includes(needle)
+      ),
+    }))
+    .filter((set) => set.brushes.length > 0)
 }
 
 /** Every brush on the shelf, flat — what a selection is resolved against. */

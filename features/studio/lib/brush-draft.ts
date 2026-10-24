@@ -1,9 +1,18 @@
 import type {
   Brush,
+  BrushColor,
+  BrushBlot,
+  BrushFluid,
   BrushGrain,
   BrushRendering,
   BrushShape,
+  BrushWet,
 } from "@/engine/brush/brush"
+import {
+  type BrushScatter,
+  MAX_SCATTER_AMOUNT,
+  NO_SCATTER,
+} from "@/engine/brush/scatter"
 import {
   type DynamicsTarget,
   isOffsetTarget,
@@ -41,8 +50,26 @@ export type BrushEdit = {
   }
   /** Null takes the grain away: the brush draws on a smooth surface again. */
   grain?: BrushGrain | null
-  rendering?: Partial<BrushRendering>
+  rendering?: Partial<Omit<BrushRendering, "wet" | "fluid" | "blot">> & {
+    /** Null dries the brush: it draws through the stroke buffer again. */
+    wet?: BrushWet | null
+    /** Null takes the water away, as null does for wet. */
+    fluid?: BrushFluid | null
+    /** Null takes the blot away, as null does for wet. */
+    blot?: BrushBlot | null
+  }
+  /** Null, or one that throws nothing, takes the section away. */
+  scatter?: BrushScatter | null
+  /** Null, or unit scales, takes the section away. */
+  color?: BrushColor | null
   dynamics?: Modulator[]
+}
+
+export const UNIT_COLOR: BrushColor = { hue: 1, saturation: 1, lightness: 1 }
+
+/** Whether two flat sections hold the same numbers and words. */
+function sameSection<T extends object>(a: T, b: T): boolean {
+  return Object.keys(b).every((key) => a[key as keyof T] === b[key as keyof T])
 }
 
 /**
@@ -63,7 +90,10 @@ export function editBrush(brush: Brush, edit: BrushEdit): Brush {
   const next: Brush = {
     ...brush,
     shape: patch(brush.shape, edit.shape as Partial<BrushShape>),
-    rendering: patch(brush.rendering, edit.rendering),
+    rendering: patch(
+      brush.rendering,
+      edit.rendering as Partial<BrushRendering>
+    ),
     dynamics: structuredClone(edit.dynamics ?? brush.dynamics),
   }
   // Absent rather than present-and-null, on both the tip and the grain: a
@@ -71,10 +101,81 @@ export function editBrush(brush: Brush, edit: BrushEdit): Brush {
   // `null` nor `undefined` is a value that model has.
   if (edit.shape && "tipTextureId" in edit.shape && !edit.shape.tipTextureId)
     delete next.shape.tipTextureId
+  // A brush is one of wet, fluid or blot (D42, fluid brushes 17), so
+  // whichever the edit turns on takes the others off rather than handing the
+  // engine a brush it refuses.
+  const media = ["fluid", "wet", "blot"] as const
+  const on = media.find((medium) => edit.rendering?.[medium])
+  if (on)
+    for (const medium of media) if (medium !== on) delete next.rendering[medium]
+  if (next.rendering.wet) next.rendering.wet = { ...next.rendering.wet }
+  else delete next.rendering.wet
+  if (next.rendering.fluid) next.rendering.fluid = { ...next.rendering.fluid }
+  else delete next.rendering.fluid
+  if (next.rendering.blot) next.rendering.blot = { ...next.rendering.blot }
+  else delete next.rendering.blot
   const grain = edit.grain === undefined ? brush.grain : edit.grain
   if (grain) next.grain = { ...grain }
   else delete next.grain
+  // A section saying what its absence says is left out, so dialling scatter
+  // or colour back to nothing gives back the brush that never had it.
+  const scatter = edit.scatter === undefined ? brush.scatter : edit.scatter
+  if (scatter && !sameSection(scatter, NO_SCATTER))
+    next.scatter = { ...scatter }
+  else delete next.scatter
+  const color = edit.color === undefined ? brush.color : edit.color
+  if (color && !sameSection(color, UNIT_COLOR)) next.color = { ...color }
+  else delete next.color
   return next
+}
+
+/**
+ * Scatter mappings saved before scatter had an amount (brush library 02).
+ *
+ * The `scatter` target was then an offset, in dab radii, and took `add` or
+ * `replace`; it is now a scale on the brush's own amount. A brush without an
+ * amount scatters nothing however its mappings drive it, so these draw
+ * nothing until it has one. They are flagged rather than migrated silently:
+ * an `add` on a brush with no amount is also what a new brush looks like
+ * half-way through being set up, and rewriting that would be a surprise.
+ */
+export function legacyScatterMappings(brush: Brush): number[] {
+  if ((brush.scatter?.amount ?? 0) > 0) return []
+  return brush.dynamics.flatMap((modulator, index) =>
+    modulator.target === "scatter" && modulator.mix !== "multiply"
+      ? [index]
+      : []
+  )
+}
+
+/**
+ * The legacy mappings made live again: the furthest they threw becomes the
+ * amount, and each becomes a scale of it that throws a dab as far as it did.
+ * An offset added to nothing is that offset, so an `add` becomes a multiply.
+ */
+export function convertLegacyScatter(brush: Brush): Brush {
+  const legacy = new Set(legacyScatterMappings(brush))
+  const reach = Math.max(
+    0,
+    ...[...legacy].flatMap((index) => brush.dynamics[index].range.map(Math.abs))
+  )
+  const amount = Math.min(MAX_SCATTER_AMOUNT, reach)
+  if (amount === 0) return brush
+  return editBrush(brush, {
+    scatter: { ...(brush.scatter ?? NO_SCATTER), amount },
+    dynamics: brush.dynamics.map((modulator, index) =>
+      legacy.has(index)
+        ? {
+            ...modulator,
+            mix: modulator.mix === "add" ? "multiply" : modulator.mix,
+            range: [
+              modulator.range[0] / amount,
+              modulator.range[1] / amount,
+            ] as const,
+          }
+        : modulator
+    ),
+  })
 }
 
 /**
@@ -136,7 +237,13 @@ export function brushCommand(brush: Brush): SetBrushCommand {
     flow: brush.rendering.flow,
     accumulation: brush.rendering.accumulation,
     tipTextureId: brush.shape.tipTextureId ?? null,
+    tipSelection: brush.shape.tipSelection ?? null,
     grain: brush.grain ? { ...brush.grain } : null,
+    color: brush.color ? { ...brush.color } : null,
+    scatter: brush.scatter ? { ...brush.scatter } : null,
+    wet: brush.rendering.wet ? { ...brush.rendering.wet } : null,
+    fluid: brush.rendering.fluid ? { ...brush.rendering.fluid } : null,
+    blot: brush.rendering.blot ? { ...brush.rendering.blot } : null,
     dynamics: structuredClone(brush.dynamics),
   }
 }

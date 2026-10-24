@@ -107,6 +107,13 @@ test("a group shows its children together, and a mask sits beside its layer", as
 }) => {
   const layers = await openStudio(page)
   await layers.getByRole("button", { name: "Add layer" }).click()
+  // A group's thumbnail scales its children down further than a layer row
+  // does, and the default pencil line thins out to nothing at that size on
+  // CI's software rasteriser. A broad stroke survives the reduction.
+  const size = page.getByRole("button", { name: /^Size:/ })
+  const initial = (await size.getAttribute("aria-label"))!
+  for (let press = 0; press < 10; press++) await page.keyboard.press("]")
+  await expect(size).not.toHaveAttribute("aria-label", initial)
   await (
     await stroke(page, 200, 600)
   )()
@@ -168,4 +175,55 @@ test("pointing at a row dims the canvas around it and previews it larger", async
   await page.mouse.move(box.x + 300, box.y + 400)
   await expect(preview).toBeHidden()
   await expect.poll(shot).toBe(plain)
+})
+
+test("the active row's clear button empties the layer, and undo refills it", async ({
+  page,
+}) => {
+  const layers = await openStudio(page)
+  await layers.getByRole("button", { name: "Add layer" }).click()
+  const second = layers.getByTestId("thumbnail-Layer 2")
+  await (
+    await stroke(page, 200, 600)
+  )()
+  await expect(second).toHaveAttribute("data-state", "shown")
+
+  const clear = layers.getByRole("button", { name: "Clear Layer 2" })
+  // Clearing waits for a yes; backing out leaves the layer alone.
+  await clear.click()
+  await page.getByRole("button", { name: "Keep it" }).click()
+  await expect(second).toHaveAttribute("data-state", "shown")
+  await clear.click()
+  await page.getByRole("button", { name: "Clear layer" }).click()
+  await expect(second).toHaveAttribute("data-state", "empty")
+  // An empty layer has nothing to clear.
+  await expect(clear).toBeDisabled()
+  await page.keyboard.press("ControlOrMeta+z")
+  await expect(second).toHaveAttribute("data-state", "shown")
+
+  // A locked layer is one the artist said not to touch.
+  await layers.getByRole("button", { name: "Lock Layer 2" }).click()
+  await expect(clear).toBeDisabled()
+})
+
+test("a vector layer's row shows the shapes on it", async ({ page }) => {
+  const layers = await openStudio(page)
+  await layers.getByRole("button", { name: "Add vector layer" }).click()
+  const row = layers.getByTestId("thumbnail-Vector 2")
+  await expect(row).toHaveAttribute("data-state", "empty")
+
+  await page.keyboard.press("u")
+  const canvas = page.getByRole("img", { name: "Drawing canvas" })
+  const box = (await canvas.boundingBox())!
+  await page.mouse.move(box.x + 200, box.y + 200)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 500, box.y + 400, { steps: 10 })
+  await page.mouse.up()
+  await expect(row).toHaveAttribute("data-state", "shown")
+  await expect.poll(() => colours(row)).toBeGreaterThan(2)
+
+  // Its shapes clear as a raster layer's pixels do, once confirmed.
+  await layers.getByRole("button", { name: "Clear Vector 2" }).click()
+  await page.getByRole("button", { name: "Clear layer" }).click()
+  await expect(row).toHaveAttribute("data-state", "empty")
 })

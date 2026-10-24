@@ -17,7 +17,16 @@ export const STAMP = {
   ROUNDNESS: 5,
   /** How strongly the canvas grain bites this dab, in [0, 1]. */
   GRAIN_DEPTH: 6,
+  HUE: 7,
+  SATURATION: 8,
+  LIGHTNESS: 9,
+  TIP_FRAME: 10,
+  /**
+   * The share of the brush's water a fluid dab carries, in [0, 1] (D42).
+   * Only the fluid stroke reads it.
+   */
+  WATER: 11,
 } as const
 
 /** Floats per dab instance. */
-export const STAMP_STRIDE = 7
+export const STAMP_STRIDE = 12

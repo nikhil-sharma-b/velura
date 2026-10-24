@@ -286,3 +286,25 @@ test("golden: a self-crossing stroke in each accumulation mode", async ({
     )
   }
 })
+
+test("a stroke clears only where it painted, and the next stroke starts clean", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:3101/tests/harness/")
+  await page.waitForFunction(() => !!window.openStrokeBufferProbe)
+  await page.evaluate(() => window.openStrokeBufferProbe(64, 64))
+  const alphaAfter = (opacity: number) =>
+    page.evaluate(async (dabOpacity) => {
+      window.probe.beginStroke("coverage", 1)
+      window.probe.stamp([{ x: 32, y: 32, radius: 12, opacity: dabOpacity }])
+      window.probe.endStroke()
+      return (await window.probe.readLayerPixel(32, 32))[3]
+    }, opacity)
+  const first = await alphaAfter(0.6)
+  // Weaker than the first: coverage depth left over from the last stroke
+  // would reject it, and ink left in the buffer would composite twice.
+  const second = await alphaAfter(0.2)
+  const expected = first + 0.2 * (1 - first)
+  expect(second).toBeGreaterThan(first)
+  expect(second).toBeCloseTo(expected, 2)
+})

@@ -28,14 +28,20 @@ export function createConvexRemoteIndex(
         ids: [...ids],
       }),
     presignPreviewUpload: () =>
-      client.action(api.tilesActions.presignPreviewUpload, { documentId }),
-    commitPreview: async () => {
-      await client.mutation(api.tiles.commitPreview, { documentId })
-    },
+      client.action(api.tilesActions.presignImmutablePreviewUpload, {
+        documentId,
+      }),
+    commitPreview: (key, flushUpdatedAt) =>
+      client.mutation(api.tiles.commitPreview, {
+        documentId,
+        key,
+        flushUpdatedAt,
+      }),
     commitFlush: async (payload) => {
-      await client.mutation(api.tiles.commitFlush, {
+      return await client.mutation(api.tiles.commitFlush, {
         documentId,
         tiles: [...payload.tiles],
+        removed: [...payload.removed],
         uploaded: [...payload.uploaded],
         structure: payload.structure,
         metrics: payload.metrics,
@@ -49,6 +55,7 @@ export function createConvexRemoteIndex(
         name: document.name,
         structure: document.structure ?? null,
         updatedAt: document.updatedAt,
+        previewVersion: document.previewVersion,
       }
     },
     tileIndex: () => client.query(api.tiles.forDocument, { documentId }),

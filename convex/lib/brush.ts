@@ -1,3 +1,14 @@
+import { validateTexture } from "../../engine/brush/texture"
+import { validateTipSelection } from "../../engine/brush/tip-sets"
+import {
+  copyBrushBlot,
+  copyBrushFluid,
+  validateBrushBlot,
+  validateBrushColor,
+  validateBrushFluid,
+  validateBrushMedium,
+  validateBrushWet,
+} from "../../engine/brush/brush"
 /**
  * What a stored brush is, in the shape of `convex/lib/palette.ts`: rules that
  * hold with or without a database, so the library panel and the mutation it
@@ -14,11 +25,15 @@
 
 import type {
   Brush,
+  BrushBlot,
+  BrushFluid,
   BrushGrain,
   BrushRendering,
   BrushShape,
+  BrushWet,
 } from "../../engine/brush/brush"
 import { type Modulator, validateDynamics } from "../../engine/brush/dynamics"
+import { type BrushScatter, validateScatter } from "../../engine/brush/scatter"
 
 export const MAX_BRUSH_NAME_LENGTH = 120
 export const MAX_SET_NAME_LENGTH = 60
@@ -104,6 +119,10 @@ function normaliseShape(value: unknown): BrushShape {
   // JSON it round-trips as, and `{ tipTextureId: undefined }` does not.
   if (shape.tipTextureId !== undefined && shape.tipTextureId !== null)
     next.tipTextureId = textureId(shape.tipTextureId, "tip texture")
+  if (shape.tipSelection !== undefined) {
+    validateTipSelection(shape.tipSelection)
+    next.tipSelection = shape.tipSelection
+  }
   return next
 }
 
@@ -117,6 +136,18 @@ function normaliseGrain(value: unknown): BrushGrain {
   }
 }
 
+function normaliseScatter(value: unknown): BrushScatter {
+  const scatter = value as Record<string, unknown>
+  const next = {
+    amount: scatter.amount,
+    count: scatter.count,
+    axes: scatter.axes,
+  } as BrushScatter
+  // The engine's own rule, as for dynamics below.
+  validateScatter(next)
+  return next
+}
+
 function normaliseRendering(value: unknown): BrushRendering {
   const rendering = (value ?? {}) as Record<string, unknown>
   if (
@@ -124,11 +155,30 @@ function normaliseRendering(value: unknown): BrushRendering {
     rendering.accumulation !== "buildup"
   )
     throw new Error("Brush accumulation must be coverage or buildup.")
-  return {
+  const next: BrushRendering = {
     accumulation: rendering.accumulation,
     opacity: inRange(rendering.opacity, "opacity", 0, 1),
     flow: inRange(rendering.flow, "flow", 0, 1),
   }
+  // Absent on every brush saved before a brush could be wet, and absent is
+  // what draws the way those brushes always drew.
+  if (rendering.wet !== undefined && rendering.wet !== null) {
+    const wet = rendering.wet as BrushWet
+    validateBrushWet(wet)
+    next.wet = { pickup: wet.pickup }
+  }
+  if (rendering.fluid !== undefined && rendering.fluid !== null) {
+    const fluid = rendering.fluid as BrushFluid
+    validateBrushFluid(fluid)
+    next.fluid = copyBrushFluid(fluid)
+  }
+  if (rendering.blot !== undefined && rendering.blot !== null) {
+    const blot = rendering.blot as BrushBlot
+    validateBrushBlot(blot)
+    next.blot = copyBrushBlot(blot)
+  }
+  validateBrushMedium(next)
+  return next
 }
 
 function normaliseModulators(value: unknown): Modulator[] {
@@ -172,6 +222,18 @@ export function normaliseBrushDefinition(value: unknown): Brush {
   }
   if (brush.grain !== undefined && brush.grain !== null)
     next.grain = normaliseGrain(brush.grain)
+  if (brush.color !== undefined && brush.color !== null) {
+    validateBrushColor(brush.color)
+    next.color = {
+      hue: brush.color.hue,
+      saturation: brush.color.saturation,
+      lightness: brush.color.lightness,
+    }
+  }
+  // Absent on every brush saved before scatter existed, and absent is what
+  // draws the way those brushes always drew.
+  if (brush.scatter !== undefined && brush.scatter !== null)
+    next.scatter = normaliseScatter(brush.scatter)
   return next
 }
 
@@ -249,6 +311,7 @@ export function reorderBrushes(
 
 /** A greyscale texture as it is stored: one byte per texel, top row first. */
 export type StoredTextureData = {
+  frameCount?: number
   width: number
   height: number
   data: Uint8Array
@@ -274,7 +337,16 @@ export function normaliseStoredTexture(value: unknown): StoredTextureData {
   const data = texture.data
   if (!(data instanceof Uint8Array))
     throw new Error("A texture must be single-channel bytes.")
-  if (data.length !== (width as number) * (height as number))
-    throw new Error("A texture must hold exactly one byte per texel.")
-  return { width: width as number, height: height as number, data }
+  const stored: StoredTextureData = {
+    width: width as number,
+    height: height as number,
+    data,
+  }
+  if (texture.frameCount !== undefined) stored.frameCount = texture.frameCount
+  validateTexture(stored)
+  if (data.length > MAX_TEXTURE_DIMENSION * MAX_TEXTURE_DIMENSION)
+    throw new Error(
+      "A texture's frames may hold at most 262144 bytes in total."
+    )
+  return stored
 }

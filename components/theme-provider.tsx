@@ -3,6 +3,25 @@
 import * as React from "react"
 import { ThemeProvider as NextThemesProvider, useTheme } from "next-themes"
 
+import { useKeybinds } from "@/features/commands/hooks/use-keybinds"
+import { createRegistry } from "@/features/commands/lib/registry"
+
+/**
+ * next-themes renders an inline script that sets the theme before first
+ * paint. It only means anything in server-rendered HTML: a script React
+ * renders in the browser never runs, and React says so in the console. That
+ * happens whenever Next rebuilds the whole page on the client, as it does for
+ * every page that calls `notFound()` (a revoked share link, say). Typing the
+ * browser's copy as data keeps React quiet; the server's copy stays a real
+ * script, and the attribute that differs between them is not a mismatch.
+ */
+const CLIENT_SCRIPT_PROPS: React.ComponentProps<
+  typeof NextThemesProvider
+>["scriptProps"] =
+  typeof window === "undefined"
+    ? undefined
+    : { type: "application/json", suppressHydrationWarning: true }
+
 function ThemeProvider({
   children,
   ...props
@@ -13,6 +32,7 @@ function ThemeProvider({
       defaultTheme="system"
       enableSystem
       disableTransitionOnChange
+      scriptProps={CLIENT_SCRIPT_PROPS}
       {...props}
     >
       <ThemeHotkey />
@@ -21,50 +41,26 @@ function ThemeProvider({
   )
 }
 
-function isTypingTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) {
-    return false
-  }
+type ThemeContext = { toggle: () => void }
 
-  return (
-    target.isContentEditable ||
-    target.tagName === "INPUT" ||
-    target.tagName === "TEXTAREA" ||
-    target.tagName === "SELECT"
-  )
-}
+/** App-wide commands: they apply on every page, not only in the studio. */
+const appCommands = createRegistry<ThemeContext>([
+  {
+    id: "view.toggleTheme",
+    label: "Toggle dark mode",
+    category: "View",
+    keybinds: ["d"],
+    // A held key flickering the whole page between themes helps nobody.
+    repeat: false,
+    run: ({ toggle }) => toggle(),
+  },
+])
 
 function ThemeHotkey() {
   const { resolvedTheme, setTheme } = useTheme()
-
-  React.useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.defaultPrevented || event.repeat) {
-        return
-      }
-
-      if (event.metaKey || event.ctrlKey || event.altKey) {
-        return
-      }
-
-      if (event.key.toLowerCase() !== "d") {
-        return
-      }
-
-      if (isTypingTarget(event.target)) {
-        return
-      }
-
-      setTheme(resolvedTheme === "dark" ? "light" : "dark")
-    }
-
-    window.addEventListener("keydown", onKeyDown)
-
-    return () => {
-      window.removeEventListener("keydown", onKeyDown)
-    }
-  }, [resolvedTheme, setTheme])
-
+  useKeybinds(appCommands, {
+    toggle: () => setTheme(resolvedTheme === "dark" ? "light" : "dark"),
+  })
   return null
 }
 

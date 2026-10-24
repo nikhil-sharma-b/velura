@@ -4,6 +4,7 @@ import { requireOwnDocument } from "./documents"
 import type { Id } from "./_generated/dataModel"
 import { type MutationCtx, query } from "./_generated/server"
 import { prunableVersions } from "./lib/retention"
+import { readScenes } from "./sceneRows"
 
 /**
  * Restore points (§9.4). Deliberately not a synced undo stack (D9): undo is
@@ -47,7 +48,7 @@ export const get = query({
     return {
       id: version._id,
       createdAt: version.createdAt,
-      structure: version.structure,
+      structure: await readScenes(ctx, version.documentId, version.structure),
       tiles: version.tiles,
     }
   },
@@ -67,6 +68,9 @@ export const get = query({
  * right for the sweep that reads it, and the sweep is what eventually reaps a
  * document nothing references (D17, ticket 21). What must never decay away is
  * the newest point — see `prunableVersions`.
+ *
+ * Returns the trees of the points thinned and of those still standing, so the
+ * caller can let go of scene chunks only the thinned ones named.
  */
 export async function recordVersion(
   ctx: MutationCtx,
@@ -80,7 +84,7 @@ export async function recordVersion(
       hash: string
     }[]
   }
-): Promise<void> {
+): Promise<{ pruned: unknown[]; kept: unknown[] }> {
   const now = Date.now()
   await ctx.db.insert("versions", {
     documentId,
@@ -93,6 +97,12 @@ export async function recordVersion(
     .query("versions")
     .withIndex("by_document_created", (q) => q.eq("documentId", documentId))
     .collect()
-  for (const version of prunableVersions(versions, now))
-    await ctx.db.delete(version._id)
+  const prunable = new Set(prunableVersions(versions, now))
+  for (const version of prunable) await ctx.db.delete(version._id)
+  return {
+    pruned: [...prunable].map((version) => version.structure),
+    kept: versions
+      .filter((version) => !prunable.has(version))
+      .map((version) => version.structure),
+  }
 }
